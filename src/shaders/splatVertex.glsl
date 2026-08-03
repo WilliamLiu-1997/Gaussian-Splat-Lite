@@ -15,6 +15,8 @@ flat out float adjustedStdDev;
 uniform vec2 renderSize;
 uniform vec4 renderToViewQuat;
 uniform vec3 renderToViewPos;
+// Uniform scale of the render-to-view transform (1.0 unless the camera is scaled)
+uniform float renderToViewScale;
 uniform mat3 renderToViewBasis;
 uniform float maxStdDev;
 uniform float minPixelRadius;
@@ -102,10 +104,15 @@ void main() {
         }
     }
 
+// Match the reference 3DGS rasterizer by clamping SH-evaluated RGB positive.
+    rgba.rgb = max(rgba.rgb, vec3(0.0));
+
     adjustedStdDev = maxStdDev;
 
-    // Compute the view space center of the splat
-    vec3 viewCenter = (!enableCovSplats ? quatVec(renderToViewQuat, center) : (renderToViewBasis * center)) + renderToViewPos;
+// The covariance branch already carries scale in the full basis matrix.
+    scales *= renderToViewScale;
+// Compute the view space center of the splat
+    vec3 viewCenter = (!enableCovSplats ? (renderToViewScale * quatVec(renderToViewQuat, center)) : (renderToViewBasis * center)) + renderToViewPos;
 
     // Discard splats behind the camera
     if (viewCenter.z >= 0.0) {

@@ -12,6 +12,7 @@ const rpcHandlers = {
   loadExtSplats,
   nextChunk,
 };
+export type RpcHandlers = typeof rpcHandlers;
 
 async function onMessage(event: MessageEvent) {
   const {
@@ -75,13 +76,17 @@ async function decodeBytesUrl({
   chunkedLength?: number;
   sendStatus: (data: unknown) => void;
 }) {
+  let readStream: ReadableStream<Uint8Array>;
+  let streamLength = 0;
+
   if (fileBytes) {
-    const chunkSize = 1048576;
-    for (let i = 0; i < fileBytes.length; i += chunkSize) {
-      decoder.push(
-        fileBytes.subarray(i, Math.min(i + chunkSize, fileBytes.length)),
-      );
-    }
+    readStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(fileBytes);
+        controller.close();
+      },
+    });
+    streamLength = fileBytes.length;
   } else if (url) {
     const request = new Request(url, {
       headers: requestHeader ? new Headers(requestHeader) : undefined,
@@ -94,49 +99,63 @@ async function decodeBytesUrl({
         `Failed to fetch "${url}": ${response.status} ${response.statusText}`,
       );
     }
-    const readStream = response.body.getReader();
+    readStream = response.body;
     const contentLength = Number.parseInt(
       response.headers.get("Content-Length") || "0",
     );
-    const total = Number.isNaN(contentLength) ? 0 : contentLength;
-    let loaded = 0;
-
-    while (true) {
-      const { done, value } = await readStream.read();
-      if (done) {
-        readStream.releaseLock();
-        break;
-      }
-      loaded += value.length;
-      sendStatus({ loaded, total });
-      decoder.push(value);
-    }
+    streamLength = Number.isNaN(contentLength) ? 0 : contentLength;
   } else if (chunked) {
-    let loaded = 0;
-    const total = chunkedLength ?? 0;
-    while (true) {
-      const readNextChunk: Promise<Uint8Array> = new Promise((resolve) => {
-        nextChunkWaiter = resolve;
-      });
-      sendStatus({ nextChunk: true });
-      const chunk = await readNextChunk;
+    readStream = new ReadableStream(
+      {
+        async pull(controller) {
+          const readNextChunk = new Promise<Uint8Array>((resolve) => {
+            nextChunkWaiter = resolve;
+          });
+          sendStatus({ nextChunk: true });
+          const chunk = await readNextChunk;
 
-      if (chunk.length === 0) {
-        break;
-      }
-
-      decoder.push(chunk);
-      loaded += chunk.length;
-      sendStatus({ loaded, total });
-    }
-    if (total === 0) {
-      sendStatus({ loaded, total: loaded });
-    }
+          if (chunk.length === 0) {
+            controller.close();
+          } else {
+            controller.enqueue(chunk);
+          }
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    streamLength = chunkedLength ?? 0;
   } else {
     throw new Error("No url or fileBytes provided");
   }
 
-  return decoder.finish();
+  const reader = readStream.getReader();
+  let loaded = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      loaded += value.length;
+      sendStatus({ loaded, total: streamLength });
+      decoder.push(value);
+    }
+
+    if (chunked && streamLength === 0) {
+      sendStatus({ loaded, total: loaded });
+    }
+
+    return decoder.finish();
+  } catch (error) {
+    try {
+      await reader.cancel(error);
+    } catch {
+      // Preserve the decoding error if stream cancellation itself fails.
+    }
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 type DecodedPackedResult = {

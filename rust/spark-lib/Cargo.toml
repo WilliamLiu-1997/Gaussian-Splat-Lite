@@ -11,4 +11,5 @@ repository.workspace = true
 anyhow.workspace = true
 half.workspace = true
 miniz_oxide.workspace = true
+ruzstd.workspace = true
 serde.workspace = true

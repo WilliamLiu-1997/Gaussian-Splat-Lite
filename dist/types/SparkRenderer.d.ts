@@ -272,6 +272,9 @@ export declare class SparkRenderer extends THREE.Mesh {
         renderToViewPos: {
             value: THREE.Vector3;
         };
+        renderToViewScale: {
+            value: number;
+        };
         renderToViewBasis: {
             value: THREE.Matrix3;
         };

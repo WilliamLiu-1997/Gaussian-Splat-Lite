@@ -67,20 +67,21 @@ pub fn sort32_internal(
     } = buffers;
     let keys = &readback[..num_splats];
 
-    // Tally low and high buckets without a branch in the hot loop.
+    // Tally low and high buckets.
     buckets16lo.fill(0);
     buckets16hi.fill(0);
 
     macro_rules! tick {
         ($key:expr) => {{
-            let valid = ($key < DEPTH_INFINITY_F32) as u32;
-            let inv = !$key;
-            let lo = inv & RADIX_MASK;
-            let hi = inv >> RADIX_BITS;
+            if $key < DEPTH_INFINITY_F32 {
+                let inv = !$key;
+                let lo = inv & RADIX_MASK;
+                let hi = inv >> RADIX_BITS;
 
-            // The mask and shift guarantee both bucket indices are in bounds.
-            unsafe { *buckets16lo.get_unchecked_mut(lo as usize) += valid };
-            unsafe { *buckets16hi.get_unchecked_mut(hi as usize) += valid };
+                // The mask and shift guarantee both bucket indices are in bounds.
+                unsafe { *buckets16lo.get_unchecked_mut(lo as usize) += 1 };
+                unsafe { *buckets16hi.get_unchecked_mut(hi as usize) += 1 };
+            }
         }};
     }
 
@@ -102,6 +103,10 @@ pub fn sort32_internal(
     let active_splats = prefix_sum_exclusive(buckets16lo);
     prefix_sum_exclusive(buckets16hi);
 
+    if active_splats == 0 {
+        return Ok(0);
+    }
+
     // Pass 1: bucket by the low 16 bits of the inverted key. Keep the key
     // alongside the index so pass 2 can scan sequentially instead of gathering.
     macro_rules! place {
@@ -109,12 +114,13 @@ pub fn sort32_internal(
             if $key < DEPTH_INFINITY_F32 {
                 let inv = !$key;
                 let lo = (inv & RADIX_MASK) as usize;
-                let pos = unsafe { *buckets16lo.get_unchecked(lo) } as usize;
+                let bucket = unsafe { buckets16lo.get_unchecked_mut(lo) };
+                let pos = *bucket as usize;
+                *bucket += 1;
                 let inv_index = ((inv as u64) << 32) | ($index as u64);
 
                 // pos < active_splats <= max_splats <= scratch.len().
                 unsafe { *scratch.get_unchecked_mut(pos) = inv_index };
-                unsafe { *buckets16lo.get_unchecked_mut(lo) += 1 };
             }
         }};
     }
@@ -142,11 +148,12 @@ pub fn sort32_internal(
         ($inv_index:expr) => {{
             let index = $inv_index as u32;
             let hi = (($inv_index >> 48) & RADIX_MASK as u64) as usize;
-            let pos = unsafe { *buckets16hi.get_unchecked(hi) } as usize;
+            let bucket = unsafe { buckets16hi.get_unchecked_mut(hi) };
+            let pos = *bucket as usize;
+            *bucket += 1;
 
             // pos < active_splats <= max_splats <= ordering.len().
             unsafe { *ordering.get_unchecked_mut(pos) = index };
-            unsafe { *buckets16hi.get_unchecked_mut(hi) += 1 };
         }};
     }
 
@@ -179,6 +186,35 @@ pub fn sort32_internal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn returns_early_when_every_key_is_invalid() {
+        let mut buffers = Sort32Buffers::default();
+        buffers.readback = vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000];
+        buffers.ordering = vec![7, 7, 7, 7];
+
+        assert_eq!(sort32_internal(&mut buffers, 4, 4), Ok(0));
+        assert_eq!(buffers.ordering, [7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn orders_finite_keys_descending_and_stably() {
+        let mut buffers = Sort32Buffers::default();
+        buffers.readback = vec![
+            0x3f800000, // 1.0
+            0x7f800000, // +infinity, excluded
+            0x00000000, // +0.0
+            0x3f800000, // 1.0, kept after the first equal key
+            0x7f7fffff, // largest finite f32
+            0x80000000, // -0.0, excluded
+            0x7fc00000, // NaN, excluded
+        ];
+
+        let active = sort32_internal(&mut buffers, 7, 7).unwrap();
+
+        assert_eq!(active, 4);
+        assert_eq!(&buffers.ordering[..active as usize], &[4, 0, 3, 2]);
+    }
 
     #[test]
     fn sorts_finite_nonnegative_depths_descending_and_filters_invalid_keys() {

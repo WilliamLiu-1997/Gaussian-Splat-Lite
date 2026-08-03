@@ -7,6 +7,14 @@ import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "./defines";
 import { getShaders } from "./shaders";
 import { resolveTimer, uploadU32DataTextureRows } from "./utils";
 
+const renderToViewScaleTmp = new THREE.Vector3();
+
+// Average (uniform) world scale of a camera.
+function getCameraWorldScale(camera: THREE.Camera): number {
+  const scale = camera.getWorldScale(renderToViewScaleTmp);
+  return (scale.x + scale.y + scale.z) / 3;
+}
+
 export interface SparkRendererOptions {
   /**
    * Pass in your THREE.WebGLRenderer instance so Spark can perform work
@@ -414,6 +422,8 @@ export class SparkRenderer extends THREE.Mesh {
       renderToViewQuat: { value: new THREE.Quaternion() },
       // SplatAccumulator to view transformation translation
       renderToViewPos: { value: new THREE.Vector3() },
+      // SplatAccumulator to view transformation uniform scale
+      renderToViewScale: { value: 1 },
       renderToViewBasis: { value: new THREE.Matrix3() },
       renderToViewOffset: { value: new THREE.Vector3() },
       // Maximum distance (in stddevs) from Gsplat center to render
@@ -536,6 +546,35 @@ export class SparkRenderer extends THREE.Mesh {
     }
     this.uniforms.renderSize.value.copy(spark.renderSize);
 
+    // Trigger update after refreshing renderSize but before any uniforms that
+    // depend on the active accumulator, avoiding both size and display latency.
+    if (spark.autoUpdate && isNewFrame) {
+      const preUpdate = spark.preUpdate && !renderer.xr.isPresenting;
+      let useCamera = camera;
+      if (renderer.xr.isPresenting) {
+        const xrCamera = renderer.xr.getCamera();
+        // Keep the per-eye camera parented to the XR rig so its world transform
+        // includes any scale applied to that rig.
+        useCamera = xrCamera.cameras[0] ?? xrCamera;
+      }
+      if (preUpdate) {
+        spark.updateInternal({
+          scene,
+          camera: useCamera,
+          autoUpdate: true,
+        });
+      } else if (spark.updateTimeoutId === -1) {
+        spark.updateTimeoutId = setTimeout(() => {
+          spark.updateTimeoutId = -1;
+          spark.updateInternal({
+            scene,
+            camera: useCamera,
+            autoUpdate: true,
+          });
+        }, 1);
+      }
+    }
+
     const typedCamera = camera as
       | THREE.PerspectiveCamera
       | THREE.OrthographicCamera;
@@ -556,8 +595,13 @@ export class SparkRenderer extends THREE.Mesh {
     accumToCamera.decompose(
       this.uniforms.renderToViewPos.value,
       this.uniforms.renderToViewQuat.value,
-      new THREE.Vector3(),
+      renderToViewScaleTmp,
     );
+    this.uniforms.renderToViewScale.value =
+      (renderToViewScaleTmp.x +
+        renderToViewScaleTmp.y +
+        renderToViewScaleTmp.z) /
+      3;
     this.uniforms.renderToViewBasis.value.setFromMatrix4(accumToCamera);
 
     this.uniforms.maxStdDev.value = spark.maxStdDev;
@@ -601,31 +645,6 @@ export class SparkRenderer extends THREE.Mesh {
     // Alternating debug flag that can aid in visual debugging
     this.uniforms.debugFlag.value = (performance.now() / 1000.0) % 2.0 < 1.0;
 
-    if (spark.autoUpdate && isNewFrame) {
-      const preUpdate = spark.preUpdate && !renderer.xr.isPresenting;
-      const useCamera = renderer.xr.isPresenting
-        ? renderer.xr.getCamera()
-        : camera;
-      if (preUpdate) {
-        spark.updateInternal({
-          scene,
-          camera: useCamera,
-          autoUpdate: true,
-        });
-      } else {
-        if (spark.updateTimeoutId === -1) {
-          spark.updateTimeoutId = setTimeout(() => {
-            spark.updateTimeoutId = -1;
-            spark.updateInternal({
-              scene,
-              camera: useCamera,
-              autoUpdate: true,
-            });
-          }, 1);
-        }
-      }
-    }
-
     spark.dirty = false;
   }
 
@@ -663,8 +682,8 @@ export class SparkRenderer extends THREE.Mesh {
     const dir = camera.getWorldDirection(new THREE.Vector3());
 
     const viewChanged =
-      center.distanceTo(this.sortedCenter) > 0.001 ||
-      dir.dot(this.sortedDir) < 0.999;
+      center.distanceTo(this.sortedCenter) >
+        0.001 * getCameraWorldScale(camera) || dir.dot(this.sortedDir) < 0.999;
 
     const next = this.accumulators.pop();
     if (!next) {
@@ -791,15 +810,11 @@ export class SparkRenderer extends THREE.Mesh {
     if (!this.sortWorker) {
       this.sortWorker = new SplatWorker();
     }
-    const result = (await this.sortWorker.call("sortSplats32", {
+    const result = await this.sortWorker.call("sortSplats32", {
       numSplats,
       readback,
       ordering,
-    })) as {
-      readback: Uint32Array<ArrayBuffer>;
-      ordering: Uint32Array;
-      activeSplats: number;
-    };
+    });
 
     if (this.sortDelay > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.sortDelay));

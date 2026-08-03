@@ -1,3 +1,4 @@
+import { RpcHandlers } from './worker';
 type PromiseRecord = {
     resolve: (value: unknown) => void;
     reject: (reason?: unknown) => void;
@@ -9,9 +10,9 @@ export declare class SplatWorker {
     static currentId: number;
     constructor();
     onMessage(event: MessageEvent): void;
-    call(name: string, args: unknown, options?: {
+    call<Name extends keyof RpcHandlers>(name: Name, args: Parameters<RpcHandlers[Name]>[0], options?: {
         onStatus?: (data: unknown) => void;
-    }): Promise<unknown>;
+    }): Promise<Awaited<ReturnType<RpcHandlers[Name]>>>;
     dispose(): void;
 }
 export declare class SplatWorkerPool {

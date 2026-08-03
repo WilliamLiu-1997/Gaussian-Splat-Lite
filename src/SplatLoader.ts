@@ -3,7 +3,7 @@ import type { ExtSplats, ExtSplatsOptions } from "./ExtSplats";
 import { PackedSplats, type PackedSplatsOptions } from "./PackedSplats";
 import { SplatMesh } from "./SplatMesh";
 import { workerPool } from "./SplatWorker";
-import type { SplatEncoding, SplatFileType } from "./defines";
+import type { SplatFileType } from "./defines";
 
 // SplatLoader implements the THREE.Loader interface for PLY and SPZ files.
 export class SplatLoader extends Loader {
@@ -54,10 +54,9 @@ export class SplatLoader extends Loader {
     onProgress?: (event: ProgressEvent) => void;
     onError?: (error: unknown) => void;
   }) {
-    if (fileBytes instanceof ArrayBuffer) {
-      fileBytes = new Uint8Array(fileBytes);
-    }
-    const resolvedURL = fileBytes
+    const byteArray =
+      fileBytes instanceof ArrayBuffer ? new Uint8Array(fileBytes) : fileBytes;
+    const resolvedURL = byteArray
       ? undefined
       : this.manager.resolveURL((this.path ?? "") + (url ?? ""));
     let readStream = stream?.getReader();
@@ -102,13 +101,13 @@ export class SplatLoader extends Loader {
         const basedUrl = resolvedURL
           ? new URL(resolvedURL, window.location.href).toString()
           : undefined;
-        const decoded = (await worker.call(
+        const decoded = await worker.call(
           extSplats ? "loadExtSplats" : "loadPackedSplats",
           {
             url: basedUrl,
             requestHeader: this.requestHeader,
             withCredentials: this.withCredentials,
-            fileBytes: fileBytes?.slice(),
+            fileBytes: byteArray?.slice(),
             fileType,
             pathName: resolvedURL || fileName,
             chunked: stream !== undefined,
@@ -116,13 +115,7 @@ export class SplatLoader extends Loader {
             encoding: packedSplats?.splatEncoding,
           },
           { onStatus },
-        )) as {
-          numSplats: number;
-          packedArray?: Uint32Array;
-          extArrays?: [Uint32Array, Uint32Array];
-          extra: Record<string, unknown>;
-          splatEncoding?: SplatEncoding;
-        };
+        );
 
         if (extSplats) {
           extSplats.initialize(decoded as ExtSplatsOptions);
@@ -134,7 +127,16 @@ export class SplatLoader extends Loader {
           onLoad?.(new PackedSplats(decoded as PackedSplatsOptions));
         }
       })
-      .catch((error) => {
+      .catch(async (error) => {
+        if (readStream) {
+          try {
+            await readStream.cancel(error);
+          } catch {
+            // Preserve the worker decoding error if stream cancellation fails.
+          }
+          readStream.releaseLock();
+          readStream = undefined;
+        }
         this.manager.itemError(resolvedURL ?? "");
         onError?.(error);
       })

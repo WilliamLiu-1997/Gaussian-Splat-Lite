@@ -1,4 +1,5 @@
 import { getTransferable } from "./utils";
+import type { RpcHandlers } from "./worker";
 import BundledWorker from "./worker?worker&inline";
 
 type PromiseRecord = {
@@ -33,20 +34,25 @@ export class SplatWorker {
     }
   }
 
-  async call(
-    name: string,
-    args: unknown,
+  async call<Name extends keyof RpcHandlers>(
+    name: Name,
+    args: Parameters<RpcHandlers[Name]>[0],
     options: { onStatus?: (data: unknown) => void } = {},
-  ): Promise<unknown> {
+  ): Promise<Awaited<ReturnType<RpcHandlers[Name]>>> {
+    type Result = Awaited<ReturnType<RpcHandlers[Name]>>;
     const id = ++SplatWorker.currentId;
-    const promise = new Promise((resolve, reject) => {
-      this.messages[id] = { resolve, reject, onStatus: options.onStatus };
+    const promise = new Promise<Result>((resolve, reject) => {
+      this.messages[id] = {
+        resolve: (value) => resolve(value as Result),
+        reject,
+        onStatus: options.onStatus,
+      };
     });
     this.worker.postMessage(
       { id, name, args },
       { transfer: getTransferable(args) },
     );
-    return await promise;
+    return promise;
   }
 
   dispose() {
