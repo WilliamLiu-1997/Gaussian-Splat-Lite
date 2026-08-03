@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A local PLY and SPZ viewer powered by Gaussian Splat Lite."
+    />
+    <title>Gaussian Splat Lite · Local Viewer</title>
+    <link rel="stylesheet" href="/examples/viewer/viewer.css" />
+  </head>
+  <body>
+    <div id="viewport" aria-hidden="true"></div>
+
+    <div class="interface">
+      <header class="toolbar">
+        <div class="brand" aria-label="Gaussian Splat Lite local viewer">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-copy">
+            <strong>Gaussian Splat Lite</strong>
+            <small>Local PLY / SPZ viewer</small>
+          </span>
+        </div>
+
+        <div class="toolbar-actions">
+          <button id="reset-view" class="button button-quiet" type="button" hidden>
+            Reset view
+          </button>
+          <button class="button button-primary" type="button" data-file-picker>
+            Open file
+            <kbd>O</kbd>
+          </button>
+        </div>
+      </header>
+
+      <main class="stage">
+        <section id="empty-state" class="empty-state" aria-labelledby="viewer-title">
+          <div class="file-glyph" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="presentation">
+              <path d="M13 5.5h14l8 8V42.5H13z" />
+              <path d="M27 5.5v8h8M18 29l6-6 6 6M24 23v13" />
+            </svg>
+          </div>
+          <p class="eyebrow">Local file viewer</p>
+          <h1 id="viewer-title">Drop a splat file here</h1>
+          <p class="empty-description">
+            Open a <strong>.ply</strong> or <strong>.spz</strong> file from your
+            device. It stays in this browser and is decoded locally.
+          </p>
+          <button class="button button-large" type="button" data-file-picker>
+            Choose PLY or SPZ
+          </button>
+          <p class="empty-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</p>
+        </section>
+      </main>
+
+      <section id="loading-panel" class="loading-panel" aria-live="polite" hidden>
+        <div class="loading-copy">
+          <span>Loading</span>
+          <strong id="loading-name">splat file</strong>
+        </div>
+        <div
+          id="loading-progress"
+          class="progress-track is-indeterminate"
+          role="progressbar"
+          aria-label="File loading progress"
+        >
+          <span id="loading-progress-fill"></span>
+        </div>
+        <span id="loading-detail" class="loading-detail">Preparing decoder…</span>
+      </section>
+
+      <footer class="statusbar">
+        <div class="status-message" aria-live="polite">
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Ready for a local file</span>
+        </div>
+        <div id="file-meta" class="file-meta" hidden>
+          <span id="file-name"></span>
+          <span class="meta-separator" aria-hidden="true"></span>
+          <span id="file-stats"></span>
+        </div>
+      </footer>
+    </div>
+
+    <div id="drop-overlay" class="drop-overlay" hidden>
+      <div class="drop-overlay-card">
+        <span class="drop-plus" aria-hidden="true">+</span>
+        <strong>Drop to open</strong>
+        <span>PLY and SPZ files only</span>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <input id="file-input" type="file" accept=".ply,.spz" hidden />
+
+    <script type="module" src="/examples/viewer/viewer.js"></script>
+  </body>
+</html>

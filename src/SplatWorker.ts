@@ -1,0 +1,118 @@
+import { getTransferable } from "./utils";
+import BundledWorker from "./worker?worker&inline";
+
+type PromiseRecord = {
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+  onStatus?: (data: unknown) => void;
+};
+
+export class SplatWorker {
+  worker: Worker;
+  messages: Record<number, PromiseRecord> = {};
+  static currentId = 0;
+
+  constructor() {
+    this.worker = new BundledWorker();
+    this.worker.onmessage = (event) => this.onMessage(event);
+  }
+
+  onMessage(event: MessageEvent) {
+    const { id, result, error, status } = event.data;
+    const promise = this.messages[id];
+    if (promise) {
+      if (error !== undefined) {
+        delete this.messages[id];
+        promise.reject(error);
+      } else if (status !== undefined) {
+        promise.onStatus?.(status);
+      } else {
+        delete this.messages[id];
+        promise.resolve(result);
+      }
+    }
+  }
+
+  async call(
+    name: string,
+    args: unknown,
+    options: { onStatus?: (data: unknown) => void } = {},
+  ): Promise<unknown> {
+    const id = ++SplatWorker.currentId;
+    const promise = new Promise((resolve, reject) => {
+      this.messages[id] = { resolve, reject, onStatus: options.onStatus };
+    });
+    this.worker.postMessage(
+      { id, name, args },
+      { transfer: getTransferable(args) },
+    );
+    return await promise;
+  }
+
+  dispose() {
+    this.worker.terminate();
+
+    const messages = Object.values(this.messages);
+    this.messages = {};
+    for (const message of messages) {
+      message.reject(new Error("Worker terminate"));
+    }
+  }
+}
+
+export class SplatWorkerPool {
+  maxWorkers;
+  numWorkers = 0;
+  freelist: SplatWorker[] = [];
+  queue: ((worker: SplatWorker) => void)[] = [];
+
+  constructor(maxWorkers = 4) {
+    this.maxWorkers = maxWorkers;
+  }
+
+  async withWorker<T>(
+    callback: (worker: SplatWorker) => Promise<T>,
+  ): Promise<T> {
+    const worker = await this.allocWorker();
+    try {
+      return await callback(worker);
+    } finally {
+      this.freeWorker(worker);
+    }
+  }
+
+  async allocWorker(): Promise<SplatWorker> {
+    const worker = this.freelist.pop();
+    if (worker) {
+      return worker;
+    }
+
+    if (this.numWorkers < this.maxWorkers) {
+      const worker = new SplatWorker();
+      this.numWorkers += 1;
+      return worker;
+    }
+
+    return new Promise((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  freeWorker(worker: SplatWorker) {
+    if (this.numWorkers > this.maxWorkers) {
+      // Worker no longer needed
+      this.numWorkers -= 1;
+      return;
+    }
+
+    const waiter = this.queue.shift();
+    if (waiter) {
+      waiter(worker);
+      return;
+    }
+
+    this.freelist.push(worker);
+  }
+}
+
+export const workerPool = new SplatWorkerPool();

@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "spark-worker-rs",
+    "spark-rs",
+    "spark-lib",
+]
+resolver = "2"
+
+[workspace.package]
+rust-version = "1.82"
+edition = "2021"
+license = "Proprietary"
+authors = ["World Labs Technologies"]
+repository = "https://github.com/sparkjs-dev/spark"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+half = { version = "2.6.0", features = ["std"] }
+js-sys = "0.3.77"
+miniz_oxide = "0.8.9"
+serde = { version = "1.0.228", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+wasm-bindgen = "0.2.100"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

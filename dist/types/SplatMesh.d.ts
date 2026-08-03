@@ -1,0 +1,140 @@
+import { ExtSplats } from './ExtSplats';
+import { PackedSplats } from './PackedSplats';
+import { RgbaArray, TRgbaArray } from './RgbaArray';
+import { SplatEdit, SplatEdits } from './SplatEdit';
+import { CovSplatModifier, CovSplatTransformer, FrameUpdateContext, GsplatModifier, SplatGenerator, SplatTransformer } from './SplatGenerator';
+import { SplatSkinning } from './SplatSkinning';
+import { SplatEncoding, SplatFileType } from './defines';
+import { DynoFloat, DynoInt, DynoVal, DynoVec4, Gsplat } from './dyno';
+import * as THREE from "three";
+export type SplatMeshOptions = {
+    url?: string;
+    fileBytes?: Uint8Array | ArrayBuffer;
+    fileType?: SplatFileType;
+    fileName?: string;
+    stream?: ReadableStream;
+    streamLength?: number;
+    packedSplats?: PackedSplats;
+    splats?: SplatSource;
+    maxSplats?: number;
+    constructSplats?: (splats: PackedSplats) => Promise<void> | void;
+    onProgress?: (event: ProgressEvent) => void;
+    onLoad?: (mesh: SplatMesh) => Promise<void> | void;
+    editable?: boolean;
+    raycastable?: boolean;
+    minRaycastOpacity?: number;
+    onFrame?: ({ mesh, time, deltaTime, }: {
+        mesh: SplatMesh;
+        time: number;
+        deltaTime: number;
+    }) => void;
+    objectModifier?: GsplatModifier;
+    objectModifiers?: GsplatModifier[];
+    worldModifier?: GsplatModifier;
+    worldModifiers?: GsplatModifier[];
+    covObjectModifiers?: CovSplatModifier[];
+    covWorldModifiers?: CovSplatModifier[];
+    splatEncoding?: SplatEncoding;
+    extSplats?: boolean | ExtSplats;
+    covSplats?: boolean;
+};
+export type SplatMeshContext = {
+    transform: SplatTransformer;
+    viewToWorld: SplatTransformer;
+    worldToView: SplatTransformer;
+    viewToObject: SplatTransformer;
+    covTransform: CovSplatTransformer;
+    covViewToWorld: CovSplatTransformer;
+    covWorldToView: CovSplatTransformer;
+    covViewToObject: CovSplatTransformer;
+    recolor: DynoVec4<THREE.Vector4>;
+    time: DynoFloat;
+    deltaTime: DynoFloat;
+    numSplats: DynoInt<string>;
+    splats: SplatSource;
+};
+export interface SplatSource {
+    prepareFetchSplat(): void;
+    dispose(): void;
+    getNumSplats(): number;
+    hasRgbDir(): boolean;
+    getNumSh(): number;
+    setMaxSh(maxSh: number): void;
+    fetchSplat({ index, viewOrigin, }: {
+        index: DynoVal<"int">;
+        viewOrigin?: DynoVal<"vec3">;
+    }): DynoVal<typeof Gsplat>;
+    forEachSplat(callback: (index: number, center: THREE.Vector3, scales: THREE.Vector3, quaternion: THREE.Quaternion, opacity: number, color: THREE.Color) => void): void;
+}
+export declare class EmptySplatSource implements SplatSource {
+    fetchDyno: DynoVal<{
+        type: "Gsplat";
+    }>;
+    prepareFetchSplat(): void;
+    dispose(): void;
+    getNumSplats(): number;
+    hasRgbDir(): boolean;
+    getNumSh(): number;
+    setMaxSh(maxSh: number): void;
+    fetchSplat({ index }: {
+        index: DynoVal<"int">;
+    }): DynoVal<typeof Gsplat>;
+    forEachSplat(): void;
+}
+export declare class SplatMesh extends SplatGenerator {
+    initialized: Promise<SplatMesh>;
+    isInitialized: boolean;
+    packedSplats?: PackedSplats;
+    extSplats?: ExtSplats;
+    covSplats: boolean;
+    splats?: SplatSource;
+    lastSplats?: SplatSource;
+    recolor: THREE.Color;
+    opacity: number;
+    context: SplatMeshContext;
+    onFrame?: ({ mesh, time, deltaTime, }: {
+        mesh: SplatMesh;
+        time: number;
+        deltaTime: number;
+    }) => void;
+    generatorDirty: boolean;
+    objectModifiers?: GsplatModifier[];
+    worldModifiers?: GsplatModifier[];
+    covObjectModifiers?: CovSplatModifier[];
+    covWorldModifiers?: CovSplatModifier[];
+    enableViewToObject: boolean;
+    enableViewToWorld: boolean;
+    enableWorldToView: boolean;
+    skinning: SplatSkinning | null;
+    edits: SplatEdit[] | null;
+    editable: boolean;
+    raycastable: boolean;
+    minRaycastOpacity: number;
+    rgbaDisplaceEdits: SplatEdits | null;
+    splatRgba: RgbaArray | null;
+    maxSh: number;
+    constructor(options?: SplatMeshOptions);
+    asyncInitialize(options: SplatMeshOptions): Promise<void>;
+    static staticInitialized: Promise<void>;
+    static isStaticInitialized: boolean;
+    static dynoTime: DynoFloat<"value">;
+    static staticInitialize(): Promise<void>;
+    pushSplat(center: THREE.Vector3, scales: THREE.Vector3, quaternion: THREE.Quaternion, opacity: number, color: THREE.Color): void;
+    forEachSplat(callback: (index: number, center: THREE.Vector3, scales: THREE.Vector3, quaternion: THREE.Quaternion, opacity: number, color: THREE.Color) => void): void;
+    dispose(): void;
+    getBoundingBox(centers_only?: boolean): THREE.Box3;
+    set objectModifier(modifier: GsplatModifier | undefined);
+    set worldModifier(modifier: GsplatModifier | undefined);
+    private constructGenerator;
+    constructCovGenerator(context: SplatMeshContext): void;
+    updateGenerator(): void;
+    update({ renderer, time, deltaTime, viewToWorld, camera, renderSize, globalEdits, }: FrameUpdateContext): void;
+    raycast(raycaster: THREE.Raycaster, intersects: {
+        distance: number;
+        point: THREE.Vector3;
+        object: THREE.Object3D;
+    }[]): void;
+    static raycastBuffer: Float32Array<ArrayBuffer>;
+    private appendRaycastBuffer;
+}
+export declare function maybeInjectSplatRgba(gsplat: DynoVal<typeof Gsplat>, rgba: DynoVal<typeof TRgbaArray>, index: DynoVal<"int">): DynoVal<typeof Gsplat>;
