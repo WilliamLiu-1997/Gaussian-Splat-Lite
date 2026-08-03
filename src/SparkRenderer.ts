@@ -462,6 +462,8 @@ export class SparkRenderer extends THREE.Mesh {
       // Gsplat collection to render
       extSplats: { type: "t", value: SplatAccumulator.emptyTexture },
       extSplats2: { type: "t", value: SplatAccumulator.emptyTexture },
+      // Per-splat special shape amount, encoded in an R8 texture
+      splatShape: { type: "t", value: SplatAccumulator.emptySplatShape },
       // Time in seconds for time-based effects
       time: { value: 0 },
       // Delta time in seconds since last frame
@@ -630,15 +632,15 @@ export class SparkRenderer extends THREE.Mesh {
       spark.orderingTexture ?? SparkRenderer.emptyOrdering;
     this.uniforms.enableExtSplats.value = this.display.extSplats;
     this.uniforms.enableCovSplats.value = this.display.covSplats;
+    const splatTextures = spark.display.getTextures();
     if (this.display.extSplats) {
-      const extSplats = spark.display.getTextures();
-      this.uniforms.extSplats.value = extSplats[0];
-      this.uniforms.extSplats2.value = extSplats[1];
+      this.uniforms.extSplats.value = splatTextures[0];
+      this.uniforms.extSplats2.value = splatTextures[1];
     } else {
-      const packedSplats = spark.display.getTextures();
-      this.uniforms.extSplats.value = packedSplats[0];
-      this.uniforms.extSplats2.value = packedSplats[0];
+      this.uniforms.extSplats.value = splatTextures[0];
+      this.uniforms.extSplats2.value = splatTextures[0];
     }
+    this.uniforms.splatShape.value = spark.display.getSplatShapeTexture();
 
     this.uniforms.time.value = spark.display.time;
     this.uniforms.deltaTime.value = spark.display.deltaTime;
@@ -696,18 +698,20 @@ export class SparkRenderer extends THREE.Mesh {
         "Next accumulator is the same as the current accumulator",
       );
     }
-    const { version, mappingVersion, generate } = next.prepareGenerate({
-      renderer,
-      scene,
-      timer: this.timer,
-      camera,
-      sortRadial: this.sortRadial ?? true,
-      renderSize: this.renderSize,
-      previous: this.current,
-    });
+    const { version, mappingVersion, sortUpdated, generate } =
+      next.prepareGenerate({
+        renderer,
+        scene,
+        timer: this.timer,
+        camera,
+        sortRadial: this.sortRadial ?? true,
+        renderSize: this.renderSize,
+        previous: this.current,
+      });
 
     let doUpdate = true;
     const needsUpdate = viewChanged || version !== this.current.version;
+    const needsSort = viewChanged || sortUpdated;
     const mappingUpdated = mappingVersion !== this.display.mappingVersion;
 
     if (autoUpdate && !needsUpdate) {
@@ -745,7 +749,10 @@ export class SparkRenderer extends THREE.Mesh {
       }
 
       this.current = next;
-      this.sortDirty = true;
+      // Appearance-only updates can reuse the current ordering. Preserve an
+      // already pending sort, but do not enqueue a new one unless depth or the
+      // mapping may have changed.
+      this.sortDirty ||= needsSort;
       this.setDirty();
     }
 

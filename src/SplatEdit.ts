@@ -252,6 +252,9 @@ export class SplatEdits {
   dynoNumEdits: DynoUniform<"int", "numEdits">;
   // A dyno uniform for the encoded edits, one uvec4 per edit
   dynoEdits: DynoUniform<"uvec4", "edits">;
+  // Encoded inputs that can affect the XYZ displacement field. RGBA-only
+  // changes are intentionally excluded so their existing sort can be reused.
+  private displacementState: number[] = [];
 
   constructor({ maxSdfs, maxEdits }: { maxSdfs?: number; maxEdits?: number }) {
     // Allocate at least 16 SDFs for efficiency
@@ -456,11 +459,59 @@ export class SplatEdits {
     return updated;
   }
 
+  private updateDisplacementState(
+    edits: { edit: SplatEdit; sdfs: SplatEditSdf[] }[],
+  ): boolean {
+    const state: number[] = [];
+    let sdfIndex = 0;
+
+    for (const [editIndex, { sdfs }] of edits.entries()) {
+      const hasDisplacement = sdfs.some(
+        ({ displace }) =>
+          displace.x !== 0 || displace.y !== 0 || displace.z !== 0,
+      );
+
+      if (hasDisplacement) {
+        const editBase = editIndex * 4;
+        state.push(
+          sdfs.length,
+          // The blend mode only affects RGBA; edit inversion affects the SDF.
+          this.editData[editBase] & (1 << 8),
+          this.editData[editBase + 2],
+          this.editData[editBase + 3],
+        );
+
+        for (let i = 0; i < sdfs.length; ++i) {
+          const sdfBase = (sdfIndex + i) * (8 * 4);
+          // SDF type/transform/size (including radius) determine modulation.
+          for (let offset = 0; offset < 16; ++offset) {
+            state.push(this.sdfData[sdfBase + offset]);
+          }
+          // values[1].xyz is the displacement vector. values[0] is RGBA.
+          state.push(
+            this.sdfData[sdfBase + 20],
+            this.sdfData[sdfBase + 21],
+            this.sdfData[sdfBase + 22],
+          );
+        }
+      }
+
+      sdfIndex += sdfs.length;
+    }
+
+    const updated =
+      state.length !== this.displacementState.length ||
+      state.some((value, index) => value !== this.displacementState[index]);
+    this.displacementState = state;
+    return updated;
+  }
+
   // Update the SDFs and edits from an array of SplatEdits and their
   // associated SplatEditSdfs, updating it for the dyno shader program.
   update(edits: { edit: SplatEdit; sdfs: SplatEditSdf[] }[]): {
     updated: boolean;
     dynoUpdated: boolean;
+    positionUpdated: boolean;
   } {
     const sdfCount = edits.reduce((total, { sdfs }) => total + sdfs.length, 0);
     const dynoUpdated = this.ensureCapacity({
@@ -526,13 +577,14 @@ export class SplatEdits {
 
         sdfIndex += 1;
       }
-      this.numSdfs = sdfIndex;
       if (sdfUpdated) {
         this.sdfTexture.needsUpdate = true;
       }
       updated ||= sdfUpdated;
     }
-    return { updated, dynoUpdated };
+    this.numSdfs = sdfIndex;
+    const positionUpdated = this.updateDisplacementState(edits);
+    return { updated, dynoUpdated, positionUpdated };
   }
 
   // Modify a Gsplat in a dyno shader program using the current edits and SDFs.

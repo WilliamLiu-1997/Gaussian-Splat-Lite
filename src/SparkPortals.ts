@@ -18,7 +18,6 @@ uniform mat4 projectionMatrix;
 uniform bool encodeLinear;
 uniform float time;
 uniform bool debugFlag;
-uniform float maxStdDev;
 uniform float minAlpha;
 uniform bool disableFalloff;
 uniform float falloff;
@@ -35,6 +34,7 @@ in vec2 vSplatUv;
 in vec3 vNdc;
 flat in uint vSplatIndex;
 flat in float adjustedStdDev;
+flat in float vSplatShape;
 
 void main() {
     if (diskRadius != 0.0) {
@@ -95,10 +95,10 @@ void main() {
         discard;
     }
 
-    float a = rgba.a;
-    float shifted = sqrt(z2) - max(0.0, a - 1.0);
-    float exponent = -0.5 * max(1.0, a) * sqr(max(0.0, shifted));
-    rgba.a = min(1.0, a) * exp(exponent);
+    float splatShape = vSplatShape;
+    float shifted = sqrt(z2) - max(0.0, splatShape - 1.0);
+    float exponent = -0.5 * splatShape * sqr(max(0.0, shifted));
+    rgba.a *= exp(exponent);
 
     if (rgba.a < minAlpha) {
         discard;

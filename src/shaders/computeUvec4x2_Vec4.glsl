@@ -19,6 +19,7 @@ uniform int targetCount;
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
 layout(location = 2) out vec4 target3;
+layout(location = 3) out vec4 targetShape;
 // layout(location = 0) out vec4 target3;
 // layout(location = 1) out uvec4 target;
 // layout(location = 2) out uvec4 target2;
@@ -39,6 +40,9 @@ void main() {
 
     // Initialize target3 to +infinity
     target3 = floatToVec4(1.0 / 0.0);
+
+    // Initialize the separately encoded special shape amount to zero
+    targetShape = vec4(0.0, 0.0, 0.0, 1.0);
 
     if ((index >= 0) && (index < targetCount)) {
         produceSplat(index);

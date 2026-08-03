@@ -7,6 +7,7 @@ export declare const outputExtendedSplat: (gsplat: DynoVal<typeof Gsplat>) => Ou
 export declare const outputExtCovSplat: (covsplat: DynoVal<typeof CovSplat>) => OutputExtCovSplat;
 export declare const outputSplatDepth: (gsplat: DynoVal<typeof Gsplat>, viewCenter: DynoVal<"vec3">, viewDir: DynoVal<"vec3">, sortRadial: DynoVal<"bool">) => OutputSplatDepth;
 export declare const outputCovSplatDepth: (covsplat: DynoVal<typeof CovSplat>, viewCenter: DynoVal<"vec3">, viewDir: DynoVal<"vec3">, sortRadial: DynoVal<"bool">) => OutputCovSplatDepth;
+export declare const outputSplatShape: (splatShape: DynoVal<"float">) => OutputSplatShape;
 export declare const outputRgba8: (rgba8: DynoVal<"vec4">) => OutputRgba8;
 export declare class OutputPackedSplat extends Dyno<{
     gsplat: typeof Gsplat;
@@ -64,6 +65,13 @@ declare class OutputCovSplatDepth extends Dyno<{
         viewCenter: DynoVal<"vec3">;
         viewDir: DynoVal<"vec3">;
         sortRadial: DynoVal<"bool">;
+    });
+}
+declare class OutputSplatShape extends Dyno<{
+    splatShape: "float";
+}, Record<string, never>> {
+    constructor({ splatShape }: {
+        splatShape: DynoVal<"float">;
     });
 }
 export declare class OutputRgba8 extends Dyno<{

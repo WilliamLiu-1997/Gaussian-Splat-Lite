@@ -65,6 +65,7 @@ export declare class SplatEdits {
     editFloatData: Float32Array;
     dynoNumEdits: DynoUniform<"int", "numEdits">;
     dynoEdits: DynoUniform<"uvec4", "edits">;
+    private displacementState;
     constructor({ maxSdfs, maxEdits }: {
         maxSdfs?: number;
         maxEdits?: number;
@@ -78,12 +79,14 @@ export declare class SplatEdits {
     private updateSdfData;
     private updateSdfFloatData;
     private encodeSdf;
+    private updateDisplacementState;
     update(edits: {
         edit: SplatEdit;
         sdfs: SplatEditSdf[];
     }[]): {
         updated: boolean;
         dynoUpdated: boolean;
+        positionUpdated: boolean;
     };
     modify(gsplat: DynoVal<typeof Gsplat>): DynoVal<typeof Gsplat>;
     modifyCov(covsplat: DynoVal<typeof CovSplat>): DynoVal<typeof CovSplat>;

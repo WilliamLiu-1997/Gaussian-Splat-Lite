@@ -265,10 +265,16 @@ export class SplatGenerator extends THREE.Object3D {
   numSplats: number;
   generator?: GsplatGenerator;
   covGenerator?: CovSplatGenerator;
+  // Optional per-splat shape code captured before conventional opacity edits.
+  // SplatAccumulator transports this separately from the generated RGBA alpha.
+  splatShape?: DynoVal<"float">;
   generatorError?: unknown;
   covGeneratorError?: unknown;
   frameUpdate?: (context: FrameUpdateContext) => void;
   version: number;
+  // Changes only when generated centers or their sort mapping may have changed.
+  // Appearance-only updates can increment version while preserving sortVersion.
+  sortVersion: number;
   mappingVersion: number;
 
   constructor({
@@ -296,6 +302,7 @@ export class SplatGenerator extends THREE.Object3D {
     this.covGenerator = covGenerator;
     this.frameUpdate = update;
     this.version = 0;
+    this.sortVersion = 0;
     this.mappingVersion = 0;
 
     if (construct) {
@@ -305,13 +312,18 @@ export class SplatGenerator extends THREE.Object3D {
     }
   }
 
-  updateVersion() {
+  // Mark generated splat data dirty. Set sort:false when only RGBA or other
+  // appearance data changed and the existing depth ordering remains valid.
+  updateVersion({ sort = true }: { sort?: boolean } = {}) {
     this.version += 1;
+    if (sort) {
+      this.sortVersion += 1;
+    }
   }
 
   updateMappingVersion() {
     this.mappingVersion += 1;
-    this.version += 1;
+    this.updateVersion();
   }
 
   set needsUpdate(value: boolean) {

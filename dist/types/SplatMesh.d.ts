@@ -98,6 +98,7 @@ export declare class SplatMesh extends SplatGenerator {
         deltaTime: number;
     }) => void;
     generatorDirty: boolean;
+    private generatorSortDirty;
     objectModifiers?: GsplatModifier[];
     worldModifiers?: GsplatModifier[];
     covObjectModifiers?: CovSplatModifier[];

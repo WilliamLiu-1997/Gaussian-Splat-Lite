@@ -28,6 +28,7 @@ import {
   dynoBlock,
   dynoConst,
   gsplatToCovSplat,
+  min,
   mul,
   outputCovSplat,
   outputCovSplatDepth,
@@ -35,6 +36,7 @@ import {
   outputExtendedSplat,
   outputPackedSplat,
   outputSplatDepth,
+  outputSplatShape,
   splitCovSplat,
   splitGsplat,
   sub,
@@ -49,7 +51,9 @@ export type GeneratorMapping = {
   node: SplatGenerator;
   generator?: GsplatGenerator;
   covGenerator?: CovSplatGenerator;
+  splatShape?: DynoVal<"float">;
   version: number;
+  sortVersion: number;
   mappingVersion?: number;
   base: number;
   count: number;
@@ -94,13 +98,20 @@ export class SplatAccumulator {
     }
   }
 
-  // Returns a THREE.DataArrayTexture representing the NewSplatAccumulator
-  // content as 2 x Uint32x4 data array textures (2048 x 2048 x 2048 in size)
+  // Returns the accumulator's splat, depth, and shape data array textures.
+  // The final R8 texture stores the special per-splat shape amount above 1.
   getTextures(): THREE.DataArrayTexture[] {
     if (this.target) {
       return this.target.textures;
     }
     return SplatAccumulator.emptyTextures;
+  }
+
+  getSplatShapeTexture(): THREE.DataArrayTexture {
+    return (
+      this.target?.textures[this.extSplats ? 3 : 2] ??
+      SplatAccumulator.emptySplatShape
+    );
   }
 
   static emptyTexture = (() => {
@@ -115,6 +126,22 @@ export class SplatAccumulator {
     texture.format = THREE.RGBAIntegerFormat;
     texture.type = THREE.UnsignedIntType;
     texture.internalFormat = "RGBA32UI";
+    texture.needsUpdate = true;
+    return texture;
+  })();
+
+  static emptySplatShape = (() => {
+    const { width, height, depth, maxSplats } = getTextureSize(1);
+    const emptyArray = new Uint8Array(maxSplats);
+    const texture = new THREE.DataArrayTexture(
+      emptyArray,
+      width,
+      height,
+      depth,
+    );
+    texture.format = THREE.RedFormat;
+    texture.type = THREE.UnsignedByteType;
+    texture.internalFormat = "R8";
     texture.needsUpdate = true;
     return texture;
   })();
@@ -171,13 +198,24 @@ export class SplatAccumulator {
       target3.format = THREE.RGBAFormat;
       target3.type = THREE.UnsignedByteType;
       target3.internalFormat = "RGBA8";
-      this.target.textures = [this.target.texture, target2, target3];
+      const targetShape = target3.clone();
+      targetShape.format = THREE.RedFormat;
+      targetShape.internalFormat = "R8";
+      this.target.textures = [
+        this.target.texture,
+        target2,
+        target3,
+        targetShape,
+      ];
     } else {
       const target3 = this.target.texture.clone();
       target3.format = THREE.RGBAFormat;
       target3.type = THREE.UnsignedByteType;
       target3.internalFormat = "RGBA8";
-      this.target.textures = [this.target.texture, target3];
+      const targetShape = target3.clone();
+      targetShape.format = THREE.RedFormat;
+      targetShape.internalFormat = "R8";
+      this.target.textures = [this.target.texture, target3, targetShape];
     }
 
     return true;
@@ -217,13 +255,17 @@ export class SplatAccumulator {
   prepareProgramMaterial(
     generator?: GsplatGenerator,
     covGenerator?: CovSplatGenerator,
+    splatShape?: DynoVal<"float">,
   ) {
     const theGenerator = generator ?? covGenerator;
     if (!theGenerator) {
       throw new Error("Either generator or covGenerator must be provided");
     }
 
-    let program = SplatAccumulator.generatorProgram.get(theGenerator);
+    const configKey = `${this.extSplats ? "ext" : "packed"}:${this.covSplats ? "cov" : "gsplat"}`;
+    let configurations = SplatAccumulator.generatorProgram.get(theGenerator);
+    let programs = configurations?.get(configKey);
+    let program = programs?.get(splatShape);
     if (!program) {
       const graph = dynoBlock(
         { index: "int" },
@@ -236,20 +278,52 @@ export class SplatAccumulator {
             covGenerator.inputs.index = index;
           }
 
+          let outputGsplat = generator?.outputs.gsplat;
+          let generatedCovSplat = covGenerator?.outputs.covsplat;
+          let outputShape = splatShape;
+
+          // Generic generators have no separately preserved shape output. In
+          // that case their original alpha is the shape code, while their
+          // conventional opacity is limited to the normal 0..1 range.
+          if (!outputShape) {
+            if (this.covSplats && generatedCovSplat) {
+              const opacity = splitCovSplat(generatedCovSplat).outputs.opacity;
+              outputShape = opacity;
+              generatedCovSplat = combineCovSplat({
+                covsplat: generatedCovSplat,
+                opacity: min(opacity, dynoConst("float", 1)),
+              });
+            } else if (outputGsplat) {
+              const opacity = splitGsplat(outputGsplat).outputs.opacity;
+              outputShape = opacity;
+              outputGsplat = combineGsplat({
+                gsplat: outputGsplat,
+                opacity: min(opacity, dynoConst("float", 1)),
+              });
+            } else if (generatedCovSplat) {
+              const opacity = splitCovSplat(generatedCovSplat).outputs.opacity;
+              outputShape = opacity;
+              generatedCovSplat = combineCovSplat({
+                covsplat: generatedCovSplat,
+                opacity: min(opacity, dynoConst("float", 1)),
+              });
+            }
+          }
+
           if (this.extSplats) {
             if (!this.covSplats) {
-              if (generator) {
-                const output = outputExtendedSplat(generator.outputs.gsplat);
+              if (outputGsplat) {
+                const output = outputExtendedSplat(outputGsplat);
                 roots.push(output);
               } else {
                 throw new Error("Generator must be provided");
               }
             } else {
-              if (covGenerator) {
-                const output = outputExtCovSplat(covGenerator.outputs.covsplat);
+              if (generatedCovSplat) {
+                const output = outputExtCovSplat(generatedCovSplat);
                 roots.push(output);
-              } else if (generator) {
-                const covsplat = gsplatToCovSplat(generator.outputs.gsplat);
+              } else if (outputGsplat) {
+                const covsplat = gsplatToCovSplat(outputGsplat);
                 const output = outputExtCovSplat(covsplat);
                 roots.push(output);
               } else {
@@ -258,18 +332,18 @@ export class SplatAccumulator {
             }
           } else {
             if (!this.covSplats) {
-              if (generator) {
+              if (outputGsplat) {
                 const centerSubView = sub(
-                  splitGsplat(generator.outputs.gsplat).outputs.center,
+                  splitGsplat(outputGsplat).outputs.center,
                   SplatAccumulator.viewCenterUniform,
                 );
                 // Store half alpha; the render shader restores the packed value.
                 const halfAlpha = mul(
-                  splitGsplat(generator.outputs.gsplat).outputs.opacity,
+                  splitGsplat(outputGsplat).outputs.opacity,
                   dynoConst("float", 0.5),
                 );
                 const gsplat = combineGsplat({
-                  gsplat: generator.outputs.gsplat,
+                  gsplat: outputGsplat,
                   center: centerSubView,
                   opacity: halfAlpha,
                 });
@@ -283,10 +357,10 @@ export class SplatAccumulator {
               }
             } else {
               let covsplat: DynoVal<typeof CovSplat>;
-              if (covGenerator) {
-                covsplat = covGenerator.outputs.covsplat;
-              } else if (generator) {
-                covsplat = gsplatToCovSplat(generator.outputs.gsplat);
+              if (generatedCovSplat) {
+                covsplat = generatedCovSplat;
+              } else if (outputGsplat) {
+                covsplat = gsplatToCovSplat(outputGsplat);
               } else {
                 throw new Error("Generator must be provided");
               }
@@ -309,10 +383,11 @@ export class SplatAccumulator {
               );
               roots.push(output);
             }
-            if (!generator) {
-              throw new Error("Generator must be provided");
-            }
           }
+          if (!outputShape) {
+            throw new Error("Splat shape must be provided");
+          }
+          roots.push(outputSplatShape(outputShape));
           if (generator) {
             const outputDepth = outputSplatDepth(
               generator.outputs.gsplat,
@@ -344,7 +419,15 @@ export class SplatAccumulator {
         // consoleLog: true,
       });
 
-      SplatAccumulator.generatorProgram.set(theGenerator, program);
+      if (!programs) {
+        programs = new Map();
+        if (!configurations) {
+          configurations = new Map();
+          SplatAccumulator.generatorProgram.set(theGenerator, configurations);
+        }
+        configurations.set(configKey, programs);
+      }
+      programs.set(splatShape, program);
     }
     Object.assign(program.uniforms, {
       targetLayer: { value: 0 },
@@ -365,7 +448,7 @@ export class SplatAccumulator {
   );
   static generatorProgram = new WeakMap<
     GsplatGenerator | CovSplatGenerator,
-    DynoProgram
+    Map<string, Map<DynoVal<"float"> | undefined, DynoProgram>>
   >();
   static fullScreenQuad = new FullScreenQuad(
     new THREE.RawShaderMaterial({ visible: false }),
@@ -374,12 +457,14 @@ export class SplatAccumulator {
   generate({
     generator,
     covGenerator,
+    splatShape,
     base,
     count,
     renderer,
   }: {
     generator?: GsplatGenerator;
     covGenerator?: CovSplatGenerator;
+    splatShape?: DynoVal<"float">;
     base: number;
     count: number;
     renderer: THREE.WebGLRenderer;
@@ -394,6 +479,7 @@ export class SplatAccumulator {
     const { program, material } = this.prepareProgramMaterial(
       generator,
       covGenerator,
+      splatShape,
     );
     program.update();
 
@@ -539,14 +625,16 @@ export class SplatAccumulator {
         node.updateMappingVersion();
       }
 
-      const { generator, covGenerator } = node;
+      const { generator, covGenerator, splatShape } = node;
       if ((generator || covGenerator) && count > 0) {
-        const { version, mappingVersion } = node;
+        const { version, sortVersion, mappingVersion } = node;
         this.mapping.push({
           node,
           generator,
           covGenerator,
+          splatShape,
           version,
+          sortVersion,
           mappingVersion,
           base,
           count,
@@ -554,9 +642,8 @@ export class SplatAccumulator {
         this.numSplats = Math.max(this.numSplats, base + count);
       }
     });
-    const { splatsUpdated, mappingUpdated } = previous.checkVersions(
-      this.mapping,
-    );
+    const { splatsUpdated, mappingUpdated, sortUpdated } =
+      previous.checkVersions(this.mapping);
     this.version = previous.version + (splatsUpdated ? 1 : 0);
     this.mappingVersion = previous.mappingVersion + (mappingUpdated ? 1 : 0);
 
@@ -564,14 +651,22 @@ export class SplatAccumulator {
       sameMapping: !mappingUpdated,
       version: this.version,
       mappingVersion: this.mappingVersion,
+      sortUpdated,
       visibleGenerators,
       generate: () => {
         this.ensureGenerate({ maxSplats });
 
-        for (const { node, base, count } of this.mapping) {
-          const { generator, covGenerator } = node;
+        for (const { generator, covGenerator, splatShape, base, count } of this
+          .mapping) {
           if ((generator || covGenerator) && count > 0) {
-            this.generate({ generator, covGenerator, base, count, renderer });
+            this.generate({
+              generator,
+              covGenerator,
+              splatShape,
+              base,
+              count,
+              renderer,
+            });
           }
         }
       },
@@ -664,7 +759,11 @@ export class SplatAccumulator {
   // the previous one. If so, we can reuse the Gsplat sort order.
   checkVersions(otherMapping: GeneratorMapping[]) {
     if (this.mapping.length !== otherMapping.length) {
-      return { splatsUpdated: true, mappingUpdated: true };
+      return {
+        splatsUpdated: true,
+        mappingUpdated: true,
+        sortUpdated: true,
+      };
     }
     const mappingUpdated = this.mapping.some((item, i) => {
       const other = otherMapping[i];
@@ -676,11 +775,18 @@ export class SplatAccumulator {
       );
     });
     if (mappingUpdated) {
-      return { splatsUpdated: true, mappingUpdated: true };
+      return {
+        splatsUpdated: true,
+        mappingUpdated: true,
+        sortUpdated: true,
+      };
     }
     const splatsUpdated = this.mapping.some((item, i) => {
       return item.version !== otherMapping[i].version;
     });
-    return { splatsUpdated, mappingUpdated };
+    const sortUpdated = this.mapping.some((item, i) => {
+      return item.sortVersion !== otherMapping[i].sortVersion;
+    });
+    return { splatsUpdated, mappingUpdated, sortUpdated };
   }
 }

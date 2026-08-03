@@ -1,6 +1,7 @@
 
 precision highp float;
 precision highp int;
+precision highp sampler2DArray;
 precision highp usampler2DArray;
 
 #include <splatDefines>
@@ -10,6 +11,7 @@ out vec2 vSplatUv;
 out vec3 vNdc;
 flat out uint vSplatIndex;
 flat out float adjustedStdDev;
+flat out float vSplatShape;
 
 // uniform uint numSplats;
 uniform vec2 renderSize;
@@ -38,6 +40,7 @@ uniform float focalAdjustment;
 uniform usampler2D ordering;
 uniform usampler2DArray extSplats;
 uniform usampler2DArray extSplats2;
+uniform sampler2DArray splatShape;
 
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
@@ -60,13 +63,14 @@ void main() {
     ivec3 texCoord = splatTexCoord(int(splatIndex));
     vec3 center, scales, xxyyzz, xyxzyz;
     vec4 quaternion, rgba;
+    float opacity;
     mat3 cov3D;
     bvec3 zeroScales = bvec3(false);
 
     if (enableExtSplats) {
         uvec4 ext1 = texelFetch(extSplats, texCoord, 0);
-        float alpha = unpackSplatExtAlpha(ext1);
-        if ((alpha == 0.0) || (alpha < minAlpha)) {
+        opacity = unpackSplatExtAlpha(ext1);
+        if ((opacity == 0.0) || (opacity < minAlpha)) {
             return;
         }
         uvec4 ext2 = texelFetch(extSplats2, texCoord, 0);
@@ -99,7 +103,8 @@ void main() {
         }
 
         rgba.a *= 2.0;
-        if ((rgba.a == 0.0) || (rgba.a < minAlpha)) {
+        opacity = rgba.a;
+        if ((opacity == 0.0) || (opacity < minAlpha)) {
             return;
         }
     }
@@ -107,6 +112,16 @@ void main() {
 // Match the reference 3DGS rasterizer by clamping SH-evaluated RGB positive.
     rgba.rgb = max(rgba.rgb, vec3(0.0));
 
+    // Decode the shape independently from mesh/SDF opacity, which remains in
+    // the main splat's alpha.
+    float shape = 1.0 + texelFetch(splatShape, texCoord, 0).r;
+    if (shape > 1.0) {
+        // Stretch the packed 1..2 range to the kernel's 1..5 shape range.
+        shape = min(shape * 4.0 - 3.0, 5.0);
+    }
+    vSplatShape = shape;
+
+    // Shape changes the falloff profile, not the original clipping boundary.
     adjustedStdDev = maxStdDev;
 
 // The covariance branch already carries scale in the full basis matrix.
@@ -133,7 +148,7 @@ void main() {
         return;
     }
 
-    vRgba = rgba;
+    vRgba = vec4(rgba.rgb, opacity);
     vSplatUv = position.xy * adjustedStdDev;
 
     // Record the splat index for entropy
@@ -225,11 +240,11 @@ void main() {
 
     // Compute anti-aliasing intensity scaling factor
     float blurAdjust = sqrt(max(0.0, detOrig / det));
-    rgba.a *= blurAdjust;
-    if (rgba.a < minAlpha) {
+    opacity *= blurAdjust;
+    if (opacity < minAlpha) {
         return;
     }
-    vRgba.a = rgba.a;
+    vRgba.a = opacity;
 
     // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
     float eigenAvg = 0.5 * (a + d);

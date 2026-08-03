@@ -39,7 +39,9 @@ import {
   defineGsplat,
   dyno,
   dynoBlock,
+  dynoConst,
   gsplatToCovSplat,
+  min,
   mul,
   splitCovSplat,
   splitGsplat,
@@ -227,6 +229,7 @@ export class SplatMesh extends SplatGenerator {
     deltaTime,
   }: { mesh: SplatMesh; time: number; deltaTime: number }) => void;
   generatorDirty = true;
+  private generatorSortDirty = true;
 
   objectModifiers?: GsplatModifier[];
   worldModifiers?: GsplatModifier[];
@@ -574,7 +577,7 @@ export class SplatMesh extends SplatGenerator {
     const { transform, viewToObject, recolor } = context;
     const generator = dynoBlock(
       { index: "int" },
-      { gsplat: Gsplat },
+      { gsplat: Gsplat, splatShape: "float" },
       ({ index }) => {
         if (!index) {
           throw new Error("index is undefined");
@@ -608,6 +611,15 @@ export class SplatMesh extends SplatGenerator {
         // Transform from object to world-space
         gsplat = transform.applyGsplat(gsplat);
 
+        // Preserve shape codes encoded in alpha before applying mesh opacity,
+        // SDF edits, or world-space modifiers. Downstream opacity processing
+        // operates on the decoded 0..1 alpha value.
+        const splatShape = splitGsplat(gsplat).outputs.opacity;
+        gsplat = combineGsplat({
+          gsplat,
+          opacity: min(splatShape, dynoConst("float", 1)),
+        });
+
         // Apply any global recoloring and opacity
         const recolorRgba = mul(recolor, splitGsplat(gsplat).outputs.rgba);
         gsplat = combineGsplat({ gsplat, rgba: recolorRgba });
@@ -625,11 +637,12 @@ export class SplatMesh extends SplatGenerator {
         }
 
         // We're done! Output resulting Gsplat
-        return { gsplat };
+        return { gsplat, splatShape };
       },
     );
     this.generator = generator;
     this.covGenerator = undefined;
+    this.splatShape = generator.outputs.splatShape;
   }
 
   constructCovGenerator(context: SplatMeshContext) {
@@ -637,7 +650,7 @@ export class SplatMesh extends SplatGenerator {
     const { covTransform, covViewToObject, recolor } = context;
     const generator = dynoBlock(
       { index: "int" },
-      { covsplat: CovSplat },
+      { covsplat: CovSplat, splatShape: "float" },
       ({ index }) => {
         if (!index) {
           throw new Error("index is undefined");
@@ -679,6 +692,15 @@ export class SplatMesh extends SplatGenerator {
         // Transform from object to world-space
         covsplat = covTransform.applyCovSplat(covsplat);
 
+        // Preserve shape codes encoded in alpha before applying mesh opacity,
+        // SDF edits, or world-space modifiers. Downstream opacity processing
+        // operates on the decoded 0..1 alpha value.
+        const splatShape = splitCovSplat(covsplat).outputs.opacity;
+        covsplat = combineCovSplat({
+          covsplat,
+          opacity: min(splatShape, dynoConst("float", 1)),
+        });
+
         // Apply any global recoloring and opacity
         const recolorRgba = mul(recolor, splitCovSplat(covsplat).outputs.rgba);
         covsplat = combineCovSplat({ covsplat, rgba: recolorRgba });
@@ -696,11 +718,12 @@ export class SplatMesh extends SplatGenerator {
         }
 
         // We're done! Output resulting Gsplat
-        return { covsplat };
+        return { covsplat, splatShape };
       },
     );
     this.generator = undefined;
     this.covGenerator = generator;
+    this.splatShape = generator.outputs.splatShape;
   }
 
   // Call this whenever something changes in the Gsplat processing pipeline,
@@ -709,6 +732,7 @@ export class SplatMesh extends SplatGenerator {
   // pipeline structure emerges after successive changes.
   updateGenerator() {
     this.generatorDirty = true;
+    this.generatorSortDirty = true;
   }
 
   // This is called automatically by SparkRenderer and you should not have to
@@ -734,17 +758,20 @@ export class SplatMesh extends SplatGenerator {
     this.numSplats = this.context.splats.getNumSplats();
 
     let updated = false;
+    let sortUpdated = false;
 
     this.context.numSplats.value = this.numSplats;
 
     if (this.context.splats !== this.lastSplats) {
       this.lastSplats = this.context.splats;
       this.generatorDirty = true;
+      this.generatorSortDirty = true;
     }
 
     if (!this.covSplats) {
       if (this.context.transform.update(this)) {
         updated = true;
+        sortUpdated = true;
       }
 
       if (
@@ -752,6 +779,7 @@ export class SplatMesh extends SplatGenerator {
         this.enableViewToWorld
       ) {
         updated = true;
+        sortUpdated = true;
       }
       const worldToView = viewToWorld.clone().invert();
       if (
@@ -759,6 +787,7 @@ export class SplatMesh extends SplatGenerator {
         this.enableWorldToView
       ) {
         updated = true;
+        sortUpdated = true;
       }
 
       const objectToWorld = new THREE.Matrix4().compose(
@@ -774,10 +803,14 @@ export class SplatMesh extends SplatGenerator {
       ) {
         // Only trigger update if we have view-dependent spherical harmonics
         updated = true;
+        // Directional RGB alone is appearance-only, but a custom
+        // viewToObject modifier may also change generated centers.
+        sortUpdated ||= this.enableViewToObject;
       }
     } else {
       if (this.context.covTransform.update(this)) {
         updated = true;
+        sortUpdated = true;
       }
 
       if (
@@ -785,6 +818,7 @@ export class SplatMesh extends SplatGenerator {
         this.enableViewToWorld
       ) {
         updated = true;
+        sortUpdated = true;
       }
       const worldToView = viewToWorld.clone().invert();
       if (
@@ -792,6 +826,7 @@ export class SplatMesh extends SplatGenerator {
         this.enableWorldToView
       ) {
         updated = true;
+        sortUpdated = true;
       }
 
       const worldToObject = this.matrixWorld.clone().invert();
@@ -802,6 +837,7 @@ export class SplatMesh extends SplatGenerator {
       ) {
         // Only trigger update if we have view-dependent spherical harmonics
         updated = true;
+        sortUpdated ||= this.enableViewToObject;
       }
     }
 
@@ -855,8 +891,10 @@ export class SplatMesh extends SplatGenerator {
     if (this.rgbaDisplaceEdits) {
       const editResult = this.rgbaDisplaceEdits.update(editsSdfs);
       updated ||= editResult.updated;
+      sortUpdated ||= editResult.positionUpdated;
       if (editResult.dynoUpdated) {
         this.generatorDirty = true;
+        this.generatorSortDirty ||= editResult.positionUpdated;
       }
     }
 
@@ -864,10 +902,12 @@ export class SplatMesh extends SplatGenerator {
       this.constructGenerator(this.context);
       this.generatorDirty = false;
       updated = true;
+      sortUpdated ||= this.generatorSortDirty;
+      this.generatorSortDirty = false;
     }
 
     if (updated) {
-      this.updateVersion();
+      this.updateVersion({ sort: sortUpdated });
     }
 
     this.onFrame?.({ mesh: this, time, deltaTime });

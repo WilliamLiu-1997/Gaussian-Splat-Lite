@@ -38,6 +38,9 @@ export const outputCovSplatDepth = (
   sortRadial: DynoVal<"bool">,
 ) => new OutputCovSplatDepth({ covsplat, viewCenter, viewDir, sortRadial });
 
+export const outputSplatShape = (splatShape: DynoVal<"float">) =>
+  new OutputSplatShape({ splatShape });
+
 export const outputRgba8 = (rgba8: DynoVal<"vec4">) =>
   new OutputRgba8({ rgba8 });
 
@@ -267,6 +270,21 @@ class OutputCovSplatDepth extends Dyno<
         }
         return [];
       },
+    });
+  }
+}
+
+class OutputSplatShape extends Dyno<
+  { splatShape: "float" },
+  Record<string, never>
+> {
+  constructor({ splatShape }: { splatShape: DynoVal<"float"> }) {
+    super({
+      inTypes: { splatShape: "float" },
+      inputs: { splatShape },
+      statements: ({ inputs }) => [
+        `targetShape = vec4(clamp((${inputs.splatShape ?? "0.0"}) - 1.0, 0.0, 1.0), 0.0, 0.0, 1.0);`,
+      ],
     });
   }
 }

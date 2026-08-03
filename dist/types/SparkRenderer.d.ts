@@ -338,6 +338,10 @@ export declare class SparkRenderer extends THREE.Mesh {
             type: string;
             value: THREE.DataArrayTexture;
         };
+        splatShape: {
+            type: string;
+            value: THREE.DataArrayTexture;
+        };
         time: {
             value: number;
         };
