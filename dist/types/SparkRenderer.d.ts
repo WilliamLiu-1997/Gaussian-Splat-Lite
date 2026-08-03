@@ -20,16 +20,11 @@ export interface SparkRendererOptions {
      */
     premultipliedAlpha?: boolean;
     /**
-     * Whether to encode Gsplat with linear RGB (for environment mapping)
-     * @default false
+     * Pass in a THREE.Timer to synchronize time-based effects across different
+     * systems. A supplied timer remains owned and updated by the caller.
+     * @default new THREE.Timer()
      */
-    encodeLinear?: boolean;
-    /**
-     * Pass in a THREE.Clock to synchronize time-based effects across different
-     * systems. Alternatively, you can set the property time directly.
-     * (default: new THREE.Clock)
-     */
-    clock?: THREE.Clock;
+    timer?: THREE.Timer;
     /**
      * Controls whether to check and automatically update Gsplat collection
      * each frame render.
@@ -228,11 +223,10 @@ export declare class SparkRenderer extends THREE.Mesh {
     falloff: number;
     clipXY: number;
     focalAdjustment: number;
-    encodeLinear: boolean;
     sortRadial: boolean;
     minSortIntervalMs: number;
-    clock: THREE.Clock;
-    time?: number;
+    readonly timer: THREE.Timer;
+    private readonly ownsTimer;
     lastFrame: number;
     updateTimeoutId: number;
     onDirty?: () => void;

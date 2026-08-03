@@ -186,6 +186,8 @@ export class SplatAccumulator {
   private saveRenderState(renderer: THREE.WebGLRenderer) {
     return {
       target: renderer.getRenderTarget(),
+      activeCubeFace: renderer.getActiveCubeFace(),
+      activeMipmapLevel: renderer.getActiveMipmapLevel(),
       xrEnabled: renderer.xr.enabled,
       autoClear: renderer.autoClear,
     };
@@ -195,11 +197,17 @@ export class SplatAccumulator {
     renderer: THREE.WebGLRenderer,
     state: {
       target: THREE.WebGLRenderTarget | null;
+      activeCubeFace: number;
+      activeMipmapLevel: number;
       xrEnabled: boolean;
       autoClear: boolean;
     },
   ) {
-    renderer.setRenderTarget(state.target);
+    renderer.setRenderTarget(
+      state.target,
+      state.activeCubeFace,
+      state.activeMipmapLevel,
+    );
     renderer.xr.enabled = state.xrEnabled;
     renderer.autoClear = state.autoClear;
   }
@@ -433,7 +441,7 @@ export class SplatAccumulator {
   prepareGenerate({
     renderer,
     scene,
-    time,
+    timer,
     camera,
     sortRadial,
     renderSize,
@@ -441,7 +449,7 @@ export class SplatAccumulator {
   }: {
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;
-    time: number;
+    timer: THREE.Timer;
     camera: THREE.Camera;
     sortRadial: boolean;
     renderSize: THREE.Vector2;
@@ -454,8 +462,8 @@ export class SplatAccumulator {
     SplatAccumulator.viewDirUniform.value.copy(this.viewDirection);
     SplatAccumulator.sortRadialUniform.value = sortRadial;
 
-    this.time = time;
-    this.deltaTime = time - previous.time;
+    this.time = timer.getElapsed();
+    this.deltaTime = timer.getDelta();
 
     const allGenerators: SplatGenerator[] = [];
     scene.traverse((node) => {

@@ -104,7 +104,6 @@ export declare function isIos(): boolean;
 export declare function isVisionPro(): boolean;
 export declare function flipPixels(pixels: Uint8Array, width: number, height: number): Uint8Array;
 export declare function pixelsToPngUrl(pixels: Uint8Array, width: number, height: number): string;
-export declare function cloneClock(clock: THREE.Clock): THREE.Clock;
 export declare function omitUndefined<T extends object>(obj: T): Partial<T>;
 export declare const IDENT_VERTEX_SHADER: string;
 export declare function averagePositions(positions: THREE.Vector3[]): THREE.Vector3;
@@ -187,4 +186,9 @@ export declare function decodeExtRgb(encoded: number): THREE.Color;
 export declare function encodeExtSh1Rgb(sh1Array: Uint32Array, index: number, sh1Rgb: Float32Array): void;
 export declare function encodeExtSh12Rgb(sh1Array: Uint32Array, sh2Array: Uint32Array, index: number, sh1Rgb: Float32Array, sh2Rgb: Float32Array): void;
 export declare function encodeExt3Rgb(sh3ArrayA: Uint32Array, sh3ArrayB: Uint32Array, index: number, sh3Rgb: Float32Array): void;
+export declare function uploadU32DataTextureRows(renderer: THREE.WebGLRenderer, texture: THREE.Texture, width: number, rows: number, data: Uint32Array): void;
+export declare function resolveTimer(timer?: THREE.Timer): {
+    timer: THREE.Timer;
+    ownsTimer: boolean;
+};
 export {};

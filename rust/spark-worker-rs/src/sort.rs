@@ -1,9 +1,12 @@
 const DEPTH_INFINITY_F32: u32 = 0x7f800000;
-const RADIX_BASE: usize = 1 << 16; // 65536
+// 16-bit radix (2 passes)
+const RADIX_BITS: u32 = 16;
+const RADIX_BASE: usize = 1 << RADIX_BITS; // 65536
+const RADIX_MASK: u32 = RADIX_BASE as u32 - 1;
 
 #[derive(Default)]
 pub struct Sort32Buffers {
-    /// raw f32 bit‑patterns (one per splat)
+    /// raw f32 bit-patterns (one per splat)
     pub readback: Vec<u32>,
     /// output indices
     pub ordering: Vec<u32>,
@@ -11,8 +14,8 @@ pub struct Sort32Buffers {
     pub buckets16lo: Vec<u32>,
     /// bucket counts / offsets (length == RADIX_BASE)
     pub buckets16hi: Vec<u32>,
-    /// scratch space for indices
-    pub scratch: Vec<u32>,
+    /// scratch space for (key, index)
+    pub scratch: Vec<u64>,
 }
 
 impl Sort32Buffers {
@@ -36,14 +39,23 @@ impl Sort32Buffers {
     }
 }
 
-/// Two‑pass radix sort (base 2¹⁶) of 32‑bit float bit‑patterns,
-/// descending order (largest keys first). Mirrors the JS `sort32Splats`.
+fn prefix_sum_exclusive(buckets: &mut [u32]) -> u32 {
+    let mut sum = 0u32;
+    for bucket in buckets.iter_mut() {
+        let count = *bucket;
+        *bucket = sum;
+        sum = sum.wrapping_add(count);
+    }
+    sum
+}
+
+/// Two-pass radix sort (base 2^16) of 32-bit float bit-patterns,
+/// descending order (largest keys first).
 pub fn sort32_internal(
     buffers: &mut Sort32Buffers,
     max_splats: usize,
     num_splats: usize,
 ) -> Result<u32, String> {
-    // make sure our buffers can hold `max_splats`
     buffers.ensure_size(max_splats);
 
     let Sort32Buffers {
@@ -55,55 +67,104 @@ pub fn sort32_internal(
     } = buffers;
     let keys = &readback[..num_splats];
 
-    // tally low and high buckets
+    // Tally low and high buckets without a branch in the hot loop.
     buckets16lo.fill(0);
     buckets16hi.fill(0);
-    for &key in keys.iter() {
-        if key < DEPTH_INFINITY_F32 {
-            let inv = !key;
-            buckets16lo[(inv & 0xFFFF) as usize] += 1;
-            buckets16hi[(inv >> 16) as usize] += 1;
-        }
+
+    macro_rules! tick {
+        ($key:expr) => {{
+            let valid = ($key < DEPTH_INFINITY_F32) as u32;
+            let inv = !$key;
+            let lo = inv & RADIX_MASK;
+            let hi = inv >> RADIX_BITS;
+
+            // The mask and shift guarantee both bucket indices are in bounds.
+            unsafe { *buckets16lo.get_unchecked_mut(lo as usize) += valid };
+            unsafe { *buckets16hi.get_unchecked_mut(hi as usize) += valid };
+        }};
     }
 
-    // ——— Pass #1: bucket by inv(low 16 bits) ———
-    // exclusive prefix‑sum → starting offsets
-    let mut total: u32 = 0;
-    for slot in buckets16lo.iter_mut() {
-        let cnt = *slot;
-        *slot = total;
-        total = total.wrapping_add(cnt);
+    let mut chunks = keys.chunks_exact(8);
+    for chunk in chunks.by_ref() {
+        tick!(chunk[0]);
+        tick!(chunk[1]);
+        tick!(chunk[2]);
+        tick!(chunk[3]);
+        tick!(chunk[4]);
+        tick!(chunk[5]);
+        tick!(chunk[6]);
+        tick!(chunk[7]);
     }
-    let active_splats = total;
-
-    // scatter into scratch by low bits of inv
-    for (i, &key) in keys.iter().enumerate() {
-        if key < DEPTH_INFINITY_F32 {
-            let inv = !key;
-            let lo = (inv & 0xFFFF) as usize;
-            scratch[buckets16lo[lo] as usize] = i as u32;
-            buckets16lo[lo] += 1;
-        }
+    for &key in chunks.remainder() {
+        tick!(key);
     }
 
-    // ——— Pass #2: bucket by inv(high 16 bits) ———
-    // exclusive prefix‑sum again
-    let mut sum: u32 = 0;
-    for slot in buckets16hi.iter_mut() {
-        let cnt = *slot;
-        *slot = sum;
-        sum = sum.wrapping_add(cnt);
-    }
-    // scatter into final ordering by high bits of inv
-    for &idx in scratch.iter().take(active_splats as usize) {
-        let key = keys[idx as usize];
-        let inv = !key;
-        let hi = (inv >> 16) as usize;
-        ordering[buckets16hi[hi] as usize] = idx;
-        buckets16hi[hi] += 1;
+    let active_splats = prefix_sum_exclusive(buckets16lo);
+    prefix_sum_exclusive(buckets16hi);
+
+    // Pass 1: bucket by the low 16 bits of the inverted key. Keep the key
+    // alongside the index so pass 2 can scan sequentially instead of gathering.
+    macro_rules! place {
+        ($key:expr, $index:expr) => {{
+            if $key < DEPTH_INFINITY_F32 {
+                let inv = !$key;
+                let lo = (inv & RADIX_MASK) as usize;
+                let pos = unsafe { *buckets16lo.get_unchecked(lo) } as usize;
+                let inv_index = ((inv as u64) << 32) | ($index as u64);
+
+                // pos < active_splats <= max_splats <= scratch.len().
+                unsafe { *scratch.get_unchecked_mut(pos) = inv_index };
+                unsafe { *buckets16lo.get_unchecked_mut(lo) += 1 };
+            }
+        }};
     }
 
-    // sanity‑check: last bucket should have consumed all entries
+    let mut chunks = keys.chunks_exact(8);
+    let mut index = 0;
+    for chunk in chunks.by_ref() {
+        place!(chunk[0], index);
+        place!(chunk[1], index + 1);
+        place!(chunk[2], index + 2);
+        place!(chunk[3], index + 3);
+        place!(chunk[4], index + 4);
+        place!(chunk[5], index + 5);
+        place!(chunk[6], index + 6);
+        place!(chunk[7], index + 7);
+        index += 8;
+    }
+    for &key in chunks.remainder() {
+        place!(key, index);
+        index += 1;
+    }
+
+    // Pass 2: bucket by the high 16 bits of the inverted key.
+    macro_rules! place2 {
+        ($inv_index:expr) => {{
+            let index = $inv_index as u32;
+            let hi = (($inv_index >> 48) & RADIX_MASK as u64) as usize;
+            let pos = unsafe { *buckets16hi.get_unchecked(hi) } as usize;
+
+            // pos < active_splats <= max_splats <= ordering.len().
+            unsafe { *ordering.get_unchecked_mut(pos) = index };
+            unsafe { *buckets16hi.get_unchecked_mut(hi) += 1 };
+        }};
+    }
+
+    let mut chunks = scratch[..active_splats as usize].chunks_exact(8);
+    for chunk in chunks.by_ref() {
+        place2!(chunk[0]);
+        place2!(chunk[1]);
+        place2!(chunk[2]);
+        place2!(chunk[3]);
+        place2!(chunk[4]);
+        place2!(chunk[5]);
+        place2!(chunk[6]);
+        place2!(chunk[7]);
+    }
+    for &inv_index in chunks.remainder() {
+        place2!(inv_index);
+    }
+
     if buckets16hi[RADIX_BASE - 1] != active_splats {
         return Err(format!(
             "Expected {} active splats but got {}",
@@ -113,4 +174,48 @@ pub fn sort32_internal(
     }
 
     Ok(active_splats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorts_finite_nonnegative_depths_descending_and_filters_invalid_keys() {
+        let values = [1.0_f32, 3.0, f32::INFINITY, 2.0, f32::NAN, 0.0];
+        let mut buffers = Sort32Buffers::default();
+        buffers.ensure_size(values.len());
+        for (dst, value) in buffers.readback.iter_mut().zip(values) {
+            *dst = value.to_bits();
+        }
+
+        let active = sort32_internal(&mut buffers, values.len(), values.len()).unwrap();
+
+        assert_eq!(active, 4);
+        assert_eq!(&buffers.ordering[..active as usize], &[1, 3, 0, 5]);
+    }
+
+    #[test]
+    fn matches_a_stable_reference_sort_across_reused_buffers() {
+        let mut buffers = Sort32Buffers::default();
+        let mut state = 0x1234_5678_u32;
+
+        for len in [1_usize, 7, 8, 9, 257, 4097] {
+            buffers.ensure_size(len);
+            let mut expected = Vec::with_capacity(len);
+            for index in 0..len {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let value = (state % 10_000) as f32 / 100.0;
+                buffers.readback[index] = value.to_bits();
+                expected.push((index as u32, value));
+            }
+            expected.sort_by(|left, right| right.1.total_cmp(&left.1));
+
+            let active = sort32_internal(&mut buffers, len, len).unwrap();
+            let expected_indices: Vec<u32> = expected.into_iter().map(|(index, _)| index).collect();
+
+            assert_eq!(active as usize, len);
+            assert_eq!(&buffers.ordering[..len], expected_indices.as_slice());
+        }
+    }
 }

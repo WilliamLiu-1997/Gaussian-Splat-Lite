@@ -68,10 +68,10 @@ export declare class SplatAccumulator {
     }): {
         nextBase: number;
     };
-    prepareGenerate({ renderer, scene, time, camera, sortRadial, renderSize, previous, }: {
+    prepareGenerate({ renderer, scene, timer, camera, sortRadial, renderSize, previous, }: {
         renderer: THREE.WebGLRenderer;
         scene: THREE.Scene;
-        time: number;
+        timer: THREE.Timer;
         camera: THREE.Camera;
         sortRadial: boolean;
         renderSize: THREE.Vector2;

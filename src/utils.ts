@@ -919,16 +919,6 @@ export function pixelsToPngUrl(
   return canvas.toDataURL("image/png");
 }
 
-// Manually clone a THREE.Clock object.
-export function cloneClock(clock: THREE.Clock): THREE.Clock {
-  const newClock = new THREE.Clock(clock.autoStart);
-  newClock.startTime = clock.startTime;
-  newClock.oldTime = clock.oldTime;
-  newClock.elapsedTime = clock.elapsedTime;
-  newClock.running = clock.running;
-  return newClock;
-}
-
 // Utility to filter out an undefined values from an object.
 export function omitUndefined<T extends object>(obj: T): Partial<T> {
   return Object.fromEntries(
@@ -1574,4 +1564,57 @@ export function encodeExt3Rgb(
       sh3Rgb[k3 + 2],
     );
   }
+}
+
+export function uploadU32DataTextureRows(
+  renderer: THREE.WebGLRenderer,
+  texture: THREE.Texture,
+  width: number,
+  rows: number,
+  data: Uint32Array,
+) {
+  const gl = renderer.getContext() as WebGL2RenderingContext;
+  const props = renderer.properties.get(texture) as {
+    __webglTexture: WebGLTexture;
+  };
+  const glTexture = props?.__webglTexture;
+  if (!glTexture) {
+    throw new Error("texture not found");
+  }
+
+  // renderer.state.pixelStorei is only available in newer Three.js releases,
+  // so preserve these WebGL flags explicitly across the direct texture upload.
+  const currentFlipY = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+  const currentPremultiply = gl.getParameter(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
+  renderer.state.activeTexture(gl.TEXTURE0);
+  renderer.state.bindTexture(gl.TEXTURE_2D, glTexture);
+  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texSubImage2D(
+    gl.TEXTURE_2D,
+    0,
+    0,
+    0,
+    width,
+    rows,
+    gl.RGBA_INTEGER,
+    gl.UNSIGNED_INT,
+    data,
+  );
+  renderer.state.unbindTexture();
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, currentFlipY);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, currentPremultiply);
+}
+
+export function resolveTimer(timer?: THREE.Timer): {
+  timer: THREE.Timer;
+  ownsTimer: boolean;
+} {
+  return {
+    timer: timer ?? new THREE.Timer(),
+    // A caller-supplied timer may be shared with other systems, so only update
+    // the timer that Spark creates and owns itself.
+    ownsTimer: timer === undefined,
+  };
 }
