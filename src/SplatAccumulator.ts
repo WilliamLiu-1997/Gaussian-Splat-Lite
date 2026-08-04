@@ -311,6 +311,28 @@ export class SplatAccumulator {
           }
 
           if (this.extSplats) {
+            // Extended centers are float32, but they still need the same
+            // camera-relative storage contract as packed centers. Keeping ECEF
+            // world coordinates here would lose local precision before render.
+            if (outputGsplat) {
+              outputGsplat = combineGsplat({
+                gsplat: outputGsplat,
+                center: sub(
+                  splitGsplat(outputGsplat).outputs.center,
+                  SplatAccumulator.viewCenterUniform,
+                ),
+              });
+            }
+            if (generatedCovSplat) {
+              generatedCovSplat = combineCovSplat({
+                covsplat: generatedCovSplat,
+                center: sub(
+                  splitCovSplat(generatedCovSplat).outputs.center,
+                  SplatAccumulator.viewCenterUniform,
+                ),
+              });
+            }
+
             if (!this.covSplats) {
               if (outputGsplat) {
                 const output = outputExtendedSplat(outputGsplat);
@@ -390,8 +412,10 @@ export class SplatAccumulator {
           roots.push(outputSplatShape(outputShape));
           if (generator) {
             const outputDepth = outputSplatDepth(
-              generator.outputs.gsplat,
-              SplatAccumulator.viewCenterUniform,
+              outputGsplat ?? generator.outputs.gsplat,
+              this.extSplats
+                ? dynoConst("vec3", [0, 0, 0])
+                : SplatAccumulator.viewCenterUniform,
               SplatAccumulator.viewDirUniform,
               SplatAccumulator.sortRadialUniform,
             );
@@ -399,8 +423,10 @@ export class SplatAccumulator {
           }
           if (covGenerator) {
             const outputDepth = outputCovSplatDepth(
-              covGenerator.outputs.covsplat,
-              SplatAccumulator.viewCenterUniform,
+              generatedCovSplat ?? covGenerator.outputs.covsplat,
+              this.extSplats
+                ? dynoConst("vec3", [0, 0, 0])
+                : SplatAccumulator.viewCenterUniform,
               SplatAccumulator.viewDirUniform,
               SplatAccumulator.sortRadialUniform,
             );

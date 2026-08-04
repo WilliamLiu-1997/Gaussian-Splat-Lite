@@ -587,10 +587,10 @@ export class SparkRenderer extends THREE.Mesh {
     const geometry = this.geometry as SplatGeometry;
     geometry.instanceCount = spark.activeSplats;
 
-    const accumToWorld = new THREE.Matrix4();
-    if (!this.display.extSplats) {
-      accumToWorld.makeTranslation(spark.display.viewOrigin);
-    }
+    // Packed and extended accumulators both store camera-relative centers.
+    const accumToWorld = new THREE.Matrix4().makeTranslation(
+      spark.display.viewOrigin,
+    );
     const cameraToWorld = camera.matrixWorld.clone();
     const worldToCamera = cameraToWorld.invert();
     const accumToCamera = worldToCamera.multiply(accumToWorld);

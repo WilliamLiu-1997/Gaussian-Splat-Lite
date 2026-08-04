@@ -1,6 +1,6 @@
 import { SparkRenderer, SplatFileType, SplatMesh } from "gaussian-splat-lite";
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { CameraController } from "./cameraController.js";
 
 const viewport = document.querySelector("#viewport");
 const fileInput = document.querySelector("#file-input");
@@ -32,10 +32,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 viewport.append(renderer.domElement);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.075;
-controls.screenSpacePanning = true;
+const controls = new CameraController(renderer, scene, camera);
 
 const splatRenderer = new SparkRenderer({ renderer });
 scene.add(splatRenderer);
@@ -128,8 +125,9 @@ function frameSplat(splat) {
   if (bounds.isEmpty()) {
     splat.position.set(0, 0, 0);
     camera.position.set(0, 0, 3);
-    controls.target.set(0, 0, 0);
-    controls.update();
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    controls.setCamera(camera);
     return;
   }
 
@@ -157,10 +155,10 @@ function frameSplat(splat) {
   camera.far = Math.max(distance + radius * 20, 100);
   camera.updateProjectionMatrix();
   camera.position.set(radius * 0.12, radius * 0.08, distance);
-  controls.target.set(0, 0, 0);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld(true);
   controls.minDistance = radius * 0.02;
-  controls.maxDistance = distance * 20;
-  controls.update();
+  controls.setCamera(camera);
 }
 
 async function loadFile(file) {
@@ -324,7 +322,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 resizeRenderer();
-renderer.setAnimationLoop(() => {
-  controls.update();
+renderer.setAnimationLoop((time) => {
+  controls.update(time);
   renderer.render(scene, camera);
 });
