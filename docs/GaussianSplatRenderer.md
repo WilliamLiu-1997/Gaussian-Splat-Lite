@@ -1,0 +1,107 @@
+# GaussianSplatRenderer
+
+[Back to the API overview](../README.md#core-concepts-and-public-api)
+
+```ts
+new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
+```
+
+## Basic options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `renderer` | `THREE.WebGLRenderer` | Required | The Three.js WebGL renderer |
+| `onDirty` | `() => void` | `undefined` | Called when loading, generation, or sorting requires another render |
+| `premultipliedAlpha` | `boolean` | `true` | Uses premultiplied alpha while accumulating Splat RGB |
+| `timer` | `THREE.Timer` | New internal timer | Shares time with another animation system; caller owns and updates a supplied timer |
+| `autoUpdate` | `boolean` | `true` | Automatically checks the Splat collection each frame |
+| `preUpdate` | `boolean` | `true` | Updates before drawing; WebXR presentation automatically uses an asynchronous post-render update |
+| `accumPackedSplats` | `boolean` | `false` | Uses compressed Packed Splats for intermediate data, reducing memory at the cost of precision; changing it regenerates the accumulator on the next update |
+
+## Quality and appearance options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `maxStdDev` | `number` | `Math.sqrt(8)` | Maximum standard deviations drawn from each Gaussian center; lower values improve speed but crop edges |
+| `minPixelRadius` | `number` | `1` | Minimum screen-space Splat radius |
+| `maxPixelRadius` | `number` | `512` | Maximum screen-space Splat radius |
+| `minAlpha` | `number` | `0.5 / 255` | Fragments below this alpha are discarded |
+| `enable2DGS` | `boolean` | `false` | Treats a Splat with exactly one zero scale axis as a 2D Gaussian |
+| `preBlurAmount` | `number` | `0` | Adds to the covariance diagonal before opacity correction |
+| `blurAmount` | `number` | `0.3` | Anti-aliasing blur amount with opacity correction |
+| `focalDistance` | `number` | `0` | Distance to the depth-of-field focal plane |
+| `apertureAngle` | `number` | `0` | Full aperture angle in radians; `0` disables depth of field |
+| `clipXY` | `number` | `1.25` | Center-clipping factor relative to the X/Y frustum boundary; `1` clips immediately outside it |
+| `focalAdjustment` | `number` | `2` | Projected Splat-size adjustment; larger values generally look sharper |
+
+## Sorting, material, and offscreen options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sortRadial` | `boolean` | `false` | Sorts by geometric distance when `true`, or by Z depth when `false` |
+| `minSortIntervalMs` | `number` | `0` | Minimum interval between sort calls, in milliseconds |
+| `transparent` | `boolean` | `true` | Places the Splat material in the Three.js transparent render pass |
+| `depthTest` | `boolean` | `true` | Reads the depth buffer for occlusion with regular meshes |
+| `depthWrite` | `boolean` | `false` | Writes depth; normally undesirable for transparent Splats |
+| `extraUniforms` | `Record<string, unknown>` | `undefined` | Additional values merged into the default shader uniforms |
+| `vertexShader` | `string` | Built in | Replaces the default Splat vertex shader |
+| `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader |
+| `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
+
+The `target` structure is:
+
+```ts
+type TargetOptions = {
+  width: number;
+  height: number;
+  doubleBuffer?: boolean; // false
+  superXY?: number;       // 1-4, default 1
+} & THREE.RenderTargetOptions;
+```
+
+`superXY` renders at a higher resolution and performs simple CPU averaging when `readTarget()` is called. Both `width * superXY` and `height * superXY` must be no greater than 8192.
+
+## Common properties and methods
+
+| API | Description |
+| --- | --- |
+| `update({ scene, camera })` | Manually generates and sorts Splats; returns `Promise<void>` |
+| `clearSplats()` | Clears the current display buffer without removing scene objects |
+| `render(scene, camera)` | Performs one Three.js render using this instance as the active Splat renderer |
+| `renderTarget({ scene, camera })` | Renders to the target configured in the constructor |
+| `readTarget()` | Reads the latest offscreen result as an RGBA `Uint8Array` |
+| `renderReadTarget({ scene, camera })` | Renders and reads an offscreen result |
+| `renderCubeMap(...)` | Renders a cube map from a world-space position |
+| `readCubeTargets()` | Reads RGBA bytes from all six cube faces |
+| `renderEnvMap(...)` | Renders and PMREM-prefilters an environment map |
+| `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
+| `dispose()` | Releases materials, geometry, textures, targets, and the sorting worker |
+| `premultipliedAlpha` | A read/write property that recompiles the material when changed |
+| `accumPackedSplats` | A read/write property that switches accumulator encoding on the next update |
+
+For an on-demand render loop, connect `onDirty` to the application's render scheduler:
+
+```js
+let needsRender = true;
+
+function requestRender() {
+  needsRender = true;
+}
+
+controls.addEventListener("update", requestRender);
+
+const splatRenderer = new GaussianSplatRenderer({
+  renderer,
+  onDirty: requestRender,
+});
+scene.add(splatRenderer);
+
+renderer.setAnimationLoop((time) => {
+  controls.update(time);
+  if (!needsRender) return;
+
+  // Clear the flag before rendering so a new onDirty call is preserved.
+  needsRender = false;
+  renderer.render(scene, camera);
+});
+```

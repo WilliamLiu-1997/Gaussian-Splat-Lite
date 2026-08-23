@@ -1,0 +1,396 @@
+import * as THREE from "three";
+
+import {
+  get_raycast_buffer,
+  get_raycast_buffer2,
+  raycast_splat_buffers,
+} from "gaussian-splat-rs";
+import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
+import type { SplatSource } from "./SplatSource";
+import { Splats } from "./Splats";
+import type { SplatFileType } from "./defines";
+import * as wasm from "./wasm";
+
+const raycastWorldToMesh = new THREE.Matrix4();
+const raycastDirectionMatrix = new THREE.Matrix3();
+const raycastOrigin = new THREE.Vector3();
+const raycastDirection = new THREE.Vector3();
+
+export type { SplatSource } from "./SplatSource";
+
+export type SplatMeshOptions = {
+  url?: string;
+  fileBytes?: Uint8Array | ArrayBuffer;
+  fileType?: SplatFileType;
+  fileName?: string;
+  stream?: ReadableStream;
+  streamLength?: number;
+  splats?: SplatSource;
+  maxSplats?: number;
+  constructSplats?: (splats: Splats) => Promise<void> | void;
+  onProgress?: (event: ProgressEvent) => void;
+  onLoad?: (mesh: SplatMesh) => Promise<void> | void;
+  editable?: boolean;
+  raycastable?: boolean;
+  minRaycastOpacity?: number;
+  onFrame?: (context: {
+    mesh: SplatMesh;
+    time: number;
+    deltaTime: number;
+  }) => void;
+};
+
+export type SplatMeshFrameContext = {
+  time: number;
+  deltaTime: number;
+  camera: THREE.Camera;
+  globalEdits: SplatEdit[];
+};
+
+/** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
+export class SplatMesh extends THREE.Object3D {
+  initialized: Promise<SplatMesh>;
+  isInitialized = false;
+
+  splats?: SplatSource;
+
+  numSplats = 0;
+  recolor = new THREE.Color(1, 1, 1);
+  opacity = 1;
+  maxSh = 3;
+
+  edits: SplatEdit[] | null = null;
+  editable: boolean;
+  raycastable: boolean;
+  minRaycastOpacity: number;
+  sdfEdits: SplatEdits | null = null;
+
+  onFrame?: SplatMeshOptions["onFrame"];
+
+  version = 0;
+  sortVersion = 0;
+  mappingVersion = 0;
+
+  private lastSource?: SplatSource;
+  private lastNumSplats = -1;
+  private lastMaxSh = -1;
+  private lastMatrixWorld = new THREE.Matrix4();
+  private hasLastMatrixWorld = false;
+  private lastRecolor = new THREE.Vector4().setScalar(Number.NaN);
+  private viewOrigin = new THREE.Vector3();
+  private lastViewOrigin = new THREE.Vector3().setScalar(Number.NaN);
+  private sdfCoordinateOrigin = new THREE.Vector3();
+
+  constructor(options: SplatMeshOptions = {}) {
+    super();
+
+    this.splats =
+      options.splats ?? new Splats({ maxSplats: options.maxSplats });
+
+    this.numSplats = this.splats.getNumSplats();
+    this.editable = options.editable ?? true;
+    this.raycastable = options.raycastable ?? true;
+    this.minRaycastOpacity = options.minRaycastOpacity ?? 0.05;
+    this.onFrame = options.onFrame;
+
+    const mutableSplats =
+      this.splats instanceof Splats ? this.splats : undefined;
+    const needsAsyncInitialization = Boolean(
+      mutableSplats &&
+        (options.url ||
+          options.fileBytes ||
+          options.stream ||
+          options.constructSplats ||
+          !mutableSplats.isInitialized),
+    );
+
+    if (needsAsyncInitialization) {
+      this.initialized = this.asyncInitialize(options).then(async () => {
+        this.isInitialized = true;
+        await options.onLoad?.(this);
+        return this;
+      });
+    } else {
+      this.isInitialized = true;
+      const maybePromise = options.onLoad?.(this);
+      this.initialized =
+        maybePromise instanceof Promise
+          ? maybePromise.then(() => this)
+          : Promise.resolve(this);
+    }
+  }
+
+  private async asyncInitialize(options: SplatMeshOptions) {
+    const splats = this.splats;
+    if (splats instanceof Splats) {
+      if (
+        options.url ||
+        options.fileBytes ||
+        options.stream ||
+        options.constructSplats
+      ) {
+        splats.reinitialize({
+          url: options.url,
+          fileBytes: options.fileBytes,
+          fileType: options.fileType,
+          fileName: options.fileName,
+          stream: options.stream,
+          streamLength: options.streamLength,
+          maxSplats: options.maxSplats,
+          construct: options.constructSplats,
+          onProgress: options.onProgress,
+        });
+      }
+      await splats.initialized;
+    }
+    this.numSplats = this.splats?.getNumSplats() ?? 0;
+    this.updateMappingVersion();
+  }
+
+  pushSplat(
+    center: THREE.Vector3,
+    scales: THREE.Vector3,
+    quaternion: THREE.Quaternion,
+    opacity: number,
+    color: THREE.Color,
+  ) {
+    if (this.splats instanceof Splats) {
+      this.splats.pushSplat(center, scales, quaternion, opacity, color);
+    }
+    this.numSplats = this.splats?.getNumSplats() ?? this.numSplats;
+  }
+
+  forEachSplat(
+    callback: (
+      index: number,
+      center: THREE.Vector3,
+      scales: THREE.Vector3,
+      quaternion: THREE.Quaternion,
+      opacity: number,
+      color: THREE.Color,
+    ) => void,
+  ) {
+    this.splats?.forEachSplat(callback);
+  }
+
+  dispose() {
+    this.sdfEdits?.dispose();
+    this.sdfEdits = null;
+    this.splats?.dispose();
+    this.splats = undefined;
+  }
+
+  getBoundingBox(centersOnly = true) {
+    if (!this.isInitialized) {
+      throw new Error(
+        "Cannot get bounding box before SplatMesh is initialized",
+      );
+    }
+    const minimum = new THREE.Vector3().setScalar(Number.POSITIVE_INFINITY);
+    const maximum = new THREE.Vector3().setScalar(Number.NEGATIVE_INFINITY);
+    const corner = new THREE.Vector3();
+
+    if (centersOnly) {
+      this.splats?.forEachCenter((_index, x, y, z) => {
+        if (Number.isNaN(x)) return;
+        corner.set(x, y, z);
+        minimum.min(corner);
+        maximum.max(corner);
+      });
+      return new THREE.Box3(minimum, maximum);
+    }
+
+    const signs = [-1, 1];
+    this.splats?.forEachSplat((_index, center, scales, quaternion) => {
+      for (const x of signs) {
+        for (const y of signs) {
+          for (const z of signs) {
+            corner
+              .set(x * scales.x, y * scales.y, z * scales.z)
+              .applyQuaternion(quaternion)
+              .add(center);
+            minimum.min(corner);
+            maximum.max(corner);
+          }
+        }
+      }
+    });
+    return new THREE.Box3(minimum, maximum);
+  }
+
+  frameUpdate({ time, deltaTime, camera, globalEdits }: SplatMeshFrameContext) {
+    this.onFrame?.({ mesh: this, time, deltaTime });
+
+    const source = this.splats;
+    if (!source) {
+      return;
+    }
+    this.splats = source;
+
+    let updated = false;
+    let sortUpdated = false;
+    const count = source.getNumSplats();
+    if (source !== this.lastSource) {
+      this.lastSource = source;
+      updated = true;
+      sortUpdated = true;
+    }
+    if (count !== this.lastNumSplats) {
+      this.lastNumSplats = count;
+      this.numSplats = count;
+      this.mappingVersion += 1;
+      updated = true;
+      sortUpdated = true;
+    }
+    if (source.needsUpdate) {
+      updated = true;
+      sortUpdated = true;
+    }
+    if (this.maxSh !== this.lastMaxSh) {
+      this.lastMaxSh = this.maxSh;
+      updated = true;
+    }
+    if (this.maxSh > 0 && source.getNumSh() > 0) {
+      camera.getWorldPosition(this.viewOrigin);
+      if (!this.viewOrigin.equals(this.lastViewOrigin)) {
+        this.lastViewOrigin.copy(this.viewOrigin);
+        // Directional SH changes appearance but never changes splat depth.
+        updated = true;
+      }
+    }
+
+    this.updateWorldMatrix(true, false);
+    if (
+      !this.hasLastMatrixWorld ||
+      !this.lastMatrixWorld.equals(this.matrixWorld)
+    ) {
+      this.lastMatrixWorld.copy(this.matrixWorld);
+      this.hasLastMatrixWorld = true;
+      updated = true;
+      sortUpdated = true;
+    }
+
+    const recolor = new THREE.Vector4(
+      this.recolor.r,
+      this.recolor.g,
+      this.recolor.b,
+      this.opacity,
+    );
+    if (!recolor.equals(this.lastRecolor)) {
+      this.lastRecolor.copy(recolor);
+      updated = true;
+    }
+
+    const edits = new Set<SplatEdit>();
+    if (this.editable) {
+      for (const edit of globalEdits) edits.add(edit);
+      if (this.edits) {
+        for (const edit of this.edits) edits.add(edit);
+      } else {
+        this.traverseVisible((node) => {
+          if (node instanceof SplatEdit) edits.add(node);
+        });
+      }
+    }
+    const orderedEdits = Array.from(edits).sort(
+      (left, right) => left.ordering - right.ordering,
+    );
+    const groups = orderedEdits.map((edit) => {
+      if (edit.sdfs) return { edit, sdfs: edit.sdfs };
+      const sdfs: SplatEditSdf[] = [];
+      edit.traverseVisible((node) => {
+        if (node instanceof SplatEditSdf) sdfs.push(node);
+      });
+      return { edit, sdfs };
+    });
+
+    if (groups.length > 0 && !this.sdfEdits) {
+      this.sdfEdits = new SplatEdits({
+        maxEdits: groups.length,
+        maxSdfs: groups.reduce((total, group) => total + group.sdfs.length, 0),
+      });
+      updated = true;
+    }
+    const sdfCoordinateOrigin = this.sdfCoordinateOrigin.setFromMatrixPosition(
+      this.matrixWorld,
+    );
+    if (this.sdfEdits?.update(groups, sdfCoordinateOrigin).updated) {
+      // RGBA-only SDF changes preserve centers and their existing sort order.
+      updated = true;
+    }
+
+    if (updated) {
+      this.updateVersion({ sort: sortUpdated });
+    }
+  }
+
+  updateVersion({ sort = true }: { sort?: boolean } = {}) {
+    this.version += 1;
+    if (sort) this.sortVersion += 1;
+  }
+
+  updateMappingVersion() {
+    this.mappingVersion += 1;
+    this.updateVersion();
+  }
+
+  set needsUpdate(value: boolean) {
+    if (value) this.updateVersion();
+  }
+
+  raycast(raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) {
+    if (
+      !wasm.isInitialized() ||
+      !this.raycastable ||
+      !(this.splats instanceof Splats)
+    ) {
+      return;
+    }
+
+    const { near, far, ray } = raycaster;
+    if (
+      this.numSplats === 0 ||
+      !Number.isFinite(this.minRaycastOpacity) ||
+      this.minRaycastOpacity >= 1 ||
+      near > far
+    ) {
+      return;
+    }
+    const worldToMesh = raycastWorldToMesh.copy(this.matrixWorld).invert();
+    const origin = raycastOrigin.copy(ray.origin).applyMatrix4(worldToMesh);
+    const direction = raycastDirection
+      .copy(ray.direction)
+      .applyMatrix3(raycastDirectionMatrix.setFromMatrix4(worldToMesh));
+    const buffer = get_raycast_buffer();
+    const buffer2 = get_raycast_buffer2();
+    const capacity = buffer.length / 4;
+
+    const [first, second] = this.splats.splatArrays;
+    for (let base = 0; base < this.numSplats; base += capacity) {
+      const count = Math.min(capacity, this.numSplats - base);
+      buffer.set(first.subarray(base * 4, (base + count) * 4));
+      buffer2.set(second.subarray(base * 4, (base + count) * 4));
+      const distances = raycast_splat_buffers(
+        origin.x,
+        origin.y,
+        origin.z,
+        direction.x,
+        direction.y,
+        direction.z,
+        this.minRaycastOpacity,
+        near,
+        far,
+        count,
+      );
+
+      for (let index = 0; index < distances.length; index += 1) {
+        const distance = distances[index];
+        intersects.push({
+          distance,
+          point: ray.at(distance, new THREE.Vector3()),
+          object: this,
+        });
+      }
+    }
+  }
+}

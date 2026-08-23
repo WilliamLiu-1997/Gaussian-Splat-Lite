@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a reproducible defect in loading, rendering, editing, or raycasting.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include package versions, the browser/runtime, and a minimal reproduction. Do not attach private or sensitive scene data.
+
+  - type: input
+    id: package_version
+    attributes:
+      label: Gaussian Splat Lite version
+      description: The npm package version or commit you are using.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: three_version
+    attributes:
+      label: Three.js version
+      placeholder: 0.185.1
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Browser and operating system
+      placeholder: Chrome 140 on Windows 11
+    validations:
+      required: true
+
+  - type: dropdown
+    id: file_type
+    attributes:
+      label: Input type
+      options:
+        - PLY
+        - SPZ
+        - Programmatically created Splats
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide a small repository, live example, code snippet, or exact steps.
+      render: js
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output
+      render: text
+
+  - type: textarea
+    id: captures
+    attributes:
+      label: Screenshots or videos
+      description: Captures are especially useful for sorting, transparency, and precision issues.

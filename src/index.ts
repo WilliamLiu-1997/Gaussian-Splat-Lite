@@ -1,0 +1,43 @@
+export {
+  GaussianSplatRenderer,
+  type GaussianSplatRendererOptions,
+} from "./GaussianSplatRenderer";
+export {
+  SplatAccumulator,
+  type SplatMapping,
+} from "./SplatAccumulator";
+
+export { SplatLoader } from "./SplatLoader";
+export type { SplatWorker } from "./SplatWorker";
+
+export { Splats, type SplatsOptions } from "./Splats";
+
+export {
+  SplatMesh,
+  type SplatMeshFrameContext,
+  type SplatMeshOptions,
+} from "./SplatMesh";
+export type {
+  SplatSource,
+  SplatShTextures,
+} from "./SplatSource";
+export {
+  SplatEdit,
+  type SplatEditGroup,
+  type SplatEditOptions,
+  SplatEditSdf,
+  type SplatEditSdfOptions,
+  SplatEditSdfType,
+  SplatEditRgbaBlendMode,
+  SplatEdits,
+} from "./SplatEdit";
+
+export {
+  toHalf,
+  fromHalf,
+} from "./utils";
+export * as utils from "./utils";
+
+export { LN_SCALE_MIN, LN_SCALE_MAX, SplatFileType } from "./defines";
+
+export * as defines from "./defines";

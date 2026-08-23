@@ -1,0 +1,12 @@
+# Normalize source and documentation files across platforms.
+* text=auto eol=lf
+
+*.glsl text
+*.html text
+*.js text
+*.json text
+*.md text
+*.rs text
+*.ts text
+*.yml text
+*.yaml text

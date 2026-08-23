@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/security/policy
+    about: Report suspected vulnerabilities privately instead of opening a public issue.
+  - name: npm package
+    url: https://www.npmjs.com/package/gaussian-splat-lite
+    about: Check published versions and package metadata.
+  - name: README and API docs
+    url: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite#readme
+    about: Review requirements, examples, and rendering notes before opening an issue.

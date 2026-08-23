@@ -1,0 +1,13 @@
+*.DS_Store
+._*
+coverage/
+dist/
+docs/CNAME
+node_modules/
+site/
+site-dist/
+site-repo/
+*.tsbuildinfo
+npm-debug.log*
+*.zip
+*.gltf

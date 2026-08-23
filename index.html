@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A PLY and SPZ Gaussian Splatting viewer powered by Gaussian Splat Lite."
+    />
+    <title>Gaussian Splat Lite · Gaussian Splatting Viewer</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="/examples/viewer/favicon.svg"
+    />
+    <link rel="stylesheet" href="/examples/viewer/viewer.css" />
+  </head>
+  <body>
+    <div id="viewport" aria-hidden="true"></div>
+
+    <div class="interface is-source-panel-open">
+      <div
+        id="loading-backdrop"
+        class="loading-backdrop"
+        aria-hidden="true"
+        hidden
+      ></div>
+      <div
+        id="source-panel-backdrop"
+        class="source-panel-backdrop"
+        aria-hidden="true"
+      ></div>
+
+      <header class="toolbar">
+        <div class="brand" aria-label="Gaussian Splat Lite viewer">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-copy">
+            <strong>Gaussian Splat <span class="brand-accent">Lite</span></strong>
+            <small>Gaussian Splatting Viewer</small>
+          </span>
+        </div>
+
+        <div class="toolbar-actions" inert>
+          <div
+            id="performance-stats"
+            class="performance-stats"
+            aria-label="Performance metrics"
+          >
+            <span class="performance-stat">
+              <output id="performance-fps">—</output>
+              <small>FPS</small>
+            </span>
+            <span class="performance-stat">
+              <output id="performance-heap">—</output>
+              <small>JS heap</small>
+            </span>
+          </div>
+          <button
+            id="reset-view"
+            class="button button-quiet"
+            type="button"
+            aria-label="Reset view"
+            title="Reset view"
+            hidden
+          >
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 4v4h4M4.7 7.3A6 6 0 1 1 4 13" />
+            </svg>
+            <span class="reset-view-label">Reset view</span>
+          </button>
+          <button
+            id="render-options-toggle"
+            class="button button-quiet"
+            type="button"
+            aria-controls="render-options"
+            aria-expanded="false"
+          >
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 5h12M7 10h9M4 15h12M7 3v4M13 8v4M8 13v4" />
+            </svg>
+            <span class="options-label">Render options</span>
+          </button>
+          <button
+            id="source-panel-toggle"
+            class="button button-primary"
+            type="button"
+            aria-controls="empty-state"
+            aria-expanded="true"
+          >
+            Open file
+          </button>
+        </div>
+      </header>
+
+      <main class="stage">
+        <section id="empty-state" class="empty-state" aria-labelledby="viewer-title">
+          <button
+            id="source-panel-close"
+            class="icon-button source-panel-close"
+            type="button"
+            aria-label="Close file panel"
+            hidden
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="m5 5 10 10M15 5 5 15" />
+            </svg>
+          </button>
+          <div class="file-glyph" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="presentation">
+              <path d="M13 5.5h14l8 8V42.5H13z" />
+              <path d="M27 5.5v8h8M18 29l6-6 6 6M24 23v13" />
+            </svg>
+          </div>
+          <p class="eyebrow">Gaussian Splatting Viewer</p>
+          <h1 id="viewer-title">Drop a splat file here</h1>
+          <p class="empty-description">
+            Choose a <strong>.ply</strong> or <strong>.spz</strong> file from your
+            device, or load one from a URL. The model is decoded in this browser.
+          </p>
+          <div class="source-actions">
+            <button
+              id="choose-file"
+              class="button button-large"
+              type="button"
+              data-file-picker
+            >
+              Choose PLY or SPZ
+            </button>
+            <button
+              id="load-example"
+              class="button button-large button-example"
+              type="button"
+            >
+              Load example
+            </button>
+          </div>
+          <div class="source-divider" aria-hidden="true">
+            <span>or load from URL</span>
+          </div>
+          <form id="url-form" class="url-form">
+            <label class="visually-hidden" for="model-url">
+              PLY or SPZ model URL
+            </label>
+            <input
+              id="model-url"
+              class="url-input"
+              type="url"
+              inputmode="url"
+              autocomplete="url"
+              placeholder="https://example.com/model.spz"
+              required
+            />
+            <button id="load-url" class="button url-button" type="submit">
+              Load
+            </button>
+          </form>
+          <p class="url-hint">Remote host must allow CORS</p>
+        </section>
+      </main>
+
+      <section id="loading-panel" class="loading-panel" aria-live="polite" hidden>
+        <div class="loading-header">
+          <div class="loading-copy">
+            <span>Loading</span>
+            <strong id="loading-name">splat file</strong>
+          </div>
+          <button
+            id="loading-cancel"
+            class="icon-button loading-cancel"
+            type="button"
+            aria-label="Cancel loading"
+            title="Cancel loading"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="m5 5 10 10M15 5 5 15" />
+            </svg>
+          </button>
+        </div>
+        <div
+          id="loading-progress"
+          class="progress-track is-indeterminate"
+          role="progressbar"
+          aria-label="Model loading progress"
+        >
+          <span id="loading-progress-fill"></span>
+        </div>
+        <span id="loading-detail" class="loading-detail">Preparing decoder…</span>
+      </section>
+
+      <footer class="statusbar">
+        <div class="status-message" aria-live="polite">
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Ready for a file or URL</span>
+        </div>
+        <div id="file-meta" class="file-meta" hidden>
+          <span id="file-name"></span>
+          <span class="meta-separator" aria-hidden="true"></span>
+          <span id="file-stats"></span>
+          <span id="model-credit-separator" class="meta-separator" aria-hidden="true" hidden></span>
+          <span id="model-credit-prefix" hidden>by</span>
+          <a
+            id="model-credit"
+            class="model-credit"
+            href="https://superspl.at/user?id=rohls"
+            target="_blank"
+            rel="noreferrer"
+            title="Lion model by Renaud"
+            hidden
+          >Renaud</a>
+        </div>
+      </footer>
+    </div>
+
+    <aside id="render-options" class="options-panel" aria-labelledby="options-title" hidden>
+      <header class="options-header">
+        <div>
+          <p class="eyebrow">Live controls</p>
+          <h2 id="options-title">Render options</h2>
+          <p>Adjust the renderer and compare each effect in real time.</p>
+        </div>
+        <button
+          id="render-options-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close render options"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m5 5 10 10M15 5 5 15" />
+          </svg>
+        </button>
+      </header>
+      <div id="render-options-content" class="options-content"></div>
+      <footer class="options-footer">
+        <span>Changes apply immediately</span>
+        <button id="render-options-reset" class="text-button" type="button">
+          Reset defaults
+        </button>
+      </footer>
+    </aside>
+
+    <div id="drop-overlay" class="drop-overlay" hidden>
+      <div class="drop-overlay-card">
+        <span class="drop-plus" aria-hidden="true">+</span>
+        <strong>Drop to open</strong>
+        <span>PLY and SPZ files only</span>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <input id="file-input" type="file" accept=".ply,.spz" hidden />
+
+    <script type="module" src="/examples/viewer/viewer.js"></script>
+  </body>
+</html>

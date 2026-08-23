@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a new renderer capability, format improvement, or API change.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do that is difficult or unsupported today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API, rendering behavior, format support, or tooling change you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include relevant Three.js, data format, GIS/ECEF, WebXR, or performance constraints.

@@ -1,0 +1,140 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install --global npm@^11.10.0
+
+      - name: Print tool versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Validate tag matches package version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_NAME}" != "v${package_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version v${package_version}."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Run release checks
+        run: npm run release:check
+
+      - name: Check package publish state
+        id: state
+        shell: bash
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          echo "package_name=${package_name}" >> "${GITHUB_OUTPUT}"
+          echo "package_version=${package_version}" >> "${GITHUB_OUTPUT}"
+          if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+            echo "already_published=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "already_published=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish to npm
+        if: ${{ steps.state.outputs.already_published != 'true' }}
+        run: npm publish --access public
+
+      - name: Skip npm publish for existing version
+        if: ${{ steps.state.outputs.already_published == 'true' }}
+        run: echo "Version ${{ steps.state.outputs.package_version }} is already on npm. Skipping npm publish."
+
+      - name: Build release changelog notes
+        id: changelog
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          section_file="${RUNNER_TEMP}/release-changelog-section.md"
+          notes_file="${RUNNER_TEMP}/release-changelog.md"
+
+          extract_version_section() {
+            local version_heading="$1"
+            local output_file="$2"
+
+            awk -v version_heading="${version_heading}" '
+              index($0, "## [" version_heading "]") == 1 {
+                capture = 1
+                next
+              }
+              capture && /^## \[/ {
+                exit
+              }
+              capture {
+                print
+              }
+            ' CHANGELOG.md > "${output_file}"
+          }
+
+          has_content() {
+            grep -q '[^[:space:]]' "$1"
+          }
+
+          extract_version_section "${version}" "${section_file}"
+          if ! has_content "${section_file}"; then
+            extract_version_section "Unreleased" "${section_file}"
+          fi
+
+          if has_content "${section_file}"; then
+            {
+              echo "## Changelog"
+              echo
+              awk 'NF { seen = 1 } seen { print }' "${section_file}"
+              echo
+            } > "${notes_file}"
+          else
+            echo "No CHANGELOG.md entry found for ${GITHUB_REF_NAME} or Unreleased."
+            : > "${notes_file}"
+          fi
+
+          echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGELOG_NOTES_FILE: ${{ steps.changelog.outputs.notes_file }}
+        shell: bash
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists."
+          else
+            gh release create "${GITHUB_REF_NAME}" --notes-file "${CHANGELOG_NOTES_FILE}" --latest
+          fi
