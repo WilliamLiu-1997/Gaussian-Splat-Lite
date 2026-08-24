@@ -1,13 +1,16 @@
 use gaussian_splat_lib::splat_encode::{
-    decode_splat_center, decode_splat_opacity, decode_splat_quat,
+    decode_splat_alpha_shape_amount, decode_splat_center, decode_splat_quat,
 };
 use half::f16;
 
 const F16_CODE_COUNT: usize = u16::MAX as usize + 1;
+const F16_ONE_CODE: usize = 0x3c00;
+const F16_UNIT_INTERVAL_CODE_COUNT: usize = F16_ONE_CODE + 1;
 
 pub struct RaycastTables {
     min_opacity_bits: Option<u32>,
-    radius_scales: Box<[f32; F16_CODE_COUNT]>,
+    alpha_radius_scales: Box<[f32; F16_UNIT_INTERVAL_CODE_COUNT]>,
+    shape_amount_radius_scales: Box<[f32; F16_UNIT_INTERVAL_CODE_COUNT]>,
     scales: Box<[f32; F16_CODE_COUNT]>,
 }
 
@@ -15,10 +18,14 @@ impl Default for RaycastTables {
     fn default() -> Self {
         Self {
             min_opacity_bits: None,
-            radius_scales: vec![0.0; F16_CODE_COUNT]
+            alpha_radius_scales: vec![0.0; F16_UNIT_INTERVAL_CODE_COUNT]
                 .into_boxed_slice()
                 .try_into()
-                .expect("opacity-radius table has a fixed size"),
+                .expect("alpha-radius table has a fixed size"),
+            shape_amount_radius_scales: vec![0.0; F16_UNIT_INTERVAL_CODE_COUNT]
+                .into_boxed_slice()
+                .try_into()
+                .expect("shape-amount-radius table has a fixed size"),
             scales: (0..F16_CODE_COUNT)
                 .map(|code| f16::from_bits(code as u16).to_f32().exp())
                 .collect::<Vec<_>>()
@@ -30,17 +37,30 @@ impl Default for RaycastTables {
 }
 
 impl RaycastTables {
-    fn get(&mut self, min_opacity: f32) -> (&[f32; F16_CODE_COUNT], &[f32; F16_CODE_COUNT]) {
+    fn get(
+        &mut self,
+        min_opacity: f32,
+    ) -> (
+        &[f32; F16_UNIT_INTERVAL_CODE_COUNT],
+        &[f32; F16_UNIT_INTERVAL_CODE_COUNT],
+        &[f32; F16_CODE_COUNT],
+    ) {
         let min_opacity_bits = min_opacity.to_bits();
         if self.min_opacity_bits != Some(min_opacity_bits) {
-            for (opacity_code, radius_scale) in self.radius_scales.iter_mut().enumerate() {
-                let encoded_opacity = decode_splat_opacity(&[0, 0, 0, opacity_code as u32]);
-                *radius_scale =
-                    opacity_isosurface_radius(encoded_opacity, min_opacity).unwrap_or(0.0);
+            for code in 0..=F16_ONE_CODE {
+                let value = f16::from_bits(code as u16).to_f32();
+                self.alpha_radius_scales[code] =
+                    splat_isosurface_radius(value, 0.0, min_opacity).unwrap_or(0.0);
+                self.shape_amount_radius_scales[code] =
+                    splat_isosurface_radius(1.0, value, min_opacity).unwrap_or(0.0);
             }
             self.min_opacity_bits = Some(min_opacity_bits);
         }
-        (&self.radius_scales, &self.scales)
+        (
+            &self.alpha_radius_scales,
+            &self.shape_amount_radius_scales,
+            &self.scales,
+        )
     }
 }
 
@@ -64,11 +84,19 @@ pub fn raycast_splat_ellipsoids(
         return;
     }
     let inv_dir_length_squared = 1.0 / dir_length_squared;
-    let (radius_scales, scale_table) = tables.get(min_opacity);
+    let (alpha_radius_scales, shape_amount_radius_scales, scale_table) = tables.get(min_opacity);
 
     for (splat_a, splat_b) in buffer.chunks(4).zip(buffer2.chunks(4)) {
-        let opacity_code = splat_a[3] as u16 as usize;
-        let radius_scale = radius_scales[opacity_code];
+        let alpha_code = splat_a[3] as u16 as usize;
+        let shape_amount_code = (splat_a[3] >> 16) as u16 as usize;
+        let radius_scale = if shape_amount_code == 0 && alpha_code <= F16_ONE_CODE {
+            alpha_radius_scales[alpha_code]
+        } else if alpha_code == F16_ONE_CODE && shape_amount_code <= F16_ONE_CODE {
+            shape_amount_radius_scales[shape_amount_code]
+        } else {
+            let [alpha, shape_amount] = decode_splat_alpha_shape_amount(splat_a);
+            splat_isosurface_radius(alpha, shape_amount, min_opacity).unwrap_or(0.0)
+        };
         if radius_scale == 0.0 {
             continue;
         }
@@ -110,15 +138,15 @@ fn f16_order_key(bits: u16) -> u16 {
 }
 
 /// Returns the standard-deviation radius whose rendered alpha equals the
-/// raycast threshold. Values above one encode the alternate splat shape: its
-/// center alpha is one and `4 * opacity - 3` is the shape used by the shader.
+/// raycast threshold. Shape amount zero selects the Gaussian kernel; positive
+/// values map linearly to the alternate kernel's shape range from one to five.
 #[inline]
-fn opacity_isosurface_radius(encoded_opacity: f32, min_opacity: f32) -> Option<f32> {
-    if !encoded_opacity.is_finite() || !min_opacity.is_finite() || encoded_opacity <= 0.0 {
+fn splat_isosurface_radius(alpha: f32, shape_amount: f32, min_opacity: f32) -> Option<f32> {
+    if !alpha.is_finite() || !shape_amount.is_finite() || !min_opacity.is_finite() || alpha <= 0.0 {
         return None;
     }
 
-    let center_opacity = encoded_opacity.min(1.0);
+    let center_opacity = alpha.min(1.0);
     // A zero cutoff would give a Gaussian infinite support. The smallest
     // positive f32 keeps that case finite while behaving as an effectively
     // disabled alpha cutoff.
@@ -127,15 +155,14 @@ fn opacity_isosurface_radius(encoded_opacity: f32, min_opacity: f32) -> Option<f
         return None;
     }
 
-    let gaussian_at_boundary = if encoded_opacity <= 1.0 {
+    let gaussian_at_boundary = if shape_amount <= 0.0 {
         // alpha = center_opacity * exp(-0.5 * radius^2)
         relative_opacity
     } else {
         // Keep this decode and kernel inverse in sync with splatVertex.glsl
-        // and splatFragment.glsl. The R8 shape amount is clamped to one, so
-        // the decoded shape is at most 5.
-        let shape = (encoded_opacity * 4.0 - 3.0).min(5.0);
-        let power = ((shape * shape - 1.0) / std::f32::consts::E).exp();
+        // and splatFragment.glsl. Encoded shape amount is clamped to one.
+        let kernel_shape = 1.0 + 4.0 * shape_amount.min(1.0);
+        let power = ((kernel_shape * kernel_shape - 1.0) / std::f32::consts::E).exp();
 
         // alpha = 1 - (1 - exp(-0.5 * radius^2))^power
         // ln_1p/exp_m1 retain precision for small opacity thresholds.
@@ -327,34 +354,35 @@ mod tests {
 
     #[test]
     fn sizes_gaussian_splats_at_the_opacity_isosurface() {
-        let opacity = 0.8;
+        let alpha = 0.8;
         let threshold = 0.1;
-        let radius = opacity_isosurface_radius(opacity, threshold).unwrap();
+        let radius = splat_isosurface_radius(alpha, 0.0, threshold).unwrap();
 
-        assert_near(opacity * (-0.5 * radius * radius).exp(), threshold);
-        assert!(opacity_isosurface_radius(0.1, threshold).is_none());
-        assert!(opacity_isosurface_radius(0.05, threshold).is_none());
+        assert_near(alpha * (-0.5 * radius * radius).exp(), threshold);
+        assert!(splat_isosurface_radius(0.1, 0.0, threshold).is_none());
+        assert!(splat_isosurface_radius(0.05, 0.0, threshold).is_none());
     }
 
     #[test]
     fn inverts_the_special_shape_kernel() {
-        let encoded_opacity = 1.5;
+        let alpha = 0.8;
+        let shape_amount = 0.5;
         let threshold = 0.1;
-        let radius = opacity_isosurface_radius(encoded_opacity, threshold).unwrap();
-        let shape = encoded_opacity * 4.0 - 3.0;
-        let power = ((shape * shape - 1.0) / std::f32::consts::E).exp();
+        let radius = splat_isosurface_radius(alpha, shape_amount, threshold).unwrap();
+        let kernel_shape = 1.0 + 4.0 * shape_amount;
+        let power = ((kernel_shape * kernel_shape - 1.0) / std::f32::consts::E).exp();
         let gaussian = (-0.5 * radius * radius).exp();
-        let alpha = 1.0 - (1.0 - gaussian).powf(power);
+        let rendered_alpha = alpha * (1.0 - (1.0 - gaussian).powf(power));
 
-        assert_near(alpha, threshold);
+        assert_near(rendered_alpha, threshold);
     }
 
     #[test]
     fn clamps_the_special_shape_like_the_shader() {
         let threshold = 0.1;
         assert_near(
-            opacity_isosurface_radius(2.0, threshold).unwrap(),
-            opacity_isosurface_radius(4.0, threshold).unwrap(),
+            splat_isosurface_radius(1.0, 1.0, threshold).unwrap(),
+            splat_isosurface_radius(1.0, 4.0, threshold).unwrap(),
         );
     }
 
@@ -363,7 +391,7 @@ mod tests {
         let (splat_a, splat_b) = unit_splat();
 
         let threshold = 0.1;
-        let radius = opacity_isosurface_radius(1.0, threshold).unwrap();
+        let radius = splat_isosurface_radius(1.0, 0.0, threshold).unwrap();
         let mut tables = RaycastTables::default();
         let mut cast = |x: f32| {
             let mut distances = Vec::new();
@@ -400,7 +428,7 @@ mod tests {
         );
 
         let threshold = 0.1;
-        let radius = opacity_isosurface_radius(1.0, threshold).unwrap();
+        let radius = splat_isosurface_radius(1.0, 0.0, threshold).unwrap();
         let mut distances = Vec::new();
         raycast_splat_ellipsoids(
             &splat_a,
@@ -421,7 +449,7 @@ mod tests {
     fn returns_the_exit_surface_when_the_ray_starts_inside() {
         let (splat_a, splat_b) = unit_splat();
         let threshold = 0.1;
-        let radius = opacity_isosurface_radius(1.0, threshold).unwrap();
+        let radius = splat_isosurface_radius(1.0, 0.0, threshold).unwrap();
         let mut distances = Vec::new();
         let mut tables = RaycastTables::default();
 
@@ -445,7 +473,7 @@ mod tests {
     fn returns_the_exit_surface_when_entry_precedes_near() {
         let (splat_a, splat_b) = unit_splat();
         let threshold = 0.1;
-        let radius = opacity_isosurface_radius(1.0, threshold).unwrap();
+        let radius = splat_isosurface_radius(1.0, 0.0, threshold).unwrap();
         let mut distances = Vec::new();
         let mut tables = RaycastTables::default();
 
@@ -466,16 +494,24 @@ mod tests {
     }
 
     #[test]
-    fn rebuilds_the_opacity_table_only_for_a_new_threshold() {
+    fn rebuilds_the_radius_tables_only_for_a_new_threshold() {
         let mut table = RaycastTables::default();
-        let opacity_code = 0x3c00; // f16 1.0
+        let alpha_code = F16_ONE_CODE;
+        let shape_amount_code = 0x3800; // f16 0.5
 
-        let low_threshold_radius = table.get(0.1).0[opacity_code];
+        let low_threshold_radius = table.get(0.1).0[alpha_code];
+        let low_threshold_shape_radius = table.get(0.1).1[shape_amount_code];
         assert_eq!(table.min_opacity_bits, Some(0.1_f32.to_bits()));
-        assert_near(table.get(0.1).0[opacity_code], low_threshold_radius);
+        assert_near(table.get(0.1).0[alpha_code], low_threshold_radius);
+        assert_near(
+            table.get(0.1).1[shape_amount_code],
+            low_threshold_shape_radius,
+        );
 
-        let high_threshold_radius = table.get(0.2).0[opacity_code];
+        let high_threshold_radius = table.get(0.2).0[alpha_code];
+        let high_threshold_shape_radius = table.get(0.2).1[shape_amount_code];
         assert_eq!(table.min_opacity_bits, Some(0.2_f32.to_bits()));
         assert!(high_threshold_radius < low_threshold_radius);
+        assert!(high_threshold_shape_radius < low_threshold_shape_radius);
     }
 }

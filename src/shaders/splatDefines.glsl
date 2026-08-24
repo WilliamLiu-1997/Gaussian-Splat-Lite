@@ -79,15 +79,16 @@ vec4 decodeQuatOctXy1010R12(uint encoded) {
     return vec4(axis * s, w);
 }
 
-// Encode a Splat into the standard two-record representation.
+// Encode a Splat into the standard two-record representation. The first
+// record's final word stores alpha and special-kernel shape amount as float16.
 void encodeSplat(
     out uvec4 splatData, out uvec4 splatData2,
-    vec3 center, vec3 scales, vec4 quaternion, vec4 rgba
+    vec3 center, vec3 scales, vec4 quaternion, vec4 rgba, float shapeAmount
 ) {
     splatData.x = floatBitsToUint(center.x);
     splatData.y = floatBitsToUint(center.y);
     splatData.z = floatBitsToUint(center.z);
-    splatData.w = packHalf2x16(vec2(rgba.a, 0.0));
+    splatData.w = packHalf2x16(clamp(vec2(rgba.a, shapeAmount), 0.0, 1.0));
 
     splatData2.x = packHalf2x16(rgba.rg);
     splatData2.y = packHalf2x16(vec2(rgba.b, log(scales.x)));
@@ -95,18 +96,19 @@ void encodeSplat(
     splatData2.w = encodeQuatOctXy1010R12(quaternion);
 }
 
-float decodeSplatAlpha(uvec4 splatData) {
-    return unpackHalf2x16(splatData.w).x;
+vec2 decodeSplatAlphaShapeAmount(uvec4 splatData) {
+    return unpackHalf2x16(splatData.w);
 }
 
 void decodeSplat(
     uvec4 splatData, uvec4 splatData2,
+    float alpha,
     out vec3 center, out vec3 scales, out vec4 quaternion, out vec4 rgba
 ) {
     center.x = uintBitsToFloat(splatData.x);
     center.y = uintBitsToFloat(splatData.y);
     center.z = uintBitsToFloat(splatData.z);
-    rgba.a = unpackHalf2x16(splatData.w).x;
+    rgba.a = alpha;
 
     rgba.rg = unpackHalf2x16(splatData2.x);
     vec2 split = unpackHalf2x16(splatData2.y);

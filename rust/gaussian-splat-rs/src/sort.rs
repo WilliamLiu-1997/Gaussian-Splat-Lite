@@ -6,8 +6,14 @@ const RADIX_MASK: u32 = RADIX_BASE as u32 - 1;
 
 #[derive(Default)]
 pub struct Sort32Buffers {
-    /// persistent xyz centers relative to their mesh origins (three f32 per splat)
-    pub centers: Vec<f32>,
+    /// persistent xyz centers per mesh, indexed by the renderer-assigned mesh ID
+    pub mesh_centers: Vec<Vec<f32>>,
+    /// generation marker for each mesh center cache
+    pub mesh_generations: Vec<u32>,
+    /// current mesh center cache generation
+    pub mesh_generation: u32,
+    /// mesh ID backing each contiguous global splat range
+    pub range_mesh_ids: Vec<u32>,
     /// first splat index for each contiguous mesh range
     pub range_bases: Vec<u32>,
     /// active splat count for each contiguous mesh range
@@ -29,8 +35,10 @@ pub struct Sort32Buffers {
 impl Sort32Buffers {
     #[cfg(test)]
     pub fn set_centers(&mut self, centers: &[f32]) {
-        self.centers.clear();
-        self.centers.extend_from_slice(centers);
+        self.mesh_centers.clear();
+        self.mesh_centers.push(centers.to_vec());
+        self.range_mesh_ids.clear();
+        self.range_mesh_ids.push(0);
         self.range_bases.clear();
         self.range_bases.push(0);
         self.range_counts.clear();
@@ -77,17 +85,12 @@ pub fn sort32_centers_internal(
             "Sort ordering buffer too small: {max_splats} < {num_splats}"
         ));
     }
-    let center_values = num_splats.saturating_mul(3);
-    if buffers.centers.len() < center_values {
+    if buffers.range_mesh_ids.len() != buffers.range_bases.len()
+        || buffers.range_bases.len() != buffers.range_counts.len()
+    {
         return Err(format!(
-            "Sort center buffer too small: {} < {}",
-            buffers.centers.len(),
-            center_values
-        ));
-    }
-    if buffers.range_bases.len() != buffers.range_counts.len() {
-        return Err(format!(
-            "Sort range base/count length mismatch: {} != {}",
+            "Sort range mesh/base/count length mismatch: {}/{}/{}",
+            buffers.range_mesh_ids.len(),
             buffers.range_bases.len(),
             buffers.range_counts.len(),
         ));
@@ -102,7 +105,12 @@ pub fn sort32_centers_internal(
     }
 
     let mut previous_end = 0usize;
-    for (&base, &count) in buffers.range_bases.iter().zip(&buffers.range_counts) {
+    for (range_index, (&base, &count)) in buffers
+        .range_bases
+        .iter()
+        .zip(&buffers.range_counts)
+        .enumerate()
+    {
         let base = base as usize;
         let end = base
             .checked_add(count as usize)
@@ -115,13 +123,26 @@ pub fn sort32_centers_internal(
                 "Sort range [{base}, {end}) exceeds splat count {num_splats}"
             ));
         }
+        let mesh_id = buffers.range_mesh_ids[range_index] as usize;
+        let center_values = (count as usize).saturating_mul(3);
+        let mesh_center_values = buffers
+            .mesh_centers
+            .get(mesh_id)
+            .map_or(0, |centers| centers.len());
+        if mesh_center_values < center_values {
+            return Err(format!(
+                "Sort center buffer for mesh {} too small: {} < {}",
+                mesh_id, mesh_center_values, center_values
+            ));
+        }
         previous_end = end;
     }
     buffers.ensure_size(max_splats);
 
     {
         let Sort32Buffers {
-            centers,
+            mesh_centers,
+            range_mesh_ids,
             range_bases,
             range_counts,
             range_origins,
@@ -149,13 +170,12 @@ pub fn sort32_centers_internal(
                 (camera_position[1] - range_origins[origin_index + 1]) as f32,
                 (camera_position[2] - range_origins[origin_index + 2]) as f32,
             ];
-            let center_start = base * 3;
-            let center_end = end * 3;
-
             // Generate each key and tally both radix passes while its value is
             // hot. Keep the invariant sort-mode branch outside the hot loop.
             // Gaps are marked invalid without a separate full key scan.
-            let center_slice = &centers[center_start..center_end];
+            // The validation above guarantees this mesh and range are present.
+            let center_slice =
+                &mesh_centers[range_mesh_ids[range_index] as usize][..count as usize * 3];
             let key_slice = &mut keys[base..end];
             // wasm32 has no scalar fused-multiply-add instruction. Using
             // `mul_add` here lowers to a costly software helper; explicit

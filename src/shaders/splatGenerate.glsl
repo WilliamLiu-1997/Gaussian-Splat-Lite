@@ -31,7 +31,6 @@ uniform usampler2D editTexture;
 
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
-layout(location = 2) out vec4 targetShape;
 
 vec3 evaluateSH1(uvec4 data, vec3 direction) {
     return decodeSplatShRgb(data.x) * (-0.4886025 * direction.y)
@@ -211,22 +210,23 @@ void applySdfEdits(vec3 position, inout vec4 rgba) {
 
 void produceSplat(int index) {
     ivec3 coord = splatTexCoord(index);
+    uvec4 sourceSplat = texelFetch(sourceSplats, coord, 0);
+    vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(sourceSplat);
     vec3 center;
     vec3 scales;
     vec4 quaternion;
     vec4 rgba;
     decodeSplat(
-        texelFetch(sourceSplats, coord, 0),
+        sourceSplat,
         texelFetch(sourceSplats2, coord, 0),
+        alphaShapeAmount.x,
         center,
         scales,
         quaternion,
         rgba
     );
     if (all(equal(scales, vec3(0.0)))) return;
-
-    float sourceAlpha = rgba.a;
-    rgba.a = min(sourceAlpha, 1.0);
+    float shapeAmount = alphaShapeAmount.y;
 
     // Match PlayCanvas' work-buffer transform. Centers retain the complete
     // affine transform, while Gaussian shape is approximated by composing the
@@ -251,14 +251,20 @@ void produceSplat(int index) {
     // after local SDF edits. This also ensures additive edits cannot bypass the
     // final mesh tint or fade.
     rgba *= vec4(recolor.rgb, clamp(recolor.a, 0.0, 1.0));
-    // Opacity is a standard [0, 1] value. The wider-kernel shape is encoded in
-    // targetShape independently, so additive SDF edits must not use alpha above
-    // one as an implicit shape/coverage control.
+    // The source encoder split regular alpha from the nonlinear LoD kernel
+    // shape amount. Edits affect alpha only; shape amount remains independent.
     rgba.a = clamp(rgba.a, 0.0, 1.0);
 
-    encodeSplat(target, target2, relativeCenter, scales, quaternion, rgba);
-
-    targetShape = vec4(clamp(sourceAlpha - 1.0, 0.0, 1.0), 0.0, 0.0, 1.0);
+    // Preserve the source's wider-kernel amount independently from opacity.
+    encodeSplat(
+        target,
+        target2,
+        relativeCenter,
+        scales,
+        quaternion,
+        rgba,
+        shapeAmount
+    );
 }
 
 void main() {
@@ -269,7 +275,6 @@ void main() {
 
     target = uvec4(0u);
     target2 = uvec4(0u);
-    targetShape = vec4(0.0, 0.0, 0.0, 1.0);
     if (index >= 0 && index < targetCount) {
         produceSplat(index);
     }

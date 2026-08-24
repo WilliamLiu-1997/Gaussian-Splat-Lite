@@ -1,6 +1,13 @@
-import * as THREE from "three";
+import type * as THREE from "three";
 
 import type { SplatAccumulator } from "./SplatAccumulator";
+import type { SplatMesh } from "./SplatMesh";
+
+type SortCenterEntry = {
+  meshId: number;
+  sortVersion: number;
+  generation: number;
+};
 
 /**
  * Re-expresses an affine transform so it consumes positions relative to
@@ -31,48 +38,115 @@ export function rebaseAffineTransform(
 }
 
 /**
- * Builds persistent sort centers relative to each mesh origin. Keeping the
- * Float64 world origin separate lets the worker form a fresh camera-to-mesh
- * offset for every sort without rebuilding the per-splat Float32 data.
+ * Tracks the per-mesh sort centers cached by the worker. The main thread only
+ * builds changed meshes; unchanged centers remain exclusively in WASM.
  */
-export function buildSortCenters(current: SplatAccumulator) {
-  const centers = new Float32Array(current.numSplats * 3);
-  const rangeBases = new Uint32Array(current.mapping.length);
-  const rangeCounts = new Uint32Array(current.mapping.length);
-  const rangeOrigins = new Float64Array(current.mapping.length * 3);
-  // Mapping rows are texture-aligned. NaN keeps gaps and disabled splats out
-  // of the active radix-sort range, matching the old infinity attachment.
-  centers.fill(Number.NaN);
+export class SortCenterCache {
+  private entries = new WeakMap<SplatMesh, SortCenterEntry>();
+  private nextMeshId = 0;
+  private generation = 0;
 
-  const objectToWorld = new THREE.Matrix4();
+  prepare(current: SplatAccumulator) {
+    const rangeMeshIds = new Uint32Array(current.mapping.length);
+    const rangeBases = new Uint32Array(current.mapping.length);
+    const rangeCounts = new Uint32Array(current.mapping.length);
+    const rangeOrigins = new Float64Array(current.mapping.length * 3);
+    const activeEntries: SortCenterEntry[] = [];
+    const changed: {
+      node: SplatMesh;
+      entry: SortCenterEntry;
+      count: number;
+      rangeIndex: number;
+      sortVersion: number;
+    }[] = [];
+    let updateCount = 0;
 
-  current.mapping.forEach(({ node, base, count }, rangeIndex) => {
-    rangeBases[rangeIndex] = base;
-    rangeCounts[rangeIndex] = count;
+    current.mapping.forEach(
+      ({ node, base, count, sortVersion }, rangeIndex) => {
+        let previous = this.entries.get(node);
+        if (!previous) {
+          if (this.nextMeshId > 0xffff_ffff) {
+            throw new Error("Sort center mesh ID space exhausted");
+          }
+          // Store a provisional entry immediately so a failed worker call can
+          // retry with the same ID. Its sentinel version forces a re-upload.
+          previous = {
+            meshId: this.nextMeshId++,
+            sortVersion: -1,
+            generation: -1,
+          };
+          this.entries.set(node, previous);
+        }
 
-    const source = node.splats;
-    if (!source) return;
+        activeEntries.push(previous);
 
-    // Keep the complete affine basis, but store its Float64 translation once
-    // per mesh instead of narrowing it into every Float32 splat center.
-    objectToWorld.copy(node.matrixWorld);
-    const elements = objectToWorld.elements;
-    const originTarget = rangeIndex * 3;
-    rangeOrigins[originTarget] = elements[12];
-    rangeOrigins[originTarget + 1] = elements[13];
-    rangeOrigins[originTarget + 2] = elements[14];
+        rangeMeshIds[rangeIndex] = previous.meshId;
+        rangeBases[rangeIndex] = base;
+        rangeCounts[rangeIndex] = count;
 
-    source.forEachCenter((index, x, y, z) => {
-      if (index >= count || Number.isNaN(x)) {
-        return;
-      }
-      const target = (base + index) * 3;
-      centers[target] = elements[0] * x + elements[4] * y + elements[8] * z;
-      centers[target + 1] = elements[1] * x + elements[5] * y + elements[9] * z;
-      centers[target + 2] =
-        elements[2] * x + elements[6] * y + elements[10] * z;
+        const elements = node.matrixWorld.elements;
+        const originTarget = rangeIndex * 3;
+        rangeOrigins[originTarget] = elements[12];
+        rangeOrigins[originTarget + 1] = elements[13];
+        rangeOrigins[originTarget + 2] = elements[14];
+
+        if (
+          previous.sortVersion !== sortVersion ||
+          previous.generation !== this.generation
+        ) {
+          changed.push({
+            node,
+            entry: previous,
+            count,
+            rangeIndex,
+            sortVersion,
+          });
+          updateCount += count;
+        }
+      },
+    );
+
+    const updateRangeIndices = new Uint32Array(changed.length);
+    const updateCenters = new Float32Array(updateCount * 3);
+    // NaN keeps disabled splats out of the active radix-sort range.
+    updateCenters.fill(Number.NaN);
+
+    let updateBase = 0;
+    changed.forEach(({ node, count, rangeIndex }, updateIndex) => {
+      updateRangeIndices[updateIndex] = rangeIndex;
+
+      const elements = node.matrixWorld.elements;
+      node.splats?.forEachCenter((index, x, y, z) => {
+        if (index >= count || Number.isNaN(x)) return;
+        const target = (updateBase + index) * 3;
+        updateCenters[target] =
+          elements[0] * x + elements[4] * y + elements[8] * z;
+        updateCenters[target + 1] =
+          elements[1] * x + elements[5] * y + elements[9] * z;
+        updateCenters[target + 2] =
+          elements[2] * x + elements[6] * y + elements[10] * z;
+      });
+      updateBase += count;
     });
-  });
 
-  return { centers, rangeBases, rangeCounts, rangeOrigins };
+    const generation = this.generation + 1;
+
+    return {
+      payload: {
+        updateRangeIndices,
+        updateCenters,
+        rangeMeshIds,
+        rangeBases,
+        rangeCounts,
+        rangeOrigins,
+      },
+      commit: () => {
+        for (const { entry, sortVersion } of changed) {
+          entry.sortVersion = sortVersion;
+        }
+        for (const entry of activeEntries) entry.generation = generation;
+        this.generation = generation;
+      },
+    };
+  }
 }

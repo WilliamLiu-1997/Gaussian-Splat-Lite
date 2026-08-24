@@ -11,6 +11,8 @@ import {
 export const threeRevision = Number.parseInt(THREE.REVISION);
 export const threeMrtArray = threeRevision >= 179;
 
+const MAX_SPLAT_OPACITY = 1000;
+
 const f32buffer = new Float32Array(1);
 const u32buffer = new Uint32Array(f32buffer.buffer);
 const supportsFloat16Array = "Float16Array" in globalThis;
@@ -196,7 +198,18 @@ export function encodeSplat(
   splatA[i4] = floatBitsToUint(x);
   splatA[i4 + 1] = floatBitsToUint(y);
   splatA[i4 + 2] = floatBitsToUint(z);
-  splatA[i4 + 3] = toHalf(opacity);
+  // Public opacity is the raw LoD coverage value. Keep regular alpha low and
+  // store Spark's nonlinear wider-kernel encoding in the high half.
+  const rawOpacity = THREE.MathUtils.clamp(opacity, 0, MAX_SPLAT_OPACITY);
+  if (rawOpacity > 1) {
+    const shapeAmount =
+      0.25 * (Math.sqrt(1 + Math.E * Math.log(rawOpacity)) - 1);
+    splatA[i4 + 3] = toHalf(1) | (toHalf(shapeAmount) << 16);
+  } else {
+    // Keep the common Gaussian path in the low lane only. This also preserves
+    // the existing NaN representation without converting a zero shape lane.
+    splatA[i4 + 3] = toHalf(rawOpacity);
+  }
   splatB[i4] = toHalf(r) | (toHalf(g) << 16);
   splatB[i4 + 1] = toHalf(b) | (toHalf(Math.log(scaleX)) << 16);
   splatB[i4 + 2] = toHalf(Math.log(scaleY)) | (toHalf(Math.log(scaleZ)) << 16);
@@ -220,7 +233,23 @@ export function decodeSplat(
   result.center.x = uintBitsToFloat(splatA[i4]);
   result.center.y = uintBitsToFloat(splatA[i4 + 1]);
   result.center.z = uintBitsToFloat(splatA[i4 + 2]);
-  result.opacity = fromHalf(splatA[i4 + 3] & 0xffff);
+  // Recover the public raw LoD opacity from the stored kernel shape amount.
+  const opacityWord = splatA[i4 + 3];
+  const shapeAmountBits = opacityWord >>> 16;
+  if (shapeAmountBits === 0) {
+    result.opacity = fromHalf(opacityWord & 0xffff);
+  } else {
+    const shapeAmount = fromHalf(shapeAmountBits);
+    if (shapeAmount > 0) {
+      const kernelShape = 1 + 4 * shapeAmount;
+      result.opacity = Math.min(
+        MAX_SPLAT_OPACITY,
+        Math.exp((kernelShape * kernelShape - 1) / Math.E),
+      );
+    } else {
+      result.opacity = fromHalf(opacityWord & 0xffff);
+    }
+  }
   result.color.r = fromHalf(splatB[i4] & 0xffff);
   result.color.g = fromHalf(splatB[i4] >>> 16);
   result.color.b = fromHalf(splatB[i4 + 1] & 0xffff);

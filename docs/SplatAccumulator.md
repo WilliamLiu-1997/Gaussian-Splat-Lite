@@ -26,8 +26,7 @@ new SplatAccumulator()
 
 | API | Description |
 | --- | --- |
-| `getTextures()` | Returns the generated Splat data textures, or empty fallback textures before allocation |
-| `getSplatShapeTexture()` | Returns the generated Splat-shape texture |
+| `getTextures()` | Returns the two generated standard-layout Splat data textures, or empty fallback textures before allocation |
 | `generateMapping(splatCounts)` | Assigns texture-row-aligned ranges and returns their required capacity |
 | `ensureGenerate({ maxSplats })` | Allocates or grows the generation target; returns whether a new target was created |
 | `generate({ mesh, base, count, renderer })` | Generates one mesh into its assigned accumulator range |

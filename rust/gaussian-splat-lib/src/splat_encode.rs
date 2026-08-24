@@ -10,6 +10,8 @@ pub const SPLAT_TEX_HEIGHT: usize = 1 << SPLAT_TEX_HEIGHT_BITS;
 pub const SPLAT_TEX_MIN_HEIGHT: usize = 1;
 pub const SPLAT_TEX_LAYER_SIZE: usize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
 
+const MAX_SPLAT_OPACITY: f32 = 1000.0;
+
 pub fn get_splat_tex_size(num_splats: usize) -> (usize, usize, usize, usize) {
     let width = SPLAT_TEX_WIDTH;
     let height = num_splats
@@ -32,7 +34,7 @@ pub fn encode_splat(
     splat_a[0] = center[0].to_bits();
     splat_a[1] = center[1].to_bits();
     splat_a[2] = center[2].to_bits();
-    splat_a[3] = f16::from_f32(opacity).to_bits() as u32;
+    encode_splat_opacity(splat_a, opacity);
     splat_b[0] =
         f16::from_f32(rgb[0]).to_bits() as u32 | ((f16::from_f32(rgb[1]).to_bits() as u32) << 16);
     splat_b[1] = f16::from_f32(rgb[2]).to_bits() as u32
@@ -56,12 +58,49 @@ pub fn decode_splat_center(splat_a: &[u32]) -> [f32; 3] {
     ]
 }
 
+/// Encodes raw opacity through 1000 as regular alpha plus Spark's nonlinear
+/// wider-kernel shape amount.
 pub fn encode_splat_opacity(splat_a: &mut [u32], opacity: f32) {
-    splat_a[3] = f16::from_f32(opacity).to_bits() as u32;
+    let raw_opacity = opacity.clamp(0.0, MAX_SPLAT_OPACITY);
+    splat_a[3] = if raw_opacity > 1.0 {
+        let shape_amount = 0.25 * (raw_opacity.ln().mul_add(std::f32::consts::E, 1.0).sqrt() - 1.0);
+        f16::ONE.to_bits() as u32 | ((f16::from_f32(shape_amount).to_bits() as u32) << 16)
+    } else {
+        // Keep the common Gaussian path in the low lane only. This also
+        // preserves the existing NaN representation without encoding zero.
+        f16::from_f32(raw_opacity).to_bits() as u32
+    };
 }
 
+/// Recovers the public raw LoD opacity from the stored kernel shape amount.
 pub fn decode_splat_opacity(splat_a: &[u32]) -> f32 {
-    f16::from_bits(splat_a[3] as u16).to_f32()
+    let opacity_word = splat_a[3];
+    let shape_amount_bits = (opacity_word >> 16) as u16;
+    if shape_amount_bits == 0 {
+        return f16::from_bits(opacity_word as u16).to_f32();
+    }
+
+    let shape_amount = f16::from_bits(shape_amount_bits).to_f32();
+    if shape_amount > 0.0 {
+        let kernel_shape = shape_amount.mul_add(4.0, 1.0);
+        ((kernel_shape * kernel_shape - 1.0) / std::f32::consts::E)
+            .exp()
+            .min(MAX_SPLAT_OPACITY)
+    } else {
+        f16::from_bits(opacity_word as u16).to_f32()
+    }
+}
+
+/// Decodes the render-time alpha and shape-amount lanes.
+pub fn decode_splat_alpha_shape_amount(splat_a: &[u32]) -> [f32; 2] {
+    decode_splat_opacity_lanes(splat_a)
+}
+
+fn decode_splat_opacity_lanes(splat_a: &[u32]) -> [f32; 2] {
+    [
+        f16::from_bits(splat_a[3] as u16).to_f32(),
+        f16::from_bits((splat_a[3] >> 16) as u16).to_f32(),
+    ]
 }
 
 pub fn encode_splat_rgb(splat_b: &mut [u32], rgb: [f32; 3]) {

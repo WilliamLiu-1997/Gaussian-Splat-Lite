@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { SplatAccumulator } from "./SplatAccumulator";
 import { SplatGeometry } from "./SplatGeometry";
 import { SplatWorker } from "./SplatWorker";
-import { buildSortCenters } from "./cameraRelative";
+import { SortCenterCache } from "./cameraRelative";
 import { getShaders } from "./shaders";
 import { resolveTimer, uploadU32DataTextureRows } from "./utils";
 
@@ -240,6 +240,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   sortedCenter = new THREE.Vector3().setScalar(Number.NEGATIVE_INFINITY);
   sortedDir = new THREE.Vector3().setScalar(0);
   private sortedRadial: boolean | undefined;
+  private sortCenterCache = new SortCenterCache();
   private sortCentersRevision = 0;
   private uploadedSortCentersRevision = -1;
   private updateRunning = false;
@@ -407,8 +408,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // Gsplat collection to render
       splats: { type: "t", value: SplatAccumulator.emptyTexture },
       splats2: { type: "t", value: SplatAccumulator.emptyTexture },
-      // Per-splat special shape amount, encoded in an R8 texture
-      splatShape: { type: "t", value: SplatAccumulator.emptySplatShape },
       // Time in seconds for time-based effects
       time: { value: 0 },
       // Delta time in seconds since last frame
@@ -595,7 +594,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const splatTextures = display.getTextures();
     this.uniforms.splats.value = splatTextures[0];
     this.uniforms.splats2.value = splatTextures[1];
-    this.uniforms.splatShape.value = display.getSplatShapeTexture();
 
     this.uniforms.time.value = display.time;
     this.uniforms.deltaTime.value = display.deltaTime;
@@ -770,14 +768,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
       const centersRevision = this.sortCentersRevision;
       if (this.uploadedSortCentersRevision !== centersRevision) {
-        const { centers, rangeBases, rangeCounts, rangeOrigins } =
-          buildSortCenters(current);
-        await this.sortWorker.call("setSortCenters", {
-          centers,
-          rangeBases,
-          rangeCounts,
-          rangeOrigins,
-        });
+        const { payload, commit } = this.sortCenterCache.prepare(current);
+        await this.sortWorker.call("setSortCenterState", payload);
+        commit();
         this.uploadedSortCentersRevision = centersRevision;
       }
 

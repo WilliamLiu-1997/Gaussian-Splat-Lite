@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Standardized source and accumulator records with alpha in the low float16 lane and special-kernel shape amount in the high float16 lane of the first record's final word.
+- Updated TypeScript and Rust encoders to preserve raw source opacity through 1000 by storing its nonlinear LoD kernel encoding in the shape-amount lane and reconstructing the raw value for public reads.
+- Removed the separate shape texture attachment and render-time texture fetch.
+
+### Removed
+
+- Removed `SplatAccumulator.getSplatShapeTexture()` now that generated shape data is carried by the main records.
+
 ## [0.1.1] - 2026-08-24
 
 ### Changed

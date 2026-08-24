@@ -162,7 +162,7 @@ const splat = new SplatMesh({
       new THREE.Vector3(0, 0, 0),       // center
       new THREE.Vector3(0.2, 0.1, 0.1), // scales
       new THREE.Quaternion(),            // rotation
-      1,                                 // opacity
+      1,                                 // raw opacity; 0..1 alpha, >1 LoD coverage (max 1000)
       new THREE.Color(0x4f8cff),         // color
     );
   },

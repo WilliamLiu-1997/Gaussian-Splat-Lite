@@ -1,32 +1,42 @@
 import init_wasm, {
   type ChunkDecoder,
   decode_to_splats,
-  set_sort_centers,
+  set_sort_center_state,
   sort32_centers,
 } from "gaussian-splat-rs";
 import type { SplatResult } from "./defines";
 
 const rpcHandlers = {
-  setSortCenters,
+  setSortCenterState,
   sortCenters32,
   loadSplats,
   nextChunk,
 };
 export type RpcHandlers = typeof rpcHandlers;
 
-function setSortCenters({
-  centers,
+function setSortCenterState({
+  updateRangeIndices,
+  updateCenters,
+  rangeMeshIds,
   rangeBases,
   rangeCounts,
   rangeOrigins,
 }: {
-  centers: Float32Array;
+  updateRangeIndices: Uint32Array;
+  updateCenters: Float32Array;
+  rangeMeshIds: Uint32Array;
   rangeBases: Uint32Array;
   rangeCounts: Uint32Array;
   rangeOrigins: Float64Array;
 }) {
-  set_sort_centers(centers, rangeBases, rangeCounts, rangeOrigins);
-  return { numSplats: Math.floor(centers.length / 3) };
+  set_sort_center_state(
+    updateRangeIndices,
+    updateCenters,
+    rangeMeshIds,
+    rangeBases,
+    rangeCounts,
+    rangeOrigins,
+  );
 }
 
 function sortCenters32({

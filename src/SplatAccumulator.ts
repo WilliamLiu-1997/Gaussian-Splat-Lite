@@ -19,6 +19,10 @@ export type SplatMapping = {
 };
 
 type GenerateUniforms = Record<string, THREE.IUniform>;
+type SplatDataTextures = readonly [
+  THREE.DataArrayTexture,
+  THREE.DataArrayTexture,
+];
 
 export class SplatAccumulator {
   time = 0;
@@ -46,12 +50,10 @@ export class SplatAccumulator {
     this.target = null;
   }
 
-  getTextures(): THREE.DataArrayTexture[] {
-    return this.target?.textures ?? SplatAccumulator.emptyTextures;
-  }
-
-  getSplatShapeTexture() {
-    return this.target?.textures[2] ?? SplatAccumulator.emptySplatShape;
+  getTextures(): SplatDataTextures {
+    // ensureGenerate() fixes every target to exactly two data attachments.
+    return (this.target?.textures ??
+      SplatAccumulator.emptyTextures) as SplatDataTextures;
   }
 
   generateMapping(splatCounts: number[]) {
@@ -84,12 +86,8 @@ export class SplatAccumulator {
     });
     this.target.scissorTest = true;
 
-    const shape = this.target.texture.clone();
-    shape.format = THREE.RedFormat;
-    shape.type = THREE.UnsignedByteType;
-    shape.internalFormat = "R8";
     const second = this.target.texture.clone();
-    this.target.textures = [this.target.texture, second, shape];
+    this.target.textures = [this.target.texture, second];
     return true;
   }
 
@@ -363,22 +361,7 @@ export class SplatAccumulator {
     return texture;
   })();
 
-  static emptySplatShape = (() => {
-    const { width, height, depth, maxSplats } = getTextureSize(1);
-    const texture = new THREE.DataArrayTexture(
-      new Uint8Array(maxSplats),
-      width,
-      height,
-      depth,
-    );
-    texture.format = THREE.RedFormat;
-    texture.type = THREE.UnsignedByteType;
-    texture.internalFormat = "R8";
-    texture.needsUpdate = true;
-    return texture;
-  })();
-
-  static emptyTextures = [
+  static emptyTextures: SplatDataTextures = [
     SplatAccumulator.emptyTexture,
     SplatAccumulator.emptyTexture,
   ];

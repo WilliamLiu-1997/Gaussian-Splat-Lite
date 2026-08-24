@@ -1,7 +1,6 @@
 
 precision highp float;
 precision highp int;
-precision highp sampler2DArray;
 precision highp usampler2DArray;
 
 #include <splatDefines>
@@ -11,7 +10,7 @@ out vec2 vSplatUv;
 out vec3 vNdc;
 flat out uint vSplatIndex;
 flat out float adjustedStdDev;
-flat out float vSplatShape;
+flat out float vKernelShape;
 
 // uniform uint numSplats;
 uniform vec2 renderSize;
@@ -35,7 +34,6 @@ uniform float focalAdjustment;
 uniform usampler2D ordering;
 uniform usampler2DArray splats;
 uniform usampler2DArray splats2;
-uniform sampler2DArray splatShape;
 
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
@@ -58,16 +56,17 @@ void main() {
     ivec3 texCoord = splatTexCoord(int(splatIndex));
     vec3 center, scales;
     vec4 quaternion, rgba;
-    float opacity;
+    float alpha;
     mat3 cov3D;
     uvec4 splat1 = texelFetch(splats, texCoord, 0);
-    opacity = decodeSplatAlpha(splat1);
-    if ((opacity == 0.0) || (opacity < minAlpha)) {
+    vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(splat1);
+    alpha = alphaShapeAmount.x;
+    if ((alpha == 0.0) || (alpha < minAlpha)) {
         return;
     }
     uvec4 splat2 = texelFetch(splats2, texCoord, 0);
 
-    decodeSplat(splat1, splat2, center, scales, quaternion, rgba);
+    decodeSplat(splat1, splat2, alpha, center, scales, quaternion, rgba);
     bvec3 zeroScales = equal(scales, vec3(0.0));
     if (all(zeroScales)) {
         return;
@@ -76,17 +75,13 @@ void main() {
 // Match the reference 3DGS rasterizer by clamping SH-evaluated RGB positive.
     rgba.rgb = max(rgba.rgb, vec3(0.0));
 
-    // Decode the shape independently from mesh/SDF opacity, which remains in
-    // the main splat's alpha.
-    float shape = 1.0 + texelFetch(splatShape, texCoord, 0).r;
-    if (shape > 1.0) {
-        // Stretch the encoded 1..2 range to the kernel's 1..5 shape range.
-        shape = min(shape * 4.0 - 3.0, 5.0);
-    }
-    vSplatShape = shape;
+    // Decode the shape amount independently from mesh/SDF opacity, which
+    // remains in the main splat's alpha.
+    float kernelShape = 1.0 + 4.0 * min(alphaShapeAmount.y, 1.0);
+    vKernelShape = kernelShape;
 
     // Expand wider shape kernels until alpha is nearly zero before clipping.
-    adjustedStdDev = maxStdDev + 0.7 * max(shape - 1.0, 0.0);
+    adjustedStdDev = maxStdDev + 0.7 * max(kernelShape - 1.0, 0.0);
 
     scales *= renderToViewScale;
     // Compute the view space center of the splat
@@ -111,7 +106,7 @@ void main() {
         return;
     }
 
-    vRgba = vec4(rgba.rgb, opacity);
+    vRgba = vec4(rgba.rgb, alpha);
     vSplatUv = position.xy * adjustedStdDev;
 
     // Record the splat index for entropy
@@ -183,11 +178,11 @@ void main() {
 
     // Compute anti-aliasing intensity scaling factor
     float blurAdjust = sqrt(max(0.0, detOrig / det));
-    opacity *= blurAdjust;
-    if (opacity < minAlpha) {
+    alpha *= blurAdjust;
+    if (alpha < minAlpha) {
         return;
     }
-    vRgba.a = opacity;
+    vRgba.a = alpha;
 
     // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
     float eigenAvg = 0.5 * (a + d);
