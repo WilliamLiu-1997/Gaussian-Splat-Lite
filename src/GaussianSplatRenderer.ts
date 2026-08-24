@@ -450,6 +450,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.sortWorker.dispose();
       this.sortWorker = null;
     }
+    this.sortCenterCache.dispose();
 
     this.geometry.dispose();
     this.material.dispose();

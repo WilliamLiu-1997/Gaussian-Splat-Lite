@@ -41,7 +41,7 @@
     "release:check": "npm run build:wasm && npm run build:site && npm run pack:check",
     "start": "npm run dev",
     "test": "npm run test:js && npm run test:rust",
-    "test:js": "node --no-warnings --loader ts-node/esm --test test/utils.test.ts",
+    "test:js": "node --no-warnings --loader ts-node/esm --test test/*.test.ts",
     "test:rust": "cargo test --manifest-path rust/Cargo.toml --workspace --locked"
   },
   "files": [

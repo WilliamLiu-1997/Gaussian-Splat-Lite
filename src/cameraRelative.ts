@@ -6,7 +6,6 @@ import type { SplatMesh } from "./SplatMesh";
 type SortCenterEntry = {
   meshId: number;
   sortVersion: number;
-  generation: number;
 };
 
 /**
@@ -42,16 +41,32 @@ export function rebaseAffineTransform(
  * builds changed meshes; unchanged centers remain exclusively in WASM.
  */
 export class SortCenterCache {
-  private entries = new WeakMap<SplatMesh, SortCenterEntry>();
+  private entries = new Map<SplatMesh, SortCenterEntry>();
+  private freeMeshIds: number[] = [];
   private nextMeshId = 0;
-  private generation = 0;
+
+  private allocateMeshId() {
+    const reused = this.freeMeshIds.pop();
+    if (reused !== undefined) return reused;
+
+    if (this.nextMeshId > 0xffff_ffff) {
+      throw new Error("Sort center mesh ID space exhausted");
+    }
+    return this.nextMeshId++;
+  }
+
+  dispose() {
+    this.entries.clear();
+    this.freeMeshIds.length = 0;
+    this.nextMeshId = 0;
+  }
 
   prepare(current: SplatAccumulator) {
     const rangeMeshIds = new Uint32Array(current.mapping.length);
     const rangeBases = new Uint32Array(current.mapping.length);
     const rangeCounts = new Uint32Array(current.mapping.length);
     const rangeOrigins = new Float64Array(current.mapping.length * 3);
-    const activeEntries: SortCenterEntry[] = [];
+    const retiredNodes = new Set(this.entries.keys());
     const changed: {
       node: SplatMesh;
       entry: SortCenterEntry;
@@ -63,24 +78,19 @@ export class SortCenterCache {
 
     current.mapping.forEach(
       ({ node, base, count, sortVersion }, rangeIndex) => {
-        let previous = this.entries.get(node);
-        if (!previous) {
-          if (this.nextMeshId > 0xffff_ffff) {
-            throw new Error("Sort center mesh ID space exhausted");
-          }
+        retiredNodes.delete(node);
+        let entry = this.entries.get(node);
+        if (!entry) {
           // Store a provisional entry immediately so a failed worker call can
           // retry with the same ID. Its sentinel version forces a re-upload.
-          previous = {
-            meshId: this.nextMeshId++,
+          entry = {
+            meshId: this.allocateMeshId(),
             sortVersion: -1,
-            generation: -1,
           };
-          this.entries.set(node, previous);
+          this.entries.set(node, entry);
         }
 
-        activeEntries.push(previous);
-
-        rangeMeshIds[rangeIndex] = previous.meshId;
+        rangeMeshIds[rangeIndex] = entry.meshId;
         rangeBases[rangeIndex] = base;
         rangeCounts[rangeIndex] = count;
 
@@ -90,13 +100,10 @@ export class SortCenterCache {
         rangeOrigins[originTarget + 1] = elements[13];
         rangeOrigins[originTarget + 2] = elements[14];
 
-        if (
-          previous.sortVersion !== sortVersion ||
-          previous.generation !== this.generation
-        ) {
+        if (entry.sortVersion !== sortVersion) {
           changed.push({
             node,
-            entry: previous,
+            entry,
             count,
             rangeIndex,
             sortVersion,
@@ -129,8 +136,6 @@ export class SortCenterCache {
       updateBase += count;
     });
 
-    const generation = this.generation + 1;
-
     return {
       payload: {
         updateRangeIndices,
@@ -144,8 +149,15 @@ export class SortCenterCache {
         for (const { entry, sortVersion } of changed) {
           entry.sortVersion = sortVersion;
         }
-        for (const entry of activeEntries) entry.generation = generation;
-        this.generation = generation;
+        // Recycle IDs only after the worker accepted the replacement state.
+        // A mesh that later becomes active again gets a fresh entry and must
+        // upload all of its centers before using its recycled ID.
+        for (const node of retiredNodes) {
+          const entry = this.entries.get(node);
+          if (!entry) continue;
+          this.entries.delete(node);
+          this.freeMeshIds.push(entry.meshId);
+        }
       },
     };
   }
