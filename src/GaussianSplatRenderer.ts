@@ -75,12 +75,6 @@ export interface GaussianSplatRendererOptions {
    */
   maxPixelRadius?: number;
   /**
-   * Whether to use compressed Packed Splats for intermediary accumulator data.
-   * Changing this at runtime regenerates the accumulator on the next update.
-   * @default false
-   */
-  accumPackedSplats?: boolean;
-  /**
    * Minimum alpha value for splat rendering.
    * @default 0.5 * (1.0 / 255.0)
    */
@@ -107,15 +101,6 @@ export interface GaussianSplatRendererOptions {
    * (equivalent to approx 0.5 pixel radius) in scenes trained with anti-aliasing.
    */
   blurAmount?: number;
-  /**
-   * Depth-of-field distance to focal plane
-   */
-  focalDistance?: number;
-  /**
-   * Full-width angle of aperture opening (in radians), 0.0 to disable
-   * @default 0.0
-   */
-  apertureAngle?: number;
   /**
    * X/Y clipping boundary factor for Gsplat centers against view frustum.
    * 1.0 clips any centers that are exactly out of bounds, while 1.25 clips
@@ -224,13 +209,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   maxStdDev: number;
   minPixelRadius: number;
   maxPixelRadius: number;
-  private accumPackedSplatsValue: boolean;
   minAlpha: number;
   enable2DGS: boolean;
   preBlurAmount: number;
   blurAmount: number;
-  focalDistance: number;
-  apertureAngle: number;
   clipXY: number;
   focalAdjustment: number;
   sortRadial: boolean;
@@ -318,13 +300,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.maxStdDev = options.maxStdDev ?? Math.sqrt(8.0);
     this.minPixelRadius = options.minPixelRadius ?? 1.0;
     this.maxPixelRadius = options.maxPixelRadius ?? 512.0;
-    this.accumPackedSplatsValue = options.accumPackedSplats ?? false;
     this.minAlpha = options.minAlpha ?? 0.5 * (1.0 / 255.0);
     this.enable2DGS = options.enable2DGS ?? false;
     this.preBlurAmount = options.preBlurAmount ?? 0.0;
     this.blurAmount = options.blurAmount ?? 0.3;
-    this.focalDistance = options.focalDistance ?? 0.0;
-    this.apertureAngle = options.apertureAngle ?? 0.0;
     this.clipXY = options.clipXY ?? 1.25;
     this.focalAdjustment = options.focalAdjustment ?? 2.0;
     this.sortRadial = options.sortRadial ?? false;
@@ -417,10 +396,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       preBlurAmount: { value: 0.0 },
       // Add to 2D splat covariance diagonal and adjust opacity (anti-aliasing)
       blurAmount: { value: 0.3 },
-      // Depth-of-field distance to focal plane
-      focalDistance: { value: 0.0 },
-      // Full-width angle of aperture opening (in radians)
-      apertureAngle: { value: 0.0 },
       // Clip Gsplats that are clipXY times beyond the +-1 frustum bounds
       clipXY: { value: 1.25 },
       // Debug renderSize scale factor
@@ -429,7 +404,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       encodeLinear: { value: false },
       // Back-to-front sort ordering of splat indices
       ordering: { type: "t", value: GaussianSplatRenderer.emptyOrdering },
-      enablePackedSplats: { value: false },
       // Gsplat collection to render
       splats: { type: "t", value: SplatAccumulator.emptyTexture },
       splats2: { type: "t", value: SplatAccumulator.emptyTexture },
@@ -490,29 +464,15 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   private createAccumulator() {
-    return new SplatAccumulator({
-      packedSplats: this.accumPackedSplatsValue,
-    });
+    return new SplatAccumulator();
   }
 
   private takeAccumulator() {
-    let accumulator = this.accumulators.pop();
-    while (
-      accumulator &&
-      accumulator.packedSplats !== this.accumPackedSplatsValue
-    ) {
-      accumulator.dispose();
-      accumulator = this.accumulators.pop();
-    }
-    return accumulator ?? this.createAccumulator();
+    return this.accumulators.pop() ?? this.createAccumulator();
   }
 
   private releaseAccumulator(accumulator: SplatAccumulator) {
-    if (accumulator.packedSplats === this.accumPackedSplatsValue) {
-      this.accumulators.push(accumulator);
-    } else {
-      accumulator.dispose();
-    }
+    this.accumulators.push(accumulator);
   }
 
   onBeforeRender(
@@ -594,7 +554,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     geometry.instanceCount = gaussianSplatRenderer.activeSplats;
 
     const display = gaussianSplatRenderer.display;
-    // Accumulator centers remain camera-relative regardless of packing.
+    // Accumulator centers are stored camera-relative.
     const accumToWorld = new THREE.Matrix4().makeTranslation(
       display.viewOrigin,
     );
@@ -618,8 +578,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.enable2DGS.value = gaussianSplatRenderer.enable2DGS;
     this.uniforms.preBlurAmount.value = gaussianSplatRenderer.preBlurAmount;
     this.uniforms.blurAmount.value = gaussianSplatRenderer.blurAmount;
-    this.uniforms.focalDistance.value = gaussianSplatRenderer.focalDistance;
-    this.uniforms.apertureAngle.value = gaussianSplatRenderer.apertureAngle;
     this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;
     this.uniforms.focalAdjustment.value = gaussianSplatRenderer.focalAdjustment;
     const outputColorSpace =
@@ -634,14 +592,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.ordering.value =
       gaussianSplatRenderer.orderingTexture ??
       GaussianSplatRenderer.emptyOrdering;
-    this.uniforms.enablePackedSplats.value = display.packedSplats;
     const splatTextures = display.getTextures();
     this.uniforms.splats.value = splatTextures[0];
-    if (display.packedSplats) {
-      this.uniforms.splats2.value = splatTextures[0];
-    } else {
-      this.uniforms.splats2.value = splatTextures[1];
-    }
+    this.uniforms.splats2.value = splatTextures[1];
     this.uniforms.splatShape.value = display.getSplatShapeTexture();
 
     this.uniforms.time.value = display.time;
@@ -738,10 +691,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
     const { version, sortUpdated, generate } = preparation;
     let doUpdate = true;
-    const needsUpdate =
-      viewChanged ||
-      version !== this.current.version ||
-      next.packedSplats !== this.current.packedSplats;
+    const needsUpdate = viewChanged || version !== this.current.version;
     const needsSort = viewChanged || sortUpdated;
 
     if (autoUpdate && !needsUpdate) {
@@ -1226,28 +1176,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.material.premultipliedAlpha = value;
       this.material.needsUpdate = true;
     }
-  }
-
-  /**
-   * Whether intermediate accumulator data uses the compressed Packed Splat
-   * encoding. Changing this preserves the current display until the replacement
-   * accumulator is generated by the next automatic or explicit update.
-   */
-  get accumPackedSplats(): boolean {
-    return this.accumPackedSplatsValue;
-  }
-
-  set accumPackedSplats(value: boolean) {
-    if (this.accumPackedSplatsValue === value) return;
-
-    this.accumPackedSplatsValue = value;
-    if (this.disposed) return;
-
-    for (const accumulator of this.accumulators) {
-      accumulator.dispose();
-    }
-    this.accumulators = [this.createAccumulator()];
-    this.setDirty();
   }
 }
 

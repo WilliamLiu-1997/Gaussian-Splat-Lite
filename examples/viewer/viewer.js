@@ -154,17 +154,8 @@ const renderOptionGroups = [
   },
   {
     title: "Splat appearance",
-    description:
-      "Shape, filtering, screen-space size, and accumulator precision.",
+    description: "Shape, filtering, and screen-space size.",
     options: [
-      {
-        property: "accumPackedSplats",
-        description:
-          "Compresses intermediate splat buffers to save GPU memory at the cost of precision.",
-        defaultValue: false,
-        falseLabel: "Full precision",
-        trueLabel: "Packed",
-      },
       {
         property: "maxStdDev",
         description:
@@ -240,32 +231,6 @@ const renderOptionGroups = [
         defaultValue: false,
         falseLabel: "Off",
         trueLabel: "On",
-      },
-    ],
-  },
-  {
-    title: "Depth of field",
-    description: "Focus is enabled when both controls are above zero.",
-    options: [
-      {
-        property: "focalDistance",
-        description:
-          "Distance from the camera to the sharp focal plane, in scene units.",
-        min: 0,
-        max: 100,
-        step: 0.1,
-        defaultValue: 0,
-        format: formatSceneUnits,
-      },
-      {
-        property: "apertureAngle",
-        description:
-          "Widens the depth-of-field blur cone. Zero disables the effect.",
-        min: 0,
-        max: 0.35,
-        step: 0.0025,
-        defaultValue: 0,
-        format: (value) => `${THREE.MathUtils.radToDeg(value).toFixed(1)}°`,
       },
     ],
   },
@@ -350,12 +315,6 @@ const renderOptionGroups = [
 ];
 
 const renderOptionInputs = new Map();
-
-function formatSceneUnits(value) {
-  if (value === 0) return "Off";
-  if (value >= 10) return value.toFixed(1);
-  return value.toFixed(2);
-}
 
 function optionTarget(option) {
   return option.target === "material" ? splatRenderer.material : splatRenderer;
@@ -499,15 +458,6 @@ function resetRenderOptions() {
     }
     input.updateOption();
   }
-}
-
-function updateFocalDistanceRange(distance, radius) {
-  const entry = renderOptionInputs.get("focalDistance");
-  if (!entry) return;
-  const max = Math.max(distance + radius * 2, 1);
-  entry.input.max = String(max);
-  entry.input.step = String(max / 500);
-  entry.input.updateOption();
 }
 
 createRenderOptions();
@@ -681,7 +631,6 @@ function frameSplat(splat) {
     : Math.max(bounds.getSize(frameSize).length() * 0.5, 0.01);
   const defaultCameraDistance = 10;
   const distance = Math.min(defaultCameraDistance, radius);
-  updateFocalDistanceRange(distance, radius);
 
   camera.near = Math.max(radius / 1000, 0.0001);
   camera.far = Math.max(distance + radius * 20, 100);

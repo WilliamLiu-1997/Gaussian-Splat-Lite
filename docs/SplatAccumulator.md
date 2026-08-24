@@ -7,14 +7,8 @@
 ## Constructor
 
 ```ts
-new SplatAccumulator(options?: { packedSplats?: boolean })
+new SplatAccumulator()
 ```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `packedSplats` | `boolean` | `false` | Uses compressed Packed Splats when enabled; otherwise uses normal Splats |
-
-The similarly named `GaussianSplatRenderer.accumPackedSplats` option defaults to `false`. Changing it at runtime regenerates that renderer's accumulator on the next update.
 
 ## Common state
 

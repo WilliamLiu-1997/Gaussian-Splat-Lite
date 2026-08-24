@@ -16,7 +16,6 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `timer` | `THREE.Timer` | New internal timer | Shares time with another animation system; caller owns and updates a supplied timer |
 | `autoUpdate` | `boolean` | `true` | Automatically checks the Splat collection each frame |
 | `preUpdate` | `boolean` | `true` | Updates before drawing; WebXR presentation automatically uses an asynchronous post-render update |
-| `accumPackedSplats` | `boolean` | `false` | Uses compressed Packed Splats for intermediate data, reducing memory at the cost of precision; changing it regenerates the accumulator on the next update |
 
 ## Quality and appearance options
 
@@ -29,8 +28,6 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `enable2DGS` | `boolean` | `false` | Treats a Splat with exactly one zero scale axis as a 2D Gaussian |
 | `preBlurAmount` | `number` | `0` | Adds to the covariance diagonal before opacity correction |
 | `blurAmount` | `number` | `0.3` | Anti-aliasing blur amount with opacity correction |
-| `focalDistance` | `number` | `0` | Distance to the depth-of-field focal plane |
-| `apertureAngle` | `number` | `0` | Full aperture angle in radians; `0` disables depth of field |
 | `clipXY` | `number` | `1.25` | Center-clipping factor relative to the X/Y frustum boundary; `1` clips immediately outside it |
 | `focalAdjustment` | `number` | `2` | Projected Splat-size adjustment; larger values generally look sharper |
 
@@ -77,7 +74,6 @@ type TargetOptions = {
 | `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
 | `dispose()` | Releases materials, geometry, textures, targets, and the sorting worker |
 | `premultipliedAlpha` | A read/write property that recompiles the material when changed |
-| `accumPackedSplats` | A read/write property that switches accumulator encoding on the next update |
 
 For an on-demand render loop, connect `onDirty` to the application's render scheduler:
 

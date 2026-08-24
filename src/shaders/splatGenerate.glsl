@@ -29,14 +29,9 @@ uniform int numEdits;
 uniform usampler2D sdfTexture;
 uniform usampler2D editTexture;
 
-#ifdef OUTPUT_PACKED
-layout(location = 0) out uvec4 target;
-layout(location = 1) out vec4 targetShape;
-#else
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
 layout(location = 2) out vec4 targetShape;
-#endif
 
 vec3 evaluateSH1(uvec4 data, vec3 direction) {
     return decodeSplatShRgb(data.x) * (-0.4886025 * direction.y)
@@ -256,13 +251,12 @@ void produceSplat(int index) {
     // after local SDF edits. This also ensures additive edits cannot bypass the
     // final mesh tint or fade.
     rgba *= vec4(recolor.rgb, clamp(recolor.a, 0.0, 1.0));
+    // Opacity is a standard [0, 1] value. The wider-kernel shape is encoded in
+    // targetShape independently, so additive SDF edits must not use alpha above
+    // one as an implicit shape/coverage control.
+    rgba.a = clamp(rgba.a, 0.0, 1.0);
 
-#ifdef OUTPUT_PACKED
-    vec4 packedRgba = vec4(rgba.rgb, rgba.a * 0.5);
-    target = encodePackedSplat(relativeCenter, scales, quaternion, packedRgba, vec4(0.0, 1.0, LN_SCALE_MIN, LN_SCALE_MAX));
-#else
     encodeSplat(target, target2, relativeCenter, scales, quaternion, rgba);
-#endif
 
     targetShape = vec4(clamp(sourceAlpha - 1.0, 0.0, 1.0), 0.0, 0.0, 1.0);
 }
@@ -274,9 +268,7 @@ void main() {
     int index = targetIndex - targetBase;
 
     target = uvec4(0u);
-#ifndef OUTPUT_PACKED
     target2 = uvec4(0u);
-#endif
     targetShape = vec4(0.0, 0.0, 0.0, 1.0);
     if (index >= 0 && index < targetCount) {
         produceSplat(index);

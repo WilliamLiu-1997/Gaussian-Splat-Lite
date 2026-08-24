@@ -38,6 +38,6 @@ export {
 } from "./utils";
 export * as utils from "./utils";
 
-export { LN_SCALE_MIN, LN_SCALE_MAX, SplatFileType } from "./defines";
+export { SplatFileType } from "./defines";
 
 export * as defines from "./defines";

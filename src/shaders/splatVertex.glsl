@@ -22,7 +22,6 @@ uniform float renderToViewScale;
 uniform float maxStdDev;
 uniform float minPixelRadius;
 uniform float maxPixelRadius;
-uniform bool enablePackedSplats;
 uniform float time;
 uniform float deltaTime;
 uniform bool debugFlag;
@@ -30,8 +29,6 @@ uniform float minAlpha;
 uniform bool enable2DGS;
 uniform float blurAmount;
 uniform float preBlurAmount;
-uniform float focalDistance;
-uniform float apertureAngle;
 uniform float clipXY;
 uniform float focalAdjustment;
 
@@ -63,34 +60,17 @@ void main() {
     vec4 quaternion, rgba;
     float opacity;
     mat3 cov3D;
-    bvec3 zeroScales = bvec3(false);
+    uvec4 splat1 = texelFetch(splats, texCoord, 0);
+    opacity = decodeSplatAlpha(splat1);
+    if ((opacity == 0.0) || (opacity < minAlpha)) {
+        return;
+    }
+    uvec4 splat2 = texelFetch(splats2, texCoord, 0);
 
-    if (enablePackedSplats) {
-        uvec4 packedData = texelFetch(splats, texCoord, 0);
-        decodePackedSplat(packedData, center, scales, quaternion, rgba, vec4(0.0, 1.0, LN_SCALE_MIN, LN_SCALE_MAX));
-        zeroScales = equal(scales, vec3(0.0));
-        if (all(zeroScales)) {
-            return;
-        }
-
-        rgba.a *= 2.0;
-        opacity = rgba.a;
-        if ((opacity == 0.0) || (opacity < minAlpha)) {
-            return;
-        }
-    } else {
-        uvec4 splat1 = texelFetch(splats, texCoord, 0);
-        opacity = decodeSplatAlpha(splat1);
-        if ((opacity == 0.0) || (opacity < minAlpha)) {
-            return;
-        }
-        uvec4 splat2 = texelFetch(splats2, texCoord, 0);
-
-        decodeSplat(splat1, splat2, center, scales, quaternion, rgba);
-        zeroScales = equal(scales, vec3(0.0));
-        if (all(zeroScales)) {
-            return;
-        }
+    decodeSplat(splat1, splat2, center, scales, quaternion, rgba);
+    bvec3 zeroScales = equal(scales, vec3(0.0));
+    if (all(zeroScales)) {
+        return;
     }
 
 // Match the reference 3DGS rasterizer by clamping SH-evaluated RGB positive.
@@ -100,7 +80,7 @@ void main() {
     // the main splat's alpha.
     float shape = 1.0 + texelFetch(splatShape, texCoord, 0).r;
     if (shape > 1.0) {
-        // Stretch the packed 1..2 range to the kernel's 1..5 shape range.
+        // Stretch the encoded 1..2 range to the kernel's 1..5 shape range.
         shape = min(shape * 4.0 - 3.0, 5.0);
     }
     vSplatShape = shape;
@@ -195,21 +175,10 @@ void main() {
     a += preBlurAmount;
     d += preBlurAmount;
 
-    float fullBlurAmount = blurAmount;
-    if ((focalDistance > 0.0) && (apertureAngle > 0.0)) {
-        float focusRadius = maxPixelRadius;
-        if (viewCenter.z < 0.0) {
-            float focusBlur = abs((-viewCenter.z - focalDistance) / viewCenter.z);
-            float apertureRadius = focal.x * tan(0.5 * apertureAngle);
-            focusRadius = focusBlur * apertureRadius;
-        }
-        fullBlurAmount = clamp(sqr(focusRadius), blurAmount, sqr(maxPixelRadius));
-    }
-
     // Do convolution with a 0.5-pixel Gaussian for anti-aliasing: sqrt(0.3) ~= 0.5
     float detOrig = a * d - b * b;
-    a += fullBlurAmount;
-    d += fullBlurAmount;
+    a += blurAmount;
+    d += blurAmount;
     float det = a * d - b * b;
 
     // Compute anti-aliasing intensity scaling factor

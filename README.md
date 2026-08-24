@@ -24,7 +24,7 @@ It works alongside standard Three.js scenes, cameras, meshes, and render loops, 
 - URL, in-memory byte, and standard `ReadableStream` inputs
 - Rust/WebAssembly file decoding, depth sorting, and raycasting
 - 3DGS rendering and optional 2DGS support
-- Spherical harmonics, depth of field, offscreen rendering, and environment-map rendering
+- Spherical harmonics, offscreen rendering, and environment-map rendering
 - SDF-based color and opacity editing
 - Camera-relative rendering for large GIS/ECEF world coordinates
 - TypeScript declarations, ESM, and CommonJS builds

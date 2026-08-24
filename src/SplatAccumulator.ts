@@ -31,16 +31,14 @@ export class SplatAccumulator {
   mapping: SplatMapping[] = [];
   version = -1;
   mappingVersion = -1;
-  packedSplats: boolean;
 
   private transformScale = new THREE.Vector3();
   private transformQuaternion = new THREE.Quaternion();
 
-  constructor({ packedSplats = false }: { packedSplats?: boolean } = {}) {
+  constructor() {
     if (!threeMrtArray) {
       throw new Error("Gaussian Splat Lite requires THREE.js r179 or above");
     }
-    this.packedSplats = packedSplats;
   }
 
   dispose() {
@@ -53,10 +51,7 @@ export class SplatAccumulator {
   }
 
   getSplatShapeTexture() {
-    return (
-      this.target?.textures[this.packedSplats ? 1 : 2] ??
-      SplatAccumulator.emptySplatShape
-    );
+    return this.target?.textures[2] ?? SplatAccumulator.emptySplatShape;
   }
 
   generateMapping(splatCounts: number[]) {
@@ -93,32 +88,24 @@ export class SplatAccumulator {
     shape.format = THREE.RedFormat;
     shape.type = THREE.UnsignedByteType;
     shape.internalFormat = "R8";
-    if (!this.packedSplats) {
-      const second = this.target.texture.clone();
-      this.target.textures = [this.target.texture, second, shape];
-    } else {
-      this.target.textures = [this.target.texture, shape];
-    }
+    const second = this.target.texture.clone();
+    this.target.textures = [this.target.texture, second, shape];
     return true;
   }
 
   private getMaterial() {
-    const key = this.packedSplats;
-    let material = SplatAccumulator.materials.get(key);
+    let material = SplatAccumulator.material;
     if (!material) {
       getShaders();
-      const defines: Record<string, string> = {};
-      if (this.packedSplats) defines.OUTPUT_PACKED = "1";
       material = new THREE.RawShaderMaterial({
         glslVersion: THREE.GLSL3,
         vertexShader: IDENT_VERTEX_SHADER,
         fragmentShader: splatGenerate,
         uniforms: makeGenerateUniforms(),
-        defines,
         depthTest: false,
         depthWrite: false,
       });
-      SplatAccumulator.materials.set(key, material);
+      SplatAccumulator.material = material;
     }
     return material;
   }
@@ -395,7 +382,7 @@ export class SplatAccumulator {
     SplatAccumulator.emptyTexture,
     SplatAccumulator.emptyTexture,
   ];
-  private static materials = new Map<boolean, THREE.RawShaderMaterial>();
+  private static material: THREE.RawShaderMaterial | null = null;
   private static fullScreenQuad = new FullScreenQuad(
     new THREE.RawShaderMaterial({ visible: false }),
   );
