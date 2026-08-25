@@ -161,6 +161,29 @@ export class SplatMesh extends THREE.Object3D {
     this.numSplats = this.splats?.getNumSplats() ?? this.numSplats;
   }
 
+  setSplat(
+    index: number,
+    center: THREE.Vector3,
+    scales: THREE.Vector3,
+    quaternion: THREE.Quaternion,
+    opacity: number,
+    color: THREE.Color,
+  ) {
+    if (!(this.splats instanceof Splats)) {
+      throw new Error("setSplat requires the built-in Splats source");
+    }
+    this.splats.setSplat(index, center, scales, quaternion, opacity, color);
+    this.numSplats = this.splats.getNumSplats();
+  }
+
+  removeSplat(index: number) {
+    if (!(this.splats instanceof Splats)) {
+      throw new Error("removeSplat requires the built-in Splats source");
+    }
+    this.splats.removeSplat(index);
+    this.numSplats = this.splats.getNumSplats();
+  }
+
   forEachSplat(
     callback: (
       index: number,

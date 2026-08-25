@@ -52,7 +52,9 @@ await mesh.initialized;
 mesh.getBoundingBox();      // Centers only; faster.
 mesh.getBoundingBox(false); // Includes rotated and scaled Splat bounds.
 
+mesh.setSplat(index, center, scales, quaternion, opacity, color);
 mesh.pushSplat(center, scales, quaternion, opacity, color);
+mesh.removeSplat(index);    // Compacts subsequent Splat indices.
 mesh.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 
 mesh.updateVersion();                 // Regenerate and re-sort.
@@ -61,7 +63,7 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-`getBoundingBox()` can only be called after initialization. `pushSplat()` only affects a mesh backed by the built-in `Splats` source.
+`getBoundingBox()` can only be called after initialization. `pushSplat()` only affects a mesh backed by the built-in `Splats` source; `setSplat()` and `removeSplat()` require it and throw for custom sources.
 
 ## Raycasting
 

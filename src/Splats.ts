@@ -210,6 +210,32 @@ export class Splats implements SplatSource {
     this.setSplat(this.numSplats, center, scales, quaternion, opacity, color);
   }
 
+  removeSplat(index: number) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= this.numSplats) {
+      throw new Error("Invalid splat index");
+    }
+
+    const recordCount = this.numSplats;
+    const target = index * 4;
+    const end = recordCount * 4;
+    const removeRecord = (data: Uint32Array) => {
+      data.copyWithin(target, target + 4, end);
+      data.fill(0, end - 4, end);
+    };
+    for (const data of this.splatArrays) {
+      removeRecord(data);
+    }
+    for (const key of ["sh1", "sh2", "sh3a", "sh3b"] as const) {
+      const data = this.extra[key];
+      if (data instanceof Uint32Array) {
+        removeRecord(data);
+      }
+    }
+
+    this.numSplats -= 1;
+    this.needsUpdate = true;
+  }
+
   forEachCenter(
     callback: (index: number, x: number, y: number, z: number) => void,
   ) {

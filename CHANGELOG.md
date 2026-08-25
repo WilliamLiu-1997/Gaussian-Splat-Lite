@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `SplatMesh.setSplat()`, plus `Splats.removeSplat()` and `SplatMesh.removeSplat()` for compact removal while preserving main and spherical-harmonic data alignment.
+
 ### Changed
 
 - Scaled idle decode-worker lifetime from three minutes at 64 MiB of peak WASM memory down to three seconds at 256 MiB, and preferred smaller idle workers for reuse so large workers can expire promptly.

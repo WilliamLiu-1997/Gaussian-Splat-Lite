@@ -18,6 +18,7 @@ data.setSplat(
 );
 
 data.pushSplat(center, scales, quaternion, opacity, color);
+data.removeSplat(0);
 data.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 ```
 
@@ -49,6 +50,7 @@ The main methods are:
 | `getSplat(index)` | Decodes and returns one Splat |
 | `setSplat(index, ...)` | Adds or overwrites one Splat |
 | `pushSplat(...)` | Appends one Splat |
+| `removeSplat(index)` | Removes one Splat and shifts subsequent indices down |
 | `forEachCenter(callback)` | Iterates centers only, suitable for spatial-index construction |
 | `forEachSplat(callback)` | Iterates and fully decodes every Splat |
 | `ensureSplats(count)` | Ensures underlying array capacity |
