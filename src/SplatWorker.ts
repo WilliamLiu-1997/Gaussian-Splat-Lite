@@ -2,6 +2,10 @@ import { getTransferable } from "./utils";
 import { WASM_MODULE } from "./wasm";
 import type { RpcHandlers } from "./worker";
 import BundledWorker from "./worker?worker&inline";
+import {
+  getWorkerIdleTimeoutMs,
+  getWorkerReuseIndex,
+} from "./workerIdleTimeout";
 
 type PromiseRecord = {
   resolve: (value: unknown) => void;
@@ -13,6 +17,7 @@ type PromiseRecord = {
 export class SplatWorker {
   worker: Worker;
   messages: Record<number, PromiseRecord> = {};
+  peakWasmMemoryBytes = 0;
   static currentId = 0;
 
   constructor() {
@@ -24,7 +29,13 @@ export class SplatWorker {
   }
 
   onMessage(event: MessageEvent) {
-    const { id, result, error, status } = event.data;
+    const { id, result, error, status, wasmMemoryBytes } = event.data;
+    if (Number.isSafeInteger(wasmMemoryBytes) && wasmMemoryBytes >= 0) {
+      this.peakWasmMemoryBytes = Math.max(
+        this.peakWasmMemoryBytes,
+        wasmMemoryBytes,
+      );
+    }
     const promise = this.messages[id];
     if (!promise) return;
 
@@ -84,8 +95,6 @@ export class SplatWorker {
   }
 }
 
-const IDLE_WORKER_TIMEOUT_MS = 3000;
-
 class SplatWorkerPool {
   maxWorkers;
   numWorkers = 0;
@@ -109,8 +118,9 @@ class SplatWorkerPool {
   }
 
   async allocWorker(): Promise<SplatWorker> {
-    const worker = this.freelist.pop();
-    if (worker) {
+    const workerIndex = getWorkerReuseIndex(this.freelist);
+    if (workerIndex !== -1) {
+      const worker = this.freelist.splice(workerIndex, 1)[0];
       const timeout = this.idleWorkerTimeouts.get(worker);
       if (timeout !== undefined) {
         clearTimeout(timeout);
@@ -153,7 +163,7 @@ class SplatWorkerPool {
       this.freelist.splice(index, 1);
       worker.dispose();
       this.numWorkers -= 1;
-    }, IDLE_WORKER_TIMEOUT_MS);
+    }, getWorkerIdleTimeoutMs(worker.peakWasmMemoryBytes));
     this.idleWorkerTimeouts.set(worker, timeout);
   }
 }

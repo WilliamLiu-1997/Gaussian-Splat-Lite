@@ -14,6 +14,12 @@ const rpcHandlers = {
 };
 export type RpcHandlers = typeof rpcHandlers;
 
+let wasmMemory: WebAssembly.Memory | undefined;
+
+function getWasmMemoryBytes() {
+  return wasmMemory?.buffer.byteLength ?? 0;
+}
+
 function setSortCenterState({
   updateRangeIndices,
   updateCenters,
@@ -89,10 +95,16 @@ async function onMessage(event: MessageEvent) {
       );
     };
     const result = await handler(args, { sendStatus });
-    self.postMessage({ id, result }, { transfer: getTransferable(result) });
+    self.postMessage(
+      { id, result, wasmMemoryBytes: getWasmMemoryBytes() },
+      { transfer: getTransferable(result) },
+    );
   } catch (error) {
     console.warn(`Worker error: ${error}`);
-    self.postMessage({ id, error }, { transfer: getTransferable(error) });
+    self.postMessage(
+      { id, error, wasmMemoryBytes: getWasmMemoryBytes() },
+      { transfer: getTransferable(error) },
+    );
   }
 }
 
@@ -338,7 +350,8 @@ async function initialize() {
   };
   self.addEventListener("message", bufferMessage);
 
-  await init_wasm({ module_or_path: await waitForModule });
+  const wasm = await init_wasm({ module_or_path: await waitForModule });
+  wasmMemory = wasm.memory;
 
   self.removeEventListener("message", bufferMessage);
   self.addEventListener("message", onMessage);
