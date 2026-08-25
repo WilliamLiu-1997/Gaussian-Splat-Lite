@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Scaled idle decode-worker lifetime from three minutes at 64 MiB of peak WASM memory down to three seconds at 256 MiB, and preferred smaller idle workers for reuse so large workers can expire promptly.
+- Generated contiguous raw sort centers during decoding and cached them in the sort worker; axial sorting now folds each mesh matrix into the view direction without materializing transformed centers, radial sorting creates transformed centers lazily, and switching modes replaces the worker and releases its previous WASM instance.
 
 ## [0.1.3] - 2026-08-25
 

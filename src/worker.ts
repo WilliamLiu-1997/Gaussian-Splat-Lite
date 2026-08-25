@@ -21,27 +21,30 @@ function getWasmMemoryBytes() {
 }
 
 function setSortCenterState({
-  updateRangeIndices,
+  centerUpdateRangeIndices,
   updateCenters,
+  matrixUpdateRangeIndices,
+  updateMatrices,
   rangeMeshIds,
   rangeBases,
   rangeCounts,
-  rangeOrigins,
 }: {
-  updateRangeIndices: Uint32Array;
+  centerUpdateRangeIndices: Uint32Array;
   updateCenters: Float32Array;
+  matrixUpdateRangeIndices: Uint32Array;
+  updateMatrices: Float64Array;
   rangeMeshIds: Uint32Array;
   rangeBases: Uint32Array;
   rangeCounts: Uint32Array;
-  rangeOrigins: Float64Array;
 }) {
   set_sort_center_state(
-    updateRangeIndices,
+    centerUpdateRangeIndices,
     updateCenters,
+    matrixUpdateRangeIndices,
+    updateMatrices,
     rangeMeshIds,
     rangeBases,
     rangeCounts,
-    rangeOrigins,
   );
 }
 
@@ -249,6 +252,7 @@ type DecodedSplatResult = {
   numSplats: number;
   splat0: Uint32Array;
   splat1: Uint32Array;
+  sortCenters: Float32Array;
   sh1?: Uint32Array;
   sh2?: Uint32Array;
   sh3a?: Uint32Array;
@@ -259,6 +263,7 @@ function toSplatResult(decoded: DecodedSplatResult): SplatResult {
   return {
     numSplats: decoded.numSplats,
     splatArrays: [decoded.splat0, decoded.splat1],
+    sortCenters: decoded.sortCenters,
     extra: {
       sh1: decoded.sh1,
       sh2: decoded.sh2,

@@ -638,7 +638,7 @@ function frameSplat(splat) {
   camera.position.set(0, 5, 5 * Math.sqrt(3)).setLength(distance);
   camera.lookAt(0, 0, 0);
   camera.updateMatrixWorld(true);
-  controls.minDistance = radius * 0.02;
+  controls.minDistance = 0;
   controls.setCamera(camera);
 }
 

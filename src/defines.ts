@@ -25,5 +25,6 @@ export type SplatExtra = {
 export type SplatResult = {
   numSplats: number;
   splatArrays: [Uint32Array, Uint32Array];
+  sortCenters?: Float32Array;
   extra: SplatExtra;
 };

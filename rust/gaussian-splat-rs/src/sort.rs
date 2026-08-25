@@ -4,12 +4,31 @@ const RADIX_BITS: u32 = 16;
 const RADIX_BASE: usize = 1 << RADIX_BITS; // 65536
 const RADIX_MASK: u32 = RADIX_BASE as u32 - 1;
 
+/// Persistent raw/radial centers and affine state for one renderer mesh.
+pub struct MeshSortState {
+    pub raw_centers: Vec<f32>,
+    pub radial_centers: Vec<f32>,
+    pub transform: [f64; 9],
+    pub origin: [f64; 3],
+    pub generation: u32,
+}
+
+impl Default for MeshSortState {
+    fn default() -> Self {
+        Self {
+            raw_centers: Vec::new(),
+            radial_centers: Vec::new(),
+            transform: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            origin: [0.0; 3],
+            generation: 0,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Sort32Buffers {
-    /// persistent xyz centers per mesh, indexed by the renderer-assigned mesh ID
-    pub mesh_centers: Vec<Vec<f32>>,
-    /// generation marker for each mesh center cache
-    pub mesh_generations: Vec<u32>,
+    /// persistent sort state indexed by the renderer-assigned mesh ID
+    pub meshes: Vec<MeshSortState>,
     /// current mesh center cache generation
     pub mesh_generation: u32,
     /// mesh ID backing each contiguous global splat range
@@ -18,8 +37,6 @@ pub struct Sort32Buffers {
     pub range_bases: Vec<u32>,
     /// active splat count for each contiguous mesh range
     pub range_counts: Vec<u32>,
-    /// Float64 world-space mesh origins (three f64 per range)
-    pub range_origins: Vec<f64>,
     /// raw f32 metric bit-patterns (one per splat)
     pub keys: Vec<u32>,
     /// output indices
@@ -33,18 +50,63 @@ pub struct Sort32Buffers {
 }
 
 impl Sort32Buffers {
+    pub fn ensure_mesh(&mut self, mesh_id: usize) -> &mut MeshSortState {
+        if self.meshes.len() <= mesh_id {
+            self.meshes.resize_with(mesh_id + 1, MeshSortState::default);
+        }
+        &mut self.meshes[mesh_id]
+    }
+
+    pub fn set_mesh_matrix(&mut self, mesh_id: usize, matrix: [f64; 16]) {
+        let transform = [
+            matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9],
+            matrix[10],
+        ];
+        let mesh = self.ensure_mesh(mesh_id);
+        if mesh.transform != transform {
+            mesh.transform = transform;
+            mesh.radial_centers.clear();
+        }
+        mesh.origin = [matrix[12], matrix[13], matrix[14]];
+    }
+
+    pub fn ensure_radial_centers(&mut self, mesh_id: usize) {
+        let mesh = self.ensure_mesh(mesh_id);
+        if mesh.radial_centers.len() == mesh.raw_centers.len() {
+            return;
+        }
+        let transform = mesh.transform;
+        mesh.radial_centers.resize(mesh.raw_centers.len(), f32::NAN);
+        for (source, target) in mesh
+            .raw_centers
+            .chunks_exact(3)
+            .zip(mesh.radial_centers.chunks_exact_mut(3))
+        {
+            let [x, y, z] = [source[0] as f64, source[1] as f64, source[2] as f64];
+            target[0] = (transform[0] * x + transform[3] * y + transform[6] * z) as f32;
+            target[1] = (transform[1] * x + transform[4] * y + transform[7] * z) as f32;
+            target[2] = (transform[2] * x + transform[5] * y + transform[8] * z) as f32;
+        }
+    }
+
+    pub fn clear_mesh(&mut self, mesh_id: usize) {
+        self.meshes[mesh_id] = MeshSortState::default();
+    }
+
     #[cfg(test)]
     pub fn set_centers(&mut self, centers: &[f32]) {
-        self.mesh_centers.clear();
-        self.mesh_centers.push(centers.to_vec());
+        self.meshes.clear();
+        self.meshes.push(MeshSortState {
+            raw_centers: centers.to_vec(),
+            radial_centers: centers.to_vec(),
+            ..MeshSortState::default()
+        });
         self.range_mesh_ids.clear();
         self.range_mesh_ids.push(0);
         self.range_bases.clear();
         self.range_bases.push(0);
         self.range_counts.clear();
         self.range_counts.push((centers.len() / 3) as u32);
-        self.range_origins.clear();
-        self.range_origins.extend_from_slice(&[0.0, 0.0, 0.0]);
     }
 
     /// ensure all internal buffers are large enough for up to `max_splats`
@@ -68,10 +130,10 @@ impl Sort32Buffers {
 }
 
 /// Build non-negative float sort keys from mesh-relative centers and a Float64
-/// world-space camera position, then sort them back-to-front. The camera-to-mesh
-/// subtraction happens once per range in f64 and is narrowed only after large
-/// world translations cancel. Radial sorting uses squared distance, which has
-/// the same ordering as distance while avoiding one square root per splat.
+/// world-space camera position, then sort them back-to-front. Axial sorting
+/// folds each affine basis into the view direction and reads raw centers
+/// directly. Radial sorting lazily materializes transformed centers and uses
+/// squared distance, which preserves distance ordering without square roots.
 pub fn sort32_centers_internal(
     buffers: &mut Sort32Buffers,
     max_splats: usize,
@@ -95,15 +157,6 @@ pub fn sort32_centers_internal(
             buffers.range_counts.len(),
         ));
     }
-    let expected_origin_values = buffers.range_bases.len().saturating_mul(3);
-    if buffers.range_origins.len() != expected_origin_values {
-        return Err(format!(
-            "Sort range origin buffer has {} values, expected {}",
-            buffers.range_origins.len(),
-            expected_origin_values,
-        ));
-    }
-
     let mut previous_end = 0usize;
     for (range_index, (&base, &count)) in buffers
         .range_bases
@@ -126,9 +179,9 @@ pub fn sort32_centers_internal(
         let mesh_id = buffers.range_mesh_ids[range_index] as usize;
         let center_values = (count as usize).saturating_mul(3);
         let mesh_center_values = buffers
-            .mesh_centers
+            .meshes
             .get(mesh_id)
-            .map_or(0, |centers| centers.len());
+            .map_or(0, |mesh| mesh.raw_centers.len());
         if mesh_center_values < center_values {
             return Err(format!(
                 "Sort center buffer for mesh {} too small: {} < {}",
@@ -137,15 +190,20 @@ pub fn sort32_centers_internal(
         }
         previous_end = end;
     }
+    if radial {
+        for range_index in 0..buffers.range_mesh_ids.len() {
+            let mesh_id = buffers.range_mesh_ids[range_index] as usize;
+            buffers.ensure_radial_centers(mesh_id);
+        }
+    }
     buffers.ensure_size(max_splats);
 
     {
         let Sort32Buffers {
-            mesh_centers,
+            meshes,
             range_mesh_ids,
             range_bases,
             range_counts,
-            range_origins,
             keys,
             buckets16lo,
             buckets16hi,
@@ -156,6 +214,7 @@ pub fn sort32_centers_internal(
 
         let invalid_key = f32::NAN.to_bits();
         let mut next_index = 0usize;
+        let direction64 = direction.map(f64::from);
 
         for (range_index, (&base, &count)) in
             range_bases.iter().zip(range_counts.iter()).enumerate()
@@ -164,18 +223,16 @@ pub fn sort32_centers_internal(
             let end = base + count as usize;
             keys[next_index..base].fill(invalid_key);
 
-            let origin_index = range_index * 3;
+            let mesh = &meshes[range_mesh_ids[range_index] as usize];
             let camera_local = [
-                (camera_position[0] - range_origins[origin_index]) as f32,
-                (camera_position[1] - range_origins[origin_index + 1]) as f32,
-                (camera_position[2] - range_origins[origin_index + 2]) as f32,
+                (camera_position[0] - mesh.origin[0]) as f32,
+                (camera_position[1] - mesh.origin[1]) as f32,
+                (camera_position[2] - mesh.origin[2]) as f32,
             ];
             // Generate each key and tally both radix passes while its value is
             // hot. Keep the invariant sort-mode branch outside the hot loop.
             // Gaps are marked invalid without a separate full key scan.
             // The validation above guarantees this mesh and range are present.
-            let center_slice =
-                &mesh_centers[range_mesh_ids[range_index] as usize][..count as usize * 3];
             let key_slice = &mut keys[base..end];
             // wasm32 has no scalar fused-multiply-add instruction. Using
             // `mul_add` here lowers to a costly software helper; explicit
@@ -183,6 +240,7 @@ pub fn sort32_centers_internal(
             // The semantic tradeoff is normal non-fused rounding; only metrics
             // within a few ULPs can change their relative order.
             if radial {
+                let center_slice = &mesh.radial_centers[..count as usize * 3];
                 for (center, key_out) in center_slice.chunks_exact(3).zip(key_slice.iter_mut()) {
                     let dx = center[0] - camera_local[0];
                     let dy = center[1] - camera_local[1];
@@ -193,11 +251,28 @@ pub fn sort32_centers_internal(
                     tally_key(key, buckets16lo, buckets16hi);
                 }
             } else {
+                let transform = mesh.transform;
+                let local_direction = [
+                    (transform[0] * direction64[0]
+                        + transform[1] * direction64[1]
+                        + transform[2] * direction64[2]) as f32,
+                    (transform[3] * direction64[0]
+                        + transform[4] * direction64[1]
+                        + transform[5] * direction64[2]) as f32,
+                    (transform[6] * direction64[0]
+                        + transform[7] * direction64[1]
+                        + transform[8] * direction64[2]) as f32,
+                ];
+                let offset = 100.0
+                    - (camera_local[0] * direction[0]
+                        + camera_local[1] * direction[1]
+                        + camera_local[2] * direction[2]);
+                let center_slice = &mesh.raw_centers[..count as usize * 3];
                 for (center, key_out) in center_slice.chunks_exact(3).zip(key_slice.iter_mut()) {
-                    let dx = center[0] - camera_local[0];
-                    let dy = center[1] - camera_local[1];
-                    let dz = center[2] - camera_local[2];
-                    let metric = dx * direction[0] + dy * direction[1] + dz * direction[2] + 100.0;
+                    let metric = center[0] * local_direction[0]
+                        + center[1] * local_direction[1]
+                        + center[2] * local_direction[2]
+                        + offset;
                     let key = metric.to_bits();
                     *key_out = key;
                     tally_key(key, buckets16lo, buckets16hi);

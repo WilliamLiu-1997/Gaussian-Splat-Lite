@@ -13,6 +13,7 @@ export type SplatMapping = {
   node: SplatMesh;
   version: number;
   sortVersion: number;
+  centerVersion: number;
   mappingVersion: number;
   base: number;
   count: number;
@@ -276,6 +277,7 @@ export class SplatAccumulator {
         node,
         version: node.version,
         sortVersion: node.sortVersion,
+        centerVersion: node.centerVersion,
         mappingVersion: node.mappingVersion,
         base,
         count,

@@ -70,6 +70,7 @@ export class SplatMesh extends THREE.Object3D {
 
   version = 0;
   sortVersion = 0;
+  centerVersion = 0;
   mappingVersion = 0;
 
   private lastSource?: SplatSource;
@@ -252,23 +253,24 @@ export class SplatMesh extends THREE.Object3D {
     this.splats = source;
 
     let updated = false;
-    let sortUpdated = false;
+    let centersUpdated = false;
+    let transformUpdated = false;
     const count = source.getNumSplats();
     if (source !== this.lastSource) {
       this.lastSource = source;
       updated = true;
-      sortUpdated = true;
+      centersUpdated = true;
     }
     if (count !== this.lastNumSplats) {
       this.lastNumSplats = count;
       this.numSplats = count;
       this.mappingVersion += 1;
       updated = true;
-      sortUpdated = true;
+      centersUpdated = true;
     }
     if (source.needsUpdate) {
       updated = true;
-      sortUpdated = true;
+      centersUpdated = true;
     }
     if (this.maxSh !== this.lastMaxSh) {
       this.lastMaxSh = this.maxSh;
@@ -291,7 +293,7 @@ export class SplatMesh extends THREE.Object3D {
       this.lastMatrixWorld.copy(this.matrixWorld);
       this.hasLastMatrixWorld = true;
       updated = true;
-      sortUpdated = true;
+      transformUpdated = true;
     }
 
     const recolor = new THREE.Vector4(
@@ -344,13 +346,18 @@ export class SplatMesh extends THREE.Object3D {
     }
 
     if (updated) {
-      this.updateVersion({ sort: sortUpdated });
+      this.version += 1;
+      if (centersUpdated || transformUpdated) this.sortVersion += 1;
+      if (centersUpdated) this.centerVersion += 1;
     }
   }
 
   updateVersion({ sort = true }: { sort?: boolean } = {}) {
     this.version += 1;
-    if (sort) this.sortVersion += 1;
+    if (sort) {
+      this.sortVersion += 1;
+      this.centerVersion += 1;
+    }
   }
 
   updateMappingVersion() {

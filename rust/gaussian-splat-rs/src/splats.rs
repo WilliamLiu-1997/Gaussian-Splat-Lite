@@ -8,7 +8,7 @@ use gaussian_splat_lib::{
         encode_splat_with_ln_scale, get_splat_tex_size,
     },
 };
-use js_sys::{Object, Reflect, Uint32Array};
+use js_sys::{Float32Array, Object, Reflect, Uint32Array};
 use wasm_bindgen::JsValue;
 
 pub struct SplatsData {
@@ -16,6 +16,7 @@ pub struct SplatsData {
     pub num_splats: usize,
     pub max_sh_degree: usize,
     pub splat_arrays: [Uint32Array; 2],
+    pub sort_centers: Float32Array,
     pub sh1: Option<Uint32Array>,
     pub sh2: Option<Uint32Array>,
     pub sh3a: Option<Uint32Array>,
@@ -37,6 +38,7 @@ impl SplatsData {
                 Uint32Array::new_with_length(0),
                 Uint32Array::new_with_length(0),
             ],
+            sort_centers: Float32Array::new_with_length(0),
             sh1: None,
             sh2: None,
             sh3a: None,
@@ -79,6 +81,12 @@ impl SplatsData {
             &object,
             &JsValue::from_str("splat1"),
             &JsValue::from(self.splat_arrays[1].clone()),
+        )
+        .unwrap();
+        Reflect::set(
+            &object,
+            &JsValue::from_str("sortCenters"),
+            &JsValue::from(self.sort_centers.clone()),
         )
         .unwrap();
         if let Some(sh1) = self.sh1.as_ref() {
@@ -142,6 +150,35 @@ impl SplatsData {
         }
     }
 
+    fn copy_sort_centers(&self, base: usize, count: usize, centers: &[f32]) {
+        self.sort_centers
+            .subarray((base * 3) as u32, ((base + count) * 3) as u32)
+            .copy_from(&centers[..count * 3]);
+    }
+
+    fn invalidate_zero_scale_sort_centers(
+        &self,
+        base: usize,
+        count: usize,
+        scales: &[f32],
+        logarithmic: bool,
+    ) {
+        let disabled_scale = if logarithmic { f32::NEG_INFINITY } else { 0.0 };
+        for index in 0..count {
+            let i3 = index * 3;
+            let disabled = scales[i3..i3 + 3]
+                .iter()
+                .all(|scale| *scale == disabled_scale);
+            if disabled {
+                let target = (base + index) * 3;
+                for component in 0..3 {
+                    self.sort_centers
+                        .set_index((target + component) as u32, f32::NAN);
+                }
+            }
+        }
+    }
+
     fn set_batch_impl(
         &mut self,
         base: usize,
@@ -156,6 +193,7 @@ impl SplatsData {
             && !scale.is_empty()
             && !batch.quat.is_empty()
         {
+            self.copy_sort_centers(base, count, batch.center);
             let encode = if ln_scale.is_some() {
                 encode_splat_with_ln_scale
             } else {
@@ -179,6 +217,7 @@ impl SplatsData {
                 );
             }
             self.buffer_dirty = true;
+            self.invalidate_zero_scale_sort_centers(base, count, scale, ln_scale.is_some());
         } else {
             if !batch.center.is_empty() {
                 self.set_center(base, count, batch.center);
@@ -213,6 +252,7 @@ impl SplatReceiver for SplatsData {
 
         self.splat_arrays[0] = Uint32Array::new_with_length((max_splats * 4) as u32);
         self.splat_arrays[1] = Uint32Array::new_with_length((max_splats * 4) as u32);
+        self.sort_centers = Float32Array::new_with_length((max_splats * 3) as u32);
 
         self.sh1 = if init.max_sh_degree < 1 {
             None
@@ -264,6 +304,7 @@ impl SplatReceiver for SplatsData {
     }
 
     fn set_center(&mut self, base: usize, count: usize, center: &[f32]) {
+        self.copy_sort_centers(base, count, center);
         self.prepare_buffers(base, count);
         for i in 0..count {
             let [i3, i4] = [i * 3, i * 4];
@@ -306,6 +347,7 @@ impl SplatReceiver for SplatsData {
             );
         }
         self.buffer_dirty = true;
+        self.invalidate_zero_scale_sort_centers(base, count, scale, false);
     }
 
     fn set_ln_scale(&mut self, base: usize, count: usize, ln_scale: &[f32]) {
@@ -318,6 +360,7 @@ impl SplatReceiver for SplatsData {
             );
         }
         self.buffer_dirty = true;
+        self.invalidate_zero_scale_sort_centers(base, count, ln_scale, true);
     }
 
     fn set_quat(&mut self, base: usize, count: usize, quat: &[f32]) {

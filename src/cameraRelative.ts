@@ -5,6 +5,7 @@ import type { SplatMesh } from "./SplatMesh";
 
 type SortCenterEntry = {
   meshId: number;
+  centerVersion: number;
   sortVersion: number;
 };
 
@@ -37,8 +38,9 @@ export function rebaseAffineTransform(
 }
 
 /**
- * Tracks the per-mesh sort centers cached by the worker. The main thread only
- * builds changed meshes; unchanged centers remain exclusively in WASM.
+ * Tracks raw-center and matrix revisions cached by the sort worker. Built-in
+ * sources bulk-copy decoder-produced centers; callback extraction remains only
+ * as a compatibility path for custom sources.
  */
 export class SortCenterCache {
   private entries = new Map<SplatMesh, SortCenterEntry>();
@@ -65,19 +67,20 @@ export class SortCenterCache {
     const rangeMeshIds = new Uint32Array(current.mapping.length);
     const rangeBases = new Uint32Array(current.mapping.length);
     const rangeCounts = new Uint32Array(current.mapping.length);
-    const rangeOrigins = new Float64Array(current.mapping.length * 3);
     const retiredNodes = new Set(this.entries.keys());
-    const changed: {
+    const changedCenters: {
       node: SplatMesh;
-      entry: SortCenterEntry;
       count: number;
       rangeIndex: number;
-      sortVersion: number;
+    }[] = [];
+    const changedMatrices: {
+      node: SplatMesh;
+      rangeIndex: number;
     }[] = [];
     let updateCount = 0;
 
     current.mapping.forEach(
-      ({ node, base, count, sortVersion }, rangeIndex) => {
+      ({ node, base, count, centerVersion, sortVersion }, rangeIndex) => {
         retiredNodes.delete(node);
         let entry = this.entries.get(node);
         if (!entry) {
@@ -85,6 +88,7 @@ export class SortCenterCache {
           // retry with the same ID. Its sentinel version forces a re-upload.
           entry = {
             meshId: this.allocateMeshId(),
+            centerVersion: -1,
             sortVersion: -1,
           };
           this.entries.set(node, entry);
@@ -94,59 +98,74 @@ export class SortCenterCache {
         rangeBases[rangeIndex] = base;
         rangeCounts[rangeIndex] = count;
 
-        const elements = node.matrixWorld.elements;
-        const originTarget = rangeIndex * 3;
-        rangeOrigins[originTarget] = elements[12];
-        rangeOrigins[originTarget + 1] = elements[13];
-        rangeOrigins[originTarget + 2] = elements[14];
-
-        if (entry.sortVersion !== sortVersion) {
-          changed.push({
+        if (entry.centerVersion !== centerVersion) {
+          changedCenters.push({
             node,
-            entry,
             count,
             rangeIndex,
-            sortVersion,
           });
           updateCount += count;
+        }
+        if (entry.sortVersion !== sortVersion) {
+          changedMatrices.push({
+            node,
+            rangeIndex,
+          });
         }
       },
     );
 
-    const updateRangeIndices = new Uint32Array(changed.length);
+    const centerUpdateRangeIndices = new Uint32Array(changedCenters.length);
     const updateCenters = new Float32Array(updateCount * 3);
     // NaN keeps disabled splats out of the active radix-sort range.
     updateCenters.fill(Number.NaN);
 
     let updateBase = 0;
-    changed.forEach(({ node, count, rangeIndex }, updateIndex) => {
-      updateRangeIndices[updateIndex] = rangeIndex;
+    changedCenters.forEach(({ node, count, rangeIndex }, updateIndex) => {
+      centerUpdateRangeIndices[updateIndex] = rangeIndex;
 
-      const elements = node.matrixWorld.elements;
-      node.splats?.forEachCenter((index, x, y, z) => {
-        if (index >= count || Number.isNaN(x)) return;
-        const target = (updateBase + index) * 3;
-        updateCenters[target] =
-          elements[0] * x + elements[4] * y + elements[8] * z;
-        updateCenters[target + 1] =
-          elements[1] * x + elements[5] * y + elements[9] * z;
-        updateCenters[target + 2] =
-          elements[2] * x + elements[6] * y + elements[10] * z;
-      });
+      const source = node.splats;
+      const centers = source?.getSortCenters?.();
+      const valueCount = count * 3;
+      if (centers) {
+        if (centers.length < valueCount) {
+          throw new Error("Sort center source is smaller than its Splat count");
+        }
+        updateCenters.set(centers.subarray(0, valueCount), updateBase * 3);
+      } else {
+        source?.forEachCenter((index, x, y, z) => {
+          if (index >= count || Number.isNaN(x)) return;
+          const target = (updateBase + index) * 3;
+          updateCenters[target] = x;
+          updateCenters[target + 1] = y;
+          updateCenters[target + 2] = z;
+        });
+      }
       updateBase += count;
+    });
+
+    const matrixUpdateRangeIndices = new Uint32Array(changedMatrices.length);
+    const updateMatrices = new Float64Array(changedMatrices.length * 16);
+    changedMatrices.forEach(({ node, rangeIndex }, updateIndex) => {
+      matrixUpdateRangeIndices[updateIndex] = rangeIndex;
+      updateMatrices.set(node.matrixWorld.elements, updateIndex * 16);
     });
 
     return {
       payload: {
-        updateRangeIndices,
+        centerUpdateRangeIndices,
         updateCenters,
+        matrixUpdateRangeIndices,
+        updateMatrices,
         rangeMeshIds,
         rangeBases,
         rangeCounts,
-        rangeOrigins,
       },
       commit: () => {
-        for (const { entry, sortVersion } of changed) {
+        for (const { node, centerVersion, sortVersion } of current.mapping) {
+          const entry = this.entries.get(node);
+          if (!entry) continue;
+          entry.centerVersion = centerVersion;
           entry.sortVersion = sortVersion;
         }
         // Recycle IDs only after the worker accepted the replacement state.

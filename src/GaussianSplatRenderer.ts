@@ -241,8 +241,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   sortedDir = new THREE.Vector3().setScalar(0);
   private sortedRadial: boolean | undefined;
   private sortCenterCache = new SortCenterCache();
-  private sortCentersRevision = 0;
-  private uploadedSortCentersRevision = -1;
+  private sortStateRevision = 0;
+  private uploadedSortStateRevision = -1;
   private updateRunning = false;
   private updatePromise: Promise<void> = Promise.resolve();
   private queuedUpdate: UpdateRequest | null = null;
@@ -446,11 +446,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       accumulator.dispose();
     }
 
-    if (this.sortWorker) {
-      this.sortWorker.dispose();
-      this.sortWorker = null;
-    }
-    this.sortCenterCache.dispose();
+    this.resetSortWorker();
 
     this.geometry.dispose();
     this.material.dispose();
@@ -461,6 +457,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.dirty = true;
       this.onDirty?.();
     }
+  }
+
+  private resetSortWorker() {
+    this.sortWorker?.dispose();
+    this.sortWorker = null;
+    this.sortCenterCache.dispose();
+    this.uploadedSortStateRevision = -1;
   }
 
   private createAccumulator() {
@@ -710,7 +713,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
 
       if (sortUpdated) {
-        this.sortCentersRevision += 1;
+        this.sortStateRevision += 1;
       }
 
       if (this.display.mappingVersion === next.mappingVersion && !needsSort) {
@@ -757,26 +760,27 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const previousActiveSplats = this.activeSplats;
 
     try {
+      const sortRadial = this.sortRadial;
+      if (this.sortWorker && this.sortedRadial !== sortRadial) {
+        this.resetSortWorker();
+      }
+      this.sortWorker ??= new SplatWorker();
+      const sortWorker = this.sortWorker;
       const { numSplats, maxSplats } = current;
       const rows = Math.max(1, Math.ceil(maxSplats / 16384));
       const orderingMaxSplats = rows * 16384;
       this.maxSplats = Math.max(this.maxSplats, orderingMaxSplats);
       const ordering = new Uint32Array(this.maxSplats);
 
-      if (!this.sortWorker) {
-        this.sortWorker = new SplatWorker();
-      }
-
-      const centersRevision = this.sortCentersRevision;
-      if (this.uploadedSortCentersRevision !== centersRevision) {
+      const stateRevision = this.sortStateRevision;
+      if (this.uploadedSortStateRevision !== stateRevision) {
         const { payload, commit } = this.sortCenterCache.prepare(current);
-        await this.sortWorker.call("setSortCenterState", payload);
+        await sortWorker.call("setSortCenterState", payload);
         commit();
-        this.uploadedSortCentersRevision = centersRevision;
+        this.uploadedSortStateRevision = stateRevision;
       }
 
-      const sortRadial = this.sortRadial;
-      const result = await this.sortWorker.call("sortCenters32", {
+      const result = await sortWorker.call("sortCenters32", {
         numSplats,
         cameraPosition: [
           current.viewOrigin.x,
@@ -853,7 +857,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         this.releaseAccumulator(current);
         this.activeSplats = previousActiveSplats;
         this.sortDirty = false;
-        this.uploadedSortCentersRevision = -1;
+        this.uploadedSortStateRevision = -1;
       }
       throw error;
     } finally {

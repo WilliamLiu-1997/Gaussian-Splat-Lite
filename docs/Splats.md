@@ -34,6 +34,7 @@ The constructor and `reinitialize()` accept the same `SplatsOptions`:
 | `streamLength` | `number` | `undefined` | Exact input-stream byte length, used for progress and safe allocation validation |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `splatArrays` | `[Uint32Array, Uint32Array]` | Empty arrays | Two pre-encoded Splat data arrays |
+| `sortCenters` | `Float32Array` | Derived from `splatArrays` | Optional contiguous raw xyz centers paired with low-level encoded data |
 | `numSplats` | `number` | Capacity | Number of valid Splats in `splatArrays` |
 | `construct` | `(splats) => void \| Promise<void>` | `undefined` | Populates the source during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |
@@ -57,4 +58,4 @@ The main methods are:
 | `reinitialize(options)` | Reinitializes from a file, stream, array, or construction callback |
 | `dispose()` | Releases textures and data references |
 
-After modifying low-level arrays such as `splatArrays` directly, set `data.needsUpdate = true`. Prefer `setSplat()` and `pushSplat()`, which manage capacity and update state automatically.
+Decoded files provide `sortCenters` directly, avoiding a main-thread center-extraction pass before their first sort. After modifying low-level arrays such as `splatArrays` directly, set `data.needsUpdate = true`; this rebuilds the contiguous center cache on demand. Prefer `setSplat()`, `pushSplat()`, and `removeSplat()`, which keep both representations synchronized automatically.

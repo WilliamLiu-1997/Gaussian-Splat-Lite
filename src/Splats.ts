@@ -15,6 +15,7 @@ export type SplatsOptions = {
   streamLength?: number;
   maxSplats?: number;
   splatArrays?: [Uint32Array, Uint32Array];
+  sortCenters?: Float32Array;
   numSplats?: number;
   construct?: (splats: Splats) => Promise<void> | void;
   onProgress?: (event: ProgressEvent) => void;
@@ -29,14 +30,16 @@ export class Splats implements SplatSource {
     new Uint32Array(0),
     new Uint32Array(0),
   ];
+  sortCenters: Float32Array = new Float32Array(0);
   extra: Record<string, unknown> = {};
 
   initialized: Promise<Splats>;
   isInitialized = false;
-  needsUpdate = true;
 
   private textures: [THREE.DataArrayTexture, THREE.DataArrayTexture];
   private shTextures: SplatShTextures = {};
+  private updateNeeded = true;
+  private sortCentersDirty = false;
 
   constructor(options: SplatsOptions = {}) {
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];
@@ -49,7 +52,8 @@ export class Splats implements SplatSource {
     this.disposeTextures();
     this.extra = {};
     this.maxSplats = options.maxSplats ?? 0;
-    this.needsUpdate = true;
+    this.sortCenters = new Float32Array(0);
+    this.updateNeeded = true;
 
     if (
       options.url ||
@@ -82,12 +86,22 @@ export class Splats implements SplatSource {
         this.maxSplats,
         options.numSplats ?? this.maxSplats,
       );
+      if (
+        options.sortCenters &&
+        options.sortCenters.length < this.numSplats * 3
+      ) {
+        throw new Error("sortCenters is smaller than numSplats");
+      }
+      this.sortCenters = options.sortCenters ?? new Float32Array(0);
+      this.sortCentersDirty = !options.sortCenters;
     } else {
       this.maxSplats = options.maxSplats ?? 0;
       this.numSplats = 0;
       this.splatArrays = [new Uint32Array(0), new Uint32Array(0)];
+      this.sortCenters = new Float32Array(0);
+      this.sortCentersDirty = false;
     }
-    this.needsUpdate = true;
+    this.updateNeeded = true;
   }
 
   private async asyncInitialize(options: SplatsOptions) {
@@ -114,6 +128,7 @@ export class Splats implements SplatSource {
   dispose() {
     this.disposeTextures();
     this.splatArrays = [new Uint32Array(0), new Uint32Array(0)];
+    this.sortCenters = new Float32Array(0);
     this.extra = {};
   }
 
@@ -144,6 +159,24 @@ export class Splats implements SplatSource {
           : 3;
   }
 
+  get needsUpdate() {
+    return this.updateNeeded;
+  }
+
+  set needsUpdate(value: boolean) {
+    this.updateNeeded = value;
+    if (value) this.sortCentersDirty = true;
+  }
+
+  private ensureSortCenterCapacity(capacity: number) {
+    const requiredValues = capacity * 3;
+    if (this.sortCenters.length >= requiredValues) return;
+
+    const sortCenters = new Float32Array(requiredValues);
+    sortCenters.set(this.sortCenters);
+    this.sortCenters = sortCenters;
+  }
+
   ensureSplats(numSplats: number): [Uint32Array, Uint32Array] {
     const currentCapacity = this.splatArrays[0].length / 4;
     const targetSize =
@@ -157,8 +190,9 @@ export class Splats implements SplatSource {
       first.set(this.splatArrays[0]);
       second.set(this.splatArrays[1]);
       this.splatArrays = [first, second];
-      this.needsUpdate = true;
+      this.updateNeeded = true;
     }
+    this.ensureSortCenterCapacity(this.splatArrays[0].length / 4);
     return this.splatArrays;
   }
 
@@ -178,6 +212,7 @@ export class Splats implements SplatSource {
     color: THREE.Color,
   ) {
     const arrays = this.ensureSplats(index + 1);
+    const sortCenters = this.getSortCenters();
     encodeSplat(
       arrays,
       index,
@@ -196,8 +231,13 @@ export class Splats implements SplatSource {
       color.g,
       color.b,
     );
+    const i3 = index * 3;
+    const disabled = scales.x === 0 && scales.y === 0 && scales.z === 0;
+    sortCenters[i3] = disabled ? Number.NaN : center.x;
+    sortCenters[i3 + 1] = disabled ? Number.NaN : center.y;
+    sortCenters[i3 + 2] = disabled ? Number.NaN : center.z;
     this.numSplats = Math.max(this.numSplats, index + 1);
-    this.needsUpdate = true;
+    this.updateNeeded = true;
   }
 
   pushSplat(
@@ -216,6 +256,7 @@ export class Splats implements SplatSource {
     }
 
     const recordCount = this.numSplats;
+    const sortCenters = this.getSortCenters();
     const target = index * 4;
     const end = recordCount * 4;
     const removeRecord = (data: Uint32Array) => {
@@ -231,14 +272,23 @@ export class Splats implements SplatSource {
         removeRecord(data);
       }
     }
+    const centerTarget = index * 3;
+    const centerEnd = recordCount * 3;
+    sortCenters.copyWithin(centerTarget, centerTarget + 3, centerEnd);
+    sortCenters.fill(0, centerEnd - 3, centerEnd);
 
     this.numSplats -= 1;
-    this.needsUpdate = true;
+    this.updateNeeded = true;
   }
 
-  forEachCenter(
-    callback: (index: number, x: number, y: number, z: number) => void,
-  ) {
+  getSortCenters() {
+    if (this.sortCentersDirty) this.rebuildSortCenters();
+    return this.sortCenters;
+  }
+
+  private rebuildSortCenters() {
+    const capacity = this.splatArrays[0].length / 4;
+    this.ensureSortCenterCapacity(capacity);
     const [splatA, splatB] = this.splatArrays;
     const centerView = new Float32Array(
       splatA.buffer,
@@ -246,15 +296,26 @@ export class Splats implements SplatSource {
       splatA.length,
     );
     for (let index = 0; index < this.numSplats; index += 1) {
+      const i3 = index * 3;
       const i4 = index * 4;
-      const scaleX = splatB[i4 + 1] >>> 16;
-      const scaleY = splatB[i4 + 2] & 0xffff;
-      const scaleZ = splatB[i4 + 2] >>> 16;
-      if (scaleX === 0xfc00 && scaleY === 0xfc00 && scaleZ === 0xfc00) {
-        callback(index, Number.NaN, Number.NaN, Number.NaN);
-        continue;
-      }
-      callback(index, centerView[i4], centerView[i4 + 1], centerView[i4 + 2]);
+      const disabled =
+        splatB[i4 + 1] >>> 16 === 0xfc00 &&
+        (splatB[i4 + 2] & 0xffff) === 0xfc00 &&
+        splatB[i4 + 2] >>> 16 === 0xfc00;
+      this.sortCenters[i3] = disabled ? Number.NaN : centerView[i4];
+      this.sortCenters[i3 + 1] = disabled ? Number.NaN : centerView[i4 + 1];
+      this.sortCenters[i3 + 2] = disabled ? Number.NaN : centerView[i4 + 2];
+    }
+    this.sortCentersDirty = false;
+  }
+
+  forEachCenter(
+    callback: (index: number, x: number, y: number, z: number) => void,
+  ) {
+    const centers = this.getSortCenters();
+    for (let index = 0; index < this.numSplats; index += 1) {
+      const i3 = index * 3;
+      callback(index, centers[i3], centers[i3 + 1], centers[i3 + 2]);
     }
   }
 

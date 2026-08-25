@@ -22,6 +22,9 @@ export interface SplatSource {
   getSplatTextures(): readonly [THREE.DataArrayTexture, THREE.DataArrayTexture];
   getShTextures(): SplatShTextures;
 
+  /** Optional contiguous xyz centers used to bypass callback-based extraction. */
+  getSortCenters?(): Float32Array;
+
   forEachCenter(
     callback: (index: number, x: number, y: number, z: number) => void,
   ): void;

@@ -25,24 +25,22 @@ thread_local! {
 
 #[wasm_bindgen]
 pub fn set_sort_center_state(
-    update_range_indices: Uint32Array,
+    center_update_range_indices: Uint32Array,
     update_centers: Float32Array,
+    matrix_update_range_indices: Uint32Array,
+    update_matrices: Float64Array,
     range_mesh_ids: Uint32Array,
     range_bases: Uint32Array,
     range_counts: Uint32Array,
-    range_origins: Float64Array,
 ) {
     if range_mesh_ids.length() != range_bases.length()
         || range_bases.length() != range_counts.length()
     {
         wasm_bindgen::throw_str("Sort range mesh/base/count arrays must have equal lengths");
     }
-    if range_origins.length() != range_bases.length().saturating_mul(3) {
-        wasm_bindgen::throw_str("Sort range origins must contain three values per range");
-    }
     let mut expected_update_values = 0_u64;
-    for index in 0..update_range_indices.length() {
-        let range_index = update_range_indices.get_index(index);
+    for index in 0..center_update_range_indices.length() {
+        let range_index = center_update_range_indices.get_index(index);
         if range_index >= range_counts.length() {
             wasm_bindgen::throw_str("Sort center update range index is out of bounds");
         }
@@ -52,57 +50,68 @@ pub fn set_sort_center_state(
     if expected_update_values != update_centers.length() as u64 {
         wasm_bindgen::throw_str("Sort center update data length does not match its ranges");
     }
+    for index in 0..matrix_update_range_indices.length() {
+        if matrix_update_range_indices.get_index(index) >= range_counts.length() {
+            wasm_bindgen::throw_str("Sort matrix update range index is out of bounds");
+        }
+    }
+    if update_matrices.length() != matrix_update_range_indices.length().saturating_mul(16) {
+        wasm_bindgen::throw_str("Sort matrix update data length does not match its ranges");
+    }
 
     SORT32_BUFFERS.with_borrow_mut(|buffers| {
         buffers.mesh_generation = buffers.mesh_generation.wrapping_add(1);
         if buffers.mesh_generation == 0 {
-            buffers.mesh_generations.fill(0);
+            for mesh in &mut buffers.meshes {
+                mesh.generation = 0;
+            }
             buffers.mesh_generation = 1;
         }
         let generation = buffers.mesh_generation;
         for index in 0..range_mesh_ids.length() {
             let mesh_id = range_mesh_ids.get_index(index) as usize;
-            if buffers.mesh_generations.len() <= mesh_id {
-                buffers.mesh_generations.resize(mesh_id + 1, 0);
-            }
-            buffers.mesh_generations[mesh_id] = generation;
+            buffers.ensure_mesh(mesh_id).generation = generation;
         }
-        for &mesh_id in &buffers.range_mesh_ids {
-            if buffers.mesh_generations[mesh_id as usize] != generation {
-                buffers.mesh_centers[mesh_id as usize] = Vec::new();
+        let mut previous_mesh_ids = std::mem::take(&mut buffers.range_mesh_ids);
+        for &mesh_id in &previous_mesh_ids {
+            if buffers.meshes[mesh_id as usize].generation != generation {
+                buffers.clear_mesh(mesh_id as usize);
             }
         }
 
         let mut center_offset = 0_u32;
-        for index in 0..update_range_indices.length() {
-            let range_index = update_range_indices.get_index(index);
+        for index in 0..center_update_range_indices.length() {
+            let range_index = center_update_range_indices.get_index(index);
             let mesh_id = range_mesh_ids.get_index(range_index) as usize;
             let center_values = range_counts.get_index(range_index).saturating_mul(3);
-            if buffers.mesh_centers.len() <= mesh_id {
-                buffers.mesh_centers.resize_with(mesh_id + 1, Vec::new);
-            }
-            let target = &mut buffers.mesh_centers[mesh_id];
-            target.resize(center_values as usize, f32::NAN);
+            let mesh = buffers.ensure_mesh(mesh_id);
+            mesh.raw_centers.resize(center_values as usize, f32::NAN);
             update_centers
                 .subarray(center_offset, center_offset + center_values)
-                .copy_to(target);
+                .copy_to(&mut mesh.raw_centers);
+            mesh.radial_centers.clear();
             center_offset += center_values;
         }
 
-        buffers
-            .range_mesh_ids
-            .resize(range_mesh_ids.length() as usize, 0);
-        range_mesh_ids.copy_to(&mut buffers.range_mesh_ids);
+        for index in 0..matrix_update_range_indices.length() {
+            let range_index = matrix_update_range_indices.get_index(index);
+            let mesh_id = range_mesh_ids.get_index(range_index) as usize;
+            let mut matrix = [0.0_f64; 16];
+            update_matrices
+                .subarray(index * 16, (index + 1) * 16)
+                .copy_to(&mut matrix);
+            buffers.set_mesh_matrix(mesh_id, matrix);
+        }
+
+        previous_mesh_ids.resize(range_mesh_ids.length() as usize, 0);
+        range_mesh_ids.copy_to(&mut previous_mesh_ids);
+        buffers.range_mesh_ids = previous_mesh_ids;
         buffers.range_bases.resize(range_bases.length() as usize, 0);
         range_bases.copy_to(&mut buffers.range_bases);
         buffers
             .range_counts
             .resize(range_counts.length() as usize, 0);
         range_counts.copy_to(&mut buffers.range_counts);
-        buffers
-            .range_origins
-            .resize(range_origins.length() as usize, 0.0);
-        range_origins.copy_to(&mut buffers.range_origins);
     });
 }
 
