@@ -15,27 +15,24 @@ use crate::{
 };
 
 pub trait ChunkReceiver: Any {
+    /// Supplies the exact encoded input length when the caller knows it before
+    /// decoding starts. Container decoders can use this to validate metadata
+    /// before allocating output storage.
+    fn set_expected_input_size(&mut self, _size: usize) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()>;
     fn finish(&mut self) -> anyhow::Result<()>;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SplatInit {
     pub num_splats: usize,
     pub max_sh_degree: usize,
 }
 
-impl Default for SplatInit {
-    fn default() -> Self {
-        Self {
-            num_splats: 0,
-            max_sh_degree: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SplatProps<'a> {
     pub center: &'a [f32],
     pub opacity: &'a [f32],
@@ -47,21 +44,6 @@ pub struct SplatProps<'a> {
     pub sh3: &'a [f32],
 }
 
-impl<'a> Default for SplatProps<'a> {
-    fn default() -> Self {
-        Self {
-            center: &[],
-            opacity: &[],
-            rgb: &[],
-            scale: &[],
-            quat: &[],
-            sh1: &[],
-            sh2: &[],
-            sh3: &[],
-        }
-    }
-}
-
 #[allow(unused)]
 pub trait SplatReceiver: 'static {
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
@@ -71,11 +53,35 @@ pub trait SplatReceiver: 'static {
         Ok(())
     }
     fn set_batch(&mut self, base: usize, count: usize, batch: &SplatProps);
+    /// Accepts the same batch with scale supplied in natural-log space.
+    /// Receivers that store log scale should override this to avoid exp/log
+    /// conversion; the default preserves the public linear-scale contract.
+    fn set_batch_ln_scale(
+        &mut self,
+        base: usize,
+        count: usize,
+        batch: &SplatProps,
+        ln_scale: &[f32],
+    ) {
+        let scale: Vec<f32> = ln_scale.iter().map(|value| value.exp()).collect();
+        self.set_batch(
+            base,
+            count,
+            &SplatProps {
+                scale: &scale,
+                ..*batch
+            },
+        );
+    }
 
     fn set_center(&mut self, base: usize, count: usize, center: &[f32]);
     fn set_opacity(&mut self, base: usize, count: usize, opacity: &[f32]);
     fn set_rgb(&mut self, base: usize, count: usize, rgb: &[f32]);
     fn set_scale(&mut self, base: usize, count: usize, scale: &[f32]);
+    fn set_ln_scale(&mut self, base: usize, count: usize, ln_scale: &[f32]) {
+        let scale: Vec<f32> = ln_scale.iter().map(|value| value.exp()).collect();
+        self.set_scale(base, count, &scale);
+    }
     fn set_quat(&mut self, base: usize, count: usize, quat: &[f32]);
 
     fn set_sh(&mut self, base: usize, count: usize, sh1: &[f32], sh2: &[f32], sh3: &[f32]) {}
@@ -119,7 +125,10 @@ impl SplatFileType {
         let clean_path = clean_path
             .split_once('#')
             .map_or(clean_path, |(path, _)| path);
-        clean_path.split('.').last().and_then(Self::from_extension)
+        clean_path
+            .split('.')
+            .next_back()
+            .and_then(Self::from_extension)
     }
 }
 
@@ -130,6 +139,7 @@ pub struct MultiDecoder<T: SplatReceiver> {
     buffer: Vec<u8>,
     buffer_gz: Option<Vec<u8>>,
     inner: Option<Box<dyn ChunkReceiver>>,
+    expected_input_size: Option<usize>,
 }
 
 impl<T: SplatReceiver> MultiDecoder<T> {
@@ -146,6 +156,7 @@ impl<T: SplatReceiver> MultiDecoder<T> {
             buffer: Vec::new(),
             buffer_gz: None,
             inner,
+            expected_input_size: None,
         }
     }
 
@@ -171,6 +182,9 @@ impl<T: SplatReceiver> MultiDecoder<T> {
         self.file_type = Some(file_type);
         let splats = self.splats.take().unwrap();
         let mut inner = new_decoder(file_type, splats);
+        if let Some(size) = self.expected_input_size {
+            inner.set_expected_input_size(size)?;
+        }
         inner.push(&self.buffer)?;
         self.buffer.clear();
         self.buffer_gz = None;
@@ -184,6 +198,14 @@ const GZIP_MAGIC: u32 = 0x00088b1f; // Gzip deflate
 impl<T: SplatReceiver> ChunkReceiver for MultiDecoder<T> {
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
+    }
+
+    fn set_expected_input_size(&mut self, size: usize) -> anyhow::Result<()> {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.set_expected_input_size(size)?;
+        }
+        self.expected_input_size = Some(size);
+        Ok(())
     }
 
     fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()> {

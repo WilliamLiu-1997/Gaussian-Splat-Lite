@@ -54,36 +54,13 @@ void main() {
     }
 
     ivec3 texCoord = splatTexCoord(int(splatIndex));
-    vec3 center, scales;
-    vec4 quaternion, rgba;
-    float alpha;
-    mat3 cov3D;
     uvec4 splat1 = texelFetch(splats, texCoord, 0);
     vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(splat1);
-    alpha = alphaShapeAmount.x;
+    float alpha = alphaShapeAmount.x;
     if ((alpha == 0.0) || (alpha < minAlpha)) {
         return;
     }
-    uvec4 splat2 = texelFetch(splats2, texCoord, 0);
-
-    decodeSplat(splat1, splat2, alpha, center, scales, quaternion, rgba);
-    bvec3 zeroScales = equal(scales, vec3(0.0));
-    if (all(zeroScales)) {
-        return;
-    }
-
-// Match the reference 3DGS rasterizer by clamping SH-evaluated RGB positive.
-    rgba.rgb = max(rgba.rgb, vec3(0.0));
-
-    // Decode the shape amount independently from mesh/SDF opacity, which
-    // remains in the main splat's alpha.
-    float kernelShape = 1.0 + 4.0 * min(alphaShapeAmount.y, 1.0);
-    vKernelShape = kernelShape;
-
-    // Expand wider shape kernels until alpha is nearly zero before clipping.
-    adjustedStdDev = maxStdDev + 0.7 * max(kernelShape - 1.0, 0.0);
-
-    scales *= renderToViewScale;
+    vec3 center = decodeSplatCenter(splat1);
     // Compute the view space center of the splat
     vec3 viewCenter = renderToViewScale * quatVec(renderToViewQuat, center) + renderToViewPos;
 
@@ -105,6 +82,31 @@ void main() {
     if (abs(clipCenter.x) > clip || abs(clipCenter.y) > clip) {
         return;
     }
+
+    // The second record is only needed by splats whose centers survive the
+    // view-frustum checks above.
+    vec3 lnScales;
+    vec4 quaternion, rgba;
+    uvec4 splat2 = texelFetch(splats2, texCoord, 0);
+    decodeSplatAttributesLnScale(splat2, alpha, lnScales, quaternion, rgba);
+    vec3 scales = exp(lnScales);
+    bvec3 zeroScales = equal(scales, vec3(0.0));
+    if (all(zeroScales)) {
+        return;
+    }
+
+    // Match the reference 3DGS rasterizer by clamping SH-evaluated RGB positive.
+    rgba.rgb = max(rgba.rgb, vec3(0.0));
+
+    // Decode the shape amount independently from mesh/SDF opacity, which
+    // remains in the main splat's alpha.
+    float kernelShape = 1.0 + 4.0 * min(alphaShapeAmount.y, 1.0);
+    vKernelShape = kernelShape;
+
+    // Expand wider shape kernels until alpha is nearly zero before clipping.
+    adjustedStdDev = maxStdDev + 0.7 * max(kernelShape - 1.0, 0.0);
+
+    scales *= renderToViewScale;
 
     vRgba = vec4(rgba.rgb, alpha);
     vSplatUv = position.xy * adjustedStdDev;
@@ -135,7 +137,7 @@ void main() {
 
     // Compute the 3D covariance matrix of the splat
     mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);
-    cov3D = RS * transpose(RS);
+    mat3 cov3D = RS * transpose(RS);
 
     // Compute the Jacobian of the splat's projection at its center
     vec2 scaledRenderSize = renderSize * focalAdjustment;

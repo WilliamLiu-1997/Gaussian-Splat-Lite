@@ -84,10 +84,13 @@ export class SplatWorker {
   }
 }
 
+const IDLE_WORKER_TIMEOUT_MS = 3000;
+
 class SplatWorkerPool {
   maxWorkers;
   numWorkers = 0;
   freelist: SplatWorker[] = [];
+  idleWorkerTimeouts = new Map<SplatWorker, ReturnType<typeof setTimeout>>();
   queue: ((worker: SplatWorker) => void)[] = [];
 
   constructor(maxWorkers = 4) {
@@ -108,6 +111,11 @@ class SplatWorkerPool {
   async allocWorker(): Promise<SplatWorker> {
     const worker = this.freelist.pop();
     if (worker) {
+      const timeout = this.idleWorkerTimeouts.get(worker);
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+        this.idleWorkerTimeouts.delete(worker);
+      }
       return worker;
     }
 
@@ -137,6 +145,16 @@ class SplatWorkerPool {
     }
 
     this.freelist.push(worker);
+    const timeout = setTimeout(() => {
+      this.idleWorkerTimeouts.delete(worker);
+      const index = this.freelist.indexOf(worker);
+      if (index === -1) return;
+
+      this.freelist.splice(index, 1);
+      worker.dispose();
+      this.numWorkers -= 1;
+    }, IDLE_WORKER_TIMEOUT_MS);
+    this.idleWorkerTimeouts.set(worker, timeout);
   }
 }
 

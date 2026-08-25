@@ -56,7 +56,7 @@ scene.add(edit);
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | `string` | Generated | Object name |
-| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY` | Component-wise multiplication or `ADD_RGBA` addition |
+| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY` | Component-wise multiplication, RGB replacement, or RGBA addition |
 | `sdfSmooth` | `number` | `0` | Smoothing amount when combining SDF shapes |
 | `softEdge` | `number` | `0` | Region-edge feathering distance |
 | `invert` | `boolean` | `false` | Inverts the entire edit region |
@@ -70,6 +70,14 @@ scene.add(edit);
 | `removeSdf(sdf)` | Removes an SDF from the explicit `sdfs` list |
 
 `addSdf()` and `removeSdf()` manage the explicit list. When `sdfs` is not `null`, the renderer uses that list instead of traversing the `SplatEdit` child hierarchy. Use `edit.add(sdf)` and `edit.remove(sdf)` when the SDFs should instead be regular `THREE.Object3D` children.
+
+## RGBA blend modes
+
+| Mode | Description |
+| --- | --- |
+| `MULTIPLY` | Multiplies the existing RGBA component-wise by the SDF RGBA |
+| `SET_RGB` | Replaces RGB with the SDF color and multiplies the existing alpha by the SDF opacity |
+| `ADD_RGBA` | Adds the SDF RGBA to the existing RGBA |
 
 ## SplatEditSdf options
 

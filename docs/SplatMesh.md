@@ -17,7 +17,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `fileType` | `SplatFileType` | Inferred from name | Explicitly selects `PLY` or `SPZ` |
 | `fileName` | `string` | `undefined` | Supplies a name for inferring the format of byte or stream input |
 | `stream` | `ReadableStream` | `undefined` | Chunked input stream |
-| `streamLength` | `number` | `undefined` | Total stream length for progress reporting |
+| `streamLength` | `number` | `undefined` | Exact input-stream byte length, used for progress and safe allocation validation |
 | `splats` | `SplatSource` | New `Splats` | Uses an existing built-in or custom source |
 | `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |
 | `constructSplats` | `(splats) => void \| Promise<void>` | `undefined` | Populates `Splats` during initialization |

@@ -13,11 +13,21 @@ pub const SPLAT_TEX_LAYER_SIZE: usize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
 const MAX_SPLAT_OPACITY: f32 = 1000.0;
 
 pub fn get_splat_tex_size(num_splats: usize) -> (usize, usize, usize, usize) {
-    let width = SPLAT_TEX_WIDTH;
+    let (width, height, depth, max_splats) = get_splat_tex_size_u64(num_splats as u64);
+    (
+        width as usize,
+        height as usize,
+        depth as usize,
+        max_splats as usize,
+    )
+}
+
+pub(crate) fn get_splat_tex_size_u64(num_splats: u64) -> (u64, u64, u64, u64) {
+    let width = SPLAT_TEX_WIDTH as u64;
     let height = num_splats
-        .div_ceil(SPLAT_TEX_WIDTH)
-        .clamp(SPLAT_TEX_MIN_HEIGHT, SPLAT_TEX_HEIGHT);
-    let depth = num_splats.div_ceil(SPLAT_TEX_LAYER_SIZE).max(1);
+        .div_ceil(width)
+        .clamp(SPLAT_TEX_MIN_HEIGHT as u64, SPLAT_TEX_HEIGHT as u64);
+    let depth = num_splats.div_ceil(SPLAT_TEX_LAYER_SIZE as u64).max(1);
     let max_splats = width * height * depth;
     (width, height, depth, max_splats)
 }
@@ -31,6 +41,26 @@ pub fn encode_splat(
     scale: [f32; 3],
     quat_xyzw: [f32; 4],
 ) {
+    encode_splat_with_ln_scale(
+        splat_a,
+        splat_b,
+        center,
+        opacity,
+        rgb,
+        scale.map(f32::ln),
+        quat_xyzw,
+    );
+}
+
+pub fn encode_splat_with_ln_scale(
+    splat_a: &mut [u32],
+    splat_b: &mut [u32],
+    center: [f32; 3],
+    opacity: f32,
+    rgb: [f32; 3],
+    ln_scale: [f32; 3],
+    quat_xyzw: [f32; 4],
+) {
     splat_a[0] = center[0].to_bits();
     splat_a[1] = center[1].to_bits();
     splat_a[2] = center[2].to_bits();
@@ -38,9 +68,9 @@ pub fn encode_splat(
     splat_b[0] =
         f16::from_f32(rgb[0]).to_bits() as u32 | ((f16::from_f32(rgb[1]).to_bits() as u32) << 16);
     splat_b[1] = f16::from_f32(rgb[2]).to_bits() as u32
-        | ((f16::from_f32(scale[0].ln()).to_bits() as u32) << 16);
-    splat_b[2] = f16::from_f32(scale[1].ln()).to_bits() as u32
-        | ((f16::from_f32(scale[2].ln()).to_bits() as u32) << 16);
+        | ((f16::from_f32(ln_scale[0]).to_bits() as u32) << 16);
+    splat_b[2] = f16::from_f32(ln_scale[1]).to_bits() as u32
+        | ((f16::from_f32(ln_scale[2]).to_bits() as u32) << 16);
     splat_b[3] = encode_quat_oct101012(quat_xyzw);
 }
 
@@ -110,9 +140,13 @@ pub fn encode_splat_rgb(splat_b: &mut [u32], rgb: [f32; 3]) {
 }
 
 pub fn encode_splat_scale(splat_b: &mut [u32], scale: [f32; 3]) {
-    splat_b[1] = (splat_b[1] & 0xffff) | ((f16::from_f32(scale[0].ln()).to_bits() as u32) << 16);
-    splat_b[2] = f16::from_f32(scale[1].ln()).to_bits() as u32
-        | ((f16::from_f32(scale[2].ln()).to_bits() as u32) << 16);
+    encode_splat_ln_scale(splat_b, scale.map(f32::ln));
+}
+
+pub fn encode_splat_ln_scale(splat_b: &mut [u32], ln_scale: [f32; 3]) {
+    splat_b[1] = (splat_b[1] & 0xffff) | ((f16::from_f32(ln_scale[0]).to_bits() as u32) << 16);
+    splat_b[2] = f16::from_f32(ln_scale[1]).to_bits() as u32
+        | ((f16::from_f32(ln_scale[2]).to_bits() as u32) << 16);
 }
 
 pub fn decode_splat_ln_scale(splat_b: &[u32]) -> [f32; 3] {

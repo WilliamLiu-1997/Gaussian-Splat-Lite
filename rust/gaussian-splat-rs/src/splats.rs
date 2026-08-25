@@ -3,8 +3,9 @@ use std::array;
 use gaussian_splat_lib::{
     decoder::{SplatInit, SplatProps, SplatReceiver},
     splat_encode::{
-        encode_splat, encode_splat_center, encode_splat_opacity, encode_splat_quat,
-        encode_splat_rgb, encode_splat_scale, encode_splat_sh_rgb, get_splat_tex_size,
+        encode_splat, encode_splat_center, encode_splat_ln_scale, encode_splat_opacity,
+        encode_splat_quat, encode_splat_rgb, encode_splat_scale, encode_splat_sh_rgb,
+        encode_splat_with_ln_scale, get_splat_tex_size,
     },
 };
 use js_sys::{Object, Reflect, Uint32Array};
@@ -140,6 +141,67 @@ impl SplatsData {
             self.buffer_dirty = false;
         }
     }
+
+    fn set_batch_impl(
+        &mut self,
+        base: usize,
+        count: usize,
+        batch: &SplatProps,
+        ln_scale: Option<&[f32]>,
+    ) {
+        let scale = ln_scale.unwrap_or(batch.scale);
+        if !batch.center.is_empty()
+            && !batch.opacity.is_empty()
+            && !batch.rgb.is_empty()
+            && !scale.is_empty()
+            && !batch.quat.is_empty()
+        {
+            let encode = if ln_scale.is_some() {
+                encode_splat_with_ln_scale
+            } else {
+                encode_splat
+            };
+            self.prepare_buffers(base, count);
+            for i in 0..count {
+                let [i3, i4] = [i * 3, i * 4];
+                let center = array::from_fn(|d| batch.center[i3 + d]);
+                let rgb = array::from_fn(|d| batch.rgb[i3 + d]);
+                let scale = array::from_fn(|d| scale[i3 + d]);
+                let quat = array::from_fn(|d| batch.quat[i4 + d]);
+                encode(
+                    &mut self.buffer_a[i4..i4 + 4],
+                    &mut self.buffer_b[i4..i4 + 4],
+                    center,
+                    batch.opacity[i],
+                    rgb,
+                    scale,
+                    quat,
+                );
+            }
+            self.buffer_dirty = true;
+        } else {
+            if !batch.center.is_empty() {
+                self.set_center(base, count, batch.center);
+            }
+            if !batch.opacity.is_empty() {
+                self.set_opacity(base, count, batch.opacity);
+            }
+            if !batch.rgb.is_empty() {
+                self.set_rgb(base, count, batch.rgb);
+            }
+            if !scale.is_empty() {
+                if ln_scale.is_some() {
+                    self.set_ln_scale(base, count, scale);
+                } else {
+                    self.set_scale(base, count, scale);
+                }
+            }
+            if !batch.quat.is_empty() {
+                self.set_quat(base, count, batch.quat);
+            }
+        }
+        self.set_sh(base, count, batch.sh1, batch.sh2, batch.sh3);
+    }
 }
 
 impl SplatReceiver for SplatsData {
@@ -182,52 +244,23 @@ impl SplatReceiver for SplatsData {
 
     fn finish(&mut self) -> anyhow::Result<()> {
         self.invalidate_buffers();
-        std::mem::swap(&mut self.buffer_a, &mut Vec::new());
-        std::mem::swap(&mut self.buffer_b, &mut Vec::new());
+        self.buffer_a = Vec::new();
+        self.buffer_b = Vec::new();
         Ok(())
     }
 
     fn set_batch(&mut self, base: usize, count: usize, batch: &SplatProps) {
-        self.prepare_buffers(base, count);
-        if !batch.center.is_empty()
-            && !batch.opacity.is_empty()
-            && !batch.rgb.is_empty()
-            && !batch.scale.is_empty()
-            && !batch.quat.is_empty()
-        {
-            for i in 0..count {
-                let [i3, i4] = [i * 3, i * 4];
-                encode_splat(
-                    &mut self.buffer_a[i4..i4 + 4],
-                    &mut self.buffer_b[i4..i4 + 4],
-                    array::from_fn(|d| batch.center[i3 + d]),
-                    batch.opacity[i],
-                    array::from_fn(|d| batch.rgb[i3 + d]),
-                    array::from_fn(|d| batch.scale[i3 + d]),
-                    array::from_fn(|d| batch.quat[i4 + d]),
-                );
-            }
-            self.buffer_dirty = true;
-        } else {
-            if !batch.center.is_empty() {
-                self.set_center(base, count, batch.center);
-            }
-            if !batch.opacity.is_empty() {
-                self.set_opacity(base, count, batch.opacity);
-            }
-            if !batch.rgb.is_empty() {
-                self.set_rgb(base, count, batch.rgb);
-            }
-            if !batch.scale.is_empty() {
-                self.set_scale(base, count, batch.scale);
-            }
-            if !batch.quat.is_empty() {
-                self.set_quat(base, count, batch.quat);
-            }
-        }
-        self.buffer_dirty = true;
+        self.set_batch_impl(base, count, batch, None);
+    }
 
-        self.set_sh(base, count, batch.sh1, batch.sh2, batch.sh3);
+    fn set_batch_ln_scale(
+        &mut self,
+        base: usize,
+        count: usize,
+        batch: &SplatProps,
+        ln_scale: &[f32],
+    ) {
+        self.set_batch_impl(base, count, batch, Some(ln_scale));
     }
 
     fn set_center(&mut self, base: usize, count: usize, center: &[f32]) {
@@ -270,6 +303,18 @@ impl SplatReceiver for SplatsData {
             encode_splat_scale(
                 &mut self.buffer_b[i4..i4 + 4],
                 array::from_fn(|d| scale[i3 + d]),
+            );
+        }
+        self.buffer_dirty = true;
+    }
+
+    fn set_ln_scale(&mut self, base: usize, count: usize, ln_scale: &[f32]) {
+        self.prepare_buffers(base, count);
+        for i in 0..count {
+            let [i3, i4] = [i * 3, i * 4];
+            encode_splat_ln_scale(
+                &mut self.buffer_b[i4..i4 + 4],
+                array::from_fn(|d| ln_scale[i3 + d]),
             );
         }
         self.buffer_dirty = true;

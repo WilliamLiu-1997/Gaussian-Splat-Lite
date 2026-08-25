@@ -5,40 +5,43 @@ use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
 
 const MAX_BUFFER_SIZE: usize = 1048576;
+type FinishCallback = Box<dyn FnOnce(Box<dyn ChunkReceiver>) -> Result<JsValue, JsValue>>;
 
 thread_local! {
-    static BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 #[wasm_bindgen]
 pub struct ChunkDecoder {
     receiver: Box<dyn ChunkReceiver>,
-    on_finish: Box<dyn FnOnce(Box<dyn ChunkReceiver>) -> Result<JsValue, JsValue>>,
+    on_finish: FinishCallback,
 }
 
 impl ChunkDecoder {
-    pub fn new(
-        receiver: Box<dyn ChunkReceiver>,
-        on_finish: Box<dyn FnOnce(Box<dyn ChunkReceiver>) -> Result<JsValue, JsValue>>,
-    ) -> Self {
+    pub fn new(receiver: Box<dyn ChunkReceiver>, on_finish: FinishCallback) -> Self {
         Self {
             receiver,
             on_finish,
         }
     }
 
-    pub fn into_inner(
-        self,
-    ) -> (
-        Box<dyn ChunkReceiver>,
-        Box<dyn FnOnce(Box<dyn ChunkReceiver>) -> Result<JsValue, JsValue>>,
-    ) {
+    pub fn into_inner(self) -> (Box<dyn ChunkReceiver>, FinishCallback) {
         (self.receiver, self.on_finish)
     }
 }
 
 #[wasm_bindgen]
 impl ChunkDecoder {
+    #[wasm_bindgen]
+    pub fn set_expected_input_size(&mut self, size: f64) -> Result<(), JsValue> {
+        if !size.is_finite() || size <= 0.0 || size.fract() != 0.0 || size > usize::MAX as f64 {
+            return Err(JsValue::from_str("Invalid expected input size"));
+        }
+        self.receiver
+            .set_expected_input_size(size as usize)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
     #[wasm_bindgen]
     pub fn push(&mut self, bytes: Uint8Array) -> Result<(), JsValue> {
         BUFFER.with_borrow_mut(|buffer| {

@@ -117,6 +117,11 @@ async function decodeBytesUrl({
 }) {
   let readStream: ReadableStream<Uint8Array>;
   let streamLength = 0;
+  let expectedInputLength = 0;
+  const suppliedInputLength = chunkedLength ?? 0;
+  if (!Number.isSafeInteger(suppliedInputLength) || suppliedInputLength < 0) {
+    throw new Error("streamLength must be an exact non-negative integer");
+  }
 
   if (fileBytes) {
     readStream = new ReadableStream({
@@ -126,6 +131,7 @@ async function decodeBytesUrl({
       },
     });
     streamLength = fileBytes.length;
+    expectedInputLength = streamLength;
   } else if (url) {
     const request = new Request(url, {
       headers: requestHeader ? new Headers(requestHeader) : undefined,
@@ -139,10 +145,24 @@ async function decodeBytesUrl({
       );
     }
     readStream = response.body;
-    const contentLength = Number.parseInt(
-      response.headers.get("Content-Length") || "0",
-    );
-    streamLength = Number.isNaN(contentLength) ? 0 : contentLength;
+    const contentLength = Number(response.headers.get("Content-Length") || "0");
+    const responseLength =
+      Number.isSafeInteger(contentLength) && contentLength > 0
+        ? contentLength
+        : 0;
+    streamLength = suppliedInputLength || responseLength;
+    const contentEncoding = response.headers.get("Content-Encoding");
+    // A CORS-filtered response can hide Content-Encoding while exposing
+    // Content-Length, so only treat an automatic response length as exact
+    // when every response header is visible. Callers can provide the exact
+    // decoded streamLength explicitly for large cross-origin inputs.
+    const hasIdentityEncoding =
+      !contentEncoding || contentEncoding.toLowerCase() === "identity";
+    if (suppliedInputLength > 0) {
+      expectedInputLength = suppliedInputLength;
+    } else if (response.type === "basic" && hasIdentityEncoding) {
+      expectedInputLength = responseLength;
+    }
   } else if (chunked) {
     readStream = new ReadableStream(
       {
@@ -162,9 +182,14 @@ async function decodeBytesUrl({
       },
       { highWaterMark: 0 },
     );
-    streamLength = chunkedLength ?? 0;
+    streamLength = suppliedInputLength;
+    expectedInputLength = streamLength;
   } else {
     throw new Error("No url or fileBytes provided");
+  }
+
+  if (expectedInputLength > 0) {
+    decoder.set_expected_input_size(expectedInputLength);
   }
 
   const reader = readStream.getReader();
@@ -176,8 +201,19 @@ async function decodeBytesUrl({
         break;
       }
       loaded += value.length;
+      if (expectedInputLength > 0 && loaded > expectedInputLength) {
+        throw new Error(
+          `Input length exceeds the expected ${expectedInputLength} bytes`,
+        );
+      }
       sendStatus({ loaded, total: streamLength });
       decoder.push(value);
+    }
+
+    if (expectedInputLength > 0 && loaded !== expectedInputLength) {
+      throw new Error(
+        `Input length mismatch: expected ${expectedInputLength} bytes, received ${loaded}`,
+      );
     }
 
     if (chunked && streamLength === 0) {

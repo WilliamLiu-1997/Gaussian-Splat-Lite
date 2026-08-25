@@ -24,6 +24,7 @@ export type SplatMeshOptions = {
   fileType?: SplatFileType;
   fileName?: string;
   stream?: ReadableStream;
+  /** Exact number of bytes yielded by stream; also used for allocation validation. */
   streamLength?: number;
   splats?: SplatSource;
   maxSplats?: number;

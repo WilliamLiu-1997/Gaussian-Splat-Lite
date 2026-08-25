@@ -165,9 +165,6 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     rgb: &state.out_rgb[..count * 3],
                     scale: &state.out_scale[..count * 3],
                     quat: &state.out_quat[..count * 4],
-                    sh1: &Vec::new(),
-                    sh2: &Vec::new(),
-                    sh3: &Vec::new(),
                     ..Default::default()
                 },
             );
@@ -208,7 +205,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     state.out_rgb[i3 + d] = 0.5 + state.f_dc[d].get_f32(&self.buffer, base) * SH_C0;
                 }
                 for d in 0..3 {
-                    state.out_scale[i3 + d] = state.scale[d].get_f32(&self.buffer, base).exp();
+                    state.out_scale[i3 + d] = state.scale[d].get_f32(&self.buffer, base);
                 }
                 let quat: [f32; 4] = array::from_fn(|d| state.rot[d].get_f32(&self.buffer, base));
                 let quat_magnitude = quat.map(|x| x.powi(2)).iter().sum::<f32>().sqrt();
@@ -236,14 +233,13 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 }
             }
 
-            self.splats.set_batch(
+            self.splats.set_batch_ln_scale(
                 state.next_splat,
                 count,
                 &SplatProps {
                     center: &state.out_center[..count * 3],
                     opacity: &state.out_opacity[..count],
                     rgb: &state.out_rgb[..count * 3],
-                    scale: &state.out_scale[..count * 3],
                     quat: &state.out_quat[..count * 4],
                     sh1: &state.out_sh1[..(if state.max_sh_degree >= 1 {
                         count * 9
@@ -262,6 +258,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     })],
                     ..Default::default()
                 },
+                &state.out_scale[..count * 3],
             );
 
             state.next_splat += count;
@@ -312,17 +309,17 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                         elem_record_size,
                         &self.buffer,
                     )?;
-                    self.splats.set_batch(
+                    self.splats.set_batch_ln_scale(
                         elem_read,
                         chunk,
                         &SplatProps {
                             center: &state.out_center[..chunk * 3],
                             opacity: &state.out_opacity[..chunk],
                             rgb: &state.out_rgb[..chunk * 3],
-                            scale: &state.out_scale[..chunk * 3],
                             quat: &state.out_quat[..chunk * 4],
                             ..Default::default()
                         },
+                        &state.out_scale[..chunk * 3],
                     );
                 }
                 PlyElementKind::Sh => {
@@ -557,7 +554,7 @@ fn parse_header(header: &str) -> anyhow::Result<ParsedHeader> {
                 current = Some(PlyElementBuilder::new(fields[1], fields[2].parse()?));
             }
             "property" => {
-                if fields.get(1).map(|s| *s) == Some("list") {
+                if fields.get(1).copied() == Some("list") {
                     return Err(anyhow!("PLY list properties are not supported"));
                 }
                 if fields.len() != 3 {
@@ -694,7 +691,7 @@ impl SuperSplatState {
             .chunk
             .ok_or(anyhow!("Missing chunk element for SuperSplat PLY"))?;
         let vertex_desc = parsed.vertex;
-        let expected_chunks = (vertex_desc.count + SUPER_CHUNK_SIZE - 1) / SUPER_CHUNK_SIZE;
+        let expected_chunks = vertex_desc.count.div_ceil(SUPER_CHUNK_SIZE);
         if chunk_desc.count < expected_chunks {
             return Err(anyhow!(
                 "Not enough chunk records: have {}, need at least {}",
@@ -807,43 +804,44 @@ impl SuperSplatState {
                 }
             };
 
-            let mut f_rest: Vec<PlyProperty> = vec![
-                PlyProperty {
-                    ty: PlyPropertyType::Uchar,
-                    offset: 0
-                };
-                num_f_rest
-            ];
-            for (name, prop) in sh_desc.properties.iter() {
-                if let Some(idx) = name
-                    .strip_prefix("f_rest_")
-                    .and_then(|s| s.parse::<usize>().ok())
-                {
-                    if idx < num_f_rest {
-                        f_rest[idx] = *prop;
+            (max_sh_degree > 0).then(|| {
+                let mut f_rest: Vec<PlyProperty> = vec![
+                    PlyProperty {
+                        ty: PlyPropertyType::Uchar,
+                        offset: 0
+                    };
+                    num_f_rest
+                ];
+                for (name, prop) in sh_desc.properties.iter() {
+                    if let Some(idx) = name
+                        .strip_prefix("f_rest_")
+                        .and_then(|s| s.parse::<usize>().ok())
+                    {
+                        if idx < num_f_rest {
+                            f_rest[idx] = *prop;
+                        }
                     }
                 }
-            }
 
-            let stride = num_f_rest / 3;
-            let sh1_props: Vec<usize> = (0..3)
-                .flat_map(|k| (0..3).map(move |d| k + d * stride))
-                .collect();
-            let sh2_props: Vec<usize> = (0..5)
-                .flat_map(|k| (0..3).map(move |d| 3 + k + d * stride))
-                .collect();
-            let sh3_props: Vec<usize> = (0..7)
-                .flat_map(|k| (0..3).map(move |d| 8 + k + d * stride))
-                .collect();
+                let stride = num_f_rest / 3;
+                let sh1_props: Vec<usize> = (0..3)
+                    .flat_map(|k| (0..3).map(move |d| k + d * stride))
+                    .collect();
+                let sh2_props: Vec<usize> = (0..5)
+                    .flat_map(|k| (0..3).map(move |d| 3 + k + d * stride))
+                    .collect();
+                let sh3_props: Vec<usize> = (0..7)
+                    .flat_map(|k| (0..3).map(move |d| 8 + k + d * stride))
+                    .collect();
 
-            Some(SuperSplatShProps {
-                f_rest,
-                sh1_props,
-                sh2_props,
-                sh3_props,
-                num_f_rest,
+                SuperSplatShProps {
+                    f_rest,
+                    sh1_props,
+                    sh2_props,
+                    sh3_props,
+                    num_f_rest,
+                }
             })
-            .filter(|_| max_sh_degree > 0)
         } else {
             None
         };
@@ -1059,9 +1057,9 @@ impl SuperSplatState {
             self.out_center[i3] = x;
             self.out_center[i3 + 1] = y;
             self.out_center[i3 + 2] = z;
-            self.out_scale[i3] = scale_x.exp();
-            self.out_scale[i3 + 1] = scale_y.exp();
-            self.out_scale[i3 + 2] = scale_z.exp();
+            self.out_scale[i3] = scale_x;
+            self.out_scale[i3 + 1] = scale_y;
+            self.out_scale[i3 + 2] = scale_z;
             self.out_rgb[i3] = r;
             self.out_rgb[i3 + 1] = g;
             self.out_rgb[i3 + 2] = b;
@@ -1355,7 +1353,7 @@ impl PointCloudDecoderState {
                 .get("blue")
                 .ok_or(anyhow!("Missing blue property"))?,
         ];
-        let alpha = properties.get("alpha").map(|p| *p);
+        let alpha = properties.get("alpha").copied();
 
         Ok(Self {
             num_splats,

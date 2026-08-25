@@ -16,6 +16,7 @@ export enum SplatEditSdfType {
 /** RGBA-only operations supported by the SDF pipeline. */
 export enum SplatEditRgbaBlendMode {
   MULTIPLY = "multiply",
+  SET_RGB = "set_rgb",
   ADD_RGBA = "add_rgba",
 }
 
@@ -229,8 +230,7 @@ export class SplatEdits {
       throw new Error("An SDF edit supports at most 65535 shapes");
     }
     const base = index * 4;
-    const blend =
-      edit.rgbaBlendMode === SplatEditRgbaBlendMode.MULTIPLY ? 0 : 1;
+    const blend = rgbaBlendModeToNumber(edit.rgbaBlendMode);
     const flags = blend | (edit.invert ? 1 << 8 : 0);
     let updated = this.setEditUint(base, flags);
     updated =
@@ -300,6 +300,17 @@ export class SplatEdits {
   }
 
   static emptyTexture = makeUintTexture(new Uint32Array(4), 1, 1);
+}
+
+function rgbaBlendModeToNumber(mode: SplatEditRgbaBlendMode) {
+  switch (mode) {
+    case SplatEditRgbaBlendMode.MULTIPLY:
+      return 0;
+    case SplatEditRgbaBlendMode.SET_RGB:
+      return 1;
+    case SplatEditRgbaBlendMode.ADD_RGBA:
+      return 2;
+  }
 }
 
 function sdfTypeToNumber(type: SplatEditSdfType) {

@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added the `SET_RGB` SDF RGBA blend mode, which replaces RGB while multiplying the existing alpha by the SDF opacity.
+
+### Changed
+
+- Reworked SPZ v4 decoding to process Zstandard streams incrementally with bounded buffers and to skip supported header-extension data.
+- Passed logarithmic scales directly through the PLY/SPZ decode and generation pipelines, avoiding redundant exponential and logarithmic conversions.
+- Deferred fetching each Splat's second texture record until its center passes view-frustum checks.
+- Disposed idle decode workers after three seconds so completed loads do not retain the full worker pool.
+- Began committing generated `dist/` artifacts for Git dependencies and added a release check that verifies they are current.
+
+### Fixed
+
+- Treated `streamLength` as an exact byte count, rejecting invalid, truncated, or oversized streams before unsafe SPZ allocation.
+- Validated SPZ point counts and packed renderer allocation sizes, with a default 2 GiB packed-model limit.
+
 ## [0.1.2] - 2026-08-25
 
 ### Changed

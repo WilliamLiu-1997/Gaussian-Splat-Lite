@@ -30,7 +30,7 @@ The constructor and `reinitialize()` accept the same `SplatsOptions`:
 | `fileType` | `SplatFileType` | Inferred from name | Explicit file format |
 | `fileName` | `string` | `undefined` | Name used to infer byte or stream input format |
 | `stream` | `ReadableStream` | `undefined` | Chunked input stream |
-| `streamLength` | `number` | `undefined` | Total input-stream length |
+| `streamLength` | `number` | `undefined` | Exact input-stream byte length, used for progress and safe allocation validation |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `splatArrays` | `[Uint32Array, Uint32Array]` | Empty arrays | Two pre-encoded Splat data arrays |
 | `numSplats` | `number` | Capacity | Number of valid Splats in `splatArrays` |

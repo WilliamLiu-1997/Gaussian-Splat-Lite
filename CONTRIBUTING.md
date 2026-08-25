@@ -36,8 +36,10 @@ update the pinned `allowScripts` entries with `npm approve-scripts`.
 - Include a minimal reproduction and captures for rendering changes when
   possible.
 - Add user-visible changes to the `Unreleased` section of `CHANGELOG.md`.
-- Do not commit generated `dist/`, `site-dist/`, Rust `target/`, or wasm-pack
-  `pkg/` directories.
+- Regenerate and commit `dist/` whenever package source changes so that Git
+  dependencies remain usable at every commit.
+- Do not commit generated `site-dist/`, Rust `target/`, or wasm-pack `pkg/`
+  directories.
 
 ## Maintainer releases
 

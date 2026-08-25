@@ -6,15 +6,23 @@ use miniz_oxide::inflate::TINFLStatus;
 use std::io::Read;
 
 use crate::decoder::{ChunkReceiver, SplatInit, SplatReceiver};
+use crate::splat_encode::get_splat_tex_size_u64;
 
 pub const SPZ_MAGIC: u32 = 0x5053474e; // "NGSP"
 const SH_C0: f32 = 0.28209479177387814;
 const MAX_SPLAT_CHUNK: usize = 65536;
 const NGSP_HEADER_SIZE: usize = 32;
 const TOC_ENTRY_SIZE: usize = 16;
-const MAX_COMPRESSION_RATIO: u64 = 1024;
-const MIN_BYTES_PER_SPLAT: u64 = 9;
 const MAX_ZSTD_WINDOW_SIZE: u64 = 100 * 1024 * 1024;
+const MAX_PACKED_MODEL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+// ZSTD blocks contain at most 128 KiB of compressed payload. This buffer can
+// hold a complete block and checksum; frame headers are smaller than that.
+const MAX_ZSTD_BLOCK_SIZE: usize = 128 * 1024;
+const MAX_ZSTD_FRAME_HEADER_SIZE: usize = 18;
+const ZSTD_BLOCK_HEADER_SIZE: usize = 3;
+const ZSTD_CHECKSUM_SIZE: usize = 4;
+const MAX_V4_COMPRESSED_BUFFER_SIZE: usize =
+    MAX_ZSTD_BLOCK_SIZE + ZSTD_BLOCK_HEADER_SIZE + ZSTD_CHECKSUM_SIZE;
 
 // Header flag bits (byte 14 of the SPZ header).
 const FLAG_HAS_EXTENSIONS: u8 = 0x02;
@@ -37,13 +45,11 @@ enum SpzFormat {
     Ngsp,
 }
 
-#[derive(Debug, Clone)]
 struct V4HeaderInfo {
     version: u32,
     num_splats: usize,
     sh_degree: usize,
     fractional_bits: u8,
-    flags: u8,
     num_streams: usize,
     toc_byte_offset: usize,
     toc_end: usize,
@@ -51,19 +57,32 @@ struct V4HeaderInfo {
 
 enum V4Stage {
     NeedHeader,
-    NeedToc(V4HeaderInfo),
-    NeedStreams {
+    SkipExtensions {
         header: V4HeaderInfo,
+        remaining: usize,
+    },
+    NeedToc(V4HeaderInfo),
+    NeedStream {
         streams: Vec<V4StreamInfo>,
-        total_size: usize,
+        next_stream: usize,
+        decoder: Box<V4StreamDecoder>,
     },
     Done,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct V4StreamInfo {
-    compressed_offset: usize,
     compressed_size: usize,
     uncompressed_size: usize,
+}
+
+#[derive(Default)]
+struct V4StreamDecoder {
+    decoder: ruzstd::FrameDecoder,
+    compressed_received: usize,
+    decoded_size: usize,
+    header_validated: bool,
+    has_checksum: bool,
 }
 
 pub struct SpzDecoder<T: SplatReceiver> {
@@ -76,10 +95,13 @@ pub struct SpzDecoder<T: SplatReceiver> {
     out_pos: usize,
     raw: Vec<u8>,
     v4_stage: V4Stage,
-    v4_total_size: Option<usize>,
+    expected_input_size: Option<usize>,
     buffer: Vec<u8>,
+    buffer_offset: usize,
     state: Option<SpzDecoderState>,
     done: bool,
+    #[cfg(test)]
+    v4_peak_compressed_buffer_size: usize,
 }
 
 impl<T: SplatReceiver> SpzDecoder<T> {
@@ -97,7 +119,10 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             done: false,
             raw: Vec::new(),
             v4_stage: V4Stage::NeedHeader,
-            v4_total_size: None,
+            expected_input_size: None,
+            buffer_offset: 0,
+            #[cfg(test)]
+            v4_peak_compressed_buffer_size: 0,
         }
     }
 
@@ -110,32 +135,30 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             self.poll_header()?;
         }
         if self.state.is_some() {
-            self.poll_sections()?;
+            self.poll_sections();
         }
         Ok(())
     }
 
     fn poll_header(&mut self) -> anyhow::Result<()> {
-        if self.buffer.len() < 16 {
+        let buffer = &self.buffer[self.buffer_offset..];
+        if buffer.len() < 16 {
             return Ok(());
         }
 
-        let header = parse_common_header(&self.buffer)?;
+        let header = parse_common_header(buffer)?;
         if !(1..=3).contains(&header.version) {
             return Err(anyhow::anyhow!(
                 "Unsupported legacy SPZ version: {}",
                 header.version
             ));
         }
-        let _reserved = self.buffer[15];
-
-        self.buffer.drain(..16);
+        self.buffer_offset += 16;
         self.init_state(
             header.version,
             header.num_splats,
             header.sh_degree,
             header.fractional_bits,
-            header.flags,
         )
     }
 
@@ -145,21 +168,20 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         num_splats: usize,
         sh_degree: usize,
         fractional_bits: u8,
-        flags: u8,
     ) -> anyhow::Result<()> {
-        if flags & 0x80 != 0 {
-            return Err(anyhow::anyhow!(
-                "Unsupported SPZ extension flags: 0x{:02x}",
-                flags
-            ));
+        if num_splats == 0 {
+            return Err(anyhow::anyhow!("SPZ point count must be greater than zero"));
         }
+        validate_splat_parameters(sh_degree, fractional_bits)?;
+
+        validate_packed_model_size(num_splats, sh_degree)?;
 
         self.state = Some(SpzDecoderState::new(
             version,
             num_splats,
             sh_degree,
             fractional_bits,
-        )?);
+        ));
 
         self.splats.init_splats(&SplatInit {
             num_splats,
@@ -173,127 +195,315 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         loop {
             let stage = std::mem::replace(&mut self.v4_stage, V4Stage::Done);
             match stage {
-                V4Stage::Done => {
-                    if let Some(total_size) = self.v4_total_size {
-                        if self.raw.len() != total_size {
-                            return Err(anyhow::anyhow!(
-                                "v4 compressed data size mismatch: expected {}, got {}",
-                                total_size,
-                                self.raw.len()
-                            ));
-                        }
-                    }
-                    self.v4_stage = V4Stage::Done;
-                    return Ok(());
-                }
+                V4Stage::Done => return Ok(()),
                 V4Stage::NeedHeader => {
                     if self.raw.len() < NGSP_HEADER_SIZE {
                         self.v4_stage = V4Stage::NeedHeader;
                         return Ok(());
                     }
-                    self.v4_stage = V4Stage::NeedToc(parse_v4_header(&self.raw)?);
+                    let header = parse_v4_header(&self.raw)?;
+                    let extension_size = header.toc_byte_offset - NGSP_HEADER_SIZE;
+                    if let Some(expected_size) = self.expected_input_size {
+                        if header.toc_end > expected_size {
+                            return Err(anyhow::anyhow!(
+                                "v4 TOC end {} exceeds expected input size {}",
+                                header.toc_end,
+                                expected_size
+                            ));
+                        }
+                    }
+
+                    self.raw.clear();
+                    self.v4_stage = if extension_size == 0 {
+                        V4Stage::NeedToc(header)
+                    } else {
+                        V4Stage::SkipExtensions {
+                            header,
+                            remaining: extension_size,
+                        }
+                    };
+                }
+                V4Stage::SkipExtensions { header, remaining } => {
+                    if remaining > 0 {
+                        self.v4_stage = V4Stage::SkipExtensions { header, remaining };
+                        return Ok(());
+                    }
+                    self.v4_stage = V4Stage::NeedToc(header);
                 }
                 V4Stage::NeedToc(header) => {
-                    if self.raw.len() < header.toc_end {
+                    let toc_size = header.toc_end - header.toc_byte_offset;
+                    if self.raw.len() < toc_size {
                         self.v4_stage = V4Stage::NeedToc(header);
                         return Ok(());
                     }
                     let (streams, total_size) = walk_v4_toc(&self.raw, &header)?;
-                    validate_v4_point_count(header.num_splats, total_size)?;
-                    self.v4_total_size = Some(total_size);
-                    self.v4_stage = V4Stage::NeedStreams {
-                        header,
-                        streams,
-                        total_size,
-                    };
-                }
-                V4Stage::NeedStreams {
-                    header,
-                    streams,
-                    total_size,
-                } => {
-                    if self.raw.len() < total_size {
-                        self.v4_stage = V4Stage::NeedStreams {
-                            header,
-                            streams,
-                            total_size,
-                        };
-                        return Ok(());
-                    }
-                    if self.raw.len() > total_size {
-                        return Err(anyhow::anyhow!(
-                            "v4 compressed data size mismatch: expected {}, got {}",
-                            total_size,
-                            self.raw.len()
-                        ));
-                    }
-
-                    self.buffer.clear();
-                    for stream in &streams {
-                        let compressed = &self.raw[stream.compressed_offset
-                            ..stream.compressed_offset + stream.compressed_size];
-                        validate_zstd_frame(compressed, stream.uncompressed_size)?;
-
-                        let mut decoder = ruzstd::StreamingDecoder::new(compressed)
-                            .map_err(|error| anyhow::anyhow!("v4 ZSTD init failed: {}", error))?;
-                        let output_start = self.buffer.len();
-                        let read_limit = u64::try_from(stream.uncompressed_size)
-                            .ok()
-                            .and_then(|size| size.checked_add(1))
-                            .ok_or_else(|| anyhow::anyhow!("v4 stream size overflow"))?;
-                        decoder
-                            .by_ref()
-                            .take(read_limit)
-                            .read_to_end(&mut self.buffer)
-                            .map_err(|error| {
-                                anyhow::anyhow!("v4 ZSTD decompress failed: {}", error)
-                            })?;
-                        let actual_size = self.buffer.len() - output_start;
-                        if actual_size != stream.uncompressed_size {
+                    if let Some(expected_size) = self.expected_input_size {
+                        if total_size != expected_size {
                             return Err(anyhow::anyhow!(
-                                "v4 ZSTD size mismatch: expected {}, got {}",
-                                stream.uncompressed_size,
-                                actual_size
-                            ));
-                        }
-                        if !decoder.get_ref().is_empty() {
-                            return Err(anyhow::anyhow!(
-                                "trailing bytes in v4 ZSTD stream: {}",
-                                decoder.get_ref().len()
+                                "v4 TOC size mismatch: expected input size {}, got {}",
+                                expected_size,
+                                total_size
                             ));
                         }
                     }
-
                     self.init_state(
                         header.version,
                         header.num_splats,
                         header.sh_degree,
                         header.fractional_bits,
-                        header.flags,
                     )?;
-                    self.poll_sections()?;
-                    self.v4_stage = V4Stage::Done;
-                    self.done = true;
-                    return Ok(());
+                    self.raw = Vec::with_capacity(MAX_V4_COMPRESSED_BUFFER_SIZE);
+                    self.v4_stage = V4Stage::NeedStream {
+                        streams,
+                        next_stream: 0,
+                        decoder: Box::default(),
+                    };
+                }
+                V4Stage::NeedStream {
+                    streams,
+                    next_stream,
+                    mut decoder,
+                } => {
+                    let stream = streams[next_stream];
+                    if !self.decode_v4_stream(stream, next_stream, decoder.as_mut())? {
+                        self.v4_stage = V4Stage::NeedStream {
+                            streams,
+                            next_stream,
+                            decoder,
+                        };
+                        return Ok(());
+                    }
+
+                    let next_stream = next_stream + 1;
+                    if next_stream == streams.len() {
+                        self.v4_stage = V4Stage::Done;
+                        self.done = true;
+                    } else {
+                        self.v4_stage = V4Stage::NeedStream {
+                            streams,
+                            next_stream,
+                            decoder: Box::default(),
+                        };
+                    }
                 }
             }
         }
     }
 
-    fn poll_sections(&mut self) -> anyhow::Result<()> {
-        let Some(state) = self.state.as_mut() else {
-            unreachable!();
-        };
+    fn v4_input_needed(&self) -> usize {
+        match &self.v4_stage {
+            V4Stage::NeedHeader => NGSP_HEADER_SIZE.saturating_sub(self.raw.len()),
+            V4Stage::SkipExtensions { remaining, .. } => *remaining,
+            V4Stage::NeedToc(header) => {
+                (header.toc_end - header.toc_byte_offset).saturating_sub(self.raw.len())
+            }
+            V4Stage::NeedStream {
+                streams,
+                next_stream,
+                decoder,
+            } => streams[*next_stream]
+                .compressed_size
+                .saturating_sub(decoder.compressed_received)
+                .min(MAX_V4_COMPRESSED_BUFFER_SIZE.saturating_sub(self.raw.len())),
+            V4Stage::Done => 0,
+        }
+    }
+
+    fn push_v4(&mut self, mut bytes: &[u8]) -> anyhow::Result<()> {
+        loop {
+            self.try_decode_v4()?;
+            if bytes.is_empty() {
+                return Ok(());
+            }
+            if matches!(self.v4_stage, V4Stage::Done) {
+                return Err(anyhow::anyhow!(
+                    "v4 compressed data size mismatch: trailing data"
+                ));
+            }
+
+            let needed = self.v4_input_needed();
+            if needed == 0 {
+                return Err(anyhow::anyhow!("v4 decoder made no progress"));
+            }
+            let take = needed.min(bytes.len());
+            if let V4Stage::SkipExtensions { remaining, .. } = &mut self.v4_stage {
+                *remaining -= take;
+            } else {
+                self.raw.extend_from_slice(&bytes[..take]);
+                if let V4Stage::NeedStream { decoder, .. } = &mut self.v4_stage {
+                    decoder.compressed_received += take;
+                    #[cfg(test)]
+                    {
+                        self.v4_peak_compressed_buffer_size =
+                            self.v4_peak_compressed_buffer_size.max(self.raw.len());
+                    }
+                }
+            }
+            bytes = &bytes[take..];
+        }
+    }
+
+    fn decode_v4_stream(
+        &mut self,
+        stream: V4StreamInfo,
+        stream_index: usize,
+        stream_decoder: &mut V4StreamDecoder,
+    ) -> anyhow::Result<bool> {
+        let num_splats = self.state.as_ref().unwrap().num_splats;
+        // walk_v4_toc already validated count × record width.
+        let bytes_per_item = stream.uncompressed_size / num_splats;
+        let max_chunk_size = MAX_SPLAT_CHUNK * bytes_per_item;
+        let input_complete = stream_decoder.compressed_received == stream.compressed_size;
+
+        if !stream_decoder.header_validated {
+            if self.raw.len() < MAX_ZSTD_FRAME_HEADER_SIZE && !input_complete {
+                return Ok(false);
+            }
+            let (has_checksum, header_size) = validate_zstd_frame(&self.raw)?;
+            stream_decoder.has_checksum = has_checksum;
+            let mut header = &self.raw[..header_size];
+            stream_decoder
+                .decoder
+                .init(&mut header)
+                .map_err(|error| anyhow::anyhow!("v4 ZSTD init failed: {}", error))?;
+            self.raw.drain(..header_size);
+            stream_decoder.header_validated = true;
+        }
+
+        loop {
+            let mut made_progress = false;
+
+            if self.buffer_offset > 0 {
+                self.compact_buffer();
+            }
+
+            while stream_decoder.decoder.can_collect() > 0 {
+                let output_remaining = stream
+                    .uncompressed_size
+                    .saturating_sub(stream_decoder.decoded_size);
+                let output_limit = output_remaining.saturating_add(1);
+                let chunk_space = max_chunk_size.saturating_sub(self.buffer.len());
+                let read_size = stream_decoder
+                    .decoder
+                    .can_collect()
+                    .min(output_limit)
+                    .min(chunk_space);
+                if read_size == 0 {
+                    break;
+                }
+
+                let output_start = self.buffer.len();
+                self.buffer.resize(output_start + read_size, 0);
+                let written = stream_decoder
+                    .decoder
+                    .read(&mut self.buffer[output_start..])
+                    .map_err(|error| anyhow::anyhow!("v4 ZSTD decompress failed: {}", error))?;
+                self.buffer.truncate(output_start + written);
+                if written == 0 {
+                    break;
+                }
+                made_progress = true;
+                stream_decoder.decoded_size += written;
+                if stream_decoder.decoded_size > stream.uncompressed_size {
+                    return Err(anyhow::anyhow!(
+                        "v4 ZSTD size mismatch: expected {}, got at least {}",
+                        stream.uncompressed_size,
+                        stream_decoder.decoded_size
+                    ));
+                }
+
+                if self.buffer.len() == max_chunk_size {
+                    self.consume_v4_output_chunk();
+                }
+            }
+
+            if stream_decoder.decoder.is_finished() {
+                let consumed = stream_decoder.decoder.bytes_read_from_source() as usize;
+                if consumed < stream.compressed_size {
+                    return Err(anyhow::anyhow!(
+                        "trailing bytes in v4 ZSTD stream: {}",
+                        stream.compressed_size - consumed
+                    ));
+                }
+                if stream_decoder.decoder.can_collect() == 0 {
+                    if stream_decoder.decoded_size != stream.uncompressed_size {
+                        return Err(anyhow::anyhow!(
+                            "v4 ZSTD size mismatch: expected {}, got {}",
+                            stream.uncompressed_size,
+                            stream_decoder.decoded_size
+                        ));
+                    }
+                    if !self.buffer.is_empty() {
+                        self.consume_v4_output_chunk();
+                    }
+                    return Ok(true);
+                }
+            }
+
+            if !stream_decoder.decoder.is_finished() {
+                if let Some(block_size) =
+                    next_zstd_block_input(&self.raw, stream_decoder.has_checksum)?
+                {
+                    // Restrict the slice to exactly one block (plus the final
+                    // checksum, when present) so ruzstd cannot accumulate the
+                    // output of many small/RLE blocks before we drain it.
+                    let (consumed, _) = stream_decoder
+                        .decoder
+                        .decode_from_to(&self.raw[..block_size], &mut [])
+                        .map_err(|error| anyhow::anyhow!("v4 ZSTD decompress failed: {}", error))?;
+                    debug_assert_eq!(consumed, block_size);
+                    self.raw.drain(..consumed);
+                    made_progress |= consumed > 0;
+                }
+            }
+
+            if !made_progress {
+                if input_complete {
+                    return Err(anyhow::anyhow!(
+                        "v4 ZSTD stream {} ended before its frame was complete",
+                        stream_index
+                    ));
+                }
+                if self.raw.len() >= MAX_V4_COMPRESSED_BUFFER_SIZE {
+                    return Err(anyhow::anyhow!(
+                        "v4 ZSTD stream {} made no progress with {} buffered bytes",
+                        stream_index,
+                        self.raw.len()
+                    ));
+                }
+                return Ok(false);
+            }
+        }
+    }
+
+    fn consume_v4_output_chunk(&mut self) {
+        self.buffer_offset = 0;
+        self.poll_sections();
+        debug_assert_eq!(self.buffer_offset, self.buffer.len());
+        self.buffer.clear();
+        self.buffer_offset = 0;
+    }
+
+    fn compact_buffer(&mut self) {
+        if self.buffer_offset == 0 {
+            return;
+        }
+        let remaining = self.buffer.len() - self.buffer_offset;
+        self.buffer.copy_within(self.buffer_offset.., 0);
+        self.buffer.truncate(remaining);
+        self.buffer_offset = 0;
+    }
+
+    fn poll_sections(&mut self) {
+        let state = self.state.as_mut().unwrap();
         loop {
             match state.stage {
                 SpzDecoderStage::Centers => {
                     let bytes_per_item = if state.version == 1 { 6 } else { 9 };
-                    let avail_items = self.buffer.len() / bytes_per_item;
-                    let remaining = state.num_splats - state.next_splat;
-                    if (avail_items < remaining) && (avail_items < MAX_SPLAT_CHUNK) {
-                        return Ok(());
-                    }
-                    let chunk = remaining.min(avail_items).min(MAX_SPLAT_CHUNK);
+                    let input = &self.buffer[self.buffer_offset..];
+                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                        return;
+                    };
 
                     if state.output.len() < chunk * 3 {
                         state.output.resize(chunk * 3, 0.0);
@@ -301,27 +511,26 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                     if state.version == 1 {
                         for i in 0..chunk {
                             let base = i * 6;
-                            state.output[i * 3 + 0] = read_f16_le(&self.buffer[base..base + 2]);
-                            state.output[i * 3 + 1] = read_f16_le(&self.buffer[base + 2..base + 4]);
-                            state.output[i * 3 + 2] = read_f16_le(&self.buffer[base + 4..base + 6]);
+                            state.output[i * 3] = read_f16_le(&input[base..base + 2]);
+                            state.output[i * 3 + 1] = read_f16_le(&input[base + 2..base + 4]);
+                            state.output[i * 3 + 2] = read_f16_le(&input[base + 4..base + 6]);
                         }
                     } else {
                         let frac = (1_u32 << state.fractional_bits) as f32;
                         for i in 0..chunk {
                             let base = i * 9;
-                            state.output[i * 3 + 0] =
-                                read_i24_le(&self.buffer[base..base + 3]) as f32 / frac;
+                            state.output[i * 3] = read_i24_le(&input[base..base + 3]) as f32 / frac;
                             state.output[i * 3 + 1] =
-                                read_i24_le(&self.buffer[base + 3..base + 6]) as f32 / frac;
+                                read_i24_le(&input[base + 3..base + 6]) as f32 / frac;
                             state.output[i * 3 + 2] =
-                                read_i24_le(&self.buffer[base + 6..base + 9]) as f32 / frac;
+                                read_i24_le(&input[base + 6..base + 9]) as f32 / frac;
                         }
                     }
 
                     self.splats
                         .set_center(state.next_splat, chunk, &state.output);
 
-                    self.buffer.drain(..chunk * bytes_per_item);
+                    self.buffer_offset += chunk * bytes_per_item;
                     state.next_splat += chunk;
                     if state.next_splat == state.num_splats {
                         state.next_splat = 0;
@@ -330,24 +539,22 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 }
                 SpzDecoderStage::Alphas => {
                     let bytes_per_item = 1;
-                    let avail_items = self.buffer.len() / bytes_per_item;
-                    let remaining = state.num_splats - state.next_splat;
-                    if (avail_items < remaining) && (avail_items < MAX_SPLAT_CHUNK) {
-                        return Ok(());
-                    }
-                    let chunk = remaining.min(avail_items).min(MAX_SPLAT_CHUNK);
+                    let input = &self.buffer[self.buffer_offset..];
+                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                        return;
+                    };
 
                     if state.output.len() < chunk {
                         state.output.resize(chunk, 0.0);
                     }
-                    for i in 0..chunk {
-                        state.output[i] = self.buffer[i] as f32 / 255.0;
+                    for (output, input) in state.output.iter_mut().zip(input).take(chunk) {
+                        *output = *input as f32 / 255.0;
                     }
 
                     self.splats
                         .set_opacity(state.next_splat, chunk, &state.output);
 
-                    self.buffer.drain(..chunk * bytes_per_item);
+                    self.buffer_offset += chunk * bytes_per_item;
                     state.next_splat += chunk;
                     if state.next_splat == state.num_splats {
                         state.next_splat = 0;
@@ -356,12 +563,10 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 }
                 SpzDecoderStage::Rgb => {
                     let bytes_per_item = 3;
-                    let avail_items = self.buffer.len() / bytes_per_item;
-                    let remaining = state.num_splats - state.next_splat;
-                    if (avail_items < remaining) && (avail_items < MAX_SPLAT_CHUNK) {
-                        return Ok(());
-                    }
-                    let chunk = remaining.min(avail_items).min(MAX_SPLAT_CHUNK);
+                    let input = &self.buffer[self.buffer_offset..];
+                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                        return;
+                    };
 
                     let scale = SH_C0 / 0.15;
                     if state.output.len() < chunk * 3 {
@@ -369,16 +574,14 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                     }
                     for i in 0..chunk {
                         let b = i * 3;
-                        state.output[b + 0] = (self.buffer[b] as f32 / 255.0 - 0.5) * scale + 0.5;
-                        state.output[b + 1] =
-                            (self.buffer[b + 1] as f32 / 255.0 - 0.5) * scale + 0.5;
-                        state.output[b + 2] =
-                            (self.buffer[b + 2] as f32 / 255.0 - 0.5) * scale + 0.5;
+                        state.output[b] = (input[b] as f32 / 255.0 - 0.5) * scale + 0.5;
+                        state.output[b + 1] = (input[b + 1] as f32 / 255.0 - 0.5) * scale + 0.5;
+                        state.output[b + 2] = (input[b + 2] as f32 / 255.0 - 0.5) * scale + 0.5;
                     }
 
                     self.splats.set_rgb(state.next_splat, chunk, &state.output);
 
-                    self.buffer.drain(..chunk * bytes_per_item);
+                    self.buffer_offset += chunk * bytes_per_item;
                     state.next_splat += chunk;
                     if state.next_splat == state.num_splats {
                         state.next_splat = 0;
@@ -387,27 +590,25 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 }
                 SpzDecoderStage::Scales => {
                     let bytes_per_item = 3;
-                    let avail_items = self.buffer.len() / bytes_per_item;
-                    let remaining = state.num_splats - state.next_splat;
-                    if (avail_items < remaining) && (avail_items < MAX_SPLAT_CHUNK) {
-                        return Ok(());
-                    }
-                    let chunk = remaining.min(avail_items).min(MAX_SPLAT_CHUNK);
+                    let input = &self.buffer[self.buffer_offset..];
+                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                        return;
+                    };
 
                     if state.output.len() < chunk * 3 {
                         state.output.resize(chunk * 3, 0.0);
                     }
                     for i in 0..chunk {
                         let b = i * 3;
-                        state.output[b + 0] = ((self.buffer[b] as f32) / 16.0 - 10.0).exp();
-                        state.output[b + 1] = ((self.buffer[b + 1] as f32) / 16.0 - 10.0).exp();
-                        state.output[b + 2] = ((self.buffer[b + 2] as f32) / 16.0 - 10.0).exp();
+                        state.output[b] = (input[b] as f32) / 16.0 - 10.0;
+                        state.output[b + 1] = (input[b + 1] as f32) / 16.0 - 10.0;
+                        state.output[b + 2] = (input[b + 2] as f32) / 16.0 - 10.0;
                     }
 
                     self.splats
-                        .set_scale(state.next_splat, chunk, &state.output);
+                        .set_ln_scale(state.next_splat, chunk, &state.output);
 
-                    self.buffer.drain(..chunk * bytes_per_item);
+                    self.buffer_offset += chunk * bytes_per_item;
                     state.next_splat += chunk;
                     if state.next_splat == state.num_splats {
                         state.next_splat = 0;
@@ -416,12 +617,10 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 }
                 SpzDecoderStage::Quats => {
                     let bytes_per_item = if state.version >= 3 { 4 } else { 3 };
-                    let avail_items = self.buffer.len() / bytes_per_item;
-                    let remaining = state.num_splats - state.next_splat;
-                    if (avail_items < remaining) && (avail_items < MAX_SPLAT_CHUNK) {
-                        return Ok(());
-                    }
-                    let chunk = remaining.min(avail_items).min(MAX_SPLAT_CHUNK);
+                    let input = &self.buffer[self.buffer_offset..];
+                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                        return;
+                    };
 
                     if state.output.len() < chunk * 4 {
                         state.output.resize(chunk * 4, 0.0);
@@ -430,10 +629,10 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         // Versions 3 and 4 use "smallest three" quaternion compression.
                         for i in 0..chunk {
                             let base = i * 4;
-                            let comp = (self.buffer[base] as u32)
-                                | ((self.buffer[base + 1] as u32) << 8)
-                                | ((self.buffer[base + 2] as u32) << 16)
-                                | ((self.buffer[base + 3] as u32) << 24);
+                            let comp = (input[base] as u32)
+                                | ((input[base + 1] as u32) << 8)
+                                | ((input[base + 2] as u32) << 16)
+                                | ((input[base + 3] as u32) << 24);
                             let largest_index = (comp >> 30) as usize;
                             let mut remaining_values = comp;
                             let value_mask: u32 = (1u32 << 9) - 1; // 9 bits for magnitude
@@ -468,9 +667,9 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         // Versions < 3 use 3 bytes (qx, qy, qz), reconstruct qw
                         for i in 0..chunk {
                             let base = i * 3;
-                            let qx = self.buffer[base] as f32 / 127.5 - 1.0;
-                            let qy = self.buffer[base + 1] as f32 / 127.5 - 1.0;
-                            let qz = self.buffer[base + 2] as f32 / 127.5 - 1.0;
+                            let qx = input[base] as f32 / 127.5 - 1.0;
+                            let qy = input[base + 1] as f32 / 127.5 - 1.0;
+                            let qz = input[base + 2] as f32 / 127.5 - 1.0;
                             let qw = (1.0 - (qx * qx + qy * qy + qz * qz)).max(0.0).sqrt();
                             let o = i * 4;
                             state.output[o] = qx;
@@ -482,7 +681,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
 
                     self.splats.set_quat(state.next_splat, chunk, &state.output);
 
-                    self.buffer.drain(..chunk * bytes_per_item);
+                    self.buffer_offset += chunk * bytes_per_item;
                     state.next_splat += chunk;
                     if state.next_splat == state.num_splats {
                         state.next_splat = 0;
@@ -500,12 +699,10 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                             _ => 0,
                         };
                         let bytes_per_item = sh_components;
-                        let avail_items = self.buffer.len() / bytes_per_item;
-                        let remaining = state.num_splats - state.next_splat;
-                        if (avail_items < remaining) && (avail_items < MAX_SPLAT_CHUNK) {
-                            return Ok(());
-                        }
-                        let chunk = remaining.min(avail_items).min(MAX_SPLAT_CHUNK);
+                        let input = &self.buffer[self.buffer_offset..];
+                        let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                            return;
+                        };
 
                         let total_floats = chunk * sh_components;
                         if state.output.len() < total_floats {
@@ -517,15 +714,14 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                             for d in 0..3 {
                                 for k in 0..3 {
                                     state.output[9 * i + k * 3 + d] =
-                                        (self.buffer[base + k * 3 + d] as f32 - 128.0) / 128.0;
+                                        (input[base + k * 3 + d] as f32 - 128.0) / 128.0;
                                 }
                             }
                             if state.sh_degree >= 2 {
                                 for d in 0..3 {
                                     for k in 0..5 {
                                         state.output[9 * chunk + 15 * i + k * 3 + d] =
-                                            (self.buffer[base + 9 + k * 3 + d] as f32 - 128.0)
-                                                / 128.0;
+                                            (input[base + 9 + k * 3 + d] as f32 - 128.0) / 128.0;
                                     }
                                 }
                             }
@@ -533,8 +729,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                                 for d in 0..3 {
                                     for k in 0..7 {
                                         state.output[24 * chunk + 21 * i + k * 3 + d] =
-                                            (self.buffer[base + 24 + k * 3 + d] as f32 - 128.0)
-                                                / 128.0;
+                                            (input[base + 24 + k * 3 + d] as f32 - 128.0) / 128.0;
                                     }
                                 }
                             }
@@ -556,7 +751,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                             },
                         );
 
-                        self.buffer.drain(..chunk * bytes_per_item);
+                        self.buffer_offset += chunk * bytes_per_item;
                         state.next_splat += chunk;
                         if state.next_splat == state.num_splats {
                             state.next_splat = 0;
@@ -564,7 +759,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         }
                     }
                 }
-                SpzDecoderStage::Done => return Ok(()),
+                SpzDecoderStage::Done => return,
             }
         }
     }
@@ -605,6 +800,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             );
 
             if out_written > 0 {
+                self.compact_buffer();
                 self.buffer.extend_from_slice(
                     &self.decompressed[self.out_pos..self.out_pos + out_written],
                 );
@@ -674,13 +870,6 @@ fn parse_v4_header(raw: &[u8]) -> anyhow::Result<V4HeaderInfo> {
             header.version
         ));
     }
-    validate_splat_parameters(header.sh_degree, header.fractional_bits)?;
-    if header.flags & 0x80 != 0 {
-        return Err(anyhow::anyhow!(
-            "Unsupported SPZ extension flags: 0x{:02x}",
-            header.flags
-        ));
-    }
 
     if header.flags & FLAG_HAS_EXTENSIONS != 0 {
         eprintln!(
@@ -699,9 +888,7 @@ fn parse_v4_header(raw: &[u8]) -> anyhow::Result<V4HeaderInfo> {
         ));
     }
 
-    let toc_size = num_streams
-        .checked_mul(TOC_ENTRY_SIZE)
-        .ok_or_else(|| anyhow::anyhow!("v4 TOC size overflow"))?;
+    let toc_size = num_streams * TOC_ENTRY_SIZE;
     let toc_end = toc_byte_offset
         .checked_add(toc_size)
         .ok_or_else(|| anyhow::anyhow!("v4 TOC end overflow"))?;
@@ -711,7 +898,6 @@ fn parse_v4_header(raw: &[u8]) -> anyhow::Result<V4HeaderInfo> {
         num_splats: header.num_splats,
         sh_degree: header.sh_degree,
         fractional_bits: header.fractional_bits,
-        flags: header.flags,
         num_streams,
         toc_byte_offset,
         toc_end,
@@ -719,7 +905,7 @@ fn parse_v4_header(raw: &[u8]) -> anyhow::Result<V4HeaderInfo> {
 }
 
 fn walk_v4_toc(raw: &[u8], header: &V4HeaderInfo) -> anyhow::Result<(Vec<V4StreamInfo>, usize)> {
-    debug_assert!(raw.len() >= header.toc_end);
+    debug_assert!(raw.len() >= header.toc_end - header.toc_byte_offset);
     let expected_sizes = expected_v4_stream_sizes(header)?;
     if header.num_streams != expected_sizes.len() {
         return Err(anyhow::anyhow!(
@@ -733,7 +919,7 @@ fn walk_v4_toc(raw: &[u8], header: &V4HeaderInfo) -> anyhow::Result<(Vec<V4Strea
     let mut data_cursor = header.toc_end;
 
     for (index, expected_size) in expected_sizes.into_iter().enumerate() {
-        let entry = header.toc_byte_offset + index * TOC_ENTRY_SIZE;
+        let entry = index * TOC_ENTRY_SIZE;
         let compressed_size = usize::try_from(read_u64_le(&raw[entry..entry + 8]))
             .map_err(|_| anyhow::anyhow!("v4 stream too large"))?;
         let uncompressed_size = usize::try_from(read_u64_le(&raw[entry + 8..entry + 16]))
@@ -748,7 +934,6 @@ fn walk_v4_toc(raw: &[u8], header: &V4HeaderInfo) -> anyhow::Result<(Vec<V4Strea
         }
 
         streams.push(V4StreamInfo {
-            compressed_offset: data_cursor,
             compressed_size,
             uncompressed_size,
         });
@@ -761,10 +946,6 @@ fn walk_v4_toc(raw: &[u8], header: &V4HeaderInfo) -> anyhow::Result<(Vec<V4Strea
 }
 
 fn expected_v4_stream_sizes(header: &V4HeaderInfo) -> anyhow::Result<Vec<usize>> {
-    if header.num_splats == 0 {
-        return Ok(Vec::new());
-    }
-
     let checked_size = |components: usize| {
         header
             .num_splats
@@ -778,43 +959,46 @@ fn expected_v4_stream_sizes(header: &V4HeaderInfo) -> anyhow::Result<Vec<usize>>
         checked_size(3)?,
         checked_size(4)?,
     ];
-    if header.num_splats > 0 && header.sh_degree > 0 {
-        let sh_components = match header.sh_degree {
-            1 => 9,
-            2 => 24,
-            3 => 45,
-            _ => unreachable!(),
-        };
+    let sh_components = match header.sh_degree {
+        1 => Some(9),
+        2 => Some(24),
+        3 => Some(45),
+        _ => None,
+    };
+    if let Some(sh_components) = sh_components {
         sizes.push(checked_size(sh_components)?);
     }
     Ok(sizes)
 }
 
-fn validate_v4_point_count(num_splats: usize, file_size: usize) -> anyhow::Result<()> {
-    if num_splats > i32::MAX as usize {
+fn packed_model_size_bytes(num_splats: usize, sh_degree: usize) -> u64 {
+    let (_, _, _, max_splats) = get_splat_tex_size_u64(num_splats as u64);
+    let texture_count = match sh_degree {
+        0 => 2_u64,
+        1 => 3,
+        2 => 4,
+        3 => 6,
+        _ => unreachable!(),
+    };
+
+    // Each packed texture stores four u32 values per padded splat.
+    max_splats * texture_count * 16
+}
+
+fn validate_packed_model_size(num_splats: usize, sh_degree: usize) -> anyhow::Result<()> {
+    let packed_bytes = packed_model_size_bytes(num_splats, sh_degree);
+    if packed_bytes > MAX_PACKED_MODEL_BYTES {
         return Err(anyhow::anyhow!(
-            "v4 point count exceeds supported maximum: {}",
-            num_splats
+            "SPZ packed model requires {} bytes, exceeding the {} byte limit",
+            packed_bytes,
+            MAX_PACKED_MODEL_BYTES
         ));
-    }
-    if num_splats > 0 {
-        let max_splats = (u64::try_from(file_size)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(MAX_COMPRESSION_RATIO))
-            / MIN_BYTES_PER_SPLAT;
-        if u64::try_from(num_splats).unwrap_or(u64::MAX) > max_splats {
-            return Err(anyhow::anyhow!(
-                "v4 point count {} is implausible for {} input bytes",
-                num_splats,
-                file_size
-            ));
-        }
     }
     Ok(())
 }
 
-fn validate_zstd_frame(compressed: &[u8], expected_size: usize) -> anyhow::Result<()> {
-    let (frame, _) = ruzstd::frame::read_frame_header(compressed)
+fn validate_zstd_frame(compressed: &[u8]) -> anyhow::Result<(bool, usize)> {
+    let (frame, header_size) = ruzstd::frame::read_frame_header(compressed)
         .map_err(|error| anyhow::anyhow!("v4 ZSTD header failed: {}", error))?;
     let window_size = frame
         .header
@@ -826,16 +1010,39 @@ fn validate_zstd_frame(compressed: &[u8], expected_size: usize) -> anyhow::Resul
             window_size
         ));
     }
+    Ok((
+        frame.header.descriptor.content_checksum_flag(),
+        header_size as usize,
+    ))
+}
 
-    let frame_size = frame.header.frame_content_size();
-    if frame_size != 0 && frame_size != u64::try_from(expected_size).unwrap_or(u64::MAX) {
+fn next_zstd_block_input(input: &[u8], has_checksum: bool) -> anyhow::Result<Option<usize>> {
+    if input.len() < ZSTD_BLOCK_HEADER_SIZE {
+        return Ok(None);
+    }
+
+    let header = (input[0] as u32) | ((input[1] as u32) << 8) | ((input[2] as u32) << 16);
+    let last_block = header & 1 != 0;
+    let block_type = (header >> 1) & 0x3;
+    let block_size = ((header >> 3) & 0x1f_ffff) as usize;
+    if block_size > MAX_ZSTD_BLOCK_SIZE {
         return Err(anyhow::anyhow!(
-            "v4 ZSTD frame size mismatch: expected {}, got {}",
-            expected_size,
-            frame_size
+            "v4 ZSTD block too large: {} bytes",
+            block_size
         ));
     }
-    Ok(())
+
+    let body_size = match block_type {
+        0 | 2 => block_size,
+        1 => 1,
+        _ => return Err(anyhow::anyhow!("v4 ZSTD reserved block type")),
+    };
+    let checksum_size = usize::from(last_block && has_checksum) * ZSTD_CHECKSUM_SIZE;
+    let size = ZSTD_BLOCK_HEADER_SIZE + body_size + checksum_size;
+    if input.len() < size {
+        return Ok(None);
+    }
+    Ok(Some(size))
 }
 
 fn validate_splat_parameters(sh_degree: usize, fractional_bits: u8) -> anyhow::Result<()> {
@@ -877,38 +1084,13 @@ fn parse_gzip_header(buffer: &mut Vec<u8>) -> anyhow::Result<bool> {
         end += extra_len;
     }
 
-    if (flags & 0x08) != 0 {
-        let mut null = end;
-        let mut found = false;
-        while null < buffer.len() {
-            if buffer[null] == 0 {
-                null += 1;
-                found = true;
-                break;
-            }
-            null += 1;
+    for flag in [0x08, 0x10] {
+        if flags & flag != 0 {
+            let Some(null) = buffer[end..].iter().position(|byte| *byte == 0) else {
+                return Ok(false);
+            };
+            end += null + 1;
         }
-        if !found {
-            return Ok(false);
-        }
-        end = null;
-    }
-
-    if (flags & 0x10) != 0 {
-        let mut null = end;
-        let mut found = false;
-        while null < buffer.len() {
-            if buffer[null] == 0 {
-                null += 1;
-                found = true;
-                break;
-            }
-            null += 1;
-        }
-        if !found {
-            return Ok(false);
-        }
-        end = null;
     }
 
     if (flags & 0x02) != 0 {
@@ -927,9 +1109,17 @@ impl<T: SplatReceiver> ChunkReceiver for SpzDecoder<T> {
         self
     }
 
+    fn set_expected_input_size(&mut self, size: usize) -> anyhow::Result<()> {
+        self.expected_input_size = Some(size);
+        Ok(())
+    }
+
     fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let mut bytes = bytes;
         if self.format == SpzFormat::Unknown {
-            self.raw.extend_from_slice(bytes);
+            let take = (4 - self.raw.len()).min(bytes.len());
+            self.raw.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
             if self.raw.len() < 4 {
                 return Ok(());
             }
@@ -946,17 +1136,14 @@ impl<T: SplatReceiver> ChunkReceiver for SpzDecoder<T> {
                     magic
                 ));
             }
-        } else {
-            match self.format {
-                SpzFormat::Gzip => self.compressed.extend_from_slice(bytes),
-                SpzFormat::Ngsp => self.raw.extend_from_slice(bytes),
-                SpzFormat::Unknown => unreachable!(),
-            }
         }
 
         match self.format {
-            SpzFormat::Gzip => self.poll_decompress(),
-            SpzFormat::Ngsp => self.try_decode_v4(),
+            SpzFormat::Gzip => {
+                self.compressed.extend_from_slice(bytes);
+                self.poll_decompress()
+            }
+            SpzFormat::Ngsp => self.push_v4(bytes),
             SpzFormat::Unknown => unreachable!(),
         }
     }
@@ -1006,14 +1193,8 @@ struct SpzDecoderState {
 }
 
 impl SpzDecoderState {
-    fn new(
-        version: u32,
-        num_splats: usize,
-        sh_degree: usize,
-        fractional_bits: u8,
-    ) -> anyhow::Result<Self> {
-        validate_splat_parameters(sh_degree, fractional_bits)?;
-        Ok(Self {
+    fn new(version: u32, num_splats: usize, sh_degree: usize, fractional_bits: u8) -> Self {
+        Self {
             version,
             num_splats,
             sh_degree,
@@ -1021,7 +1202,17 @@ impl SpzDecoderState {
             next_splat: 0,
             stage: SpzDecoderStage::Centers,
             output: Vec::with_capacity(MAX_SPLAT_CHUNK * 4),
-        })
+        }
+    }
+
+    fn chunk_size(&self, input_len: usize, bytes_per_item: usize) -> Option<usize> {
+        let available = input_len / bytes_per_item;
+        let remaining = self.num_splats - self.next_splat;
+        if available < remaining && available < MAX_SPLAT_CHUNK {
+            None
+        } else {
+            Some(remaining.min(available).min(MAX_SPLAT_CHUNK))
+        }
     }
 }
 
@@ -1118,6 +1309,70 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CountingSplats {
+        num_splats: usize,
+        centers: usize,
+        opacity: usize,
+        rgb: usize,
+        scales: usize,
+        quats: usize,
+        finished: bool,
+    }
+
+    impl CountingSplats {
+        fn add(seen: &mut usize, base: usize, count: usize) {
+            assert_eq!(base, *seen);
+            assert!(count <= MAX_SPLAT_CHUNK);
+            *seen += count;
+        }
+    }
+
+    impl SplatReceiver for CountingSplats {
+        fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
+            self.num_splats = init.num_splats;
+            Ok(())
+        }
+
+        fn finish(&mut self) -> anyhow::Result<()> {
+            assert_eq!(self.centers, self.num_splats);
+            assert_eq!(self.opacity, self.num_splats);
+            assert_eq!(self.rgb, self.num_splats);
+            assert_eq!(self.scales, self.num_splats);
+            assert_eq!(self.quats, self.num_splats);
+            self.finished = true;
+            Ok(())
+        }
+
+        fn set_batch(&mut self, _base: usize, _count: usize, _batch: &SplatProps) {
+            unreachable!();
+        }
+
+        fn set_center(&mut self, base: usize, count: usize, _center: &[f32]) {
+            Self::add(&mut self.centers, base, count);
+        }
+
+        fn set_opacity(&mut self, base: usize, count: usize, _opacity: &[f32]) {
+            Self::add(&mut self.opacity, base, count);
+        }
+
+        fn set_rgb(&mut self, base: usize, count: usize, _rgb: &[f32]) {
+            Self::add(&mut self.rgb, base, count);
+        }
+
+        fn set_scale(&mut self, _base: usize, _count: usize, _scale: &[f32]) {
+            unreachable!();
+        }
+
+        fn set_ln_scale(&mut self, base: usize, count: usize, _ln_scale: &[f32]) {
+            Self::add(&mut self.scales, base, count);
+        }
+
+        fn set_quat(&mut self, base: usize, count: usize, _quat: &[f32]) {
+            Self::add(&mut self.quats, base, count);
+        }
+    }
+
     fn copy_splat_values(
         destination: &mut Vec<f32>,
         base: usize,
@@ -1137,6 +1392,78 @@ mod tests {
 
     fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn zstd_raw_zero_frame(uncompressed_size: usize) -> Vec<u8> {
+        assert!(uncompressed_size > 0);
+        assert!(u32::try_from(uncompressed_size).is_ok());
+
+        let mut frame = Vec::with_capacity(
+            uncompressed_size
+                + 4
+                + MAX_ZSTD_FRAME_HEADER_SIZE
+                + uncompressed_size.div_ceil(MAX_ZSTD_BLOCK_SIZE) * ZSTD_BLOCK_HEADER_SIZE,
+        );
+        frame.extend_from_slice(&ruzstd::frame::MAGIC_NUM.to_le_bytes());
+        if uncompressed_size <= u8::MAX as usize {
+            // Single segment, one-byte frame content size, no checksum.
+            frame.push(0x20);
+            frame.push(uncompressed_size as u8);
+        } else {
+            // Single segment, four-byte frame content size, no checksum.
+            frame.push(0xa0);
+            frame.extend_from_slice(&(uncompressed_size as u32).to_le_bytes());
+        }
+
+        let mut remaining = uncompressed_size;
+        while remaining > 0 {
+            let block_size = remaining.min(MAX_ZSTD_BLOCK_SIZE);
+            remaining -= block_size;
+            let last_block = usize::from(remaining == 0);
+            let block_header = ((block_size as u32) << 3) | last_block as u32;
+            let block_header = block_header.to_le_bytes();
+            frame.extend_from_slice(&block_header[..ZSTD_BLOCK_HEADER_SIZE]);
+            frame.resize(frame.len() + block_size, 0);
+        }
+        frame
+    }
+
+    fn assemble_v4_file<B: AsRef<[u8]>>(
+        num_splats: usize,
+        sh_degree: u8,
+        streams: &[(B, usize)],
+    ) -> Vec<u8> {
+        let toc_offset = NGSP_HEADER_SIZE;
+        let mut file = vec![0; toc_offset + streams.len() * TOC_ENTRY_SIZE];
+
+        write_u32_at(&mut file, 0, SPZ_MAGIC);
+        write_u32_at(&mut file, 4, 4);
+        write_u32_at(&mut file, 8, num_splats as u32);
+        file[12] = sh_degree;
+        file[13] = 12;
+        file[15] = streams.len() as u8;
+        write_u32_at(&mut file, 16, toc_offset as u32);
+
+        for (index, (stream, uncompressed_size)) in streams.iter().enumerate() {
+            let stream = stream.as_ref();
+            let entry = toc_offset + index * TOC_ENTRY_SIZE;
+            write_u64_at(&mut file, entry, stream.len() as u64);
+            write_u64_at(&mut file, entry + 8, *uncompressed_size as u64);
+            file.extend_from_slice(stream);
+        }
+        file
+    }
+
+    fn v4_raw_file(num_splats: usize) -> Vec<u8> {
+        let widths = [9_usize, 1, 3, 3, 4];
+        let streams: Vec<(Vec<u8>, usize)> = widths
+            .iter()
+            .map(|width| {
+                let uncompressed_size = num_splats * width;
+                (zstd_raw_zero_frame(uncompressed_size), uncompressed_size)
+            })
+            .collect();
+        assemble_v4_file(num_splats, 0, &streams)
     }
 
     fn v4_file_with_sh_degree(sh_degree: u8) -> Vec<u8> {
@@ -1170,37 +1497,18 @@ mod tests {
         ];
 
         let mut streams = vec![
-            (POSITIONS, 9_u64),
-            (ALPHAS, 1_u64),
-            (COLORS, 3_u64),
-            (SCALES, 3_u64),
-            (ROTATIONS, 4_u64),
+            (POSITIONS, 9_usize),
+            (ALPHAS, 1_usize),
+            (COLORS, 3_usize),
+            (SCALES, 3_usize),
+            (ROTATIONS, 4_usize),
         ];
         match sh_degree {
             0 => {}
             3 => streams.push((SH_DEGREE_3, 45)),
             _ => panic!("test fixture only supports SH degrees 0 and 3"),
         }
-        let toc_offset = NGSP_HEADER_SIZE;
-        let mut file = vec![0; toc_offset + streams.len() * TOC_ENTRY_SIZE];
-
-        write_u32_at(&mut file, 0, SPZ_MAGIC);
-        write_u32_at(&mut file, 4, 4);
-        write_u32_at(&mut file, 8, 1);
-        file[12] = sh_degree;
-        file[13] = 12;
-        file[14] = 0;
-        file[15] = streams.len() as u8;
-        write_u32_at(&mut file, 16, toc_offset as u32);
-
-        for (index, (stream, uncompressed_size)) in streams.iter().enumerate() {
-            let entry = toc_offset + index * TOC_ENTRY_SIZE;
-            write_u64_at(&mut file, entry, stream.len() as u64);
-            write_u64_at(&mut file, entry + 8, *uncompressed_size);
-            file.extend_from_slice(stream);
-        }
-
-        file
+        assemble_v4_file(1, sh_degree, &streams)
     }
 
     fn v4_file() -> Vec<u8> {
@@ -1270,6 +1578,24 @@ mod tests {
     fn decodes_chunked_spz_v4_and_detects_raw_ngsp_magic() {
         let splats = decode_in_chunks(&v4_file(), 1).unwrap();
         assert_test_splat(&splats);
+    }
+
+    #[test]
+    fn incrementally_decodes_multi_block_v4_streams_with_bounded_input() {
+        let num_splats = MAX_SPLAT_CHUNK + 1;
+        let file = v4_raw_file(num_splats);
+        let mut decoder = SpzDecoder::new(CountingSplats::default());
+        for chunk in file.chunks(4093) {
+            decoder.push(chunk).unwrap();
+        }
+
+        assert!(decoder.v4_peak_compressed_buffer_size <= MAX_V4_COMPRESSED_BUFFER_SIZE);
+        assert!(decoder.v4_peak_compressed_buffer_size >= MAX_ZSTD_BLOCK_SIZE);
+        assert!(decoder.raw.capacity() <= MAX_V4_COMPRESSED_BUFFER_SIZE);
+        decoder.finish().unwrap();
+        let splats = decoder.into_splats();
+        assert_eq!(splats.num_splats, num_splats);
+        assert!(splats.finished);
     }
 
     #[test]

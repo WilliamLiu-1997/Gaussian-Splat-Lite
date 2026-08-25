@@ -20,7 +20,7 @@ uniform usampler2DArray sh3TextureB;
 
 uniform mat3 objectBasis;
 uniform vec3 objectOffset;
-uniform vec3 objectScale;
+uniform vec3 objectLnScale;
 uniform vec4 objectQuaternion;
 uniform vec4 recolor;
 
@@ -203,7 +203,18 @@ void applySdfEdits(vec3 position, inout vec4 rgba) {
         float amount = softEdge == 0.0
             ? (distance < 0.0 ? 1.0 : 0.0)
             : clamp(-distance / softEdge + 0.5, 0.0, 1.0);
-        vec4 target = blendMode == 0u ? rgba * sdfRgba : rgba + sdfRgba;
+        vec4 target = rgba;
+        switch (blendMode) {
+            case 0u:
+                target = rgba * sdfRgba;
+                break;
+            case 1u:
+                target = vec4(sdfRgba.rgb, rgba.a * sdfRgba.a);
+                break;
+            case 2u:
+                target = rgba + sdfRgba;
+                break;
+        }
         rgba = mix(rgba, target, amount);
     }
 }
@@ -212,20 +223,18 @@ void produceSplat(int index) {
     ivec3 coord = splatTexCoord(index);
     uvec4 sourceSplat = texelFetch(sourceSplats, coord, 0);
     vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(sourceSplat);
-    vec3 center;
-    vec3 scales;
+    vec3 center = decodeSplatCenter(sourceSplat);
+    vec3 lnScales;
     vec4 quaternion;
     vec4 rgba;
-    decodeSplat(
-        sourceSplat,
+    decodeSplatAttributesLnScale(
         texelFetch(sourceSplats2, coord, 0),
         alphaShapeAmount.x,
-        center,
-        scales,
+        lnScales,
         quaternion,
         rgba
     );
-    if (all(equal(scales, vec3(0.0)))) return;
+    if (all(equal(lnScales, vec3(-INFINITY)))) return;
     float shapeAmount = alphaShapeAmount.y;
 
     // Match PlayCanvas' work-buffer transform. Centers retain the complete
@@ -238,7 +247,7 @@ void produceSplat(int index) {
         vec3 sourceViewDirection = normalize(quatVec(inverseObjectQuaternion, worldViewDirection));
         rgba.rgb += evaluateSH(coord, sourceViewDirection);
     }
-    scales *= objectScale;
+    lnScales += objectLnScale;
     quaternion = quatQuat(objectQuaternion, quaternion);
 
     vec3 editPosition = center;
@@ -256,11 +265,11 @@ void produceSplat(int index) {
     rgba.a = clamp(rgba.a, 0.0, 1.0);
 
     // Preserve the source's wider-kernel amount independently from opacity.
-    encodeSplat(
+    encodeSplatLnScale(
         target,
         target2,
         relativeCenter,
-        scales,
+        lnScales,
         quaternion,
         rgba,
         shapeAmount

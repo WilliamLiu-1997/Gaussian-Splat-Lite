@@ -142,7 +142,11 @@ export class SplatAccumulator {
     // per-axis scale. This is intentionally an approximation for non-uniform
     // transforms, but preserves ordinary scale/quaternion storage and 2DGS
     // zero axes.
-    uniforms.objectScale.value.copy(this.transformScale);
+    uniforms.objectLnScale.value.set(
+      Math.log(this.transformScale.x),
+      Math.log(this.transformScale.y),
+      Math.log(this.transformScale.z),
+    );
     uniforms.objectQuaternion.value.copy(this.transformQuaternion);
     uniforms.recolor.value.set(
       mesh.recolor.r,
@@ -385,7 +389,7 @@ function makeGenerateUniforms(): GenerateUniforms {
     sh3TextureB: { value: SplatAccumulator.emptyTexture },
     objectBasis: { value: new THREE.Matrix3() },
     objectOffset: { value: new THREE.Vector3() },
-    objectScale: { value: new THREE.Vector3(1, 1, 1) },
+    objectLnScale: { value: new THREE.Vector3() },
     objectQuaternion: { value: new THREE.Quaternion() },
     recolor: { value: new THREE.Vector4(1, 1, 1, 1) },
     numSdfs: { value: 0 },
