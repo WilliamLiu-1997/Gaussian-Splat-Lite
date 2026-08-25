@@ -19,7 +19,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Passed logarithmic scales directly through the PLY/SPZ decode and generation pipelines, avoiding redundant exponential and logarithmic conversions.
 - Deferred fetching each Splat's second texture record until its center passes view-frustum checks.
 - Disposed idle decode workers after three seconds so completed loads do not retain the full worker pool.
-- Began committing generated `dist/` artifacts for Git dependencies and added a release check that verifies they are current.
 
 ### Fixed
 
