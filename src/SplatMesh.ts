@@ -6,7 +6,6 @@ import {
   raycast_splat_buffers,
 } from "gaussian-splat-rs";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
-import type { SplatSource } from "./SplatSource";
 import { Splats } from "./Splats";
 import type { SplatFileType } from "./defines";
 import type { SplatPostDecodeProgram } from "./postDecode";
@@ -16,8 +15,6 @@ const raycastWorldToMesh = new THREE.Matrix4();
 const raycastDirectionMatrix = new THREE.Matrix3();
 const raycastOrigin = new THREE.Vector3();
 const raycastDirection = new THREE.Vector3();
-
-export type { SplatSource } from "./SplatSource";
 
 export type SplatMeshOptions = {
   url?: string;
@@ -29,7 +26,7 @@ export type SplatMeshOptions = {
   streamLength?: number;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
-  splats?: SplatSource;
+  splats?: Splats;
   maxSplats?: number;
   constructSplats?: (splats: Splats) => Promise<void> | void;
   onProgress?: (event: ProgressEvent) => void;
@@ -56,7 +53,7 @@ export class SplatMesh extends THREE.Object3D {
   initialized: Promise<SplatMesh>;
   isInitialized = false;
 
-  splats?: SplatSource;
+  splats?: Splats;
 
   numSplats = 0;
   recolor = new THREE.Color(1, 1, 1);
@@ -76,7 +73,7 @@ export class SplatMesh extends THREE.Object3D {
   centerVersion = 0;
   mappingVersion = 0;
 
-  private lastSource?: SplatSource;
+  private lastSplats?: Splats;
   private lastNumSplats = -1;
   private lastMaxSh = -1;
   private lastMatrixWorld = new THREE.Matrix4();
@@ -89,6 +86,9 @@ export class SplatMesh extends THREE.Object3D {
   constructor(options: SplatMeshOptions = {}) {
     super();
 
+    if (options.splats && !(options.splats instanceof Splats)) {
+      throw new TypeError("SplatMesh splats must be a Splats instance");
+    }
     this.splats =
       options.splats ?? new Splats({ maxSplats: options.maxSplats });
 
@@ -98,15 +98,13 @@ export class SplatMesh extends THREE.Object3D {
     this.minRaycastOpacity = options.minRaycastOpacity ?? 0.05;
     this.onFrame = options.onFrame;
 
-    const mutableSplats =
-      this.splats instanceof Splats ? this.splats : undefined;
     const needsAsyncInitialization = Boolean(
-      mutableSplats &&
+      this.splats &&
         (options.url ||
           options.fileBytes ||
           options.stream ||
           options.constructSplats ||
-          !mutableSplats.isInitialized),
+          !this.splats.isInitialized),
     );
 
     if (needsAsyncInitialization) {
@@ -127,7 +125,7 @@ export class SplatMesh extends THREE.Object3D {
 
   private async asyncInitialize(options: SplatMeshOptions) {
     const splats = this.splats;
-    if (splats instanceof Splats) {
+    if (splats) {
       if (
         options.url ||
         options.fileBytes ||
@@ -160,9 +158,7 @@ export class SplatMesh extends THREE.Object3D {
     opacity: number,
     color: THREE.Color,
   ) {
-    if (this.splats instanceof Splats) {
-      this.splats.pushSplat(center, scales, quaternion, opacity, color);
-    }
+    this.splats?.pushSplat(center, scales, quaternion, opacity, color);
     this.numSplats = this.splats?.getNumSplats() ?? this.numSplats;
   }
 
@@ -174,16 +170,16 @@ export class SplatMesh extends THREE.Object3D {
     opacity: number,
     color: THREE.Color,
   ) {
-    if (!(this.splats instanceof Splats)) {
-      throw new Error("setSplat requires the built-in Splats source");
+    if (!this.splats) {
+      throw new Error("Cannot set a Splat after SplatMesh is disposed");
     }
     this.splats.setSplat(index, center, scales, quaternion, opacity, color);
     this.numSplats = this.splats.getNumSplats();
   }
 
   removeSplat(index: number) {
-    if (!(this.splats instanceof Splats)) {
-      throw new Error("removeSplat requires the built-in Splats source");
+    if (!this.splats) {
+      throw new Error("Cannot remove a Splat after SplatMesh is disposed");
     }
     this.splats.removeSplat(index);
     this.numSplats = this.splats.getNumSplats();
@@ -260,8 +256,8 @@ export class SplatMesh extends THREE.Object3D {
     let centersUpdated = false;
     let transformUpdated = false;
     const count = source.getNumSplats();
-    if (source !== this.lastSource) {
-      this.lastSource = source;
+    if (source !== this.lastSplats) {
+      this.lastSplats = source;
       updated = true;
       centersUpdated = true;
     }
@@ -374,11 +370,7 @@ export class SplatMesh extends THREE.Object3D {
   }
 
   raycast(raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) {
-    if (
-      !wasm.isInitialized() ||
-      !this.raycastable ||
-      !(this.splats instanceof Splats)
-    ) {
+    if (!wasm.isInitialized() || !this.raycastable || !this.splats) {
       return;
     }
 

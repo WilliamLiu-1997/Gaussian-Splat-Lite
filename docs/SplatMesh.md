@@ -19,7 +19,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `stream` | `ReadableStream` | `undefined` | Chunked input stream |
 | `streamLength` | `number` | `undefined` | Exact input-stream byte length, used for progress and safe allocation validation |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
-| `splats` | `SplatSource` | New `Splats` | Uses an existing built-in or custom source |
+| `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
 | `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |
 | `constructSplats` | `(splats) => void \| Promise<void>` | `undefined` | Populates `Splats` during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Download or stream decoding progress callback |
@@ -29,7 +29,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `minRaycastOpacity` | `number` | `0.05` | Per-Splat kernel-alpha threshold; clips the raycast hit area at this opacity, including special-shape Splats |
 | `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before Splat generation for a frame |
 
-Normally, choose exactly one of `url`, `fileBytes`, or `stream`. The `splats` option is intended for advanced custom sources and should not be mixed with file input.
+Normally, choose exactly one of `url`, `fileBytes`, or `stream`. An existing `splats` instance should not be mixed with file input.
 
 ## Common properties
 
@@ -42,7 +42,7 @@ Normally, choose exactly one of `url`, `fileBytes`, or `stream`. The `splats` op
 | `opacity` | `1` | Opacity multiplier applied to the entire object |
 | `maxSh` | `3` | Maximum spherical-harmonic degree; use `0` for base color only |
 | `edits` | `SplatEdit[] \| null` | Explicit edits applied only to this mesh |
-| `splats` | `SplatSource \| undefined` | Current underlying source |
+| `splats` | `Splats \| undefined` | Current underlying Splat data |
 | `needsUpdate` | `boolean` setter | Set to `true` to force Splat regeneration and depth re-sorting; `false` does nothing |
 
 ## Common methods
@@ -64,7 +64,7 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-`getBoundingBox()` can only be called after initialization. `pushSplat()` only affects a mesh backed by the built-in `Splats` source; `setSplat()` and `removeSplat()` require it and throw for custom sources.
+`getBoundingBox()` can only be called after initialization. `setSplat()` and `removeSplat()` throw after the mesh has been disposed.
 
 ## Raycasting
 

@@ -1,10 +1,16 @@
 import * as THREE from "three";
 
 import { SplatLoader } from "./SplatLoader";
-import type { SplatShTextures, SplatSource } from "./SplatSource";
 import { SPLAT_TEX_WIDTH, type SplatFileType } from "./defines";
 import type { SplatPostDecodeProgram } from "./postDecode";
 import { decodeSplat, encodeSplat, getTextureSize } from "./utils";
+
+type SplatShTextures = {
+  sh1?: THREE.DataArrayTexture;
+  sh2?: THREE.DataArrayTexture;
+  sh3a?: THREE.DataArrayTexture;
+  sh3b?: THREE.DataArrayTexture;
+};
 
 export type SplatsOptions = {
   url?: string;
@@ -26,7 +32,7 @@ export type SplatsOptions = {
 };
 
 /** A mutable splat source with two 16-byte texture records per splat. */
-export class Splats implements SplatSource {
+export class Splats {
   maxSplats = 0;
   numSplats = 0;
   splatArrays: [Uint32Array, Uint32Array] = [

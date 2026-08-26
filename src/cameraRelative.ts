@@ -37,11 +37,7 @@ export function rebaseAffineTransform(
   return matrix;
 }
 
-/**
- * Tracks raw-center and matrix revisions cached by the sort worker. Built-in
- * sources bulk-copy decoder-produced centers; callback extraction remains only
- * as a compatibility path for custom sources.
- */
+/** Tracks raw-center and matrix revisions cached by the sort worker. */
 export class SortCenterCache {
   private entries = new Map<SplatMesh, SortCenterEntry>();
   private freeMeshIds: number[] = [];
@@ -124,23 +120,12 @@ export class SortCenterCache {
     changedCenters.forEach(({ node, count, rangeIndex }, updateIndex) => {
       centerUpdateRangeIndices[updateIndex] = rangeIndex;
 
-      const source = node.splats;
-      const centers = source?.getSortCenters?.();
+      const centers = node.splats?.getSortCenters();
       const valueCount = count * 3;
-      if (centers) {
-        if (centers.length < valueCount) {
-          throw new Error("Sort center source is smaller than its Splat count");
-        }
-        updateCenters.set(centers.subarray(0, valueCount), updateBase * 3);
-      } else {
-        source?.forEachCenter((index, x, y, z) => {
-          if (index >= count || Number.isNaN(x)) return;
-          const target = (updateBase + index) * 3;
-          updateCenters[target] = x;
-          updateCenters[target + 1] = y;
-          updateCenters[target + 2] = z;
-        });
+      if (!centers || centers.length < valueCount) {
+        throw new Error("Sort center data is smaller than its Splat count");
       }
+      updateCenters.set(centers.subarray(0, valueCount), updateBase * 3);
       updateBase += count;
     });
 

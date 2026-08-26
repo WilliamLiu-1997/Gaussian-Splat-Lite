@@ -18,10 +18,6 @@ export {
   type SplatMeshFrameContext,
   type SplatMeshOptions,
 } from "./SplatMesh";
-export type {
-  SplatSource,
-  SplatShTextures,
-} from "./SplatSource";
 export {
   SplatEdit,
   type SplatEditGroup,

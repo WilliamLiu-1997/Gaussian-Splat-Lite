@@ -197,7 +197,6 @@ await splat.initialized;
 | [`SplatMesh`](docs/SplatMesh.md) | A transformable, visible, and raycastable Gaussian Splat scene object |
 | [`SplatLoader`](docs/SplatLoader.md) | A Three.js Loader-style PLY/SPZ decoder |
 | [`Splats`](docs/Splats.md) | The built-in mutable Splat source, with per-Splat read and write access |
-| [`SplatSource`](docs/SplatSource.md) | The TypeScript interface implemented by custom Splat sources |
 | [`SplatEdit`](docs/SplatEdit.md) / [`SplatEditSdf`](docs/SplatEdit.md) | SDF-region RGBA editing objects |
 | [`SplatAccumulator`](docs/SplatAccumulator.md) | A low-level generation buffer used by the renderer; normally internal |
 | [`SplatFileType`](docs/SplatFileType.md) | File type enum containing `PLY` and `SPZ` |
