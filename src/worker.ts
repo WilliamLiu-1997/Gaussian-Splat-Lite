@@ -5,6 +5,12 @@ import init_wasm, {
   sort32_centers,
 } from "gaussian-splat-rs";
 import type { SplatResult } from "./defines";
+import type { SerializedSplatPostDecode } from "./postDecode";
+import {
+  type PostDecodeSplatData,
+  applySplatPostDecode,
+} from "./postDecodeRuntime";
+import { getTransferable } from "./transferable";
 
 const rpcHandlers = {
   setSortCenterState,
@@ -248,18 +254,7 @@ async function decodeBytesUrl({
   }
 }
 
-type DecodedSplatResult = {
-  numSplats: number;
-  splat0: Uint32Array;
-  splat1: Uint32Array;
-  sortCenters: Float32Array;
-  sh1?: Uint32Array;
-  sh2?: Uint32Array;
-  sh3a?: Uint32Array;
-  sh3b?: Uint32Array;
-};
-
-function toSplatResult(decoded: DecodedSplatResult): SplatResult {
+function toSplatResult(decoded: PostDecodeSplatData): SplatResult {
   return {
     numSplats: decoded.numSplats,
     splatArrays: [decoded.splat0, decoded.splat1],
@@ -283,6 +278,7 @@ async function loadSplats(
     pathName,
     chunked,
     chunkedLength,
+    postDecode,
   }: {
     url?: string;
     requestHeader?: Record<string, string>;
@@ -292,11 +288,12 @@ async function loadSplats(
     pathName?: string;
     chunked?: boolean;
     chunkedLength?: number;
+    postDecode?: SerializedSplatPostDecode;
   },
   { sendStatus }: { sendStatus: (data: unknown) => void },
 ) {
   const decoder = decode_to_splats(fileType, pathName ?? url);
-  const decoded = await decodeBytesUrl({
+  const decoded = (await decodeBytesUrl({
     decoder,
     fileBytes,
     url,
@@ -305,38 +302,15 @@ async function loadSplats(
     chunked,
     chunkedLength,
     sendStatus,
-  });
-  return toSplatResult(decoded as DecodedSplatResult);
+  })) as PostDecodeSplatData;
+  if (postDecode) applySplatPostDecode(decoded, postDecode);
+  return toSplatResult(decoded);
 }
 
 let nextChunkWaiter = (_chunk: Uint8Array) => {};
 
 async function nextChunk({ chunk }: { chunk: Uint8Array }) {
   nextChunkWaiter(chunk);
-}
-
-function getTransferable(ctx: unknown): Transferable[] {
-  const buffers: Transferable[] = [];
-  const seen = new Set();
-
-  function traverse(obj: unknown) {
-    if (obj && typeof obj === "object" && !seen.has(obj)) {
-      seen.add(obj);
-
-      if (obj instanceof ArrayBuffer) {
-        buffers.push(obj);
-      } else if (ArrayBuffer.isView(obj)) {
-        buffers.push(obj.buffer as ArrayBuffer);
-      } else if (Array.isArray(obj)) {
-        obj.forEach(traverse);
-      } else {
-        Object.values(obj).forEach(traverse);
-      }
-    }
-  }
-
-  traverse(ctx);
-  return buffers;
 }
 
 async function initialize() {

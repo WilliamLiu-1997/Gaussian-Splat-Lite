@@ -147,6 +147,23 @@ const splat = new SplatMesh({
 });
 ```
 
+Decoded values can be transformed in the worker with a serializable, per-Splat
+expression. The library continues to own packed arrays and encoding:
+
+```js
+import { postDecode } from "gaussian-splat-lite";
+
+const transform = postDecode.define(({ splat, op }) => ({
+  position: op.add(splat.position, [1, 0, 0]),
+  color: op.mul(splat.color, [1, 0.8, 0.8]),
+}));
+
+const splat = new SplatMesh({ fileBytes: bytes, postDecode: transform });
+```
+
+See [`postDecode`](docs/PostDecode.md) for external attributes, opacity,
+quaternions, scale, and spherical harmonics.
+
 When the input URL does not have a recognizable extension, specify `fileType` explicitly or provide a `.ply` / `.spz` name through `fileName`.
 
 ### Creating Splats in code
@@ -184,6 +201,7 @@ await splat.initialized;
 | [`SplatEdit`](docs/SplatEdit.md) / [`SplatEditSdf`](docs/SplatEdit.md) | SDF-region RGBA editing objects |
 | [`SplatAccumulator`](docs/SplatAccumulator.md) | A low-level generation buffer used by the renderer; normally internal |
 | [`SplatFileType`](docs/SplatFileType.md) | File type enum containing `PLY` and `SPZ` |
+| [`postDecode`](docs/PostDecode.md) | Serializable per-Splat expressions executed inside the decode worker |
 
 ## Large world coordinates / GIS / ECEF
 

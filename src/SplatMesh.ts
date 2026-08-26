@@ -9,6 +9,7 @@ import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
 import type { SplatSource } from "./SplatSource";
 import { Splats } from "./Splats";
 import type { SplatFileType } from "./defines";
+import type { SplatPostDecodeProgram } from "./postDecode";
 import * as wasm from "./wasm";
 
 const raycastWorldToMesh = new THREE.Matrix4();
@@ -26,6 +27,8 @@ export type SplatMeshOptions = {
   stream?: ReadableStream;
   /** Exact number of bytes yielded by stream; also used for allocation validation. */
   streamLength?: number;
+  /** Declarative per-splat transform executed in the decode worker. */
+  postDecode?: SplatPostDecodeProgram;
   splats?: SplatSource;
   maxSplats?: number;
   constructSplats?: (splats: Splats) => Promise<void> | void;
@@ -138,6 +141,7 @@ export class SplatMesh extends THREE.Object3D {
           fileName: options.fileName,
           stream: options.stream,
           streamLength: options.streamLength,
+          postDecode: options.postDecode,
           maxSplats: options.maxSplats,
           construct: options.constructSplats,
           onProgress: options.onProgress,

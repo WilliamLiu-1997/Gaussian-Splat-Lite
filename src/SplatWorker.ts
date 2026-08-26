@@ -1,4 +1,4 @@
-import { getTransferable } from "./utils";
+import { getTransferable } from "./transferable";
 import { WASM_MODULE } from "./wasm";
 import type { RpcHandlers } from "./worker";
 import BundledWorker from "./worker?worker&inline";

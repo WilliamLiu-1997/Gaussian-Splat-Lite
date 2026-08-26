@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { SplatLoader } from "./SplatLoader";
 import type { SplatShTextures, SplatSource } from "./SplatSource";
 import { SPLAT_TEX_WIDTH, type SplatFileType } from "./defines";
+import type { SplatPostDecodeProgram } from "./postDecode";
 import { decodeSplat, encodeSplat, getTextureSize } from "./utils";
 
 export type SplatsOptions = {
@@ -13,6 +14,8 @@ export type SplatsOptions = {
   stream?: ReadableStream;
   /** Exact number of bytes yielded by stream; also used for allocation validation. */
   streamLength?: number;
+  /** Declarative per-splat transform executed in the decode worker. */
+  postDecode?: SplatPostDecodeProgram;
   maxSplats?: number;
   splatArrays?: [Uint32Array, Uint32Array];
   sortCenters?: Float32Array;
@@ -115,6 +118,7 @@ export class Splats implements SplatSource {
         fileName: options.fileName,
         stream: options.stream,
         streamLength: options.streamLength,
+        postDecode: options.postDecode,
         onProgress: options.onProgress,
       });
     }

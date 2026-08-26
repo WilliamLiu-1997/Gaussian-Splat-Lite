@@ -32,6 +32,7 @@ The constructor and `reinitialize()` accept the same `SplatsOptions`:
 | `fileName` | `string` | `undefined` | Name used to infer byte or stream input format |
 | `stream` | `ReadableStream` | `undefined` | Chunked input stream |
 | `streamLength` | `number` | `undefined` | Exact input-stream byte length, used for progress and safe allocation validation |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `splatArrays` | `[Uint32Array, Uint32Array]` | Empty arrays | Two pre-encoded Splat data arrays |
 | `sortCenters` | `Float32Array` | Derived from `splatArrays` | Optional contiguous raw xyz centers paired with low-level encoded data |

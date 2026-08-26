@@ -11,6 +11,7 @@ export { SplatLoader } from "./SplatLoader";
 export type { SplatWorker } from "./SplatWorker";
 
 export { Splats, type SplatsOptions } from "./Splats";
+export { postDecode, type SplatPostDecodeProgram } from "./postDecode";
 
 export {
   SplatMesh,

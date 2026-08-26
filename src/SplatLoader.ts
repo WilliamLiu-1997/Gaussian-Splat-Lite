@@ -3,6 +3,10 @@ import { SplatMesh } from "./SplatMesh";
 import { workerPool } from "./SplatWorker";
 import { Splats, type SplatsOptions } from "./Splats";
 import type { SplatFileType } from "./defines";
+import {
+  type SplatPostDecodeProgram,
+  serializeSplatPostDecode,
+} from "./postDecode";
 
 // SplatLoader implements the THREE.Loader interface for PLY and SPZ files.
 export class SplatLoader extends Loader {
@@ -36,6 +40,7 @@ export class SplatLoader extends Loader {
     fileName,
     stream,
     streamLength,
+    postDecode,
     onLoad,
     onProgress,
     onError,
@@ -47,6 +52,7 @@ export class SplatLoader extends Loader {
     fileName?: string;
     stream?: ReadableStream;
     streamLength?: number;
+    postDecode?: SplatPostDecodeProgram;
     onLoad?: (decoded: Splats) => void;
     onProgress?: (event: ProgressEvent) => void;
     onError?: (error: unknown) => void;
@@ -118,6 +124,9 @@ export class SplatLoader extends Loader {
             pathName: resolvedURL || fileName,
             chunked: stream !== undefined,
             chunkedLength: streamLength,
+            postDecode: postDecode
+              ? serializeSplatPostDecode(postDecode)
+              : undefined,
           },
           { onStatus },
         );
@@ -152,6 +161,7 @@ export class SplatLoader extends Loader {
     fileName,
     stream,
     streamLength,
+    postDecode,
     onProgress,
   }: {
     splats?: Splats;
@@ -161,6 +171,7 @@ export class SplatLoader extends Loader {
     fileName?: string;
     stream?: ReadableStream;
     streamLength?: number;
+    postDecode?: SplatPostDecodeProgram;
     onProgress?: (event: ProgressEvent) => void;
   }): Promise<Splats> {
     return new Promise((resolve, reject) => {
@@ -172,6 +183,7 @@ export class SplatLoader extends Loader {
         fileName,
         stream,
         streamLength,
+        postDecode,
         onLoad: resolve,
         onProgress,
         onError: reject,
