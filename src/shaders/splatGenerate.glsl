@@ -142,11 +142,13 @@ float evaluateSdfs(
     int sdfCount,
     vec3 position,
     float smoothAmount,
-    out vec4 resultRgba
+    out vec4 resultRgba,
+    out vec4 resultRgbaMask
 ) {
     float distanceAccum = smoothAmount == 0.0 ? INFINITY : 0.0;
     float maxExponent = -INFINITY;
     resultRgba = vec4(0.0);
+    resultRgbaMask = vec4(0.0);
     int sdfLast = min(sdfFirst + sdfCount, numSdfs);
 
     for (int index = sdfFirst; index < sdfLast; ++index) {
@@ -157,6 +159,12 @@ float evaluateSdfs(
         vec4 sizes;
         vec4 value;
         unpackSdf(index, flags, center, quaternion, scale, sizes, value);
+        vec4 valueMask = vec4(
+            (flags & 0x10000u) != 0u ? 1.0 : 0.0,
+            (flags & 0x20000u) != 0u ? 1.0 : 0.0,
+            (flags & 0x40000u) != 0u ? 1.0 : 0.0,
+            (flags & 0x80000u) != 0u ? 1.0 : 0.0
+        );
         vec3 sdfPosition = quatVec(quaternion, position * scale) + center;
         float distance = sdfDistance(flags & 0xffu, sdfPosition, sizes);
         if ((flags & 0x100u) != 0u) distance = -distance;
@@ -164,7 +172,8 @@ float evaluateSdfs(
         if (smoothAmount == 0.0) {
             if (distance < distanceAccum) {
                 distanceAccum = distance;
-                resultRgba = value;
+                resultRgba = value * valueMask;
+                resultRgbaMask = valueMask;
             }
         } else {
             float exponent = -distance / smoothAmount;
@@ -172,11 +181,13 @@ float evaluateSdfs(
                 float rescale = exp(maxExponent - exponent);
                 distanceAccum *= rescale;
                 resultRgba *= rescale;
+                resultRgbaMask *= rescale;
                 maxExponent = exponent;
             }
             float weight = exp(exponent - maxExponent);
             distanceAccum += weight;
-            resultRgba += weight * value;
+            resultRgba += weight * value * valueMask;
+            resultRgbaMask += weight * valueMask;
         }
     }
 
@@ -184,6 +195,7 @@ float evaluateSdfs(
         return distanceAccum == 0.0 ? INFINITY : distanceAccum;
     }
     resultRgba /= distanceAccum;
+    resultRgbaMask /= distanceAccum;
     return (-log(distanceAccum) - maxExponent) * smoothAmount;
 }
 
@@ -198,7 +210,15 @@ void applySdfEdits(vec3 position, inout vec4 rgba) {
         float smoothAmount = uintBitsToFloat(edit.w);
 
         vec4 sdfRgba;
-        float distance = evaluateSdfs(sdfFirst, sdfCount, position, smoothAmount, sdfRgba);
+        vec4 sdfRgbaMask;
+        float distance = evaluateSdfs(
+            sdfFirst,
+            sdfCount,
+            position,
+            smoothAmount,
+            sdfRgba,
+            sdfRgbaMask
+        );
         if (invert) distance = -distance;
         float amount = softEdge == 0.0
             ? (distance < 0.0 ? 1.0 : 0.0)
@@ -206,10 +226,10 @@ void applySdfEdits(vec3 position, inout vec4 rgba) {
         vec4 target = rgba;
         switch (blendMode) {
             case 0u:
-                target = rgba * sdfRgba;
+                target = rgba * (vec4(1.0) + sdfRgba - sdfRgbaMask);
                 break;
             case 1u:
-                target = vec4(sdfRgba.rgb, rgba.a * sdfRgba.a);
+                target = rgba * (vec4(1.0) - sdfRgbaMask) + sdfRgba;
                 break;
             case 2u:
                 target = rgba + sdfRgba;

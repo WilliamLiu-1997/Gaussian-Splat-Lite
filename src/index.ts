@@ -23,6 +23,7 @@ export {
   type SplatEditGroup,
   type SplatEditOptions,
   SplatEditSdf,
+  type SplatEditSdfColor,
   type SplatEditSdfOptions,
   SplatEditSdfType,
   SplatEditRgbaBlendMode,

@@ -28,14 +28,14 @@ import {
 
 const edit = new SplatEdit({
   name: "Warm sphere",
-  rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY,
+  rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY_RGBA,
   softEdge: 0.1,
   sdfSmooth: 0,
 });
 
 const sphere = new SplatEditSdf({
   type: SplatEditSdfType.SPHERE,
-  color: new THREE.Color(1, 0.5, 0.5),
+  color: new THREE.Color(1, 0.5, 0.5), // Assigns R, G, and B.
   opacity: 0.4,
   radius: 1,
 });
@@ -56,7 +56,7 @@ scene.add(edit);
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | `string` | Generated | Object name |
-| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY` | Component-wise multiplication, RGB replacement, or RGBA addition |
+| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY_RGBA` | Multiplication, replacement, or addition on assigned RGBA channels |
 | `sdfSmooth` | `number` | `0` | Smoothing amount when combining SDF shapes |
 | `softEdge` | `number` | `0` | Region-edge feathering distance |
 | `invert` | `boolean` | `false` | Inverts the entire edit region |
@@ -75,9 +75,27 @@ scene.add(edit);
 
 | Mode | Description |
 | --- | --- |
-| `MULTIPLY` | Multiplies the existing RGBA component-wise by the SDF RGBA |
-| `SET_RGB` | Replaces RGB with the SDF color and multiplies the existing alpha by the SDF opacity |
-| `ADD_RGBA` | Adds the SDF RGBA to the existing RGBA |
+| `MULTIPLY_RGBA` | Multiplies each assigned channel by the corresponding SDF value |
+| `SET_RGBA` | Replaces each assigned channel with the corresponding SDF value |
+| `ADD_RGBA` | Adds the corresponding SDF value to each assigned channel |
+
+All three modes preserve channels that the SDF does not assign. For example,
+this edit replaces only R and G; the existing B and alpha values remain unchanged:
+
+```ts
+const partialColor = new SplatEditSdf({
+  color: { r: 1, g: 0.5 },
+});
+
+const edit = new SplatEdit({
+  rgbaBlendMode: SplatEditRgbaBlendMode.SET_RGBA,
+  sdfs: [partialColor],
+});
+```
+
+A `THREE.Color` assigns all three RGB channels. Omit `color` to preserve all RGB
+channels, and omit `opacity` to preserve alpha. Assign `undefined` to an existing
+channel later if it should become unassigned.
 
 ## SplatEditSdf options
 
@@ -85,8 +103,8 @@ scene.add(edit);
 | --- | --- | --- | --- |
 | `type` | `SplatEditSdfType` | `SPHERE` | SDF shape |
 | `invert` | `boolean` | `false` | Inverts the inside and outside of the shape |
-| `opacity` | `number` | `1` | Alpha value used by the edit |
-| `color` | `THREE.Color` | White | RGB value used by the edit |
+| `opacity` | `number` | Unassigned | Alpha value used by the edit; an unassigned alpha is preserved |
+| `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | RGB values used by the edit; each unassigned channel is preserved |
 | `radius` | `number` | `0` | Radius used by sphere, cylinder, capsule, and related shapes |
 
 An SDF extends `THREE.Object3D`; its position, rotation, and scale define the edit region. Edits execute in creation order by default, and the order can be changed through `edit.ordering`.

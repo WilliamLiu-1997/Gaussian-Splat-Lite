@@ -15,33 +15,39 @@ export enum SplatEditSdfType {
 
 /** RGBA-only operations supported by the SDF pipeline. */
 export enum SplatEditRgbaBlendMode {
-  MULTIPLY = "multiply",
-  SET_RGB = "set_rgb",
+  MULTIPLY_RGBA = "multiply_rgba",
+  SET_RGBA = "set_rgba",
   ADD_RGBA = "add_rgba",
 }
+
+export type SplatEditSdfColor = {
+  r?: number;
+  g?: number;
+  b?: number;
+};
 
 export type SplatEditSdfOptions = {
   type?: SplatEditSdfType;
   invert?: boolean;
   opacity?: number;
-  color?: THREE.Color;
+  color?: SplatEditSdfColor;
   radius?: number;
 };
 
-/** A signed-distance shape carrying only color and opacity. */
+/** A signed-distance shape carrying optional color and opacity channels. */
 export class SplatEditSdf extends THREE.Object3D {
   type: SplatEditSdfType;
   invert: boolean;
-  opacity: number;
-  color: THREE.Color;
+  opacity?: number;
+  color: SplatEditSdfColor;
   radius: number;
 
   constructor(options: SplatEditSdfOptions = {}) {
     super();
     this.type = options.type ?? SplatEditSdfType.SPHERE;
     this.invert = options.invert ?? false;
-    this.opacity = options.opacity ?? 1;
-    this.color = options.color ?? new THREE.Color(1, 1, 1);
+    this.opacity = options.opacity;
+    this.color = options.color ?? {};
     this.radius = options.radius ?? 0;
   }
 }
@@ -69,7 +75,7 @@ export class SplatEdit extends THREE.Object3D {
   constructor(options: SplatEditOptions = {}) {
     super();
     this.rgbaBlendMode =
-      options.rgbaBlendMode ?? SplatEditRgbaBlendMode.MULTIPLY;
+      options.rgbaBlendMode ?? SplatEditRgbaBlendMode.MULTIPLY_RGBA;
     this.sdfSmooth = options.sdfSmooth ?? 0;
     this.softEdge = options.softEdge ?? 0;
     this.invert = options.invert ?? false;
@@ -95,6 +101,7 @@ export class SplatEdit extends THREE.Object3D {
 export type SplatEditGroup = { edit: SplatEdit; sdfs: SplatEditSdf[] };
 
 const SDF_TEXELS = 5;
+const SDF_RGBA_MASK_SHIFT = 16;
 const MIN_CAPACITY = 16;
 const scratchFloat = new Float32Array(1);
 const scratchUint = new Uint32Array(scratchFloat.buffer);
@@ -249,7 +256,16 @@ export class SplatEdits {
     sizes: THREE.Vector4,
   ) {
     const base = index * SDF_TEXELS * 4;
-    const flags = sdfTypeToNumber(sdf.type) | (sdf.invert ? 1 << 8 : 0);
+    const color = sdf.color;
+    const rgbaMask =
+      (color.r === undefined ? 0 : 1) |
+      (color.g === undefined ? 0 : 1 << 1) |
+      (color.b === undefined ? 0 : 1 << 2) |
+      (sdf.opacity === undefined ? 0 : 1 << 3);
+    const flags =
+      sdfTypeToNumber(sdf.type) |
+      (sdf.invert ? 1 << 8 : 0) |
+      (rgbaMask << SDF_RGBA_MASK_SHIFT);
     let updated = this.setSdfFloat(base, center.x);
     updated = this.setSdfFloat(base + 1, center.y) || updated;
     updated = this.setSdfFloat(base + 2, center.z) || updated;
@@ -270,10 +286,10 @@ export class SplatEdits {
     updated = this.setSdfFloat(base + 14, sizes.z) || updated;
     updated = this.setSdfFloat(base + 15, sizes.w) || updated;
 
-    updated = this.setSdfFloat(base + 16, sdf.color.r) || updated;
-    updated = this.setSdfFloat(base + 17, sdf.color.g) || updated;
-    updated = this.setSdfFloat(base + 18, sdf.color.b) || updated;
-    updated = this.setSdfFloat(base + 19, sdf.opacity) || updated;
+    updated = this.setSdfFloat(base + 16, color.r ?? 0) || updated;
+    updated = this.setSdfFloat(base + 17, color.g ?? 0) || updated;
+    updated = this.setSdfFloat(base + 18, color.b ?? 0) || updated;
+    updated = this.setSdfFloat(base + 19, sdf.opacity ?? 0) || updated;
     return updated;
   }
 
@@ -304,9 +320,9 @@ export class SplatEdits {
 
 function rgbaBlendModeToNumber(mode: SplatEditRgbaBlendMode) {
   switch (mode) {
-    case SplatEditRgbaBlendMode.MULTIPLY:
+    case SplatEditRgbaBlendMode.MULTIPLY_RGBA:
       return 0;
-    case SplatEditRgbaBlendMode.SET_RGB:
+    case SplatEditRgbaBlendMode.SET_RGBA:
       return 1;
     case SplatEditRgbaBlendMode.ADD_RGBA:
       return 2;
