@@ -29,7 +29,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `minRaycastOpacity` | `number` | `0.05` | Per-Splat kernel-alpha threshold; clips the raycast hit area at this opacity, including special-shape Splats |
 | `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before Splat generation for a frame |
 
-Normally, choose exactly one of `url`, `fileBytes`, or `stream`. An existing `splats` instance should not be mixed with file input.
+Choose at most one initialization input from `url`, `fileBytes`, `stream`, `splats`, and `constructSplats`; mixing them throws an error.
 
 ## Common properties
 

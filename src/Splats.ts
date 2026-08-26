@@ -1,6 +1,5 @@
 import * as THREE from "three";
 
-import { SplatLoader } from "./SplatLoader";
 import { SPLAT_TEX_WIDTH, type SplatFileType } from "./defines";
 import type { SplatPostDecodeProgram } from "./postDecode";
 import { decodeSplat, encodeSplat, getTextureSize } from "./utils";
@@ -11,6 +10,12 @@ type SplatShTextures = {
   sh3a?: THREE.DataArrayTexture;
   sh3b?: THREE.DataArrayTexture;
 };
+
+const SH_COUNTS = [0, 3, 8, 15] as const;
+const SH_KEYS = ["sh1", "sh2", "sh3a", "sh3b"] as const;
+
+type DecodedSplat = ReturnType<typeof decodeSplat>;
+type DecodedSplatWithSh = DecodedSplat & { sh: THREE.Color[] };
 
 export type SplatsOptions = {
   url?: string;
@@ -31,6 +36,76 @@ export type SplatsOptions = {
   extra?: Record<string, unknown>;
 };
 
+type SplatsState = {
+  maxSplats: number;
+  numSplats: number;
+  splatArrays: [Uint32Array, Uint32Array];
+  sortCenters: Float32Array;
+  extra: Record<string, unknown>;
+  sortCentersDirty: boolean;
+};
+
+function getInitializationInputs(options: SplatsOptions): string[] {
+  const inputs: string[] = [];
+  if (options.url !== undefined) inputs.push("url");
+  if (options.fileBytes !== undefined) inputs.push("fileBytes");
+  if (options.stream !== undefined) inputs.push("stream");
+  if (options.splatArrays !== undefined) inputs.push("splatArrays");
+  if (options.construct !== undefined) inputs.push("construct");
+  return inputs;
+}
+
+function validateInitializationInputs(options: SplatsOptions) {
+  const inputs = getInitializationInputs(options);
+  if (inputs.length > 1) {
+    throw new Error(
+      `Splats initialization inputs are mutually exclusive; provide only one of url, fileBytes, stream, splatArrays, or construct (received: ${inputs.join(", ")})`,
+    );
+  }
+}
+
+function hasFileInput(options: SplatsOptions) {
+  return (
+    options.url !== undefined ||
+    options.fileBytes !== undefined ||
+    options.stream !== undefined
+  );
+}
+
+function createSplatsState(options: SplatsOptions): SplatsState {
+  if (options.splatArrays !== undefined) {
+    const capacity = Math.floor(
+      Math.min(options.splatArrays[0].length, options.splatArrays[1].length) /
+        4,
+    );
+    const maxSplats = Math.floor(capacity / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
+    const numSplats = Math.min(maxSplats, options.numSplats ?? maxSplats);
+    if (
+      options.sortCenters !== undefined &&
+      options.sortCenters.length < numSplats * 3
+    ) {
+      throw new Error("sortCenters is smaller than numSplats");
+    }
+    return {
+      maxSplats,
+      numSplats,
+      splatArrays: options.splatArrays,
+      sortCenters: options.sortCenters ?? new Float32Array(0),
+      extra: options.extra ?? {},
+      sortCentersDirty: options.sortCenters === undefined,
+    };
+  }
+
+  return {
+    maxSplats: options.maxSplats ?? 0,
+    numSplats: 0,
+    splatArrays: [new Uint32Array(0), new Uint32Array(0)],
+    sortCenters: new Float32Array(0),
+    extra: options.extra ?? {},
+    sortCentersDirty: false,
+  };
+}
+
 /** A mutable splat source with two 16-byte texture records per splat. */
 export class Splats {
   maxSplats = 0;
@@ -49,75 +124,80 @@ export class Splats {
   private shTextures: SplatShTextures = {};
   private updateNeeded = true;
   private sortCentersDirty = false;
+  private initializationVersion = 0;
 
   constructor(options: SplatsOptions = {}) {
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];
     this.initialized = Promise.resolve(this);
-    this.reinitialize(options);
+    this.initialize(options);
   }
 
-  reinitialize(options: SplatsOptions) {
-    this.isInitialized = false;
-    this.disposeTextures();
-    this.extra = {};
-    this.maxSplats = options.maxSplats ?? 0;
-    this.sortCenters = new Float32Array(0);
-    this.updateNeeded = true;
+  initialize(options: SplatsOptions = {}): Promise<Splats> {
+    validateInitializationInputs(options);
+    const isAsync = hasFileInput(options) || options.construct !== undefined;
+    const state = createSplatsState(
+      isAsync ? { maxSplats: options.maxSplats } : options,
+    );
+    const version = ++this.initializationVersion;
 
-    if (
-      options.url ||
-      options.fileBytes ||
-      options.stream ||
-      options.construct
-    ) {
-      this.initialized = this.asyncInitialize(options).then(() => {
-        this.isInitialized = true;
-        return this;
-      });
+    this.isInitialized = false;
+    this.commitState(state);
+
+    if (isAsync) {
+      // Defer construction so initialize() can publish the new promise before a
+      // user callback has an opportunity to re-enter initialize().
+      this.initialized = Promise.resolve()
+        .then(() =>
+          version === this.initializationVersion
+            ? this.asyncInitialize(options)
+            : undefined,
+        )
+        .then((initialized) => {
+          if (!initialized) return this;
+          try {
+            if (version === this.initializationVersion) {
+              this.commitState(initialized.captureState());
+              this.isInitialized = true;
+            }
+          } finally {
+            initialized.dispose();
+          }
+          return this;
+        });
     } else {
-      this.initialize(options);
       this.isInitialized = true;
       this.initialized = Promise.resolve(this);
     }
+
+    return this.initialized;
   }
 
-  initialize(options: SplatsOptions) {
+  private commitState(state: SplatsState) {
     this.disposeTextures();
-    this.extra = options.extra ?? {};
-    if (options.splatArrays) {
-      this.splatArrays = options.splatArrays;
-      this.maxSplats = Math.floor(
-        Math.min(this.splatArrays[0].length, this.splatArrays[1].length) / 4,
-      );
-      this.maxSplats =
-        Math.floor(this.maxSplats / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
-      this.numSplats = Math.min(
-        this.maxSplats,
-        options.numSplats ?? this.maxSplats,
-      );
-      if (
-        options.sortCenters &&
-        options.sortCenters.length < this.numSplats * 3
-      ) {
-        throw new Error("sortCenters is smaller than numSplats");
-      }
-      this.sortCenters = options.sortCenters ?? new Float32Array(0);
-      this.sortCentersDirty = !options.sortCenters;
-    } else {
-      this.maxSplats = options.maxSplats ?? 0;
-      this.numSplats = 0;
-      this.splatArrays = [new Uint32Array(0), new Uint32Array(0)];
-      this.sortCenters = new Float32Array(0);
-      this.sortCentersDirty = false;
-    }
+    this.maxSplats = state.maxSplats;
+    this.numSplats = state.numSplats;
+    this.splatArrays = state.splatArrays;
+    this.sortCenters = state.sortCenters;
+    this.extra = state.extra;
+    this.sortCentersDirty = state.sortCentersDirty;
     this.updateNeeded = true;
   }
 
-  private async asyncInitialize(options: SplatsOptions) {
-    const loader = new SplatLoader();
-    if (options.fileBytes || options.url || options.stream) {
-      await loader.loadInternalAsync({
-        splats: this,
+  private captureState(): SplatsState {
+    return {
+      maxSplats: this.maxSplats,
+      numSplats: this.numSplats,
+      splatArrays: this.splatArrays,
+      sortCenters: this.sortCenters,
+      extra: this.extra,
+      sortCentersDirty: this.sortCentersDirty,
+    };
+  }
+
+  private async asyncInitialize(options: SplatsOptions): Promise<Splats> {
+    if (hasFileInput(options)) {
+      const { SplatLoader } = await import("./SplatLoader");
+      return new SplatLoader().loadInternalAsync({
         url: options.url,
         fileBytes: options.fileBytes,
         fileType: options.fileType,
@@ -129,17 +209,20 @@ export class Splats {
       });
     }
 
-    const maybePromise = options.construct?.(this);
-    if (maybePromise instanceof Promise) {
-      await maybePromise;
+    const initialized = new Splats({ maxSplats: options.maxSplats });
+    try {
+      await options.construct?.(initialized);
+      return initialized;
+    } catch (error) {
+      initialized.dispose();
+      throw error;
     }
   }
 
   dispose() {
-    this.disposeTextures();
-    this.splatArrays = [new Uint32Array(0), new Uint32Array(0)];
-    this.sortCenters = new Float32Array(0);
-    this.extra = {};
+    this.initializationVersion += 1;
+    this.isInitialized = false;
+    this.commitState(createSplatsState({}));
   }
 
   private disposeTextures() {
@@ -206,11 +289,18 @@ export class Splats {
     return this.splatArrays;
   }
 
-  getSplat(index: number) {
+  getSplat(index: number): DecodedSplatWithSh;
+  getSplat(index: number, includeSh: true): DecodedSplatWithSh;
+  getSplat(index: number, includeSh: false): DecodedSplat;
+  getSplat(index: number, includeSh: boolean): DecodedSplat;
+  getSplat(index: number, includeSh = true) {
     if (index < 0 || index >= this.numSplats) {
       throw new Error("Invalid splat index");
     }
-    return decodeSplat(this.splatArrays, index);
+    const splat = decodeSplat(this.splatArrays, index);
+    return includeSh
+      ? { ...splat, sh: decodeSplatSh(this.extra, index, this.getNumSh()) }
+      : splat;
   }
 
   setSplat(
@@ -457,4 +547,33 @@ function newUintArrayTexture(
   texture.generateMipmaps = false;
   texture.needsUpdate = true;
   return texture;
+}
+
+function decodeSplatSh(
+  extra: Record<string, unknown>,
+  index: number,
+  degree: number,
+) {
+  const count = SH_COUNTS[degree] ?? 0;
+  const result = new Array<THREE.Color>(count);
+  const base = index * 4;
+  for (let coefficient = 0; coefficient < count; coefficient += 1) {
+    const data = extra[SH_KEYS[coefficient >> 2]];
+    const word =
+      data instanceof Uint32Array ? data[base + (coefficient & 3)] : 0;
+    result[coefficient] = decodeShColor(word);
+  }
+  return result;
+}
+
+function decodeShColor(word: number) {
+  const exponentAndSigns = word >>> 24;
+  const multiplier = 2 ** ((exponentAndSigns >>> 3) - 15) / 255;
+  let r = (word & 0xff) * multiplier;
+  let g = ((word >>> 8) & 0xff) * multiplier;
+  let b = ((word >>> 16) & 0xff) * multiplier;
+  if (exponentAndSigns & 1) r = -r;
+  if (exponentAndSigns & 2) g = -g;
+  if (exponentAndSigns & 4) b = -b;
+  return new THREE.Color(r, g, b);
 }

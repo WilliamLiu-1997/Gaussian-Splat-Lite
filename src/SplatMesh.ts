@@ -48,6 +48,20 @@ export type SplatMeshFrameContext = {
   globalEdits: SplatEdit[];
 };
 
+function validateSplatMeshInitializationInputs(options: SplatMeshOptions) {
+  const inputs: string[] = [];
+  if (options.url !== undefined) inputs.push("url");
+  if (options.fileBytes !== undefined) inputs.push("fileBytes");
+  if (options.stream !== undefined) inputs.push("stream");
+  if (options.splats !== undefined) inputs.push("splats");
+  if (options.constructSplats !== undefined) inputs.push("constructSplats");
+  if (inputs.length > 1) {
+    throw new Error(
+      `SplatMesh initialization inputs are mutually exclusive; provide only one of url, fileBytes, stream, splats, or constructSplats (received: ${inputs.join(", ")})`,
+    );
+  }
+}
+
 /** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
 export class SplatMesh extends THREE.Object3D {
   initialized: Promise<SplatMesh>;
@@ -89,8 +103,21 @@ export class SplatMesh extends THREE.Object3D {
     if (options.splats && !(options.splats instanceof Splats)) {
       throw new TypeError("SplatMesh splats must be a Splats instance");
     }
+    validateSplatMeshInitializationInputs(options);
     this.splats =
-      options.splats ?? new Splats({ maxSplats: options.maxSplats });
+      options.splats ??
+      new Splats({
+        url: options.url,
+        fileBytes: options.fileBytes,
+        fileType: options.fileType,
+        fileName: options.fileName,
+        stream: options.stream,
+        streamLength: options.streamLength,
+        postDecode: options.postDecode,
+        maxSplats: options.maxSplats,
+        construct: options.constructSplats,
+        onProgress: options.onProgress,
+      });
 
     this.numSplats = this.splats.getNumSplats();
     this.editable = options.editable ?? true;
@@ -98,17 +125,10 @@ export class SplatMesh extends THREE.Object3D {
     this.minRaycastOpacity = options.minRaycastOpacity ?? 0.05;
     this.onFrame = options.onFrame;
 
-    const needsAsyncInitialization = Boolean(
-      this.splats &&
-        (options.url ||
-          options.fileBytes ||
-          options.stream ||
-          options.constructSplats ||
-          !this.splats.isInitialized),
-    );
-
-    if (needsAsyncInitialization) {
-      this.initialized = this.asyncInitialize(options).then(async () => {
+    if (!this.splats.isInitialized) {
+      this.initialized = this.splats.initialized.then(async () => {
+        this.numSplats = this.splats?.getNumSplats() ?? 0;
+        this.updateMappingVersion();
         this.isInitialized = true;
         await options.onLoad?.(this);
         return this;
@@ -121,34 +141,6 @@ export class SplatMesh extends THREE.Object3D {
           ? maybePromise.then(() => this)
           : Promise.resolve(this);
     }
-  }
-
-  private async asyncInitialize(options: SplatMeshOptions) {
-    const splats = this.splats;
-    if (splats) {
-      if (
-        options.url ||
-        options.fileBytes ||
-        options.stream ||
-        options.constructSplats
-      ) {
-        splats.reinitialize({
-          url: options.url,
-          fileBytes: options.fileBytes,
-          fileType: options.fileType,
-          fileName: options.fileName,
-          stream: options.stream,
-          streamLength: options.streamLength,
-          postDecode: options.postDecode,
-          maxSplats: options.maxSplats,
-          construct: options.constructSplats,
-          onProgress: options.onProgress,
-        });
-      }
-      await splats.initialized;
-    }
-    this.numSplats = this.splats?.getNumSplats() ?? 0;
-    this.updateMappingVersion();
   }
 
   pushSplat(

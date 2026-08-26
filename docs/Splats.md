@@ -7,6 +7,7 @@
 ```js
 const data = splat.splats;
 const item = data.getSplat(0);
+const itemWithoutSh = data.getSplat(0, false);
 
 data.setSplat(
   0,
@@ -22,7 +23,7 @@ data.removeSplat(0);
 data.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 ```
 
-The constructor and `reinitialize()` accept the same `SplatsOptions`:
+The constructor and `initialize()` accept the same `SplatsOptions`:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -41,7 +42,9 @@ The constructor and `reinitialize()` accept the same `SplatsOptions`:
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |
 | `extra` | `Record<string, unknown>` | `{}` | Additional data such as SH arrays |
 
-File input, `splatArrays`, and `construct` serve different initialization paths and normally should not be mixed. Supplying `splatArrays` directly is a low-level encoded-data API.
+Choose at most one initialization input from `url`, `fileBytes`, `stream`, `splatArrays`, and `construct`; mixing them throws an error. Supplying `splatArrays` directly is a low-level encoded-data API.
+
+`initialize()` returns the same promise exposed as `initialized`. File loading and `construct` callbacks run against staged data; if another `initialize()` call supersedes them, their completed state is discarded instead of replacing the newer data.
 
 The main methods are:
 
@@ -49,14 +52,14 @@ The main methods are:
 | --- | --- |
 | `initialized` / `isInitialized` | Asynchronous initialization state |
 | `getNumSplats()` / `getNumSh()` | Returns Splat count and available SH degree |
-| `getSplat(index)` | Decodes and returns one Splat |
+| `getSplat(index, includeSh?)` | Decodes one Splat with SH coefficients by default; pass `false` to skip SH decoding |
 | `setSplat(index, ...)` | Adds or overwrites one Splat |
 | `pushSplat(...)` | Appends one Splat |
 | `removeSplat(index)` | Removes one Splat and shifts subsequent indices down |
 | `forEachCenter(callback)` | Iterates centers only, suitable for spatial-index construction |
 | `forEachSplat(callback)` | Iterates and fully decodes every Splat |
 | `ensureSplats(count)` | Ensures underlying array capacity |
-| `reinitialize(options)` | Reinitializes from a file, stream, array, or construction callback |
+| `initialize(options)` | Initializes or replaces data from a file, stream, array, or construction callback |
 | `dispose()` | Releases textures and data references |
 
 Decoded files provide `sortCenters` directly, avoiding a main-thread center-extraction pass before their first sort. After modifying low-level arrays such as `splatArrays` directly, set `data.needsUpdate = true`; this rebuilds the contiguous center cache on demand. Prefer `setSplat()`, `pushSplat()`, and `removeSplat()`, which keep both representations synchronized automatically.
