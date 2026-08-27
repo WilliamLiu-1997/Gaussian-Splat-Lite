@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Reduced accumulator shader work by projecting quaternion vector parts directly during octahedral encoding and constructing packed SH scale factors from exact float exponent bits.
+- Reduced rendering shader work by clipping ordinary Gaussian support to the configured alpha threshold, precomputing wide-kernel powers per vertex, and projecting covariance without intermediate matrices.
 
 ### Fixed
 

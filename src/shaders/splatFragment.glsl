@@ -17,8 +17,8 @@ in vec4 vRgba;
 in vec2 vSplatUv;
 in vec3 vNdc;
 flat in uint vSplatIndex;
-flat in float adjustedStdDev;
-flat in float vKernelShape;
+flat in float vSupportRadiusSquared;
+flat in float vKernelPower;
 
 #include <logdepthbuf_pars_fragment>
 
@@ -26,18 +26,15 @@ void main() {
     vec4 rgba = vRgba;
 
     float z2 = dot(vSplatUv, vSplatUv);
-    if (z2 > (adjustedStdDev * adjustedStdDev)) {
+    if (z2 > vSupportRadiusSquared) {
         discard;
     }
 
-    float kernelShape = vKernelShape;
-    if (kernelShape <= 1.0) {
-        rgba.a *= exp(-0.5 * z2);
-    } else {
-        float power = exp((kernelShape * kernelShape - 1.0) / 2.718281828459045);
-        float alpha = 1.0 - pow(1.0 - exp(-0.5 * z2), power);
-        rgba.a *= alpha;
+    float kernelAlpha = exp(-0.5 * z2);
+    if (vKernelPower != 0.0) {
+        kernelAlpha = 1.0 - pow(1.0 - kernelAlpha, vKernelPower);
     }
+    rgba.a *= kernelAlpha;
 
     if (rgba.a < minAlpha) {
         discard;

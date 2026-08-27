@@ -9,8 +9,8 @@ out vec4 vRgba;
 out vec2 vSplatUv;
 out vec3 vNdc;
 flat out uint vSplatIndex;
-flat out float adjustedStdDev;
-flat out float vKernelShape;
+flat out float vSupportRadiusSquared;
+flat out float vKernelPower;
 
 // uniform uint numSplats;
 uniform vec2 renderSize;
@@ -41,6 +41,12 @@ bool isPerspectiveMatrix( mat4 m ) {
 }
 
 #include <logdepthbuf_pars_vertex>
+
+float gaussianSupportRadius(float alpha, float maximumRadius) {
+    if (minAlpha <= 0.0) return maximumRadius;
+    float radiusSquared = 2.0 * log(alpha / minAlpha);
+    return min(maximumRadius, sqrt(max(0.0, radiusSquared)));
+}
 
 void main() {
     // Default to outside the frustum so it's discarded if we return early
@@ -101,15 +107,24 @@ void main() {
     // Decode the shape amount independently from mesh/SDF opacity, which
     // remains in the main splat's alpha.
     float kernelShape = 1.0 + 4.0 * min(alphaShapeAmount.y, 1.0);
-    vKernelShape = kernelShape;
+    // Zero marks the ordinary Gaussian path; wider kernels reuse this power
+    // for every covered fragment.
+    float kernelPower = 0.0;
+    if (kernelShape > 1.0) {
+        kernelPower = exp(
+            (kernelShape * kernelShape - 1.0) / 2.718281828459045
+        );
+    }
+    vKernelPower = kernelPower;
 
     // Expand wider shape kernels until alpha is nearly zero before clipping.
-    adjustedStdDev = maxStdDev + 0.7 * max(kernelShape - 1.0, 0.0);
+    float maximumSupportRadius = maxStdDev
+        + 0.7 * max(kernelShape - 1.0, 0.0);
+    float supportRadius = maximumSupportRadius;
 
     scales *= renderToViewScale;
 
     vRgba = vec4(rgba.rgb, alpha);
-    vSplatUv = position.xy * adjustedStdDev;
 
     // Record the splat index for entropy
     vSplatIndex = splatIndex;
@@ -118,6 +133,12 @@ void main() {
     vec4 viewQuaternion = quatQuat(renderToViewQuat, quaternion);
 
     if (enable2DGS && any(zeroScales)) {
+        if (kernelPower == 0.0) {
+            supportRadius = gaussianSupportRadius(alpha, supportRadius);
+        }
+        vSupportRadiusSquared = supportRadius * supportRadius;
+        vSplatUv = position.xy * supportRadius;
+
         vec3 offset;
         if (zeroScales.z) {
             offset = vec3(vSplatUv.xy * scales.xy, 0.0);
@@ -135,38 +156,33 @@ void main() {
         return;
     }
 
-    // Compute the 3D covariance matrix of the splat
+    // Compute the scaled rotation basis of the splat.
     mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);
-    mat3 cov3D = RS * transpose(RS);
 
-    // Compute the Jacobian of the splat's projection at its center
+    // Compute the two relevant columns of the projection Jacobian.
     vec2 scaledRenderSize = renderSize * focalAdjustment;
     vec2 focal = 0.5 * scaledRenderSize * vec2(projectionMatrix[0][0], projectionMatrix[1][1]);
 
-    mat3 J;
+    vec3 j0;
+    vec3 j1;
     if (isOrthographic) {
-        J = mat3(
-            focal.x, 0.0, 0.0,
-            0.0, focal.y, 0.0,
-            0.0, 0.0, 0.0
-        );
+        j0 = vec3(focal.x, 0.0, 0.0);
+        j1 = vec3(0.0, focal.y, 0.0);
     } else {
         float invZ = 1.0 / viewCenter.z;
         vec2 J1 = focal * invZ;
         vec2 J2 = -(J1 * viewCenter.xy) * invZ;
-        J = mat3(
-            J1.x, 0.0, J2.x,
-            0.0, J1.y, J2.y,
-            0.0, 0.0, 0.0
-        );
+        j0 = vec3(J1.x, 0.0, J2.x);
+        j1 = vec3(0.0, J1.y, J2.y);
     }
 
-    // Compute the 2D covariance by projecting the 3D covariance
-    // and picking out the XY plane components.
-    mat3 cov2D = transpose(J) * cov3D * J;
-    float a = cov2D[0][0];
-    float d = cov2D[1][1];
-    float b = cov2D[0][1];
+    // Project only the 2D covariance entries that are consumed below:
+    // j^T * RS * RS^T * j = dot(RS^T * j, RS^T * j).
+    vec3 p0 = transpose(RS) * j0;
+    vec3 p1 = transpose(RS) * j1;
+    float a = dot(p0, p0);
+    float b = dot(p0, p1);
+    float d = dot(p1, p1);
 
     // Optionally pre-blur the splat to match non-antialias optimized splats
     a += preBlurAmount;
@@ -186,6 +202,14 @@ void main() {
     }
     vRgba.a = alpha;
 
+    // Ordinary Gaussians need only cover fragments that can reach minAlpha.
+    // Wide kernels retain their separately expanded support radius.
+    if (kernelPower == 0.0) {
+        supportRadius = gaussianSupportRadius(alpha, supportRadius);
+    }
+    vSupportRadiusSquared = supportRadius * supportRadius;
+    vSplatUv = position.xy * supportRadius;
+
     // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
     float eigenAvg = 0.5 * (a + d);
     float eigenDelta = sqrt(max(0.0, eigenAvg * eigenAvg - det));
@@ -196,8 +220,15 @@ void main() {
         : ((a >= d) ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
     vec2 eigenVec2 = vec2(eigenVec1.y, -eigenVec1.x);
 
-    float scale1 = min(maxPixelRadius, adjustedStdDev * sqrt(eigen1));
-    float scale2 = min(maxPixelRadius, adjustedStdDev * sqrt(eigen2));
+    // Apply maxPixelRadius to the original support first, then shrink both the
+    // quad and its UV extent by the same ratio to preserve the Gaussian profile.
+    float scale1 = min(maxPixelRadius, maximumSupportRadius * sqrt(eigen1));
+    float scale2 = min(maxPixelRadius, maximumSupportRadius * sqrt(eigen2));
+    float supportScale = (maximumSupportRadius > 0.0)
+        ? supportRadius / maximumSupportRadius
+        : 0.0;
+    scale1 *= supportScale;
+    scale2 *= supportScale;
     if (scale1 < minPixelRadius && scale2 < minPixelRadius) {
         return;
     }
