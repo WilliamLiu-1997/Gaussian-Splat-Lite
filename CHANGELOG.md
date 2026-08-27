@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added `SplatMesh.setSplat()`, plus `Splats.removeSplat()` and `SplatMesh.removeSplat()` for compact removal while preserving main and spherical-harmonic data alignment.
+- Added `setSplats()`, `pushSplats()`, and `removeSplats()` batch mutation APIs to `Splats` and `SplatMesh`, with optional SH0/1/2/3 input and aligned main, spherical-harmonic, and sort-center data.
 - Added `postDecode`, a serializable per-Splat expression API for transforming logical position, scale, quaternion, opacity, alpha, color, and spherical harmonics inside the decode worker, with support for external attributes.
 
 ### Changed

@@ -53,9 +53,9 @@ await mesh.initialized;
 mesh.getBoundingBox();      // Centers only; faster.
 mesh.getBoundingBox(false); // Includes rotated and scaled Splat bounds.
 
-mesh.setSplat(index, center, scales, quaternion, opacity, color);
-mesh.pushSplat(center, scales, quaternion, opacity, color);
-mesh.removeSplat(index);    // Compacts subsequent Splat indices.
+mesh.setSplats([index], [splat]);
+mesh.pushSplats([splat]);
+mesh.removeSplats([indexA, indexB]); // Compacts surviving Splat indices.
 mesh.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 
 mesh.updateVersion();                 // Regenerate and re-sort.
@@ -64,7 +64,7 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-`getBoundingBox()` can only be called after initialization. `setSplat()` and `removeSplat()` throw after the mesh has been disposed.
+Each batch input contains `center`, `scales`, `quaternion`, `opacity`, and `color`, plus optional `sh` with 0, 3, 8, or 15 coefficients for SH0/1/2/3. `getBoundingBox()` can only be called after initialization. Batch mutation methods throw after the mesh has been disposed.
 
 ## Raycasting
 

@@ -6,7 +6,7 @@ import {
   raycast_splat_buffers,
 } from "gaussian-splat-rs";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
-import { Splats } from "./Splats";
+import { type SplatInput, Splats } from "./Splats";
 import type { SplatFileType } from "./defines";
 import type { SplatPostDecodeProgram } from "./postDecode";
 import * as wasm from "./wasm";
@@ -143,37 +143,27 @@ export class SplatMesh extends THREE.Object3D {
     }
   }
 
-  pushSplat(
-    center: THREE.Vector3,
-    scales: THREE.Vector3,
-    quaternion: THREE.Quaternion,
-    opacity: number,
-    color: THREE.Color,
-  ) {
-    this.splats?.pushSplat(center, scales, quaternion, opacity, color);
-    this.numSplats = this.splats?.getNumSplats() ?? this.numSplats;
-  }
-
-  setSplat(
-    index: number,
-    center: THREE.Vector3,
-    scales: THREE.Vector3,
-    quaternion: THREE.Quaternion,
-    opacity: number,
-    color: THREE.Color,
-  ) {
+  pushSplats(splats: readonly SplatInput[]) {
     if (!this.splats) {
-      throw new Error("Cannot set a Splat after SplatMesh is disposed");
+      throw new Error("Cannot push Splats after SplatMesh is disposed");
     }
-    this.splats.setSplat(index, center, scales, quaternion, opacity, color);
+    this.splats.pushSplats(splats);
     this.numSplats = this.splats.getNumSplats();
   }
 
-  removeSplat(index: number) {
+  setSplats(indices: readonly number[], splats: readonly SplatInput[]) {
     if (!this.splats) {
-      throw new Error("Cannot remove a Splat after SplatMesh is disposed");
+      throw new Error("Cannot set Splats after SplatMesh is disposed");
     }
-    this.splats.removeSplat(index);
+    this.splats.setSplats(indices, splats);
+    this.numSplats = this.splats.getNumSplats();
+  }
+
+  removeSplats(indices: readonly number[]) {
+    if (!this.splats) {
+      throw new Error("Cannot remove Splats after SplatMesh is disposed");
+    }
+    this.splats.removeSplats(indices);
     this.numSplats = this.splats.getNumSplats();
   }
 

@@ -175,13 +175,14 @@ import { SplatMesh } from "gaussian-splat-lite";
 const splat = new SplatMesh({
   maxSplats: 100,
   constructSplats: (data) => {
-    data.pushSplat(
-      new THREE.Vector3(0, 0, 0),       // center
-      new THREE.Vector3(0.2, 0.1, 0.1), // scales
-      new THREE.Quaternion(),            // rotation
-      1,                                 // raw opacity; 0..1 alpha, >1 LoD coverage (max 1000)
-      new THREE.Color(0x4f8cff),         // color
-    );
+    data.pushSplats([{
+      center: new THREE.Vector3(0, 0, 0),
+      scales: new THREE.Vector3(0.2, 0.1, 0.1),
+      quaternion: new THREE.Quaternion(),
+      opacity: 1, // Raw opacity; 0..1 alpha, >1 LoD coverage (max 1000).
+      color: new THREE.Color(0x4f8cff),
+      sh: [], // Optional: 0, 3, 8, or 15 coefficients for SH0/1/2/3.
+    }]);
   },
 });
 
@@ -196,7 +197,7 @@ await splat.initialized;
 | [`GaussianSplatRenderer`](docs/GaussianSplatRenderer.md) | Integrates with Three.js and generates, sorts, and draws every visible Splat |
 | [`SplatMesh`](docs/SplatMesh.md) | A transformable, visible, and raycastable Gaussian Splat scene object |
 | [`SplatLoader`](docs/SplatLoader.md) | A Three.js Loader-style PLY/SPZ decoder |
-| [`Splats`](docs/Splats.md) | The built-in mutable Splat source, with per-Splat read and write access |
+| [`Splats`](docs/Splats.md) | The built-in mutable Splat source, with decoded reads and aligned batch mutation |
 | [`SplatEdit`](docs/SplatEdit.md) / [`SplatEditSdf`](docs/SplatEdit.md) | SDF-region RGBA editing objects |
 | [`SplatAccumulator`](docs/SplatAccumulator.md) | A low-level generation buffer used by the renderer; normally internal |
 | [`SplatFileType`](docs/SplatFileType.md) | File type enum containing `PLY` and `SPZ` |
