@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-28
+
 ### Changed
 
 - Reduced accumulator shader work by projecting quaternion vector parts directly during octahedral encoding and constructing packed SH scale factors from exact float exponent bits.
@@ -99,7 +101,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.2...v0.1.3
