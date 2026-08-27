@@ -1266,6 +1266,33 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.material.needsUpdate = true;
     }
   }
+
+  get transparent(): boolean {
+    return this.material.transparent;
+  }
+
+  set transparent(value: boolean) {
+    if (this.material.transparent !== value) {
+      this.material.transparent = value;
+      this.material.needsUpdate = true;
+    }
+  }
+
+  get depthTest(): boolean {
+    return this.material.depthTest;
+  }
+
+  set depthTest(value: boolean) {
+    this.material.depthTest = value;
+  }
+
+  get depthWrite(): boolean {
+    return this.material.depthWrite;
+  }
+
+  set depthWrite(value: boolean) {
+    this.material.depthWrite = value;
+  }
 }
 
 function checkIsXRRenderTarget(renderTarget: THREE.RenderTarget | null) {

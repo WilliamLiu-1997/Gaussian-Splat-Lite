@@ -75,6 +75,9 @@ type TargetOptions = {
 | `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
 | `dispose()` | Releases materials, geometry, textures, targets, and the sorting worker |
 | `premultipliedAlpha` | A read/write property that recompiles the material when changed |
+| `transparent` | A read/write property that controls whether Splats use the transparent render pass and recompiles the material when changed |
+| `depthTest` | A read/write property that controls whether Splats are tested against the depth buffer |
+| `depthWrite` | A read/write property that controls whether Splats write to the depth buffer |
 
 For an on-demand render loop, connect `onDirty` to the application's render scheduler:
 
