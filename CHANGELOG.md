@@ -9,14 +9,20 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added `GaussianSplatRenderer.shrinkToFit()` for synchronizing the current scene and shrinking renderer work resources to their current allocation tiers while preserving the current display until any replacement is ready.
 - Added `setSplats()`, `pushSplats()`, and `removeSplats()` batch mutation APIs to `Splats` and `SplatMesh`, with optional SH0/1/2/3 input and aligned main, spherical-harmonic, and sort-center data.
 - Added `postDecode`, a serializable per-Splat expression API for transforming logical position, scale, quaternion, opacity, alpha, color, and spherical harmonics inside the decode worker, with support for external attributes.
 
 ### Changed
 
+- Changed the default `GaussianSplatRenderer.minAlpha` from `0.5 / 255` to `1 / 255`.
+- Made the encoded Splat, sort-center, and SH array properties private.
 - `Splats.getSplat()` now returns decoded spherical-harmonic coefficients by default; pass `false` to skip SH decoding.
 - Replaced `Splats.reinitialize()` with a unified `initialize()` entry point, rejected conflicting initialization inputs, and isolated asynchronous initialization so superseded work cannot overwrite newer data.
-- Direct `splatArrays` input is now validated and padded to a texture-compatible capacity instead of silently truncating non-aligned records.
+- Made direct encoded-array initialization and the Splat record encoder internal implementation details; code-generated data now uses the managed `setSplats()` and `pushSplats()` APIs.
+- Optimized `pushSplats()` and `setSplats()` with direct center-array views, common opacity and identity-quaternion fast paths, and no transient append-index or per-coefficient SH arrays, while preserving whole-batch validation.
+- Optimized `removeSplats()` by compacting contiguous survivor ranges and using already sorted unique removal indices without temporary sets or sorting.
+- Cleared mappings when pooled accumulators are disposed during resource cleanup, and released CPU ordering buffers when the renderer is disposed.
 - Renamed the SDF blend modes to `MULTIPLY_RGBA`, `SET_RGBA`, and `ADD_RGBA`; all modes now modify only explicitly assigned color and opacity channels.
 - Scaled idle decode-worker lifetime from three minutes at 64 MiB of peak WASM memory down to three seconds at 256 MiB, and preferred smaller idle workers for reuse so large workers can expire promptly.
 - Generated contiguous raw sort centers during decoding and cached them in the sort worker; axial sorting now folds each mesh matrix into the view direction without materializing transformed centers, radial sorting creates transformed centers lazily, and switching modes replaces the worker and releases its previous WASM instance.

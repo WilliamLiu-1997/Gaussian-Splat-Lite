@@ -200,7 +200,7 @@ const renderOptionGroups = [
         min: 0,
         max: 0.1,
         step: 0.5 / 255,
-        defaultValue: 0.5 / 255,
+        defaultValue: 1 / 255,
         format: (value) => value.toFixed(4),
       },
       {

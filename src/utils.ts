@@ -10,13 +10,11 @@ import {
 import {
   decodeQuatOctXy1010R12ToArray,
   decodeSplatOpacity,
-  encodeQuatOctXy1010R12,
-  encodeSplatOpacity,
 } from "./splatCodec";
 export { fromHalf, toHalf } from "./float16";
 export { encodeQuatOctXy1010R12 } from "./splatCodec";
 export { getTransferable } from "./transferable";
-import { fromHalf, toHalf } from "./float16";
+import { fromHalf } from "./float16";
 
 export const threeRevision = Number.parseInt(THREE.REVISION);
 export const threeMrtArray = threeRevision >= 179;
@@ -34,36 +32,6 @@ export function floatBitsToUint(f: number): number {
 export function uintBitsToFloat(u: number): number {
   u32buffer[0] = u;
   return f32buffer[0];
-}
-
-export function encodeSplat(
-  splatArrays: [Uint32Array, Uint32Array],
-  index: number,
-  x: number,
-  y: number,
-  z: number,
-  scaleX: number,
-  scaleY: number,
-  scaleZ: number,
-  quatX: number,
-  quatY: number,
-  quatZ: number,
-  quatW: number,
-  opacity: number,
-  r: number,
-  g: number,
-  b: number,
-) {
-  const i4 = index * 4;
-  const [splatA, splatB] = splatArrays;
-  splatA[i4] = floatBitsToUint(x);
-  splatA[i4 + 1] = floatBitsToUint(y);
-  splatA[i4 + 2] = floatBitsToUint(z);
-  splatA[i4 + 3] = encodeSplatOpacity(opacity);
-  splatB[i4] = toHalf(r) | (toHalf(g) << 16);
-  splatB[i4 + 1] = toHalf(b) | (toHalf(Math.log(scaleX)) << 16);
-  splatB[i4 + 2] = toHalf(Math.log(scaleY)) | (toHalf(Math.log(scaleZ)) << 16);
-  splatB[i4 + 3] = encodeQuatOctXy1010R12(quatX, quatY, quatZ, quatW);
 }
 
 export function decodeSplat(

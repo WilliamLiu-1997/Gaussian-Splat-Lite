@@ -181,6 +181,9 @@ export class SplatMesh extends THREE.Object3D {
   }
 
   dispose() {
+    // @ts-ignore Object base class has a dispose method in Three.js >= r186
+    super.dispose?.();
+
     this.sdfEdits?.dispose();
     this.sdfEdits = null;
     this.splats?.dispose();
@@ -374,11 +377,9 @@ export class SplatMesh extends THREE.Object3D {
     const buffer2 = get_raycast_buffer2();
     const capacity = buffer.length / 4;
 
-    const [first, second] = this.splats.splatArrays;
     for (let base = 0; base < this.numSplats; base += capacity) {
       const count = Math.min(capacity, this.numSplats - base);
-      buffer.set(first.subarray(base * 4, (base + count) * 4));
-      buffer2.set(second.subarray(base * 4, (base + count) * 4));
+      this.splats.copySplatRecords(buffer, buffer2, base, count);
       const distances = raycast_splat_buffers(
         origin.x,
         origin.y,

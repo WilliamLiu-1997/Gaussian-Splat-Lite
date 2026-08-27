@@ -32,6 +32,6 @@ new SplatAccumulator()
 | `generate({ mesh, base, count, renderer })` | Generates one mesh into its assigned accumulator range |
 | `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collects visible meshes, runs frame updates, compares versions, and returns a deferred generation plan |
 | `checkVersions(mapping)` | Reports generated-data, mapping, and sorting changes relative to another mapping |
-| `dispose()` | Releases the accumulator render target |
+| `dispose()` | Releases the render target and drops retained mesh mappings |
 
 `prepareGenerate()`, `generate()`, and version management are renderer plumbing. Use `GaussianSplatRenderer.update()` for normal manual updates.

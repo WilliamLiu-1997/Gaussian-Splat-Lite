@@ -120,12 +120,8 @@ export class SortCenterCache {
     changedCenters.forEach(({ node, count, rangeIndex }, updateIndex) => {
       centerUpdateRangeIndices[updateIndex] = rangeIndex;
 
-      const centers = node.splats?.getSortCenters();
-      const valueCount = count * 3;
-      if (!centers || centers.length < valueCount) {
-        throw new Error("Sort center data is smaller than its Splat count");
-      }
-      updateCenters.set(centers.subarray(0, valueCount), updateBase * 3);
+      if (!node.splats) throw new Error("SplatMesh has no source");
+      node.splats.copySortCenters(updateCenters, updateBase * 3, count);
       updateBase += count;
     });
 

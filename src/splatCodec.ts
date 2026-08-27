@@ -2,6 +2,7 @@ import { fromHalf, toHalf } from "./float16";
 
 const MAX_SPLAT_OPACITY = 1000;
 const F32_EPSILON = 1.192_092_895_507_812_5e-7;
+const ENCODED_IDENTITY_QUATERNION = (512 << 10) | 1023;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -20,6 +21,7 @@ export function decodeSplatOpacity(word: number) {
 }
 
 export function encodeSplatOpacity(opacity: number) {
+  if (opacity > 0 && opacity <= 1) return toHalf(opacity);
   const value = clamp(opacity, 0, MAX_SPLAT_OPACITY);
   if (value > 1) {
     const shapeAmount = 0.25 * (Math.sqrt(Math.log(value) * Math.E + 1) - 1);
@@ -67,6 +69,9 @@ function encodeQuaternion(
     lengthSquared <= minimumLengthSquared
   ) {
     return undefined;
+  }
+  if (qx === 0 && qy === 0 && qz === 0) {
+    return ENCODED_IDENTITY_QUATERNION;
   }
 
   const inverseLength = 1 / Math.sqrt(lengthSquared);

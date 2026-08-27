@@ -7,11 +7,22 @@ import { getShaders } from "./shaders";
 import { resolveTimer, uploadU32DataTextureRows } from "./utils";
 
 const renderToViewScaleTmp = new THREE.Vector3();
+const ORDERING_TEXTURE_WIDTH = 4096;
+const SPLATS_PER_ORDERING_ROW = ORDERING_TEXTURE_WIDTH * 4;
+const DEFAULT_MIN_ALPHA = 1 / 255;
+
+function getOrderingCapacity(maxSplats: number) {
+  return (
+    Math.max(1, Math.ceil(maxSplats / SPLATS_PER_ORDERING_ROW)) *
+    SPLATS_PER_ORDERING_ROW
+  );
+}
 
 type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
   autoUpdate: boolean;
+  shrinkToFit: boolean;
 };
 
 // Average (uniform) world scale of a camera.
@@ -76,7 +87,7 @@ export interface GaussianSplatRendererOptions {
   maxPixelRadius?: number;
   /**
    * Minimum alpha value for splat rendering.
-   * @default 0.5 * (1.0 / 255.0)
+   * @default 1 / 255
    */
   minAlpha?: number;
   /**
@@ -302,7 +313,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.maxStdDev = options.maxStdDev ?? Math.sqrt(8.0);
     this.minPixelRadius = options.minPixelRadius ?? 1.0;
     this.maxPixelRadius = options.maxPixelRadius ?? 512.0;
-    this.minAlpha = options.minAlpha ?? 0.5 * (1.0 / 255.0);
+    this.minAlpha = options.minAlpha ?? DEFAULT_MIN_ALPHA;
     this.enable2DGS = options.enable2DGS ?? false;
     this.preBlurAmount = options.preBlurAmount ?? 0.0;
     this.blurAmount = options.blurAmount ?? 0.3;
@@ -391,7 +402,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // Maximum pixel radius for splat rendering
       maxPixelRadius: { value: 512.0 },
       // Minimum alpha value for splat rendering
-      minAlpha: { value: 0.5 * (1.0 / 255.0) },
+      minAlpha: { value: DEFAULT_MIN_ALPHA },
       // Enable interpreting 0-thickness Gsplats as 2DGS
       enable2DGS: { value: false },
       // Add to projected 2D splat covariance diagonal (thickens and brightens)
@@ -424,6 +435,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.disposed = true;
     this.queuedUpdate = null;
 
+    // @ts-ignore Object base class has a dispose method in Three.js >= r186
+    super.dispose?.();
+
     if (this.target) {
       this.target.dispose();
       this.target = undefined;
@@ -446,8 +460,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     for (const accumulator of accumulators) {
       accumulator.dispose();
     }
+    this.accumulators.length = 0;
 
     this.resetSortWorker();
+    this.releaseReadbackBuffers();
+    this.orderingBuffer = new Uint32Array(0);
+    this.maxSplats = 0;
+    this.activeSplats = 0;
 
     this.geometry.dispose();
     this.material.dispose();
@@ -467,6 +486,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uploadedSortStateRevision = -1;
   }
 
+  private releaseReadbackBuffers() {
+    this.superPixels = undefined;
+    this.targetPixels = undefined;
+  }
+
   private createAccumulator() {
     return new SplatAccumulator();
   }
@@ -477,6 +501,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
   private releaseAccumulator(accumulator: SplatAccumulator) {
     this.accumulators.push(accumulator);
+  }
+
+  private disposeOversizedAccumulators(maxSplats: number) {
+    for (const accumulator of this.accumulators) {
+      if (accumulator.maxSplats > maxSplats) accumulator.dispose();
+    }
   }
 
   onBeforeRender(
@@ -534,6 +564,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
           scene,
           camera: useCamera,
           autoUpdate: true,
+          shrinkToFit: false,
         });
       } else if (gaussianSplatRenderer.updateTimeoutId === -1) {
         gaussianSplatRenderer.updateTimeoutId = setTimeout(() => {
@@ -542,6 +573,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
             scene,
             camera: useCamera,
             autoUpdate: true,
+            shrinkToFit: false,
           });
         }, 1);
       }
@@ -621,7 +653,28 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     scene: THREE.Scene;
     camera: THREE.Camera;
   }) {
-    await this.updateInternal({ scene, camera, autoUpdate: false });
+    await this.updateInternal({
+      scene,
+      camera,
+      autoUpdate: false,
+      shrinkToFit: false,
+    });
+  }
+
+  /** Updates the current scene and shrinks renderer work resources to their current allocation tiers. */
+  async shrinkToFit({
+    scene,
+    camera,
+  }: {
+    scene: THREE.Scene;
+    camera: THREE.Camera;
+  }) {
+    await this.updateInternal({
+      scene,
+      camera,
+      autoUpdate: false,
+      shrinkToFit: true,
+    });
   }
 
   private updateInternal(request: UpdateRequest): Promise<void> {
@@ -633,6 +686,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       camera: request.camera,
       // A queued explicit update must not be weakened by a later automatic one.
       autoUpdate: request.autoUpdate && (pending?.autoUpdate ?? true),
+      shrinkToFit: request.shrinkToFit || (pending?.shrinkToFit ?? false),
     };
 
     if (!this.updateRunning) {
@@ -657,8 +711,16 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
   }
 
-  private async performUpdate({ scene, camera, autoUpdate }: UpdateRequest) {
+  private async performUpdate({
+    scene,
+    camera,
+    autoUpdate,
+    shrinkToFit,
+  }: UpdateRequest) {
     const renderer = this.renderer;
+    if (shrinkToFit) {
+      this.releaseReadbackBuffers();
+    }
     if (this.ownsTimer) {
       this.timer.update();
     }
@@ -692,22 +754,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.releaseAccumulator(next);
       throw error;
     }
-    const { version, sortUpdated, generate } = preparation;
-    let doUpdate = true;
-    const needsUpdate = viewChanged || version !== this.current.version;
-    const needsSort = viewChanged || sortUpdated;
-
-    if (autoUpdate && !needsUpdate) {
-      // Triggered by auto-update but no change
-      doUpdate = false;
-    }
+    const { version, sortUpdated, requiredMaxSplats, generate } = preparation;
+    const orderingNeedsShrink =
+      shrinkToFit && getOrderingCapacity(requiredMaxSplats) < this.maxSplats;
+    // Explicit updates, including shrinkToFit(), always regenerate. Only an
+    // unchanged automatic update can skip the candidate accumulator.
+    const doUpdate =
+      !autoUpdate || viewChanged || version !== this.current.version;
+    const needsSort = orderingNeedsShrink || viewChanged || sortUpdated;
 
     if (!doUpdate) {
       // Restore unused accumulator to the free list
       this.releaseAccumulator(next);
     } else {
       try {
-        generate();
+        generate(shrinkToFit);
       } catch (error) {
         this.releaseAccumulator(next);
         throw error;
@@ -737,10 +798,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.setDirty();
     }
 
-    await this.driveSort();
+    await this.driveSort(orderingNeedsShrink);
+    if (shrinkToFit) {
+      this.disposeOversizedAccumulators(this.current.maxSplats);
+    }
   }
 
-  private async driveSort() {
+  private async driveSort(shrinkOrdering = false) {
     if (this.disposed || this.sorting || !this.sortDirty) {
       return;
     }
@@ -761,6 +825,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const previousActiveSplats = this.activeSplats;
 
     try {
+      if (shrinkOrdering) this.resetSortWorker();
       const sortRadial = this.sortRadial;
       if (this.sortWorker && this.sortedRadial !== sortRadial) {
         this.resetSortWorker();
@@ -768,10 +833,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.sortWorker ??= new SplatWorker();
       const sortWorker = this.sortWorker;
       const { numSplats, maxSplats } = current;
-      const rows = Math.max(1, Math.ceil(maxSplats / 16384));
-      const orderingMaxSplats = rows * 16384;
-      this.maxSplats = Math.max(this.maxSplats, orderingMaxSplats);
-      if (this.orderingBuffer.length < this.maxSplats) {
+      const orderingMaxSplats = getOrderingCapacity(maxSplats);
+      const rows = orderingMaxSplats / SPLATS_PER_ORDERING_ROW;
+      this.maxSplats = shrinkOrdering
+        ? orderingMaxSplats
+        : Math.max(this.maxSplats, orderingMaxSplats);
+      if (this.orderingBuffer.length !== this.maxSplats) {
         this.orderingBuffer = new Uint32Array(this.maxSplats);
       }
 
@@ -800,19 +867,25 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       });
 
       this.activeSplats = result.activeSplats;
-      const activeRows = Math.ceil(result.activeSplats / 16384);
+      const activeRows = Math.ceil(
+        result.activeSplats / SPLATS_PER_ORDERING_ROW,
+      );
       const previousOrdering = this.orderingTexture?.image.data;
 
-      if (this.orderingTexture && rows > this.orderingTexture.image.height) {
+      if (
+        this.orderingTexture &&
+        (rows > this.orderingTexture.image.height ||
+          (shrinkOrdering && rows !== this.orderingTexture.image.height))
+      ) {
         this.orderingTexture.dispose();
         this.orderingTexture = null;
       }
 
       if (!this.orderingTexture) {
-        // console.log(`Allocating orderingTexture: ${4096}x${rows}`);
+        // console.log(`Allocating orderingTexture: ${ORDERING_TEXTURE_WIDTH}x${rows}`);
         const orderingTexture = new THREE.DataTexture(
           result.ordering,
-          4096,
+          ORDERING_TEXTURE_WIDTH,
           rows,
           THREE.RGBAIntegerFormat,
           THREE.UnsignedIntType,
@@ -829,7 +902,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
           uploadU32DataTextureRows(
             renderer,
             this.orderingTexture,
-            4096,
+            ORDERING_TEXTURE_WIDTH,
             activeRows,
             result.ordering,
           );
@@ -840,7 +913,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // while the other buffer is transferred to the worker for the next sort.
       this.orderingBuffer =
         previousOrdering instanceof Uint32Array &&
-        previousOrdering.length >= this.maxSplats
+        previousOrdering.length === this.maxSplats
           ? previousOrdering
           : new Uint32Array(this.maxSplats);
 
@@ -878,9 +951,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   private static emptyOrdering = (() => {
-    const numIndices = 4 * 4096 * 1;
+    const numIndices = 4 * ORDERING_TEXTURE_WIDTH;
     const emptyArray = new Uint32Array(numIndices);
-    const texture = new THREE.DataTexture(emptyArray, 4096, 1);
+    const texture = new THREE.DataTexture(
+      emptyArray,
+      ORDERING_TEXTURE_WIDTH,
+      1,
+    );
     texture.format = THREE.RGBAIntegerFormat;
     texture.type = THREE.UnsignedIntType;
     texture.internalFormat = "RGBA32UI";

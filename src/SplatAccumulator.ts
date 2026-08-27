@@ -47,8 +47,17 @@ export class SplatAccumulator {
   }
 
   dispose() {
+    this.disposeTarget();
+    this.mapping = [];
+    this.numSplats = 0;
+    this.version = -1;
+    this.mappingVersion = -1;
+  }
+
+  private disposeTarget() {
     this.target?.dispose();
     this.target = null;
+    this.maxSplats = 0;
   }
 
   getTextures(): SplatDataTextures {
@@ -67,13 +76,26 @@ export class SplatAccumulator {
     return { maxSplats, mapping };
   }
 
-  ensureGenerate({ maxSplats }: { maxSplats: number }) {
-    if (this.target && Math.max(1, maxSplats) <= this.maxSplats) {
+  ensureGenerate({
+    maxSplats,
+    shrinkToFit = false,
+  }: {
+    maxSplats: number;
+    shrinkToFit?: boolean;
+  }) {
+    const textureSize = getTextureSize(Math.max(1, maxSplats));
+    if (
+      this.target &&
+      (shrinkToFit
+        ? textureSize.maxSplats === this.maxSplats
+        : textureSize.maxSplats <= this.maxSplats)
+    ) {
       return false;
     }
-    this.dispose();
+    // Keep the prepared mapping and versions while replacing only its GPU
+    // storage. Full dispose() also severs references to source meshes.
+    this.disposeTarget();
 
-    const textureSize = getTextureSize(Math.max(1, maxSplats));
     const { width, height, depth } = textureSize;
     this.maxSplats = textureSize.maxSplats;
     this.target = new THREE.WebGLArrayRenderTarget(width, height, depth, {
@@ -116,17 +138,8 @@ export class SplatAccumulator {
     }
     const material = this.getMaterial();
     const uniforms = material.uniforms as GenerateUniforms;
-    const [sourceSplats, sourceSplats2] = source.getSplatTextures();
-    const sh = source.getShTextures();
-    source.needsUpdate = false;
-
-    uniforms.sourceSplats.value = sourceSplats;
-    uniforms.sourceSplats2.value = sourceSplats2;
+    source.setTextureUniforms(uniforms);
     uniforms.numSh.value = Math.min(mesh.maxSh, source.getNumSh());
-    uniforms.sh1Texture.value = sh.sh1 ?? SplatAccumulator.emptyTexture;
-    uniforms.sh2Texture.value = sh.sh2 ?? SplatAccumulator.emptyTexture;
-    uniforms.sh3TextureA.value = sh.sh3a ?? SplatAccumulator.emptyTexture;
-    uniforms.sh3TextureB.value = sh.sh3b ?? SplatAccumulator.emptyTexture;
 
     decomposeSplatTransform(
       mesh.matrixWorld,
@@ -293,8 +306,9 @@ export class SplatAccumulator {
     return {
       version: this.version,
       sortUpdated,
-      generate: () => {
-        this.ensureGenerate({ maxSplats });
+      requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
+      generate: (shrinkToFit = false) => {
+        this.ensureGenerate({ maxSplats, shrinkToFit });
         for (const { node, base, count } of this.mapping) {
           this.generate({ mesh: node, base, count, renderer });
         }

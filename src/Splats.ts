@@ -1,8 +1,10 @@
 import * as THREE from "three";
 
 import type { SplatFileType } from "./defines";
+import { toHalf } from "./float16";
 import type { SplatPostDecodeProgram } from "./postDecode";
-import { decodeSplat, encodeSplat, getTextureSize } from "./utils";
+import { encodeQuatOctXy1010R12, encodeSplatOpacity } from "./splatCodec";
+import { decodeSplat, getTextureSize } from "./utils";
 
 type SplatShTextures = {
   sh1?: THREE.DataArrayTexture;
@@ -10,6 +12,8 @@ type SplatShTextures = {
   sh3a?: THREE.DataArrayTexture;
   sh3b?: THREE.DataArrayTexture;
 };
+
+type SplatShArrays = (Uint32Array | undefined)[];
 
 const SH_COUNTS = [0, 3, 8, 15] as const;
 const SH_KEYS = ["sh1", "sh2", "sh3a", "sh3b"] as const;
@@ -39,11 +43,14 @@ export type SplatsOptions = {
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
   maxSplats?: number;
+  construct?: (splats: Splats) => Promise<void> | void;
+  onProgress?: (event: ProgressEvent) => void;
+};
+
+type SplatsInitializationOptions = SplatsOptions & {
   splatArrays?: [Uint32Array, Uint32Array];
   sortCenters?: Float32Array;
   numSplats?: number;
-  construct?: (splats: Splats) => Promise<void> | void;
-  onProgress?: (event: ProgressEvent) => void;
   extra?: Record<string, unknown>;
 };
 
@@ -56,7 +63,9 @@ type SplatsState = {
   sortCentersDirty: boolean;
 };
 
-function getInitializationInputs(options: SplatsOptions): string[] {
+function getInitializationInputs(
+  options: SplatsInitializationOptions,
+): string[] {
   const inputs: string[] = [];
   if (options.url !== undefined) inputs.push("url");
   if (options.fileBytes !== undefined) inputs.push("fileBytes");
@@ -66,7 +75,7 @@ function getInitializationInputs(options: SplatsOptions): string[] {
   return inputs;
 }
 
-function validateInitializationInputs(options: SplatsOptions) {
+function validateInitializationInputs(options: SplatsInitializationOptions) {
   const inputs = getInitializationInputs(options);
   if (inputs.length > 1) {
     throw new Error(
@@ -83,7 +92,7 @@ function hasFileInput(options: SplatsOptions) {
   );
 }
 
-function createSplatsState(options: SplatsOptions): SplatsState {
+function createSplatsState(options: SplatsInitializationOptions): SplatsState {
   if (options.splatArrays !== undefined) {
     const [first, second] = options.splatArrays;
     if (first.length !== second.length) {
@@ -144,12 +153,12 @@ function createSplatsState(options: SplatsOptions): SplatsState {
 export class Splats {
   maxSplats = 0;
   numSplats = 0;
-  splatArrays: [Uint32Array, Uint32Array] = [
+  private splatArrays: [Uint32Array, Uint32Array] = [
     new Uint32Array(0),
     new Uint32Array(0),
   ];
-  sortCenters: Float32Array = new Float32Array(0);
-  extra: Record<string, unknown> = {};
+  private sortCenters: Float32Array = new Float32Array(0);
+  private extra: Record<string, unknown> = {};
 
   initialized: Promise<Splats>;
   isInitialized = false;
@@ -167,10 +176,11 @@ export class Splats {
   }
 
   initialize(options: SplatsOptions = {}): Promise<Splats> {
-    validateInitializationInputs(options);
+    const initializationOptions = options as SplatsInitializationOptions;
+    validateInitializationInputs(initializationOptions);
     const isAsync = hasFileInput(options) || options.construct !== undefined;
     const state = createSplatsState(
-      isAsync ? { maxSplats: options.maxSplats } : options,
+      isAsync ? { maxSplats: options.maxSplats } : initializationOptions,
     );
     const version = ++this.initializationVersion;
 
@@ -319,7 +329,7 @@ export class Splats {
     }
   }
 
-  ensureSplats(numSplats: number): [Uint32Array, Uint32Array] {
+  private ensureSplats(numSplats: number): [Uint32Array, Uint32Array] {
     const currentCapacity = this.splatArrays[0].length / 4;
     const targetSize =
       numSplats <= this.maxSplats
@@ -340,6 +350,21 @@ export class Splats {
     return this.splatArrays;
   }
 
+  private prepareSplatEncoding(numSplats: number, shDegree: number) {
+    const arrays = this.ensureSplats(numSplats);
+    this.ensureShCapacity(shDegree, arrays[0].length / 4);
+    return {
+      arrays,
+      splatCenters: new Float32Array(
+        arrays[0].buffer,
+        arrays[0].byteOffset,
+        arrays[0].length,
+      ),
+      sortCenters: this.getSortCenters(),
+      shArrays: shDegree === 0 ? undefined : getSplatShArrays(this.extra),
+    };
+  }
+
   getSplat(index: number): DecodedSplatWithSh;
   getSplat(index: number, includeSh: true): DecodedSplatWithSh;
   getSplat(index: number, includeSh: false): DecodedSplat;
@@ -354,70 +379,99 @@ export class Splats {
       : splat;
   }
 
+  copySplatRecords(
+    firstTarget: Uint32Array,
+    secondTarget: Uint32Array,
+    sourceStart: number,
+    count: number,
+  ) {
+    const wordStart = sourceStart * 4;
+    const wordEnd = wordStart + count * 4;
+    firstTarget.set(this.splatArrays[0].subarray(wordStart, wordEnd));
+    secondTarget.set(this.splatArrays[1].subarray(wordStart, wordEnd));
+  }
+
   setSplats(indices: readonly number[], splats: readonly SplatInput[]) {
     if (indices.length !== splats.length) {
       throw new Error("Splat indices and data must have the same length");
     }
+    const count = splats.length;
+    if (count === 0) return;
+
     let shDegree = this.getNumSh();
     let maxIndex = -1;
-    for (let offset = 0; offset < splats.length; offset += 1) {
+    for (let offset = 0; offset < count; offset += 1) {
       const index = indices[offset];
       validateSplatIndex(index);
-      maxIndex = Math.max(maxIndex, index);
-      const splat = splats[offset];
-      shDegree = Math.max(shDegree, getShDegree(splat.sh));
+      if (index > maxIndex) maxIndex = index;
+      const sh = splats[offset].sh;
+      if (sh === undefined) continue;
+      const degree = getShDegree(sh);
+      if (degree > shDegree) shDegree = degree;
     }
-    if (splats.length === 0) return;
 
-    const arrays = this.ensureSplats(maxIndex + 1);
-    this.ensureShCapacity(shDegree, arrays[0].length / 4);
-    const sortCenters = this.getSortCenters();
-    for (let offset = 0; offset < splats.length; offset += 1) {
-      const splatIndex = indices[offset];
-      const { center, scales, quaternion, opacity, color, sh } = splats[offset];
+    const { arrays, splatCenters, sortCenters, shArrays } =
+      this.prepareSplatEncoding(maxIndex + 1, shDegree);
+    for (let offset = 0; offset < count; offset += 1) {
       encodeSplat(
         arrays,
-        splatIndex,
-        center.x,
-        center.y,
-        center.z,
-        scales.x,
-        scales.y,
-        scales.z,
-        quaternion.x,
-        quaternion.y,
-        quaternion.z,
-        quaternion.w,
-        opacity,
-        color.r,
-        color.g,
-        color.b,
+        splatCenters,
+        shArrays,
+        sortCenters,
+        indices[offset],
+        splats[offset],
       );
-      encodeSplatSh(this.extra, splatIndex, sh);
-
-      const i3 = splatIndex * 3;
-      const disabled = scales.x === 0 && scales.y === 0 && scales.z === 0;
-      sortCenters[i3] = disabled ? Number.NaN : center.x;
-      sortCenters[i3 + 1] = disabled ? Number.NaN : center.y;
-      sortCenters[i3 + 2] = disabled ? Number.NaN : center.z;
     }
-    this.numSplats = Math.max(this.numSplats, maxIndex + 1);
+    if (maxIndex >= this.numSplats) this.numSplats = maxIndex + 1;
     this.updateNeeded = true;
   }
 
   pushSplats(splats: readonly SplatInput[]) {
-    const indices = splats.map((_, offset) => this.numSplats + offset);
-    this.setSplats(indices, splats);
+    const count = splats.length;
+    if (count === 0) return;
+
+    const startIndex = this.numSplats;
+    const endIndex = startIndex + count;
+    validateSplatIndex(endIndex - 1);
+
+    let shDegree = this.getNumSh();
+    for (let offset = 0; offset < count; offset += 1) {
+      const sh = splats[offset].sh;
+      if (sh === undefined) continue;
+      const degree = getShDegree(sh);
+      if (degree > shDegree) shDegree = degree;
+    }
+
+    const { arrays, splatCenters, sortCenters, shArrays } =
+      this.prepareSplatEncoding(endIndex, shDegree);
+    for (let offset = 0; offset < count; offset += 1) {
+      encodeSplat(
+        arrays,
+        splatCenters,
+        shArrays,
+        sortCenters,
+        startIndex + offset,
+        splats[offset],
+      );
+    }
+    this.numSplats = endIndex;
+    this.updateNeeded = true;
   }
 
   removeSplats(indices: readonly number[]) {
-    const removed = new Set<number>();
+    if (indices.length === 0) return;
+
+    let sortedUnique = true;
+    let previousIndex = -1;
     for (const index of indices) {
       validateSplatIndex(index);
       if (index >= this.numSplats) throw new Error("Invalid splat index");
-      removed.add(index);
+      if (index <= previousIndex) sortedUnique = false;
+      previousIndex = index;
     }
-    if (removed.size === 0) return;
+    const removedIndices = sortedUnique
+      ? indices
+      : [...new Set(indices)].sort((left, right) => left - right);
 
     const recordCount = this.numSplats;
     this.ensureShCapacity(this.getNumSh(), this.splatArrays[0].length / 4);
@@ -428,24 +482,33 @@ export class Splats {
       if (sh instanceof Uint32Array) recordArrays.push(sh);
     }
 
-    let targetIndex = 0;
-    for (let sourceIndex = 0; sourceIndex < recordCount; sourceIndex += 1) {
-      if (removed.has(sourceIndex)) continue;
-      if (targetIndex !== sourceIndex) {
-        for (const data of recordArrays) {
-          data.copyWithin(
-            targetIndex * 4,
-            sourceIndex * 4,
-            sourceIndex * 4 + 4,
-          );
-        }
-        sortCenters.copyWithin(
-          targetIndex * 3,
-          sourceIndex * 3,
-          sourceIndex * 3 + 3,
+    let targetIndex = removedIndices[0];
+    let sourceIndex = targetIndex + 1;
+    for (let offset = 1; offset < removedIndices.length; offset += 1) {
+      const nextRemoved = removedIndices[offset];
+      const count = nextRemoved - sourceIndex;
+      if (count > 0) {
+        copySplatRange(
+          recordArrays,
+          sortCenters,
+          targetIndex,
+          sourceIndex,
+          count,
         );
+        targetIndex += count;
       }
-      targetIndex += 1;
+      sourceIndex = nextRemoved + 1;
+    }
+    const tailCount = recordCount - sourceIndex;
+    if (tailCount > 0) {
+      copySplatRange(
+        recordArrays,
+        sortCenters,
+        targetIndex,
+        sourceIndex,
+        tailCount,
+      );
+      targetIndex += tailCount;
     }
     for (const data of recordArrays) {
       data.fill(0, targetIndex * 4, recordCount * 4);
@@ -456,9 +519,16 @@ export class Splats {
     this.updateNeeded = true;
   }
 
-  getSortCenters() {
+  private getSortCenters() {
     if (this.sortCentersDirty) this.rebuildSortCenters();
     return this.sortCenters;
+  }
+
+  copySortCenters(target: Float32Array, targetStart: number, count: number) {
+    if (count > this.numSplats || targetStart + count * 3 > target.length) {
+      throw new Error("Invalid sort center copy range");
+    }
+    target.set(this.getSortCenters().subarray(0, count * 3), targetStart);
   }
 
   private rebuildSortCenters() {
@@ -517,7 +587,19 @@ export class Splats {
     }
   }
 
-  getSplatTextures() {
+  setTextureUniforms(uniforms: Record<string, THREE.IUniform>) {
+    const [splats, splats2] = this.getSplatTextures();
+    const sh = this.getShTextures();
+    uniforms.sourceSplats.value = splats;
+    uniforms.sourceSplats2.value = splats2;
+    uniforms.sh1Texture.value = sh.sh1 ?? Splats.emptyTexture;
+    uniforms.sh2Texture.value = sh.sh2 ?? Splats.emptyTexture;
+    uniforms.sh3TextureA.value = sh.sh3a ?? Splats.emptyTexture;
+    uniforms.sh3TextureB.value = sh.sh3b ?? Splats.emptyTexture;
+    this.updateNeeded = false;
+  }
+
+  private getSplatTextures() {
     if (this.maxSplats === 0 || this.splatArrays[0].length === 0) {
       return [Splats.emptyTexture, Splats.emptyTexture] as const;
     }
@@ -553,7 +635,7 @@ export class Splats {
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];
   }
 
-  getShTextures(): SplatShTextures {
+  private getShTextures(): SplatShTextures {
     this.shTextures.sh1 = this.ensureShTexture("sh1", this.shTextures.sh1);
     this.shTextures.sh2 = this.ensureShTexture("sh2", this.shTextures.sh2);
     this.shTextures.sh3a = this.ensureShTexture("sh3a", this.shTextures.sh3a);
@@ -651,50 +733,135 @@ function validateSplatIndex(index: number) {
   }
 }
 
+function copySplatRange(
+  recordArrays: Uint32Array[],
+  sortCenters: Float32Array,
+  targetIndex: number,
+  sourceIndex: number,
+  count: number,
+) {
+  const target4 = targetIndex * 4;
+  const source4 = sourceIndex * 4;
+  const count4 = count * 4;
+  for (const data of recordArrays) {
+    data.copyWithin(target4, source4, source4 + count4);
+  }
+  const target3 = targetIndex * 3;
+  const source3 = sourceIndex * 3;
+  sortCenters.copyWithin(target3, source3, source3 + count * 3);
+}
+
+function encodeSplat(
+  splatArrays: [Uint32Array, Uint32Array],
+  splatCenters: Float32Array,
+  shArrays: SplatShArrays | undefined,
+  sortCenters: Float32Array,
+  index: number,
+  splat: SplatInput,
+) {
+  const i4 = index * 4;
+  const [splatA, splatB] = splatArrays;
+  const { center, scales, quaternion, opacity, color } = splat;
+  splatCenters[i4] = center.x;
+  splatCenters[i4 + 1] = center.y;
+  splatCenters[i4 + 2] = center.z;
+  splatA[i4 + 3] = encodeSplatOpacity(opacity);
+  splatB[i4] = toHalf(color.r) | (toHalf(color.g) << 16);
+  splatB[i4 + 1] = toHalf(color.b) | (toHalf(Math.log(scales.x)) << 16);
+  splatB[i4 + 2] =
+    toHalf(Math.log(scales.y)) | (toHalf(Math.log(scales.z)) << 16);
+  splatB[i4 + 3] = encodeQuatOctXy1010R12(
+    quaternion.x,
+    quaternion.y,
+    quaternion.z,
+    quaternion.w,
+  );
+  if (shArrays) encodeSplatSh(shArrays, index, splat.sh);
+
+  const i3 = index * 3;
+  const disabled = scales.x === 0 && scales.y === 0 && scales.z === 0;
+  sortCenters[i3] = disabled ? Number.NaN : center.x;
+  sortCenters[i3 + 1] = disabled ? Number.NaN : center.y;
+  sortCenters[i3 + 2] = disabled ? Number.NaN : center.z;
+}
+
 function getShDegree(sh?: readonly THREE.Color[]) {
   const count = sh?.length ?? 0;
-  const degree = SH_COUNTS.indexOf(count as (typeof SH_COUNTS)[number]);
-  if (degree < 0) {
-    throw new Error("SH must contain 0, 3, 8, or 15 coefficients");
+  switch (count) {
+    case 0:
+      return 0;
+    case 3:
+      return 1;
+    case 8:
+      return 2;
+    case 15:
+      return 3;
+    default:
+      throw new Error("SH must contain 0, 3, 8, or 15 coefficients");
   }
-  return degree;
+}
+
+function getSplatShArrays(extra: Record<string, unknown>): SplatShArrays {
+  const sh1 = extra.sh1;
+  const sh2 = extra.sh2;
+  const sh3a = extra.sh3a;
+  const sh3b = extra.sh3b;
+  return [
+    sh1 instanceof Uint32Array ? sh1 : undefined,
+    sh2 instanceof Uint32Array ? sh2 : undefined,
+    sh3a instanceof Uint32Array ? sh3a : undefined,
+    sh3b instanceof Uint32Array ? sh3b : undefined,
+  ];
 }
 
 function encodeSplatSh(
-  extra: Record<string, unknown>,
+  shArrays: SplatShArrays,
   index: number,
   sh?: readonly THREE.Color[],
 ) {
   const base = index * 4;
-  for (const key of SH_KEYS) {
-    const data = extra[key];
-    if (data instanceof Uint32Array) data.fill(0, base, base + 4);
+  for (let arrayIndex = 0; arrayIndex < shArrays.length; arrayIndex += 1) {
+    const data = shArrays[arrayIndex];
+    if (!data) continue;
+    data[base] = 0;
+    data[base + 1] = 0;
+    data[base + 2] = 0;
+    data[base + 3] = 0;
   }
   if (!sh) return;
 
   for (let coefficient = 0; coefficient < sh.length; coefficient += 1) {
-    const data = extra[SH_KEYS[coefficient >> 2]];
-    if (!(data instanceof Uint32Array)) continue;
+    const data = shArrays[coefficient >> 2];
+    if (!data) continue;
     data[base + (coefficient & 3)] = encodeShColor(sh[coefficient]);
   }
 }
 
 function encodeShColor(color: THREE.Color) {
-  const values = [color.r, color.g, color.b] as const;
-  const maxAbs = Math.max(...values.map(Math.abs));
+  const maxAbs = Math.max(
+    Math.abs(color.r),
+    Math.abs(color.g),
+    Math.abs(color.b),
+  );
   const exponent = Math.round(
     Math.min(31, Math.max(0, Math.floor(Math.log2(maxAbs)) + 15)),
   );
   const divisor = 2 ** (exponent - 15) / 255;
-  const encoded = values.map((value) =>
-    Math.round(Math.min(255, Math.max(0, Math.abs(value) / divisor))),
+  const encodedR = Math.round(
+    Math.min(255, Math.max(0, Math.abs(color.r) / divisor)),
+  );
+  const encodedG = Math.round(
+    Math.min(255, Math.max(0, Math.abs(color.g) / divisor)),
+  );
+  const encodedB = Math.round(
+    Math.min(255, Math.max(0, Math.abs(color.b) / divisor)),
   );
   const signs =
     (color.r < 0 ? 1 : 0) | (color.g < 0 ? 2 : 0) | (color.b < 0 ? 4 : 0);
   return (
-    encoded[0] |
-    (encoded[1] << 8) |
-    (encoded[2] << 16) |
+    encodedR |
+    (encodedG << 8) |
+    (encodedB << 16) |
     (((exponent << 3) | signs) << 24)
   );
 }
