@@ -296,6 +296,22 @@ export class Splats {
           : 3;
   }
 
+  /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
+  getByteLength() {
+    let byteLength =
+      this.splatArrays[0].byteLength +
+      this.splatArrays[1].byteLength +
+      this.sortCenters.byteLength;
+
+    for (const value of Object.values(this.extra)) {
+      if (ArrayBuffer.isView(value)) {
+        byteLength += value.byteLength;
+      }
+    }
+
+    return byteLength;
+  }
+
   get needsUpdate() {
     return this.updateNeeded;
   }

@@ -51,6 +51,7 @@ The main methods are:
 | --- | --- |
 | `initialized` / `isInitialized` | Asynchronous initialization state |
 | `getNumSplats()` / `getNumSh()` | Returns Splat count and available SH degree |
+| `getByteLength()` | Returns current retained bytes for encoded Splat, sort-center, and SH arrays |
 | `getSplat(index, includeSh?)` | Decodes one Splat with SH coefficients by default; pass `false` to skip SH decoding |
 | `setSplats(indices, splats)` | Adds or overwrites Splats at the paired indices, including optional SH0/1/2/3 data |
 | `pushSplats(splats)` | Appends a batch of Splats, including optional SH0/1/2/3 data |
