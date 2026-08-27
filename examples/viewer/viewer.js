@@ -282,17 +282,14 @@ const renderOptionGroups = [
     options: [
       {
         property: "premultipliedAlpha",
-        target: "material",
         description:
           "Uses RGB already multiplied by alpha for edge-correct blending.",
         defaultValue: true,
         falseLabel: "Off",
         trueLabel: "On",
-        needsMaterialUpdate: true,
       },
       {
         property: "depthTest",
-        target: "material",
         description:
           "Lets opaque Three.js geometry occlude splats using the depth buffer.",
         defaultValue: true,
@@ -301,7 +298,6 @@ const renderOptionGroups = [
       },
       {
         property: "depthWrite",
-        target: "material",
         description:
           "Writes splats to depth. This can create hard artifacts in transparent areas.",
         defaultValue: false,
@@ -310,13 +306,11 @@ const renderOptionGroups = [
       },
       {
         property: "transparent",
-        target: "material",
         description:
           "Places splats in Three.js’s transparent pass instead of its opaque pass.",
         defaultValue: true,
         falseLabel: "Opaque",
         trueLabel: "Transparent",
-        needsMaterialUpdate: true,
       },
     ],
   },
@@ -324,16 +318,11 @@ const renderOptionGroups = [
 
 const renderOptionInputs = new Map();
 
-function optionTarget(option) {
-  return option.target === "material" ? splatRenderer.material : splatRenderer;
-}
-
 function applyRenderOption(option, value) {
   if (option.apply) {
     option.apply(value);
   } else {
-    optionTarget(option)[option.property] = value;
-    if (option.needsMaterialUpdate) splatRenderer.material.needsUpdate = true;
+    splatRenderer[option.property] = value;
     splatRenderer.setDirty();
   }
   requestRender();
