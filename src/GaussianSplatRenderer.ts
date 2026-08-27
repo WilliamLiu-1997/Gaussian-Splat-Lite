@@ -225,7 +225,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   onDirty?: () => void;
   dirty: boolean;
 
-  orderingTexture: THREE.DataTexture | null = null;
+  private orderingTexture: THREE.DataTexture | null = null;
+  private orderingBuffer: Uint32Array = new Uint32Array(0);
   maxSplats = 0;
   activeSplats = 0;
 
@@ -770,7 +771,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       const rows = Math.max(1, Math.ceil(maxSplats / 16384));
       const orderingMaxSplats = rows * 16384;
       this.maxSplats = Math.max(this.maxSplats, orderingMaxSplats);
-      const ordering = new Uint32Array(this.maxSplats);
+      if (this.orderingBuffer.length < this.maxSplats) {
+        this.orderingBuffer = new Uint32Array(this.maxSplats);
+      }
 
       const stateRevision = this.sortStateRevision;
       if (this.uploadedSortStateRevision !== stateRevision) {
@@ -793,11 +796,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
           current.viewDirection.z,
         ],
         radial: sortRadial,
-        ordering,
+        ordering: this.orderingBuffer,
       });
 
       this.activeSplats = result.activeSplats;
       const activeRows = Math.ceil(result.activeSplats / 16384);
+      const previousOrdering = this.orderingTexture?.image.data;
 
       if (this.orderingTexture && rows > this.orderingTexture.image.height) {
         this.orderingTexture.dispose();
@@ -817,9 +821,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         orderingTexture.needsUpdate = true;
         this.orderingTexture = orderingTexture;
       } else {
+        this.orderingTexture.image.data = result.ordering;
         const renderer = this.renderer;
         if (!renderer.properties.has(this.orderingTexture)) {
-          this.orderingTexture.image.data = result.ordering;
           this.orderingTexture.needsUpdate = true;
         } else if (activeRows > 0) {
           uploadU32DataTextureRows(
@@ -831,6 +835,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
           );
         }
       }
+
+      // Alternate two buffers so the texture's CPU-side source stays attached
+      // while the other buffer is transferred to the worker for the next sort.
+      this.orderingBuffer =
+        previousOrdering instanceof Uint32Array &&
+        previousOrdering.length >= this.maxSplats
+          ? previousOrdering
+          : new Uint32Array(this.maxSplats);
 
       // console.log(`Sorted (${this.minSortIntervalMs}) ${numSplats} splats in ${(performance.now() - now).toFixed(0)} ms`);
 

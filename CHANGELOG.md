@@ -20,6 +20,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Renamed the SDF blend modes to `MULTIPLY_RGBA`, `SET_RGBA`, and `ADD_RGBA`; all modes now modify only explicitly assigned color and opacity channels.
 - Scaled idle decode-worker lifetime from three minutes at 64 MiB of peak WASM memory down to three seconds at 256 MiB, and preferred smaller idle workers for reuse so large workers can expire promptly.
 - Generated contiguous raw sort centers during decoding and cached them in the sort worker; axial sorting now folds each mesh matrix into the view direction without materializing transformed centers, radial sorting creates transformed centers lazily, and switching modes replaces the worker and releases its previous WASM instance.
+- Made the renderer's ordering texture internal and reused two transferable ordering buffers across depth sorts, avoiding per-sort allocations while keeping the texture's CPU-side data attached.
 
 ### Removed
 
