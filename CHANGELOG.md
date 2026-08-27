@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced accumulator shader work by projecting quaternion vector parts directly during octahedral encoding and constructing packed SH scale factors from exact float exponent bits.
+
 ### Fixed
 
 - Preserved wide-kernel semantic opacity when applying SDF opacity edits or mesh-wide opacity, including fully hiding meshes whose opacity is zero.

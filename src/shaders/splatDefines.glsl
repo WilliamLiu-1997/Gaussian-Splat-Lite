@@ -22,18 +22,16 @@ uint encodeQuatOctXy1010R12(vec4 q) {
         q = -q;
     }
     // Compute rotation angle: θ = 2 * acos(q.w) ∈ [0,π]
-    float halfTheta = acos(q.w);
-    float theta = 2.0 * halfTheta;
-    float s = sin(halfTheta);
-    // Recover the rotation axis; use a default if nearly zero rotation.
-    vec3 axis = (abs(s) < 1e-6) ? vec3(1.0, 0.0, 0.0) : q.xyz / s;
-    
+    float theta = 2.0 * acos(clamp(q.w, 0.0, 1.0));
+
     // --- Folded Octahedral Mapping (inline) ---
-    // Compute p = (axis.x, axis.y) / (|axis.x|+|axis.y|+|axis.z|)
-    float sum = abs(axis.x) + abs(axis.y) + abs(axis.z);
-    vec2 p = vec2(axis.x, axis.y) / sum;
-    // If axis.z < 0, fold the mapping.
-    if (axis.z < 0.0) {
+    // q.xyz = axis * sin(theta / 2). The common sine factor cancels during
+    // octahedral normalization, so the rotation axis need not be recovered.
+    float sum = abs(q.x) + abs(q.y) + abs(q.z);
+    // Use the canonical +X axis when the vector part is too small to project.
+    vec2 p = (sum < 1e-6) ? vec2(1.0, 0.0) : q.xy / sum;
+    // Fold the lower hemisphere.
+    if (q.z < 0.0) {
         float oldPx = p.x;
         p.x = (1.0 - abs(p.y)) * (p.x >= 0.0 ? 1.0 : -1.0);
         p.y = (1.0 - abs(oldPx)) * (p.y >= 0.0 ? 1.0 : -1.0);
@@ -126,7 +124,9 @@ void decodeSplatAttributesLnScale(
 
 vec3 decodeSplatShRgb(uint encoded) {
     uint biasedBase = (encoded >> 27u) & 0x1fu;
-    float divisor = exp2(float(int(biasedBase) - 15)) / 255.0;
+    // Re-bias the exponent from the packed bias of 15 to float32's bias of 127,
+    // then construct the exact power of two directly (127 - 15 = 112).
+    float divisor = uintBitsToFloat((biasedBase + 112u) << 23u) / 255.0;
 
     vec3 rgb = vec3(uvec3(encoded & 0xffu, (encoded >> 8u) & 0xffu, (encoded >> 16u) & 0xffu));
     rgb *= divisor;
