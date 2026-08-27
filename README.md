@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="./Gaussian-Splat-Lite.svg" alt="Gaussian Splat Lite" width="645">
+  <img src="./Gaussian-Splat-Lite.svg" alt="Gaussian Splat Lite" width="1000">
 </p>
 
 </div>
