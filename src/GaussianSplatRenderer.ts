@@ -22,7 +22,7 @@ type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
   autoUpdate: boolean;
-  shrinkToFit: boolean;
+  shrinkResources: boolean;
 };
 
 // Average (uniform) world scale of a camera.
@@ -564,7 +564,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
           scene,
           camera: useCamera,
           autoUpdate: true,
-          shrinkToFit: false,
+          shrinkResources: false,
         });
       } else if (gaussianSplatRenderer.updateTimeoutId === -1) {
         gaussianSplatRenderer.updateTimeoutId = setTimeout(() => {
@@ -573,7 +573,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
             scene,
             camera: useCamera,
             autoUpdate: true,
-            shrinkToFit: false,
+            shrinkResources: false,
           });
         }, 1);
       }
@@ -657,12 +657,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       scene,
       camera,
       autoUpdate: false,
-      shrinkToFit: false,
+      shrinkResources: false,
     });
   }
 
   /** Updates the current scene and shrinks renderer work resources to their current allocation tiers. */
-  async shrinkToFit({
+  async shrinkResources({
     scene,
     camera,
   }: {
@@ -673,7 +673,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       scene,
       camera,
       autoUpdate: false,
-      shrinkToFit: true,
+      shrinkResources: true,
     });
   }
 
@@ -686,7 +686,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       camera: request.camera,
       // A queued explicit update must not be weakened by a later automatic one.
       autoUpdate: request.autoUpdate && (pending?.autoUpdate ?? true),
-      shrinkToFit: request.shrinkToFit || (pending?.shrinkToFit ?? false),
+      shrinkResources:
+        request.shrinkResources || (pending?.shrinkResources ?? false),
     };
 
     if (!this.updateRunning) {
@@ -715,10 +716,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     scene,
     camera,
     autoUpdate,
-    shrinkToFit,
+    shrinkResources,
   }: UpdateRequest) {
     const renderer = this.renderer;
-    if (shrinkToFit) {
+    if (shrinkResources) {
       this.releaseReadbackBuffers();
     }
     if (this.ownsTimer) {
@@ -756,8 +757,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
     const { version, sortUpdated, requiredMaxSplats, generate } = preparation;
     const orderingNeedsShrink =
-      shrinkToFit && getOrderingCapacity(requiredMaxSplats) < this.maxSplats;
-    // Explicit updates, including shrinkToFit(), always regenerate. Only an
+      shrinkResources &&
+      getOrderingCapacity(requiredMaxSplats) < this.maxSplats;
+    // Explicit updates, including shrinkResources(), always regenerate. Only an
     // unchanged automatic update can skip the candidate accumulator.
     const doUpdate =
       !autoUpdate || viewChanged || version !== this.current.version;
@@ -768,7 +770,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.releaseAccumulator(next);
     } else {
       try {
-        generate(shrinkToFit);
+        generate(shrinkResources);
       } catch (error) {
         this.releaseAccumulator(next);
         throw error;
@@ -799,7 +801,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
 
     await this.driveSort(orderingNeedsShrink);
-    if (shrinkToFit) {
+    if (shrinkResources) {
       this.disposeOversizedAccumulators(this.current.maxSplats);
     }
   }

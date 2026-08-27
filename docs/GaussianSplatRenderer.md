@@ -63,7 +63,7 @@ type TargetOptions = {
 | API | Description |
 | --- | --- |
 | `update({ scene, camera })` | Manually generates and sorts Splats; returns `Promise<void>` |
-| `shrinkToFit({ scene, camera })` | Synchronizes the scene like an explicit update, releases cached readback buffers, and shrinks renderer-owned accumulator, ordering, and sort-worker resources to their current allocation tiers; the previous display remains active until its replacement is ready |
+| `shrinkResources({ scene, camera })` | Synchronizes the scene like an explicit update, releases cached readback buffers, and shrinks renderer-owned accumulator, ordering, and sort-worker resources to their current allocation tiers; the previous display remains active until its replacement is ready |
 | `clearSplats()` | Clears the current display buffer without removing scene objects |
 | `render(scene, camera)` | Performs one Three.js render using this instance as the active Splat renderer |
 | `renderTarget({ scene, camera })` | Renders to the target configured in the constructor |

@@ -78,15 +78,15 @@ export class SplatAccumulator {
 
   ensureGenerate({
     maxSplats,
-    shrinkToFit = false,
+    shrinkResources = false,
   }: {
     maxSplats: number;
-    shrinkToFit?: boolean;
+    shrinkResources?: boolean;
   }) {
     const textureSize = getTextureSize(Math.max(1, maxSplats));
     if (
       this.target &&
-      (shrinkToFit
+      (shrinkResources
         ? textureSize.maxSplats === this.maxSplats
         : textureSize.maxSplats <= this.maxSplats)
     ) {
@@ -307,8 +307,8 @@ export class SplatAccumulator {
       version: this.version,
       sortUpdated,
       requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
-      generate: (shrinkToFit = false) => {
-        this.ensureGenerate({ maxSplats, shrinkToFit });
+      generate: (shrinkResources = false) => {
+        this.ensureGenerate({ maxSplats, shrinkResources });
         for (const { node, base, count } of this.mapping) {
           this.generate({ mesh: node, base, count, renderer });
         }
