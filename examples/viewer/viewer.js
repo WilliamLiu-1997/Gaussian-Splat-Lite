@@ -150,6 +150,14 @@ const renderOptionGroups = [
           renderOnDemand = value;
         },
       },
+      {
+        property: "preUpdate",
+        description:
+          "Updates splats before drawing. Disable it to defer updates until after the frame.",
+        defaultValue: true,
+        falseLabel: "Post-render",
+        trueLabel: "Pre-render",
+      },
     ],
   },
   {
