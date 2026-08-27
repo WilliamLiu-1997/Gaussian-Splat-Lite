@@ -32,6 +32,24 @@ uniform usampler2D editTexture;
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
 
+const float MAX_SEMANTIC_OPACITY = 1000.0;
+
+float decodeSemanticOpacity(float alpha, float shapeAmount) {
+    if (shapeAmount <= 0.0) return alpha;
+
+    float kernelShape = 1.0 + 4.0 * shapeAmount;
+    float kernelOpacity = exp(
+        (kernelShape * kernelShape - 1.0) / 2.718281828459045
+    );
+    return min(MAX_SEMANTIC_OPACITY, alpha * kernelOpacity);
+}
+
+float encodeWideSemanticOpacity(float opacity) {
+    opacity = min(opacity, MAX_SEMANTIC_OPACITY);
+    float kernelShape = sqrt(log(opacity) * 2.718281828459045 + 1.0);
+    return 0.25 * (kernelShape - 1.0);
+}
+
 vec3 evaluateSH1(uvec4 data, vec3 direction) {
     return decodeSplatShRgb(data.x) * (-0.4886025 * direction.y)
         + decodeSplatShRgb(data.y) * (0.4886025 * direction.z)
@@ -199,7 +217,12 @@ float evaluateSdfs(
     return (-log(distanceAccum) - maxExponent) * smoothAmount;
 }
 
-void applySdfEdits(vec3 position, inout vec4 rgba) {
+bool applySdfEdits(
+    vec3 position,
+    inout vec4 rgba,
+    float shapeAmount
+) {
+    bool semanticOpacityDecoded = false;
     for (int editIndex = 0; editIndex < numEdits; ++editIndex) {
         uvec4 edit = texelFetch(editTexture, ivec2(0, editIndex), 0);
         uint blendMode = edit.x & 0xffu;
@@ -223,6 +246,16 @@ void applySdfEdits(vec3 position, inout vec4 rgba) {
         float amount = softEdge == 0.0
             ? (distance < 0.0 ? 1.0 : 0.0)
             : clamp(-distance / softEdge + 0.5, 0.0, 1.0);
+        bool editOpacity = amount > 0.0 && sdfRgbaMask.a > 0.0;
+        if (editOpacity && !semanticOpacityDecoded) {
+            // SDF opacity values operate on semantic opacity, not on the alpha
+            // half of the nonlinear wide-kernel encoding.
+            rgba.a = decodeSemanticOpacity(
+                clamp(rgba.a, 0.0, 1.0),
+                shapeAmount
+            );
+            semanticOpacityDecoded = true;
+        }
         vec4 target = rgba;
         switch (blendMode) {
             case 0u:
@@ -237,6 +270,7 @@ void applySdfEdits(vec3 position, inout vec4 rgba) {
         }
         rgba = mix(rgba, target, amount);
     }
+    return semanticOpacityDecoded;
 }
 
 void produceSplat(int index) {
@@ -274,21 +308,39 @@ void produceSplat(int index) {
     center += objectOffset;
 // The center is camera-relative while editPosition is mesh-origin-relative,
 // matching the rebased SDF transforms without reconstructing world position.
-    applySdfEdits(editPosition, rgba);
-    vec3 relativeCenter = center;
-    // Recolor and opacity are both mesh-wide overrides, so apply them together
-    // after local SDF edits. This also ensures additive edits cannot bypass the
-    // final mesh tint or fade.
-    rgba *= vec4(recolor.rgb, clamp(recolor.a, 0.0, 1.0));
-    // The source encoder split regular alpha from the nonlinear LoD kernel
-    // shape amount. Edits affect alpha only; shape amount remains independent.
-    rgba.a = clamp(rgba.a, 0.0, 1.0);
+    // Opacity is clamped once on the CPU when preparing this mesh.
+    float opacityScale = recolor.a;
+    bool semanticOpacityDecoded = applySdfEdits(
+        editPosition,
+        rgba,
+        shapeAmount
+    );
+    rgba.rgb *= recolor.rgb;
+    if (!semanticOpacityDecoded && opacityScale >= 1.0) {
+        // Neither SDFs nor the mesh opacity changed opacity, so preserve the
+        // source alpha/shape encoding without any transcendental operations.
+        rgba.a = clamp(rgba.a, 0.0, 1.0);
+    } else {
+        if (!semanticOpacityDecoded) {
+            rgba.a = decodeSemanticOpacity(
+                clamp(rgba.a, 0.0, 1.0),
+                shapeAmount
+            );
+        }
+        float semanticOpacity = rgba.a * opacityScale;
+        if (semanticOpacity <= 1.0) {
+            rgba.a = clamp(semanticOpacity, 0.0, 1.0);
+            shapeAmount = 0.0;
+        } else {
+            rgba.a = 1.0;
+            shapeAmount = encodeWideSemanticOpacity(semanticOpacity);
+        }
+    }
 
-    // Preserve the source's wider-kernel amount independently from opacity.
     encodeSplatLnScale(
         target,
         target2,
-        relativeCenter,
+        center,
         lnScales,
         quaternion,
         rgba,

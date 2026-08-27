@@ -166,7 +166,7 @@ export class SplatAccumulator {
       mesh.recolor.r,
       mesh.recolor.g,
       mesh.recolor.b,
-      mesh.opacity,
+      THREE.MathUtils.clamp(mesh.opacity, 0, 1),
     );
 
     const edits = mesh.sdfEdits;
@@ -273,7 +273,13 @@ export class SplatAccumulator {
 
     const visibleMeshes: SplatMesh[] = [];
     scene.traverseVisible((node) => {
-      if (node instanceof SplatMesh && camera.layers.test(node.layers)) {
+      // Mesh opacity is the final multiplier after SDF opacity edits, so zero
+      // remains fully transparent even when an SDF sets or adds opacity.
+      if (
+        node instanceof SplatMesh &&
+        camera.layers.test(node.layers) &&
+        node.opacity > 0
+      ) {
         visibleMeshes.push(node);
       }
     });

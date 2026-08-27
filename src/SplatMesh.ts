@@ -285,7 +285,7 @@ export class SplatMesh extends THREE.Object3D {
       this.recolor.r,
       this.recolor.g,
       this.recolor.b,
-      this.opacity,
+      THREE.MathUtils.clamp(this.opacity, 0, 1),
     );
     if (!recolor.equals(this.lastRecolor)) {
       this.lastRecolor.copy(recolor);

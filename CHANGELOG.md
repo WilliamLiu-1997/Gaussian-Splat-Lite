@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved wide-kernel semantic opacity when applying SDF opacity edits or mesh-wide opacity, including fully hiding meshes whose opacity is zero.
+
 ## [0.1.5] - 2026-08-27
 
 ### Added
