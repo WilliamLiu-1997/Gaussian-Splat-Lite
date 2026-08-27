@@ -16,6 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - `Splats.getSplat()` now returns decoded spherical-harmonic coefficients by default; pass `false` to skip SH decoding.
 - Replaced `Splats.reinitialize()` with a unified `initialize()` entry point, rejected conflicting initialization inputs, and isolated asynchronous initialization so superseded work cannot overwrite newer data.
+- Direct `splatArrays` input is now validated and padded to a texture-compatible capacity instead of silently truncating non-aligned records.
 - Renamed the SDF blend modes to `MULTIPLY_RGBA`, `SET_RGBA`, and `ADD_RGBA`; all modes now modify only explicitly assigned color and opacity channels.
 - Scaled idle decode-worker lifetime from three minutes at 64 MiB of peak WASM memory down to three seconds at 256 MiB, and preferred smaller idle workers for reuse so large workers can expire promptly.
 - Generated contiguous raw sort centers during decoding and cached them in the sort worker; axial sorting now folds each mesh matrix into the view direction without materializing transformed centers, radial sorting creates transformed centers lazily, and switching modes replaces the worker and releases its previous WASM instance.

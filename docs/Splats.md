@@ -45,7 +45,7 @@ The constructor and `initialize()` accept the same `SplatsOptions`:
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |
 | `extra` | `Record<string, unknown>` | `{}` | Additional data such as SH arrays |
 
-Choose at most one initialization input from `url`, `fileBytes`, `stream`, `splatArrays`, and `construct`; mixing them throws an error. Supplying `splatArrays` directly is a low-level encoded-data API.
+Choose at most one initialization input from `url`, `fileBytes`, `stream`, `splatArrays`, and `construct`; mixing them throws an error. Supplying `splatArrays` directly is a low-level encoded-data API. Both arrays must have the same length and contain complete four-word records. Inputs that do not fill a texture row are padded automatically to the next compatible texture capacity without changing `numSplats`.
 
 `initialize()` returns the same promise exposed as `initialized`. File loading and `construct` callbacks run against staged data; if another `initialize()` call supersedes them, their completed state is discarded instead of replacing the newer data.
 

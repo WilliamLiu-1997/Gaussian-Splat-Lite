@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-import { SPLAT_TEX_WIDTH, type SplatFileType } from "./defines";
+import type { SplatFileType } from "./defines";
 import type { SplatPostDecodeProgram } from "./postDecode";
 import { decodeSplat, encodeSplat, getTextureSize } from "./utils";
 
@@ -85,22 +85,45 @@ function hasFileInput(options: SplatsOptions) {
 
 function createSplatsState(options: SplatsOptions): SplatsState {
   if (options.splatArrays !== undefined) {
-    const capacity = Math.floor(
-      Math.min(options.splatArrays[0].length, options.splatArrays[1].length) /
-        4,
-    );
-    const maxSplats = Math.floor(capacity / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
-    const numSplats = Math.min(maxSplats, options.numSplats ?? maxSplats);
+    const [first, second] = options.splatArrays;
+    if (first.length !== second.length) {
+      throw new Error("splatArrays must have the same length");
+    }
+    if (first.length % 4 !== 0) {
+      throw new Error("splatArrays must contain complete four-word records");
+    }
+
+    const inputCapacity = first.length / 4;
+    const numSplats = options.numSplats ?? inputCapacity;
+    if (
+      !Number.isSafeInteger(numSplats) ||
+      numSplats < 0 ||
+      numSplats > inputCapacity
+    ) {
+      throw new Error("numSplats must be an integer within splatArrays");
+    }
     if (
       options.sortCenters !== undefined &&
       options.sortCenters.length < numSplats * 3
     ) {
       throw new Error("sortCenters is smaller than numSplats");
     }
+
+    const maxSplats =
+      inputCapacity === 0 ? 0 : getTextureSize(inputCapacity).maxSplats;
+    let splatArrays = options.splatArrays;
+    if (maxSplats !== inputCapacity) {
+      splatArrays = [
+        new Uint32Array(maxSplats * 4),
+        new Uint32Array(maxSplats * 4),
+      ];
+      splatArrays[0].set(first);
+      splatArrays[1].set(second);
+    }
     return {
       maxSplats,
       numSplats,
-      splatArrays: options.splatArrays,
+      splatArrays,
       sortCenters: options.sortCenters ?? new Float32Array(0),
       extra: options.extra ?? {},
       sortCentersDirty: options.sortCenters === undefined,
