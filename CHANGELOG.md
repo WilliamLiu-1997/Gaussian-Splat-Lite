@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-28
+
+### Added
+
+- Exported the shared `workerPool` from the package entry point.
+
 ## [0.1.8] - 2026-08-28
 
 ### Fixed
@@ -113,7 +119,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.5...v0.1.6
