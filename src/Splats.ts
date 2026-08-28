@@ -697,21 +697,16 @@ export class Splats {
     return texture;
   }
 
-  static emptyTexture = newUintArrayTexture(null, 1, 1, 1);
+  static emptyTexture = newUintArrayTexture(new Uint32Array(4), 1, 1, 1);
 }
 
 function newUintArrayTexture(
-  data: Uint32Array | null,
+  data: Uint32Array,
   width: number,
   height: number,
   depth: number,
 ) {
-  const texture = new THREE.DataArrayTexture(
-    data as Uint32Array<ArrayBuffer>,
-    width,
-    height,
-    depth,
-  );
+  const texture = new THREE.DataArrayTexture(data, width, height, depth);
   texture.format = THREE.RGBAIntegerFormat;
   texture.type = THREE.UnsignedIntType;
   texture.internalFormat = "RGBA32UI";
