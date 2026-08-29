@@ -62,12 +62,40 @@ export class SplatLoader extends Loader {
     const resolvedURL = byteArray
       ? undefined
       : this.manager.resolveURL((this.path ?? "") + (url ?? ""));
-    let readStream = stream?.getReader();
+    let streamReader = stream?.getReader();
+    const cancelStreamReader = async (reason: unknown) => {
+      const reader = streamReader;
+      streamReader = undefined;
+      if (!reader) return;
+      try {
+        await reader.cancel(reason);
+      } catch {
+        // Preserve the original error if stream cancellation fails.
+      }
+      reader.releaseLock();
+    };
 
     this.manager.itemStart(resolvedURL ?? "");
 
     workerPool
       .withWorker(async (worker) => {
+        const readStreamChunk = async () => {
+          const reader = streamReader;
+          if (!reader) return new Uint8Array(0);
+
+          try {
+            const { done, value } = await reader.read();
+            if (!done) return value;
+
+            reader.releaseLock();
+            streamReader = undefined;
+            return new Uint8Array(0);
+          } catch (error) {
+            await worker.call("nextChunk", { chunk: new Uint8Array(0) });
+            throw error;
+          }
+        };
+
         const onStatus = async (data: unknown) => {
           const { loaded, total } = data as {
             loaded?: number;
@@ -88,24 +116,7 @@ export class SplatLoader extends Loader {
           }
 
           if ((data as { nextChunk?: boolean }).nextChunk) {
-            let chunk: Uint8Array;
-            if (!readStream) {
-              chunk = new Uint8Array(0);
-            } else {
-              const { done, value } = await readStream
-                .read()
-                .catch(async (error) => {
-                  await worker.call("nextChunk", { chunk: new Uint8Array(0) });
-                  throw error;
-                });
-              if (done) {
-                readStream.releaseLock();
-                readStream = undefined;
-                chunk = new Uint8Array(0);
-              } else {
-                chunk = value;
-              }
-            }
+            const chunk = await readStreamChunk();
             await worker.call("nextChunk", { chunk });
           }
         };
@@ -136,15 +147,7 @@ export class SplatLoader extends Loader {
         onLoad?.(result);
       })
       .catch(async (error) => {
-        if (readStream) {
-          try {
-            await readStream.cancel(error);
-          } catch {
-            // Preserve the worker decoding error if stream cancellation fails.
-          }
-          readStream.releaseLock();
-          readStream = undefined;
-        }
+        await cancelStreamReader(error);
         this.manager.itemError(resolvedURL ?? "");
         onError?.(error);
       })

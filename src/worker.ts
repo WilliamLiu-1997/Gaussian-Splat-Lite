@@ -136,24 +136,25 @@ async function decodeBytesUrl({
   chunkedLength?: number;
   sendStatus: (data: unknown) => void;
 }) {
-  let readStream: ReadableStream<Uint8Array>;
-  let streamLength = 0;
-  let expectedInputLength = 0;
-  const suppliedInputLength = chunkedLength ?? 0;
-  if (!Number.isSafeInteger(suppliedInputLength) || suppliedInputLength < 0) {
-    throw new Error("streamLength must be an exact non-negative integer");
+  if (fileBytes) {
+    const byteLength = fileBytes.length;
+    if (byteLength > 0) {
+      decoder.set_expected_input_size(byteLength);
+    }
+    sendStatus({ loaded: byteLength, total: byteLength });
+    decoder.push(fileBytes);
+    return decoder.finish();
   }
 
-  if (fileBytes) {
-    readStream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(fileBytes);
-        controller.close();
-      },
-    });
-    streamLength = fileBytes.length;
-    expectedInputLength = streamLength;
-  } else if (url) {
+  const suppliedInputLength = chunkedLength ?? 0;
+  if (!Number.isSafeInteger(suppliedInputLength) || suppliedInputLength < 0) {
+    throw new Error("streamLength must be a non-negative integer");
+  }
+  let streamLength = suppliedInputLength;
+  let expectedInputLength = 0;
+  let responseBody: ReadableStream<Uint8Array> | undefined;
+
+  if (url) {
     const request = new Request(url, {
       headers: requestHeader ? new Headers(requestHeader) : undefined,
       credentials: withCredentials ? "include" : "same-origin",
@@ -165,62 +166,50 @@ async function decodeBytesUrl({
         `Failed to fetch "${url}": ${response.status} ${response.statusText}`,
       );
     }
-    readStream = response.body;
+    responseBody = response.body;
     const contentLength = Number(response.headers.get("Content-Length") || "0");
     const responseLength =
       Number.isSafeInteger(contentLength) && contentLength > 0
         ? contentLength
         : 0;
-    streamLength = suppliedInputLength || responseLength;
+    streamLength ||= responseLength;
     const contentEncoding = response.headers.get("Content-Encoding");
     // A CORS-filtered response can hide Content-Encoding while exposing
-    // Content-Length, so only treat an automatic response length as exact
-    // when every response header is visible. Callers can provide the exact
-    // decoded streamLength explicitly for large cross-origin inputs.
+    // Content-Length, so only use the response length for decoder validation
+    // when every response header is visible.
     const hasIdentityEncoding =
       !contentEncoding || contentEncoding.toLowerCase() === "identity";
-    if (suppliedInputLength > 0) {
-      expectedInputLength = suppliedInputLength;
-    } else if (response.type === "basic" && hasIdentityEncoding) {
+    if (response.type === "basic" && hasIdentityEncoding) {
       expectedInputLength = responseLength;
     }
-  } else if (chunked) {
-    readStream = new ReadableStream(
-      {
-        async pull(controller) {
-          const readNextChunk = new Promise<Uint8Array>((resolve) => {
-            nextChunkWaiter = resolve;
-          });
-          sendStatus({ nextChunk: true });
-          const chunk = await readNextChunk;
-
-          if (chunk.length === 0) {
-            controller.close();
-          } else {
-            controller.enqueue(chunk);
-          }
-        },
-      },
-      { highWaterMark: 0 },
-    );
-    streamLength = suppliedInputLength;
-    expectedInputLength = streamLength;
-  } else {
+  } else if (!chunked) {
     throw new Error("No url or fileBytes provided");
   }
 
-  if (expectedInputLength > 0) {
-    decoder.set_expected_input_size(expectedInputLength);
-  }
+  const streamReader = responseBody?.getReader();
+  const readInputChunk = async () => {
+    if (streamReader) {
+      const { done, value } = await streamReader.read();
+      return done ? undefined : value;
+    }
 
-  const reader = readStream.getReader();
+    const chunk = await new Promise<Uint8Array>((resolve) => {
+      nextChunkWaiter = resolve;
+      sendStatus({ nextChunk: true });
+    });
+    return chunk.length === 0 ? undefined : chunk;
+  };
+
   let loaded = 0;
   try {
+    if (expectedInputLength > 0) {
+      decoder.set_expected_input_size(expectedInputLength);
+    }
+
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
+      const value = await readInputChunk();
+      if (!value) break;
+
       loaded += value.length;
       if (expectedInputLength > 0 && loaded > expectedInputLength) {
         throw new Error(
@@ -244,13 +233,13 @@ async function decodeBytesUrl({
     return decoder.finish();
   } catch (error) {
     try {
-      await reader.cancel(error);
+      await streamReader?.cancel(error);
     } catch {
       // Preserve the decoding error if stream cancellation itself fails.
     }
     throw error;
   } finally {
-    reader.releaseLock();
+    streamReader?.releaseLock();
   }
 }
 

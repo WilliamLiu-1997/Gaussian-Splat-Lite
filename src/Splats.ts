@@ -38,7 +38,7 @@ export type SplatsOptions = {
   fileType?: SplatFileType;
   fileName?: string;
   stream?: ReadableStream;
-  /** Exact number of bytes yielded by stream; also used for allocation validation. */
+  /** Optional stream byte-length estimate used for progress reporting. */
   streamLength?: number;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;

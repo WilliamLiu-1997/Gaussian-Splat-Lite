@@ -17,7 +17,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `fileType` | `SplatFileType` | Inferred from name | Explicitly selects `PLY` or `SPZ` |
 | `fileName` | `string` | `undefined` | Supplies a name for inferring the format of byte or stream input |
 | `stream` | `ReadableStream` | `undefined` | Chunked input stream |
-| `streamLength` | `number` | `undefined` | Exact input-stream byte length, used for progress and safe allocation validation |
+| `streamLength` | `number` | `undefined` | Optional input-stream byte-length estimate used for progress reporting |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
 | `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
 | `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |

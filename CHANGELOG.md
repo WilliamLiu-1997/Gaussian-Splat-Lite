@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-29
+
+### Changed
+
+- Treated `streamLength` as an optional progress estimate for caller-provided streams instead of requiring it to match the decoded byte count exactly.
+- Simplified byte-array and chunked-stream decoding without intermediate `ReadableStream` wrappers.
+
+### Fixed
+
+- Cancelled and released caller-provided stream readers when loading or worker decoding fails.
+
+### Removed
+
+- Removed the internal shared `workerPool` from the package entry-point exports.
+
 ## [0.1.9] - 2026-08-28
 
 ### Added
@@ -119,7 +134,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.6...v0.1.7

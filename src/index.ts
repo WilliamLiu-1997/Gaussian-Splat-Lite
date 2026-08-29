@@ -8,7 +8,7 @@ export {
 } from "./SplatAccumulator";
 
 export { SplatLoader } from "./SplatLoader";
-export { type SplatWorker, workerPool } from "./SplatWorker";
+export type { SplatWorker } from "./SplatWorker";
 
 export { Splats, type SplatInput, type SplatsOptions } from "./Splats";
 export { postDecode, type SplatPostDecodeProgram } from "./postDecode";
