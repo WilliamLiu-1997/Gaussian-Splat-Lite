@@ -113,8 +113,6 @@ export class SortCenterCache {
 
     const centerUpdateRangeIndices = new Uint32Array(changedCenters.length);
     const updateCenters = new Float32Array(updateCount * 3);
-    // NaN keeps disabled splats out of the active radix-sort range.
-    updateCenters.fill(Number.NaN);
 
     let updateBase = 0;
     changedCenters.forEach(({ node, count, rangeIndex }, updateIndex) => {
