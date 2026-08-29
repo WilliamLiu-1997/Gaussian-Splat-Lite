@@ -59,8 +59,9 @@ export function allocateSplatPostDecodeRegisters(
   }
 
   const programEnd = instructionCount;
+  // `when` is consumed at the condition boundary before its range may be
+  // reused by the output suffix; only values written back must reach the end.
   for (const output of [
-    outputs.when,
     outputs.position,
     outputs.scale,
     outputs.quaternion,
@@ -158,7 +159,22 @@ export function allocateSplatPostDecodeRegisters(
     }
   }
 
-  return { registerOffsets, registerValueCount };
+  const conditionCarryOffsets: number[] = [];
+  const conditionEnd = outputs.when === undefined ? 0 : outputs.when + 1;
+  for (let index = 0; index < conditionEnd; index += 1) {
+    if (constantRegisters[index] || lastUses[index] < conditionEnd) continue;
+    const offset = registerOffsets[index];
+    const width = TYPE_WIDTHS[instructions[index].type];
+    for (let lane = 0; lane < width; lane += 1) {
+      conditionCarryOffsets.push(offset + lane);
+    }
+  }
+
+  return {
+    registerOffsets,
+    registerValueCount,
+    conditionCarryOffsets: new Uint32Array(conditionCarryOffsets),
+  };
 }
 
 function rustMin(left: number, right: number) {
@@ -207,18 +223,29 @@ function readAttributeBlock(
   blockSize: number,
   registers: Float32Array,
   outputBase: number,
+  sourceIndices?: Uint16Array,
 ) {
   const componentBytes = ATTRIBUTE_FORMAT_BYTES[attribute.format];
   const read = ATTRIBUTE_READERS[attribute.format];
   for (let component = 0; component < attribute.components; component += 1) {
-    let inputOffset =
-      attribute.byteOffset +
-      blockStart * attribute.byteStride +
-      component * componentBytes;
     const componentOutput = outputBase + component * blockSize;
-    for (let index = 0; index < blockCount; index += 1) {
-      registers[componentOutput + index] = read(data, inputOffset);
-      inputOffset += attribute.byteStride;
+    if (sourceIndices) {
+      for (let index = 0; index < blockCount; index += 1) {
+        const inputOffset =
+          attribute.byteOffset +
+          (blockStart + sourceIndices[index]) * attribute.byteStride +
+          component * componentBytes;
+        registers[componentOutput + index] = read(data, inputOffset);
+      }
+    } else {
+      let inputOffset =
+        attribute.byteOffset +
+        blockStart * attribute.byteStride +
+        component * componentBytes;
+      for (let index = 0; index < blockCount; index += 1) {
+        registers[componentOutput + index] = read(data, inputOffset);
+        inputOffset += attribute.byteStride;
+      }
     }
   }
 }
@@ -296,11 +323,13 @@ function evaluateInputFieldBlock(
   splat0Float: Float32Array,
   registers: Float32Array,
   outputBase: number,
+  sourceIndices?: Uint16Array,
 ) {
   switch (field) {
     case InputField.Position:
       for (let index = 0; index < blockCount; index += 1) {
-        const wordBase = (blockStart + index) * 4;
+        const sourceIndex = sourceIndices?.[index] ?? index;
+        const wordBase = (blockStart + sourceIndex) * 4;
         registers[outputBase + index] = splat0Float[wordBase];
         registers[outputBase + blockSize + index] = splat0Float[wordBase + 1];
         registers[outputBase + blockSize * 2 + index] =
@@ -309,7 +338,8 @@ function evaluateInputFieldBlock(
       break;
     case InputField.Scale:
       for (let index = 0; index < blockCount; index += 1) {
-        const wordBase = (blockStart + index) * 4;
+        const sourceIndex = sourceIndices?.[index] ?? index;
+        const wordBase = (blockStart + sourceIndex) * 4;
         const word1 = data.splat1[wordBase + 1];
         const word2 = data.splat1[wordBase + 2];
         registers[outputBase + index] = Math.exp(fromHalf(word1 >>> 16));
@@ -323,7 +353,8 @@ function evaluateInputFieldBlock(
       break;
     case InputField.Quaternion:
       for (let index = 0; index < blockCount; index += 1) {
-        const wordBase = (blockStart + index) * 4;
+        const sourceIndex = sourceIndices?.[index] ?? index;
+        const wordBase = (blockStart + sourceIndex) * 4;
         decodeQuatOctXy1010R12ToArray(
           data.splat1[wordBase + 3],
           registers,
@@ -334,21 +365,24 @@ function evaluateInputFieldBlock(
       break;
     case InputField.Opacity:
       for (let index = 0; index < blockCount; index += 1) {
+        const sourceIndex = sourceIndices?.[index] ?? index;
         registers[outputBase + index] = decodeSplatOpacity(
-          data.splat0[(blockStart + index) * 4 + 3],
+          data.splat0[(blockStart + sourceIndex) * 4 + 3],
         );
       }
       break;
     case InputField.Alpha:
       for (let index = 0; index < blockCount; index += 1) {
+        const sourceIndex = sourceIndices?.[index] ?? index;
         registers[outputBase + index] = fromHalf(
-          data.splat0[(blockStart + index) * 4 + 3] & 0xffff,
+          data.splat0[(blockStart + sourceIndex) * 4 + 3] & 0xffff,
         );
       }
       break;
     case InputField.Color:
       for (let index = 0; index < blockCount; index += 1) {
-        const wordBase = (blockStart + index) * 4;
+        const sourceIndex = sourceIndices?.[index] ?? index;
+        const wordBase = (blockStart + sourceIndex) * 4;
         const word0 = data.splat1[wordBase];
         const word1 = data.splat1[wordBase + 1];
         registers[outputBase + index] = fromHalf(word0 & 0xffff);
@@ -363,8 +397,9 @@ function evaluateInputFieldBlock(
       const location = shWord(data, coefficient);
       if (location) {
         for (let index = 0; index < blockCount; index += 1) {
+          const sourceIndex = sourceIndices?.[index] ?? index;
           decodeSh(
-            location[0][(blockStart + index) * 4 + location[1]],
+            location[0][(blockStart + sourceIndex) * 4 + location[1]],
             registers,
             outputBase + index,
             blockSize,
@@ -387,6 +422,33 @@ function evaluateInputFieldBlock(
   }
 }
 
+function filterConditionBlock(
+  registers: Float32Array,
+  conditionBase: number,
+  carryOffsets: Uint32Array,
+  sourceIndices: Uint16Array,
+  blockCount: number,
+  blockSize: number,
+) {
+  let activeCount = 0;
+  for (let index = 0; index < blockCount; index += 1) {
+    if (registers[conditionBase + index] !== 0) {
+      sourceIndices[activeCount++] = index;
+    }
+  }
+  if (activeCount === 0 || activeCount === blockCount) return activeCount;
+
+  for (const offset of carryOffsets) {
+    const base = offset * blockSize;
+    // Matches are collected in ascending order, so this forward in-place copy
+    // never overwrites a source lane that has not been read yet.
+    for (let index = 0; index < activeCount; index += 1) {
+      registers[base + index] = registers[base + sourceIndices[index]];
+    }
+  }
+  return activeCount;
+}
+
 function evaluateProgram(
   data: PostDecodeSplatData,
   program: SerializedSplatPostDecode,
@@ -394,10 +456,14 @@ function evaluateProgram(
   splat0Float: Float32Array,
   registers: Float32Array,
   registerOffsets: Uint32Array,
+  conditionCarryOffsets: Uint32Array,
   processCount: number,
   blockSize: number,
 ) {
-  const { attributes, constants, instructions } = program;
+  const { attributes, constants, instructions, outputs } = program;
+  const whenRegister = outputs.when;
+  const activeIndices =
+    whenRegister === undefined ? undefined : new Uint16Array(blockSize);
   // SoA layout: each vector lane owns blockSize contiguous register values.
   for (
     let instructionIndex = 0;
@@ -418,7 +484,8 @@ function evaluateProgram(
   }
 
   for (let blockStart = 0; blockStart < processCount; blockStart += blockSize) {
-    const blockCount = Math.min(blockSize, processCount - blockStart);
+    let blockCount = Math.min(blockSize, processCount - blockStart);
+    let sourceIndices: Uint16Array | undefined;
     for (
       let instructionIndex = 0;
       instructionIndex < instructions.length;
@@ -450,6 +517,7 @@ function evaluateProgram(
             splat0Float,
             registers,
             outputBase,
+            sourceIndices,
           );
           break;
         case Opcode.InputAttribute:
@@ -461,6 +529,7 @@ function evaluateProgram(
             blockSize,
             registers,
             outputBase,
+            sourceIndices,
           );
           break;
         case Opcode.Negate:
@@ -836,6 +905,25 @@ function evaluateProgram(
           }
         }
       }
+
+      // Serialization guarantees that the dynamic condition and all of its
+      // dependencies form the prefix ending at `whenRegister`.
+      if (instructionIndex === whenRegister && activeIndices) {
+        const conditionBase = registerOffsets[whenRegister] * blockSize;
+        const activeCount = filterConditionBlock(
+          registers,
+          conditionBase,
+          conditionCarryOffsets,
+          activeIndices,
+          blockCount,
+          blockSize,
+        );
+        if (activeCount !== blockCount) {
+          if (activeCount !== 0) sourceIndices = activeIndices;
+          blockCount = activeCount;
+          if (blockCount === 0) break;
+        }
+      }
     }
     for (let index = 0; index < blockCount; index += 1) {
       writeOutputs(
@@ -846,7 +934,7 @@ function evaluateProgram(
         registerOffsets,
         blockSize,
         index,
-        blockStart + index,
+        blockStart + (sourceIndices?.[index] ?? index),
       );
     }
   }
@@ -863,13 +951,6 @@ function writeOutputs(
   splatIndex: number,
 ) {
   const { outputs } = program;
-  if (
-    outputs.when !== undefined &&
-    registers[registerOffsets[outputs.when] * blockSize + blockIndex] === 0
-  ) {
-    return;
-  }
-
   const wordBase = splatIndex * 4;
   if (outputs.position !== undefined) {
     const base = registerOffsets[outputs.position] * blockSize + blockIndex;
@@ -961,7 +1042,7 @@ export function applySplatPostDecode(
   }
   if (processCount === 0 || program.instructions.length === 0) return;
 
-  const { registerOffsets, registerValueCount } =
+  const { registerOffsets, registerValueCount, conditionCarryOffsets } =
     allocateSplatPostDecodeRegisters(program);
   const blockSize = getBlockSize(registerValueCount, processCount);
   const registers = new Float32Array(registerValueCount * blockSize);
@@ -983,6 +1064,7 @@ export function applySplatPostDecode(
     splat0Float,
     registers,
     registerOffsets,
+    conditionCarryOffsets,
     processCount,
     blockSize,
   );

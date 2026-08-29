@@ -7,8 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-08-30
+
 ### Changed
 
+- Evaluated dynamic post-decode `when` guards before output-only expressions and compacted matching Splats within each worker block, skipping unnecessary attribute reads and arithmetic for rejected Splats.
 - Pruned unused post-decode instructions, constants, and attributes during serialization, including folding constant `when` conditions.
 - Reused post-decode temporary registers after their final use and allocated exact value widths, reducing worker scratch memory and increasing block sizes for long expression programs.
 - Replaced recursive post-decode liveness traversal with an iterative worklist so maximum-length programs do not depend on the JavaScript call-stack limit.

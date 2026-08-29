@@ -867,44 +867,69 @@ function pruneProgram(
     }
   }
 
-  const live = new Uint8Array(builder.instructions.length);
-  const pending: number[] = [];
-  const markLive = (register: number) => {
-    if (live[register]) return;
-    live[register] = 1;
-    pending.push(register);
-  };
-  for (const register of [
-    outputs.when,
-    outputs.position,
-    outputs.scale,
-    outputs.quaternion,
-    outputs.opacity,
-    outputs.alpha,
-    outputs.color,
-    ...(outputs.sh ?? []),
-  ]) {
-    if (register !== undefined) markLive(register);
-  }
-  while (pending.length !== 0) {
-    const register = pending.pop();
-    if (register === undefined) break;
-    for (const argument of builder.instructions[register].args) {
-      markLive(argument);
+  const markDependencies = (
+    roots: readonly (number | undefined)[],
+    marked: Uint8Array,
+  ) => {
+    const pending: number[] = [];
+    for (const register of roots) {
+      if (register === undefined || marked[register]) continue;
+      marked[register] = 1;
+      pending.push(register);
     }
+    while (pending.length !== 0) {
+      const register = pending.pop();
+      if (register === undefined) break;
+      for (const argument of builder.instructions[register].args) {
+        if (marked[argument]) continue;
+        marked[argument] = 1;
+        pending.push(argument);
+      }
+    }
+  };
+
+  const live = new Uint8Array(builder.instructions.length);
+  markDependencies(
+    [
+      outputs.when,
+      outputs.position,
+      outputs.scale,
+      outputs.quaternion,
+      outputs.opacity,
+      outputs.alpha,
+      outputs.color,
+      ...(outputs.sh ?? []),
+    ],
+    live,
+  );
+
+  // Dynamic conditions form a topological prefix. The worker can evaluate
+  // that prefix for the full block, compact the matching Splats, and avoid all
+  // output-only work for the rest.
+  const conditionLive = new Uint8Array(builder.instructions.length);
+  if (outputs.when !== undefined) {
+    markDependencies([outputs.when], conditionLive);
+  }
+  const instructionOrder: number[] = [];
+  if (outputs.when !== undefined) {
+    for (let index = 0; index < live.length; index += 1) {
+      if (conditionLive[index]) instructionOrder.push(index);
+    }
+  }
+  for (let index = 0; index < live.length; index += 1) {
+    if (live[index] && !conditionLive[index]) instructionOrder.push(index);
   }
 
   const registerMap = new Int32Array(builder.instructions.length).fill(-1);
-  let registerCount = 0;
-  for (let index = 0; index < live.length; index += 1) {
-    if (live[index]) registerMap[index] = registerCount++;
+  for (let index = 0; index < instructionOrder.length; index += 1) {
+    registerMap[instructionOrder[index]] = index;
   }
 
   const constants: number[] = [];
   const attributes: AttributeBinding[] = [];
   const attributeMap = new Map<number, number>();
-  const instructions = builder.instructions.flatMap((instruction, index) => {
-    if (!live[index]) return [];
+  const instructions = instructionOrder.map((sourceIndex) => {
+    const instruction = builder.instructions[sourceIndex];
     let immediate = instruction.immediate;
     if (instruction.opcode === Opcode.Constant) {
       immediate = constants.length;
@@ -923,13 +948,11 @@ function pruneProgram(
       }
       immediate = mapped;
     }
-    return [
-      {
-        ...instruction,
-        args: instruction.args.map((argument) => registerMap[argument]),
-        immediate,
-      },
-    ];
+    return {
+      ...instruction,
+      args: instruction.args.map((argument) => registerMap[argument]),
+      immediate,
+    };
   });
   const remap = (register: number | undefined) =>
     register === undefined ? undefined : registerMap[register];
