@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Pruned unused post-decode instructions, constants, and attributes during serialization, including folding constant `when` conditions.
+- Reused post-decode temporary registers after their final use and allocated exact value widths, reducing worker scratch memory and increasing block sizes for long expression programs.
+- Replaced recursive post-decode liveness traversal with an iterative worklist so maximum-length programs do not depend on the JavaScript call-stack limit.
+- Avoided redundant `NaN` initialization before fully copying sort-center updates.
+
 ## [0.1.10] - 2026-08-29
 
 ### Changed
@@ -134,7 +141,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.7...v0.1.8

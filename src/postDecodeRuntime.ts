@@ -30,13 +30,135 @@ const MAX_BLOCK_SIZE = 512;
 // Keep each worker's temporary register file bounded for very large programs.
 const MAX_REGISTER_BYTES = 4 * 1024 * 1024;
 
-function getBlockSize(instructionCount: number, processCount: number) {
-  const bytesPerSplat = instructionCount * 4 * Float32Array.BYTES_PER_ELEMENT;
+function getBlockSize(registerValueCount: number, processCount: number) {
+  const bytesPerSplat = registerValueCount * Float32Array.BYTES_PER_ELEMENT;
   return Math.min(
     processCount,
     MAX_BLOCK_SIZE,
     Math.max(1, Math.floor(MAX_REGISTER_BYTES / bytesPerSplat)),
   );
+}
+
+type FreeRegisterRange = {
+  offset: number;
+  width: number;
+};
+
+/** @internal */
+export function allocateSplatPostDecodeRegisters(
+  program: SerializedSplatPostDecode,
+) {
+  const { instructions, outputs } = program;
+  const instructionCount = instructions.length;
+  const lastUses = new Uint32Array(instructionCount);
+  for (let index = 0; index < instructionCount; index += 1) {
+    lastUses[index] = index;
+    for (const argument of instructions[index].args) {
+      lastUses[argument] = index;
+    }
+  }
+
+  const programEnd = instructionCount;
+  for (const output of [
+    outputs.when,
+    outputs.position,
+    outputs.scale,
+    outputs.quaternion,
+    outputs.opacity,
+    outputs.alpha,
+    outputs.color,
+    ...(outputs.sh ?? []),
+  ]) {
+    if (output !== undefined) lastUses[output] = programEnd;
+  }
+
+  const registerOffsets = new Uint32Array(instructionCount);
+  const constantRegisters = new Uint8Array(instructionCount);
+  let registerValueCount = 0;
+  // Constants are initialized before instruction evaluation and only once for
+  // all blocks, so their physical ranges span the entire program.
+  for (let index = 0; index < instructionCount; index += 1) {
+    if (instructions[index].opcode === Opcode.Constant) {
+      constantRegisters[index] = 1;
+      lastUses[index] = programEnd;
+      registerOffsets[index] = registerValueCount;
+      registerValueCount += TYPE_WIDTHS[instructions[index].type];
+    }
+  }
+
+  const releases: FreeRegisterRange[][] = Array.from(
+    { length: instructionCount },
+    () => [],
+  );
+  const freeRanges: FreeRegisterRange[] = [];
+
+  const release = (released: FreeRegisterRange) => {
+    let insertIndex = 0;
+    while (
+      insertIndex < freeRanges.length &&
+      freeRanges[insertIndex].offset < released.offset
+    ) {
+      insertIndex += 1;
+    }
+
+    let offset = released.offset;
+    let width = released.width;
+    const previous = freeRanges[insertIndex - 1];
+    if (previous && previous.offset + previous.width === offset) {
+      offset = previous.offset;
+      width += previous.width;
+      freeRanges.splice(insertIndex - 1, 1);
+      insertIndex -= 1;
+    }
+    const next = freeRanges[insertIndex];
+    if (next && offset + width === next.offset) {
+      width += next.width;
+      freeRanges.splice(insertIndex, 1);
+    }
+    freeRanges.splice(insertIndex, 0, { offset, width });
+  };
+
+  const allocate = (width: number) => {
+    let bestIndex = -1;
+    for (let index = 0; index < freeRanges.length; index += 1) {
+      const range = freeRanges[index];
+      if (
+        range.width >= width &&
+        (bestIndex === -1 || range.width < freeRanges[bestIndex].width)
+      ) {
+        bestIndex = index;
+      }
+    }
+    if (bestIndex === -1) {
+      const offset = registerValueCount;
+      registerValueCount += width;
+      return offset;
+    }
+
+    const range = freeRanges[bestIndex];
+    const offset = range.offset;
+    if (range.width === width) {
+      freeRanges.splice(bestIndex, 1);
+    } else {
+      range.offset += width;
+      range.width -= width;
+    }
+    return offset;
+  };
+
+  for (let index = 0; index < instructionCount; index += 1) {
+    for (const range of releases[index]) release(range);
+    if (constantRegisters[index]) continue;
+    const width = TYPE_WIDTHS[instructions[index].type];
+    const offset = allocate(width);
+    registerOffsets[index] = offset;
+    const releaseIndex = lastUses[index] + 1;
+    if (releaseIndex < instructionCount) {
+      releases[releaseIndex].push({ offset, width });
+    }
+  }
+
+  return { registerOffsets, registerValueCount };
 }
 
 function rustMin(left: number, right: number) {
@@ -271,11 +393,11 @@ function evaluateProgram(
   attributeData: DataView,
   splat0Float: Float32Array,
   registers: Float32Array,
+  registerOffsets: Uint32Array,
   processCount: number,
   blockSize: number,
 ) {
   const { attributes, constants, instructions } = program;
-  const registerStride = blockSize * 4;
   // SoA layout: each vector lane owns blockSize contiguous register values.
   for (
     let instructionIndex = 0;
@@ -284,7 +406,7 @@ function evaluateProgram(
   ) {
     const instruction = instructions[instructionIndex];
     if (instruction.opcode !== Opcode.Constant) continue;
-    const outputBase = instructionIndex * registerStride;
+    const outputBase = registerOffsets[instructionIndex] * blockSize;
     const width = TYPE_WIDTHS[instruction.type];
     for (let lane = 0; lane < width; lane += 1) {
       registers.fill(
@@ -305,11 +427,11 @@ function evaluateProgram(
       const instruction = instructions[instructionIndex];
       const { args, immediate, opcode, type } = instruction;
       if (opcode === Opcode.Constant) continue;
-      const outputBase = instructionIndex * registerStride;
+      const outputBase = registerOffsets[instructionIndex] * blockSize;
       const width = TYPE_WIDTHS[type];
-      const arg0 = (args[0] ?? 0) * registerStride;
-      const arg1 = (args[1] ?? 0) * registerStride;
-      const arg2 = (args[2] ?? 0) * registerStride;
+      const arg0 = registerOffsets[args[0] ?? 0] * blockSize;
+      const arg1 = registerOffsets[args[1] ?? 0] * blockSize;
+      const arg2 = registerOffsets[args[2] ?? 0] * blockSize;
       const arg0Width =
         args[0] === undefined ? 0 : TYPE_WIDTHS[instructions[args[0]].type];
       const arg1Width =
@@ -688,7 +810,7 @@ function evaluateProgram(
             }
             if (width === 4) {
               registers[outputBase + blockSize * 3 + index] =
-                registers[(args[3] ?? 0) * registerStride + index];
+                registers[registerOffsets[args[3] ?? 0] * blockSize + index];
             }
           }
           break;
@@ -721,6 +843,7 @@ function evaluateProgram(
         splat0Float,
         program,
         registers,
+        registerOffsets,
         blockSize,
         index,
         blockStart + index,
@@ -734,28 +857,28 @@ function writeOutputs(
   splat0Float: Float32Array,
   program: SerializedSplatPostDecode,
   registers: Float32Array,
+  registerOffsets: Uint32Array,
   blockSize: number,
   blockIndex: number,
   splatIndex: number,
 ) {
   const { outputs } = program;
-  const registerStride = blockSize * 4;
   if (
     outputs.when !== undefined &&
-    registers[outputs.when * registerStride + blockIndex] === 0
+    registers[registerOffsets[outputs.when] * blockSize + blockIndex] === 0
   ) {
     return;
   }
 
   const wordBase = splatIndex * 4;
   if (outputs.position !== undefined) {
-    const base = outputs.position * registerStride + blockIndex;
+    const base = registerOffsets[outputs.position] * blockSize + blockIndex;
     splat0Float[wordBase] = registers[base];
     splat0Float[wordBase + 1] = registers[base + blockSize];
     splat0Float[wordBase + 2] = registers[base + blockSize * 2];
   }
   if (outputs.scale !== undefined) {
-    const base = outputs.scale * registerStride + blockIndex;
+    const base = registerOffsets[outputs.scale] * blockSize + blockIndex;
     const first = data.splat1[wordBase + 1] & 0xffff;
     data.splat1[wordBase + 1] =
       (first | (toHalf(Math.log(registers[base])) << 16)) >>> 0;
@@ -765,23 +888,23 @@ function writeOutputs(
       0;
   }
   if (outputs.quaternion !== undefined) {
-    const base = outputs.quaternion * registerStride + blockIndex;
+    const base = registerOffsets[outputs.quaternion] * blockSize + blockIndex;
     const encoded = encodeQuaternion(registers, base, blockSize);
     if (encoded !== undefined) data.splat1[wordBase + 3] = encoded;
   }
   if (outputs.opacity !== undefined) {
-    const base = outputs.opacity * registerStride + blockIndex;
+    const base = registerOffsets[outputs.opacity] * blockSize + blockIndex;
     data.splat0[wordBase + 3] = encodeSplatOpacity(registers[base]);
   }
   if (outputs.alpha !== undefined) {
-    const base = outputs.alpha * registerStride + blockIndex;
+    const base = registerOffsets[outputs.alpha] * blockSize + blockIndex;
     data.splat0[wordBase + 3] =
       ((data.splat0[wordBase + 3] & 0xffff_0000) |
         toHalf(clamp(registers[base], 0, 1))) >>>
       0;
   }
   if (outputs.color !== undefined) {
-    const base = outputs.color * registerStride + blockIndex;
+    const base = registerOffsets[outputs.color] * blockSize + blockIndex;
     data.splat1[wordBase] =
       (toHalf(registers[base]) |
         (toHalf(registers[base + blockSize]) << 16)) >>>
@@ -799,7 +922,8 @@ function writeOutputs(
     ) {
       const location = shWord(data, coefficient);
       if (location) {
-        const base = outputs.sh[coefficient] * registerStride + blockIndex;
+        const base =
+          registerOffsets[outputs.sh[coefficient]] * blockSize + blockIndex;
         location[0][wordBase + location[1]] = encodeSh(
           registers,
           base,
@@ -837,10 +961,10 @@ export function applySplatPostDecode(
   }
   if (processCount === 0 || program.instructions.length === 0) return;
 
-  const blockSize = getBlockSize(program.instructions.length, processCount);
-  const registers = new Float32Array(
-    program.instructions.length * 4 * blockSize,
-  );
+  const { registerOffsets, registerValueCount } =
+    allocateSplatPostDecodeRegisters(program);
+  const blockSize = getBlockSize(registerValueCount, processCount);
+  const registers = new Float32Array(registerValueCount * blockSize);
   const attributeData = new DataView(
     program.attributeData.buffer,
     program.attributeData.byteOffset,
@@ -858,6 +982,7 @@ export function applySplatPostDecode(
     attributeData,
     splat0Float,
     registers,
+    registerOffsets,
     processCount,
     blockSize,
   );

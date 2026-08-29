@@ -847,6 +847,110 @@ function inferLiteralType(value: unknown): SplatPostDecodeValueType {
   throw new Error("Unsupported postDecode literal");
 }
 
+function pruneProgram(
+  builder: ProgramBuilder,
+  sourceOutputs: SplatPostDecodeOutputs,
+) {
+  const outputs = { ...sourceOutputs };
+  if (outputs.when !== undefined) {
+    const condition = builder.instructions[outputs.when];
+    if (condition.opcode === Opcode.Constant) {
+      if (builder.constants[condition.immediate] === 0) {
+        return {
+          instructions: [],
+          constants: [],
+          outputs: {},
+          attributes: [],
+        };
+      }
+      outputs.when = undefined;
+    }
+  }
+
+  const live = new Uint8Array(builder.instructions.length);
+  const pending: number[] = [];
+  const markLive = (register: number) => {
+    if (live[register]) return;
+    live[register] = 1;
+    pending.push(register);
+  };
+  for (const register of [
+    outputs.when,
+    outputs.position,
+    outputs.scale,
+    outputs.quaternion,
+    outputs.opacity,
+    outputs.alpha,
+    outputs.color,
+    ...(outputs.sh ?? []),
+  ]) {
+    if (register !== undefined) markLive(register);
+  }
+  while (pending.length !== 0) {
+    const register = pending.pop();
+    if (register === undefined) break;
+    for (const argument of builder.instructions[register].args) {
+      markLive(argument);
+    }
+  }
+
+  const registerMap = new Int32Array(builder.instructions.length).fill(-1);
+  let registerCount = 0;
+  for (let index = 0; index < live.length; index += 1) {
+    if (live[index]) registerMap[index] = registerCount++;
+  }
+
+  const constants: number[] = [];
+  const attributes: AttributeBinding[] = [];
+  const attributeMap = new Map<number, number>();
+  const instructions = builder.instructions.flatMap((instruction, index) => {
+    if (!live[index]) return [];
+    let immediate = instruction.immediate;
+    if (instruction.opcode === Opcode.Constant) {
+      immediate = constants.length;
+      constants.push(
+        ...builder.constants.slice(
+          instruction.immediate,
+          instruction.immediate + TYPE_WIDTHS[instruction.type],
+        ),
+      );
+    } else if (instruction.opcode === Opcode.InputAttribute) {
+      let mapped = attributeMap.get(instruction.immediate);
+      if (mapped === undefined) {
+        mapped = attributes.length;
+        attributeMap.set(instruction.immediate, mapped);
+        attributes.push(builder.attributes[instruction.immediate]);
+      }
+      immediate = mapped;
+    }
+    return [
+      {
+        ...instruction,
+        args: instruction.args.map((argument) => registerMap[argument]),
+        immediate,
+      },
+    ];
+  });
+  const remap = (register: number | undefined) =>
+    register === undefined ? undefined : registerMap[register];
+
+  return {
+    instructions,
+    constants,
+    outputs: {
+      when: remap(outputs.when),
+      position: remap(outputs.position),
+      scale: remap(outputs.scale),
+      quaternion: remap(outputs.quaternion),
+      opacity: remap(outputs.opacity),
+      alpha: remap(outputs.alpha),
+      color: remap(outputs.color),
+      sh: outputs.sh?.map((register) => registerMap[register]),
+    },
+    attributes,
+  };
+}
+
 class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
   readonly [SPLAT_POST_DECODE_PROGRAM] = true as const;
 
@@ -859,7 +963,13 @@ class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
     if (!(program instanceof SplatPostDecodeProgramImpl)) {
       throw new Error("Invalid postDecode program");
     }
-    const { builder, outputs } = program;
+    const { builder } = program;
+    const {
+      instructions,
+      constants,
+      outputs,
+      attributes: attributeBindings,
+    } = pruneProgram(builder, program.outputs);
     type AttributeRegion = {
       buffer: ArrayBufferLike;
       start: number;
@@ -870,7 +980,7 @@ class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
       ArrayBufferLike,
       { start: number; end: number }[]
     >();
-    for (const attribute of builder.attributes) {
+    for (const attribute of attributeBindings) {
       if (attribute.count === 0) continue;
       const packedBytes =
         ATTRIBUTE_FORMAT_BYTES[attribute.format] * attribute.components;
@@ -908,7 +1018,7 @@ class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
         region.outputOffset,
       );
     }
-    const attributes = builder.attributes.map((attribute) => {
+    const attributes = attributeBindings.map((attribute) => {
       let byteOffset = 0;
       if (attribute.count !== 0) {
         const sourceOffset = attribute.data.byteOffset + attribute.byteOffset;
@@ -933,8 +1043,8 @@ class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
     });
 
     return {
-      instructions: builder.instructions,
-      constants: new Float32Array(builder.constants),
+      instructions,
+      constants: new Float32Array(constants),
       outputs,
       attributeData,
       attributes,
