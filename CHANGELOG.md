@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-08-31
+
+### Added
+
+- Added `tan`, `asin`, `atan`, and vector-aware `atan2(y, x)` operations to the experimental post-decode expression API.
+
 ## [0.1.12] - 2026-08-31
 
 ### Changed
@@ -155,7 +161,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.9...v0.1.10

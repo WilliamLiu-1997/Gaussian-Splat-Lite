@@ -18,6 +18,9 @@ export enum Opcode {
   Sin = 23,
   Cos = 24,
   Acos = 25,
+  Tan = 26,
+  Asin = 27,
+  Atan = 28,
   Add = 30,
   Subtract = 31,
   Multiply = 32,
@@ -37,6 +40,7 @@ export enum Opcode {
   Or = 46,
   QuaternionMultiply = 47,
   RotateVector = 48,
+  Atan2 = 49,
   Select = 60,
   Clamp = 61,
   Mix = 62,
@@ -330,6 +334,10 @@ type SplatPostDecodeOperations = {
   sin: UnaryNumericOperation;
   cos: UnaryNumericOperation;
   acos: UnaryNumericOperation;
+  tan: UnaryNumericOperation;
+  asin: UnaryNumericOperation;
+  atan: UnaryNumericOperation;
+  atan2: BinaryNumericOperation;
   normalize<T extends VectorValueType | "quaternion">(
     value: ValueLike<T>,
   ): SplatPostDecodeValue<T>;
@@ -769,6 +777,10 @@ class ProgramBuilder {
       sin: unaryNumeric(Opcode.Sin),
       cos: unaryNumeric(Opcode.Cos),
       acos: unaryNumeric(Opcode.Acos),
+      tan: unaryNumeric(Opcode.Tan),
+      asin: unaryNumeric(Opcode.Asin),
+      atan: unaryNumeric(Opcode.Atan),
+      atan2: binaryNumeric(Opcode.Atan2),
       normalize: (value) => this.unary(Opcode.Normalize, value) as never,
       length: (value) =>
         this.unary(Opcode.Length, value, "float") as FloatValue,

@@ -1,6 +1,6 @@
 {
   "name": "gaussian-splat-lite",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "A lightweight Three.js Gaussian Splatting renderer with PLY/SPZ loading, WebAssembly-accelerated sorting and raycasting, multi-Splat rendering, and high-precision GIS/ECEF coordinate support",
   "author": "William Liu <lyz15972107087@gmail.com>",
   "type": "module",

@@ -843,6 +843,22 @@ function evaluateUnaryBlock(
         for (let lane = 0; lane < blockCount; lane += 1) {
           registers[output + lane] = Math.acos(registers[input + lane]);
         }
+        break;
+      case Opcode.Tan:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.tan(registers[input + lane]);
+        }
+        break;
+      case Opcode.Asin:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.asin(registers[input + lane]);
+        }
+        break;
+      case Opcode.Atan:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.atan(registers[input + lane]);
+        }
+        break;
     }
   }
 }
@@ -908,6 +924,15 @@ function evaluateBinaryBlock(
             registers[right + lane],
           );
         }
+        break;
+      case Opcode.Atan2:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.atan2(
+            registers[left + lane],
+            registers[right + lane],
+          );
+        }
+        break;
     }
   }
 }
@@ -1013,6 +1038,9 @@ function executeRange(
       case Opcode.Sin:
       case Opcode.Cos:
       case Opcode.Acos:
+      case Opcode.Tan:
+      case Opcode.Asin:
+      case Opcode.Atan:
         evaluateUnaryBlock(
           opcode,
           registers,
@@ -1080,6 +1108,7 @@ function executeRange(
       case Opcode.Pow:
       case Opcode.Min:
       case Opcode.Max:
+      case Opcode.Atan2:
         evaluateBinaryBlock(
           opcode,
           registers,
