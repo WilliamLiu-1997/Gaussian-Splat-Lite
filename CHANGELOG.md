@@ -11,6 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Short-circuited arbitrary nested post-decode `when` expressions per worker block, routing only matching Splats through each AND/OR/NOT branch and compacting survivors before evaluating patch outputs.
 - Reworked post-decode flow compilation with logical constant folding, iterative condition traversal, and reusable generation-based register maps, avoiding call-stack limits and repeated register-map allocation for deeply nested or shared condition graphs.
+- Reduced post-decode condition-flow compilation scratch memory by allocating its traversal stack only for logical branches and storing only pending AND/OR continuations.
 - Reduced decode-worker setup and execution overhead with packed `Uint16Array` bytecode, stage-indexed register carry events, precomputed instruction and output-write plans, and field-major patch and spherical-harmonic writeback.
 
 ## [0.1.11] - 2026-08-30

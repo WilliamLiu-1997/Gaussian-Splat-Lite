@@ -1113,73 +1113,66 @@ function tryCompileConditionFlow(
   }
 
   const reverseNodes: FlowNode[] = [];
-  const FLOW_VISIT = 0;
-  const FLOW_AND_LEFT = 1;
-  const FLOW_OR_LEFT = 2;
-  const FLOW_FRAME_SIZE = 4;
-  // A nested logical instruction adds at most one pending continuation.
-  const frames = new Int32Array((whenRegister + 2) * FLOW_FRAME_SIZE);
-  let frameEnd = 0;
-  const pushFrame = (
-    type: number,
-    register: number,
-    onTrue = 0,
-    onFalse = 0,
-  ) => {
-    if (frameEnd === frames.length) {
-      throw new Error("Invalid postDecode condition depth");
-    }
-    frames[frameEnd] = type;
-    frames[frameEnd + 1] = register;
-    frames[frameEnd + 2] = onTrue;
-    frames[frameEnd + 3] = onFalse;
-    frameEnd += FLOW_FRAME_SIZE;
-  };
-
-  // `compiledTarget` is the return value of the most recently completed
-  // frame. Continuation frames use it to compile the left side of AND/OR
-  // after the right side has established its short-circuit target.
+  const FLOW_AND_LEFT = 0;
+  const FLOW_OR_LEFT = 1;
+  const FLOW_CONTINUATION_SIZE = 3;
+  let continuations: Int32Array | undefined;
+  let continuationEnd = 0;
+  let register = whenRegister;
+  let onTrue = FLOW_ACCEPT;
+  let onFalse = FLOW_REJECT;
   let compiledTarget = FLOW_REJECT;
-  pushFrame(FLOW_VISIT, whenRegister, FLOW_ACCEPT, FLOW_REJECT);
-  while (frameEnd !== 0) {
-    frameEnd -= FLOW_FRAME_SIZE;
-    const type = frames[frameEnd];
-    const register = frames[frameEnd + 1];
-    const onTrue = frames[frameEnd + 2];
-    const onFalse = frames[frameEnd + 3];
-
-    if (type === FLOW_AND_LEFT) {
-      pushFrame(FLOW_VISIT, register, compiledTarget, onFalse);
-      continue;
-    }
-    if (type === FLOW_OR_LEFT) {
-      pushFrame(FLOW_VISIT, register, onTrue, compiledTarget);
-      continue;
-    }
-
+  while (true) {
     const constant = constantValues[register];
     if (constant !== FLOW_DYNAMIC) {
       compiledTarget = constant === FLOW_CONSTANT_TRUE ? onTrue : onFalse;
-      continue;
+    } else {
+      const instruction = builder.instructions[register];
+      if (instruction.opcode === Opcode.Not) {
+        register = instruction.args[0];
+        const target = onTrue;
+        onTrue = onFalse;
+        onFalse = target;
+        continue;
+      }
+      if (
+        instruction.opcode === Opcode.And ||
+        instruction.opcode === Opcode.Or
+      ) {
+        continuations ??= new Int32Array(
+          (whenRegister + 1) * FLOW_CONTINUATION_SIZE,
+        );
+        if (continuationEnd === continuations.length) {
+          throw new Error("Invalid postDecode condition depth");
+        }
+        const isAnd = instruction.opcode === Opcode.And;
+        continuations[continuationEnd] = isAnd ? FLOW_AND_LEFT : FLOW_OR_LEFT;
+        continuations[continuationEnd + 1] = instruction.args[0];
+        continuations[continuationEnd + 2] = isAnd ? onFalse : onTrue;
+        continuationEnd += FLOW_CONTINUATION_SIZE;
+        register = instruction.args[1];
+        continue;
+      }
+      if (reverseNodes.length >= 4096) return undefined;
+      compiledTarget = reverseNodes.length;
+      reverseNodes.push({ register, onTrue, onFalse });
     }
-    const instruction = builder.instructions[register];
-    if (instruction.opcode === Opcode.Not) {
-      pushFrame(FLOW_VISIT, instruction.args[0], onFalse, onTrue);
-      continue;
+
+    if (continuationEnd === 0) break;
+    continuationEnd -= FLOW_CONTINUATION_SIZE;
+    if (!continuations) {
+      throw new Error("Invalid postDecode condition continuation");
     }
-    if (instruction.opcode === Opcode.And) {
-      pushFrame(FLOW_AND_LEFT, instruction.args[0], 0, onFalse);
-      pushFrame(FLOW_VISIT, instruction.args[1], onTrue, onFalse);
-      continue;
+    const type = continuations[continuationEnd];
+    register = continuations[continuationEnd + 1];
+    const target = continuations[continuationEnd + 2];
+    if (type === FLOW_AND_LEFT) {
+      onTrue = compiledTarget;
+      onFalse = target;
+    } else {
+      onTrue = target;
+      onFalse = compiledTarget;
     }
-    if (instruction.opcode === Opcode.Or) {
-      pushFrame(FLOW_OR_LEFT, instruction.args[0], onTrue);
-      pushFrame(FLOW_VISIT, instruction.args[1], onTrue, onFalse);
-      continue;
-    }
-    if (reverseNodes.length >= 4096) return undefined;
-    compiledTarget = reverseNodes.length;
-    reverseNodes.push({ register, onTrue, onFalse });
   }
 
   const entry = compiledTarget;
