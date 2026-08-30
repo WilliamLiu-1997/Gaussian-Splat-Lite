@@ -781,6 +781,137 @@ function enqueueConditionFlowBlock(
   heads[stage] = sourceIndex;
 }
 
+function evaluateUnaryBlock(
+  opcode: Opcode,
+  registers: Float32Array,
+  outputBase: number,
+  inputBase: number,
+  width: number,
+  blockSize: number,
+  blockCount: number,
+) {
+  for (let component = 0; component < width; component += 1) {
+    const output = outputBase + component * blockSize;
+    const input = inputBase + component * blockSize;
+    switch (opcode) {
+      case Opcode.Negate:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = -registers[input + lane];
+        }
+        break;
+      case Opcode.Abs:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.abs(registers[input + lane]);
+        }
+        break;
+      case Opcode.Log:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.log(registers[input + lane]);
+        }
+        break;
+      case Opcode.Exp:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.exp(registers[input + lane]);
+        }
+        break;
+      case Opcode.Floor:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.floor(registers[input + lane]);
+        }
+        break;
+      case Opcode.Ceil:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.ceil(registers[input + lane]);
+        }
+        break;
+      case Opcode.Round:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = roundAwayFromZero(registers[input + lane]);
+        }
+        break;
+      case Opcode.Sin:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.sin(registers[input + lane]);
+        }
+        break;
+      case Opcode.Cos:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.cos(registers[input + lane]);
+        }
+        break;
+      case Opcode.Acos:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = Math.acos(registers[input + lane]);
+        }
+    }
+  }
+}
+
+function evaluateBinaryBlock(
+  opcode: Opcode,
+  registers: Float32Array,
+  outputBase: number,
+  arg0: number,
+  arg1: number,
+  width: number,
+  arg1Width: number,
+  blockSize: number,
+  blockCount: number,
+) {
+  for (let component = 0; component < width; component += 1) {
+    const output = outputBase + component * blockSize;
+    const left = arg0 + component * blockSize;
+    const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
+    switch (opcode) {
+      case Opcode.Add:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] =
+            registers[left + lane] + registers[right + lane];
+        }
+        break;
+      case Opcode.Subtract:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] =
+            registers[left + lane] - registers[right + lane];
+        }
+        break;
+      case Opcode.Multiply:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] =
+            registers[left + lane] * registers[right + lane];
+        }
+        break;
+      case Opcode.Divide:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] =
+            registers[left + lane] / registers[right + lane];
+        }
+        break;
+      case Opcode.Pow:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] =
+            registers[left + lane] ** registers[right + lane];
+        }
+        break;
+      case Opcode.Min:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = rustMin(
+            registers[left + lane],
+            registers[right + lane],
+          );
+        }
+        break;
+      case Opcode.Max:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[output + lane] = rustMax(
+            registers[left + lane],
+            registers[right + lane],
+          );
+        }
+    }
+  }
+}
+
 function executeRange(
   data: PostDecodeSplatData,
   program: SerializedSplatPostDecode,
@@ -882,46 +1013,15 @@ function executeRange(
       case Opcode.Sin:
       case Opcode.Cos:
       case Opcode.Acos:
-        for (let component = 0; component < width; component += 1) {
-          const output = outputBase + component * blockSize;
-          const input = arg0 + component * blockSize;
-          for (let lane = 0; lane < blockCount; lane += 1) {
-            const value = registers[input + lane];
-            let result: number;
-            switch (opcode) {
-              case Opcode.Negate:
-                result = -value;
-                break;
-              case Opcode.Abs:
-                result = Math.abs(value);
-                break;
-              case Opcode.Log:
-                result = Math.log(value);
-                break;
-              case Opcode.Exp:
-                result = Math.exp(value);
-                break;
-              case Opcode.Floor:
-                result = Math.floor(value);
-                break;
-              case Opcode.Ceil:
-                result = Math.ceil(value);
-                break;
-              case Opcode.Round:
-                result = roundAwayFromZero(value);
-                break;
-              case Opcode.Sin:
-                result = Math.sin(value);
-                break;
-              case Opcode.Cos:
-                result = Math.cos(value);
-                break;
-              default:
-                result = Math.acos(value);
-            }
-            registers[output + lane] = result;
-          }
-        }
+        evaluateUnaryBlock(
+          opcode,
+          registers,
+          outputBase,
+          arg0,
+          width,
+          blockSize,
+          blockCount,
+        );
         break;
       case Opcode.Sqrt:
         for (let component = 0; component < width; component += 1) {
@@ -978,47 +1078,19 @@ function executeRange(
       case Opcode.Multiply:
       case Opcode.Divide:
       case Opcode.Pow:
-        for (let component = 0; component < width; component += 1) {
-          const output = outputBase + component * blockSize;
-          const left = arg0 + component * blockSize;
-          const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
-          for (let lane = 0; lane < blockCount; lane += 1) {
-            const leftValue = registers[left + lane];
-            const rightValue = registers[right + lane];
-            let result: number;
-            switch (opcode) {
-              case Opcode.Add:
-                result = leftValue + rightValue;
-                break;
-              case Opcode.Subtract:
-                result = leftValue - rightValue;
-                break;
-              case Opcode.Multiply:
-                result = leftValue * rightValue;
-                break;
-              case Opcode.Divide:
-                result = leftValue / rightValue;
-                break;
-              default:
-                result = leftValue ** rightValue;
-            }
-            registers[output + lane] = result;
-          }
-        }
-        break;
       case Opcode.Min:
       case Opcode.Max:
-        for (let component = 0; component < width; component += 1) {
-          const output = outputBase + component * blockSize;
-          const left = arg0 + component * blockSize;
-          const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
-          for (let lane = 0; lane < blockCount; lane += 1) {
-            registers[output + lane] =
-              opcode === Opcode.Min
-                ? rustMin(registers[left + lane], registers[right + lane])
-                : rustMax(registers[left + lane], registers[right + lane]);
-          }
-        }
+        evaluateBinaryBlock(
+          opcode,
+          registers,
+          outputBase,
+          arg0,
+          arg1,
+          width,
+          arg1Width,
+          blockSize,
+          blockCount,
+        );
         break;
       case Opcode.Dot:
         for (let lane = 0; lane < blockCount; lane += 1) {
@@ -1065,21 +1137,27 @@ function executeRange(
         }
         break;
       case Opcode.Less:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] =
+            registers[arg0 + lane] < registers[arg1 + lane] ? 1 : 0;
+        }
+        break;
       case Opcode.LessEqual:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] =
+            registers[arg0 + lane] <= registers[arg1 + lane] ? 1 : 0;
+        }
+        break;
       case Opcode.Greater:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] =
+            registers[arg0 + lane] > registers[arg1 + lane] ? 1 : 0;
+        }
+        break;
       case Opcode.GreaterEqual:
         for (let lane = 0; lane < blockCount; lane += 1) {
-          const left = registers[arg0 + lane];
-          const right = registers[arg1 + lane];
-          const result =
-            opcode === Opcode.Less
-              ? left < right
-              : opcode === Opcode.LessEqual
-                ? left <= right
-                : opcode === Opcode.Greater
-                  ? left > right
-                  : left >= right;
-          registers[outputBase + lane] = result ? 1 : 0;
+          registers[outputBase + lane] =
+            registers[arg0 + lane] >= registers[arg1 + lane] ? 1 : 0;
         }
         break;
       case Opcode.And:
@@ -1183,19 +1261,24 @@ function executeRange(
         }
         break;
       case Opcode.Vec2:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] = registers[arg0 + lane];
+          registers[outputBase + blockSize + lane] = registers[arg1 + lane];
+        }
+        break;
       case Opcode.Vec3:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] = registers[arg0 + lane];
+          registers[outputBase + blockSize + lane] = registers[arg1 + lane];
+          registers[outputBase + blockSize * 2 + lane] = registers[arg2 + lane];
+        }
+        break;
       case Opcode.Vec4:
         for (let lane = 0; lane < blockCount; lane += 1) {
           registers[outputBase + lane] = registers[arg0 + lane];
           registers[outputBase + blockSize + lane] = registers[arg1 + lane];
-          if (width >= 3) {
-            registers[outputBase + blockSize * 2 + lane] =
-              registers[arg2 + lane];
-          }
-          if (width === 4) {
-            registers[outputBase + blockSize * 3 + lane] =
-              registers[arg3 + lane];
-          }
+          registers[outputBase + blockSize * 2 + lane] = registers[arg2 + lane];
+          registers[outputBase + blockSize * 3 + lane] = registers[arg3 + lane];
         }
         break;
       case Opcode.Component:

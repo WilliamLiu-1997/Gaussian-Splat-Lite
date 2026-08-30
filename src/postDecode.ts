@@ -917,7 +917,6 @@ class InstructionSerializer {
   readonly instructions: SplatPostDecodeInstruction[] = [];
   readonly constants: number[] = [];
   readonly attributes: AttributeBinding[] = [];
-  tooLarge = false;
 
   private readonly constantMap = new Map<number, number>();
   private readonly attributeMap = new Map<number, number>();
@@ -978,7 +977,7 @@ class InstructionSerializer {
       if (source.opcode === Opcode.Constant) {
         let target = this.constantMap.get(sourceIndex);
         if (target === undefined) {
-          if (!this.reserveInstruction()) break;
+          this.reserveInstruction();
           target = this.instructions.length;
           this.constantMap.set(sourceIndex, target);
           const immediate = this.constants.length;
@@ -994,7 +993,7 @@ class InstructionSerializer {
         continue;
       }
 
-      if (!this.reserveInstruction()) break;
+      this.reserveInstruction();
       let immediate = source.immediate;
       if (source.opcode === Opcode.InputAttribute) {
         let target = this.attributeMap.get(immediate);
@@ -1018,9 +1017,9 @@ class InstructionSerializer {
   }
 
   private reserveInstruction() {
-    if (this.instructions.length < 4096) return true;
-    this.tooLarge = true;
-    return false;
+    if (this.instructions.length >= 4096) {
+      throw new Error("postDecode compiled program exceeds 4096 instructions");
+    }
   }
 }
 
@@ -1063,20 +1062,18 @@ type FlowNode = {
   onFalse: number;
 };
 
-function tryCompileConditionFlow(
+function compileConditionFlow(
   builder: ProgramBuilder,
   outputs: SplatPostDecodeOutputs,
   outputRoots: readonly (number | undefined)[],
+  whenRegister: number,
 ): CompiledProgram | undefined {
-  const whenRegister = outputs.when;
-  if (whenRegister === undefined) return undefined;
-
   const FLOW_ACCEPT = -1;
   const FLOW_REJECT = -2;
   const FLOW_DYNAMIC = 0;
   const FLOW_CONSTANT_FALSE = 1;
   const FLOW_CONSTANT_TRUE = 2;
-  const constantValues = new Uint8Array(builder.instructions.length);
+  const constantValues = new Uint8Array(whenRegister + 1);
   for (let register = 0; register <= whenRegister; register += 1) {
     const instruction = builder.instructions[register];
     if (instruction.opcode === Opcode.Constant && instruction.type === "bool") {
@@ -1153,7 +1150,9 @@ function tryCompileConditionFlow(
         register = instruction.args[1];
         continue;
       }
-      if (reverseNodes.length >= 4096) return undefined;
+      if (reverseNodes.length >= 4096) {
+        throw new Error("postDecode condition exceeds 4096 flow nodes");
+      }
       compiledTarget = reverseNodes.length;
       reverseNodes.push({ register, onTrue, onFalse });
     }
@@ -1182,27 +1181,11 @@ function tryCompileConditionFlow(
     return undefined;
   }
 
-  const reachable = new Uint8Array(reverseNodes.length);
-  const pending = [entry];
-  while (pending.length !== 0) {
-    const node = pending.pop();
-    if (node === undefined || node < 0 || reachable[node]) continue;
-    reachable[node] = 1;
-    pending.push(reverseNodes[node].onTrue, reverseNodes[node].onFalse);
-  }
-  const nodeOrder: number[] = [];
-  for (let node = reverseNodes.length - 1; node >= 0; node -= 1) {
-    if (reachable[node]) nodeOrder.push(node);
-  }
-  const flowMap = new Int32Array(reverseNodes.length).fill(-1);
-  for (let stage = 0; stage < nodeOrder.length; stage += 1) {
-    flowMap[nodeOrder[stage]] = stage;
-  }
-  if (flowMap[entry] !== 0) {
+  const stageCount = reverseNodes.length;
+  if (entry !== stageCount - 1) {
     throw new Error("Invalid postDecode condition flow");
   }
 
-  const stageCount = nodeOrder.length;
   const acceptTarget = stageCount;
   const rejectTarget = acceptTarget + 1;
   const stages = new Uint16Array(
@@ -1233,10 +1216,10 @@ function tryCompileConditionFlow(
       ? acceptTarget
       : target === FLOW_REJECT
         ? rejectTarget
-        : flowMap[target];
+        : stageCount - 1 - target;
 
   for (let stage = 0; stage < stageCount; stage += 1) {
-    const node = reverseNodes[nodeOrder[stage]];
+    const node = reverseNodes[stageCount - 1 - stage];
     const offset = stage * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
     const onTrue = remapTarget(node.onTrue);
     const onFalse = remapTarget(node.onFalse);
@@ -1252,12 +1235,11 @@ function tryCompileConditionFlow(
     if (stage === 0 || predecessors[stage] !== stage - 1) {
       pathRegisters.clear();
     }
-    const node = reverseNodes[nodeOrder[stage]];
+    const node = reverseNodes[stageCount - 1 - stage];
     const offset = stage * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
     stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_START] =
       serializer.instructions.length;
     serializer.appendDependencies([node.register], pathRegisters, true);
-    if (serializer.tooLarge) return undefined;
     stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION] =
       serializer.instructions.length - 1;
     const predicateRegister = pathRegisters.get(node.register);
@@ -1269,7 +1251,6 @@ function tryCompileConditionFlow(
 
   if (acceptPredecessor !== stageCount - 1) pathRegisters.clear();
   serializer.appendDependencies(outputRoots, pathRegisters);
-  if (serializer.tooLarge) return undefined;
   return {
     instructions: serializer.instructions,
     constants: serializer.constants,
@@ -1304,49 +1285,29 @@ function compileProgram(
     ...(outputs.sh ?? []),
   ];
   if (outputs.when !== undefined) {
-    const flow = tryCompileConditionFlow(builder, outputs, outputRoots);
+    const flow = compileConditionFlow(
+      builder,
+      outputs,
+      outputRoots,
+      outputs.when,
+    );
     if (flow) return flow;
   }
 
   const live = new Uint8Array(builder.instructions.length);
   markDependencies(builder, outputRoots, live);
-  const conditionLive = new Uint8Array(builder.instructions.length);
-  if (outputs.when !== undefined) {
-    markDependencies(builder, [outputs.when], conditionLive);
-  }
-  for (let register = 0; register < live.length; register += 1) {
-    live[register] ||= conditionLive[register];
-  }
-
   const instructionOrder: number[] = [];
-  if (outputs.when !== undefined) {
-    for (let register = 0; register < live.length; register += 1) {
-      if (conditionLive[register]) instructionOrder.push(register);
-    }
-    for (let register = 0; register < live.length; register += 1) {
-      if (live[register] && !conditionLive[register]) {
-        instructionOrder.push(register);
-      }
-    }
-  } else {
-    for (let register = 0; register < live.length; register += 1) {
-      if (live[register]) instructionOrder.push(register);
-    }
+  for (let register = 0; register < live.length; register += 1) {
+    if (live[register]) instructionOrder.push(register);
   }
 
   const serializer = new InstructionSerializer(builder);
   const registers = new GenerationRegisterMap(builder.instructions.length);
   serializer.append(instructionOrder, registers);
-  const when =
-    outputs.when === undefined ? undefined : registers.get(outputs.when);
   return {
     instructions: serializer.instructions,
     constants: serializer.constants,
     outputs: remapOutputs(outputs, registers),
-    condition:
-      when === undefined
-        ? undefined
-        : { mode: "flow", stages: new Uint16Array([0, when, when, 1, 2]) },
     attributes: serializer.attributes,
   };
 }
