@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-08-31
+
 ### Changed
 
 - Short-circuited arbitrary nested post-decode `when` expressions per worker block, routing only matching Splats through each AND/OR/NOT branch and compacting survivors before evaluating patch outputs.
@@ -153,7 +155,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.8...v0.1.9
