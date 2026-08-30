@@ -1,6 +1,11 @@
-# postDecode
+# postDecode `Experimental`
 
 [Back to the API overview](../README.md#core-concepts-and-public-api)
+
+`postDecode` currently exists to support post-decode processing for
+[3D-Tiles-RendererJS-3DGS-Plugin](https://github.com/WilliamLiu-1997/3D-Tiles-RendererJS-3DGS-Plugin).
+It may be removed if a better solution becomes available, and its API may change
+in future releases.
 
 `postDecode` describes a logical transform for one decoded Splat. The callback runs immediately and builds a serializable expression program; the callback itself is never sent to a Web Worker. Gaussian Splat Lite executes that program in the decode worker and owns all packed-array, SH-layout, sorting-center, and re-encoding details.
 

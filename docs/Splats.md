@@ -36,7 +36,7 @@ The constructor and `initialize()` accept the same `SplatsOptions`:
 | `fileName` | `string` | `undefined` | Name used to infer byte or stream input format |
 | `stream` | `ReadableStream` | `undefined` | Chunked input stream |
 | `streamLength` | `number` | `undefined` | Optional input-stream byte-length estimate used for progress reporting |
-| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | **`Experimental`** Serializable per-Splat transform executed in the decode worker |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `construct` | `(splats) => void \| Promise<void>` | `undefined` | Populates the source during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |

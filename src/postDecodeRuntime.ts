@@ -39,11 +39,9 @@ export type PostDecodeSplatData = {
 };
 
 const MAX_BLOCK_SIZE = 512;
-// Keep each worker's temporary register file bounded for very large programs.
-const MAX_REGISTER_BYTES = 4 * 1024 * 1024;
-const CONDITION_CARRY_EVENT_OFFSET_MASK = 0xffff;
-const CONDITION_CARRY_EVENT_REMOVAL = 0x1_0000;
-const CONDITION_CARRY_EVENT_STAGE_SHIFT = 17;
+const MAX_REGISTER_BYTES = 4 * 1024 ** 2;
+const CONDITION_CARRY_EVENT_OFFSET_MASK = 0x7fff_ffff;
+const CONDITION_CARRY_EVENT_REMOVAL = 0x8000_0000;
 
 function getInstructionCount(instructions: Uint16Array) {
   const count = instructions.length / SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
@@ -51,6 +49,13 @@ function getInstructionCount(instructions: Uint16Array) {
     throw new Error("Invalid packed postDecode instructions");
   }
   return count;
+}
+
+function instructionWidth(instructions: Uint16Array, index: number) {
+  return instructions[
+    index * SPLAT_POST_DECODE_INSTRUCTION_STRIDE +
+      SPLAT_POST_DECODE_INSTRUCTION_WIDTH
+  ];
 }
 
 function getBlockSize(registerValueCount: number, processCount: number) {
@@ -71,8 +76,7 @@ type FreeRegisterRange = {
 export function allocateSplatPostDecodeRegisters(
   program: SerializedSplatPostDecode,
 ) {
-  const { instructions, outputs } = program;
-  const { condition } = program;
+  const { instructions, outputs, condition } = program;
   const instructionCount = getInstructionCount(instructions);
   const lastUses = new Uint32Array(instructionCount);
   for (let index = 0; index < instructionCount; index += 1) {
@@ -113,8 +117,6 @@ export function allocateSplatPostDecodeRegisters(
   }
 
   const programEnd = instructionCount;
-  // `when` is consumed at the condition boundary before its range may be
-  // reused by the output suffix; only values written back must reach the end.
   for (const output of [
     outputs.position,
     outputs.scale,
@@ -130,8 +132,6 @@ export function allocateSplatPostDecodeRegisters(
   const registerOffsets = new Uint32Array(instructionCount);
   const constantRegisters = new Uint8Array(instructionCount);
   let registerValueCount = 0;
-  // Constants are initialized before instruction evaluation and only once for
-  // all blocks, so their physical ranges span the entire program.
   for (let index = 0; index < instructionCount; index += 1) {
     const instructionOffset = index * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
     if (
@@ -146,23 +146,21 @@ export function allocateSplatPostDecodeRegisters(
     }
   }
 
-  const releases: FreeRegisterRange[][] = Array.from(
-    { length: instructionCount + 1 },
-    () => [],
-  );
+  const releaseHeads = new Int32Array(instructionCount + 1).fill(-1);
+  const releaseNext = new Int32Array(instructionCount).fill(-1);
   const freeRanges: FreeRegisterRange[] = [];
 
-  const release = (released: FreeRegisterRange) => {
+  const release = (releasedOffset: number, releasedWidth: number) => {
+    let offset = releasedOffset;
+    let width = releasedWidth;
     let insertIndex = 0;
     while (
       insertIndex < freeRanges.length &&
-      freeRanges[insertIndex].offset < released.offset
+      freeRanges[insertIndex].offset < offset
     ) {
       insertIndex += 1;
     }
 
-    let offset = released.offset;
-    let width = released.width;
     const previous = freeRanges[insertIndex - 1];
     if (previous && previous.offset + previous.width === offset) {
       offset = previous.offset;
@@ -197,9 +195,8 @@ export function allocateSplatPostDecodeRegisters(
 
     const range = freeRanges[bestIndex];
     const offset = range.offset;
-    if (range.width === width) {
-      freeRanges.splice(bestIndex, 1);
-    } else {
+    if (range.width === width) freeRanges.splice(bestIndex, 1);
+    else {
       range.offset += width;
       range.width -= width;
     }
@@ -207,31 +204,35 @@ export function allocateSplatPostDecodeRegisters(
   };
 
   for (let index = 0; index < instructionCount; index += 1) {
-    for (const range of releases[index]) release(range);
+    for (
+      let released = releaseHeads[index];
+      released !== -1;
+      released = releaseNext[released]
+    ) {
+      release(
+        registerOffsets[released],
+        instructionWidth(instructions, released),
+      );
+    }
     if (constantRegisters[index]) continue;
-    const width =
-      instructions[
-        index * SPLAT_POST_DECODE_INSTRUCTION_STRIDE +
-          SPLAT_POST_DECODE_INSTRUCTION_WIDTH
-      ];
+    const width = instructionWidth(instructions, index);
     const offset = allocate(width);
     registerOffsets[index] = offset;
     const releaseIndex = lastUses[index] + 1;
     if (releaseIndex <= instructionCount) {
-      releases[releaseIndex].push({ offset, width });
+      releaseNext[index] = releaseHeads[releaseIndex];
+      releaseHeads[releaseIndex] = index;
     }
   }
-
   const conditionStageCount = packedConditionStages
     ? packedConditionStages.length / SPLAT_POST_DECODE_FLOW_STAGE_STRIDE
     : 0;
   if (!Number.isInteger(conditionStageCount)) {
     throw new Error("Invalid packed postDecode condition flow");
   }
+  let conditionCarryStageStarts = new Uint32Array();
   let conditionCarryEvents = new Uint32Array();
   if (packedConditionStages && conditionStageCount !== 0) {
-    // Programs are limited to 4096 instructions with at most four lanes each,
-    // so every physical register offset fits losslessly in a Uint16.
     if (registerValueCount > 0x1_0000) {
       throw new Error("postDecode register offsets exceed Uint16 capacity");
     }
@@ -288,6 +289,7 @@ export function allocateSplatPostDecodeRegisters(
     for (let stage = 0; stage < conditionStageCount; stage += 1) {
       eventStarts[stage + 1] = eventStarts[stage] + eventCounts[stage];
     }
+    conditionCarryStageStarts = eventStarts;
 
     conditionCarryEvents = new Uint32Array(eventStarts[conditionStageCount]);
     const removalCursors = new Uint32Array(
@@ -311,13 +313,10 @@ export function allocateSplatPostDecodeRegisters(
         const carryOffset = offset + lane;
         if (endStage < conditionStageCount) {
           conditionCarryEvents[removalCursors[endStage]] =
-            (endStage << CONDITION_CARRY_EVENT_STAGE_SHIFT) |
-            CONDITION_CARRY_EVENT_REMOVAL |
-            carryOffset;
+            CONDITION_CARRY_EVENT_REMOVAL | carryOffset;
           removalCursors[endStage] += 1;
         }
-        conditionCarryEvents[additionCursors[firstStage]] =
-          (firstStage << CONDITION_CARRY_EVENT_STAGE_SHIFT) | carryOffset;
+        conditionCarryEvents[additionCursors[firstStage]] = carryOffset;
         additionCursors[firstStage] += 1;
       }
     }
@@ -326,6 +325,7 @@ export function allocateSplatPostDecodeRegisters(
   return {
     registerOffsets,
     registerValueCount,
+    conditionCarryStageStarts,
     conditionCarryEvents,
   };
 }
@@ -643,6 +643,55 @@ function evaluateInputFieldBlock(
   }
 }
 
+type RuntimePlan = {
+  outputPlan: OutputWritePlan;
+  registerBases: Uint32Array;
+  conditionStages?: Uint16Array;
+  conditionStageCount: number;
+  outputInstructionStart: number;
+  conditionCarryStageStarts: Uint32Array;
+  conditionCarryEvents: Uint32Array;
+  blockSize: number;
+  registerValueCount: number;
+};
+
+function prepareProgram(
+  data: PostDecodeSplatData,
+  program: SerializedSplatPostDecode,
+  processCount: number,
+): RuntimePlan {
+  const {
+    registerOffsets: registerBases,
+    registerValueCount,
+    conditionCarryStageStarts,
+    conditionCarryEvents,
+  } = allocateSplatPostDecodeRegisters(program);
+  const blockSize = getBlockSize(registerValueCount, processCount);
+  for (let index = 0; index < registerBases.length; index += 1) {
+    registerBases[index] *= blockSize;
+  }
+  const conditionStages = program.condition?.stages;
+  const conditionStageCount =
+    (conditionStages?.length ?? 0) / SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
+  const outputInstructionStart =
+    (conditionStages?.[
+      conditionStages.length -
+        SPLAT_POST_DECODE_FLOW_STAGE_STRIDE +
+        SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION
+    ] ?? -1) + 1;
+  return {
+    outputPlan: createOutputWritePlan(data, program, registerBases),
+    registerBases,
+    conditionStages,
+    conditionStageCount,
+    outputInstructionStart,
+    conditionCarryStageStarts,
+    conditionCarryEvents,
+    blockSize,
+    registerValueCount,
+  };
+}
+
 function compactRegisterBlock(
   registers: Float32Array,
   activeOffsets: Uint16Array,
@@ -654,8 +703,7 @@ function compactRegisterBlock(
   for (let carryIndex = 0; carryIndex < activeCount; carryIndex += 1) {
     const offset = activeOffsets[carryIndex];
     const base = offset * blockSize;
-    // Lanes are collected in ascending order, so this forward in-place copy
-    // never overwrites a source lane that has not been read yet.
+    // Ascending lanes make this forward in-place copy safe.
     for (let index = 0; index < nextCount; index += 1) {
       registers[base + index] = registers[base + laneIndices[index]];
     }
@@ -663,43 +711,44 @@ function compactRegisterBlock(
 }
 
 type ConditionCarryState = {
+  stageStarts: Uint32Array;
   events: Uint32Array;
-  eventIndex: number;
+  nextStage: number;
   activeOffsets: Uint16Array;
   activePositions: Int32Array;
   activeCount: number;
 };
 
 function applyConditionCarryEvents(carry: ConditionCarryState, stage: number) {
-  while (
-    carry.eventIndex < carry.events.length &&
-    carry.events[carry.eventIndex] >>> CONDITION_CARRY_EVENT_STAGE_SHIFT <=
-      stage
-  ) {
-    const event = carry.events[carry.eventIndex];
-    const offset = event & CONDITION_CARRY_EVENT_OFFSET_MASK;
-    carry.eventIndex += 1;
-    if (event & CONDITION_CARRY_EVENT_REMOVAL) {
-      const position = carry.activePositions[offset];
-      if (position === -1) {
-        throw new Error("Invalid postDecode condition carry removal");
+  while (carry.nextStage <= stage) {
+    const eventStart = carry.stageStarts[carry.nextStage];
+    const eventEnd = carry.stageStarts[carry.nextStage + 1];
+    for (let eventIndex = eventStart; eventIndex < eventEnd; eventIndex += 1) {
+      const event = carry.events[eventIndex];
+      const offset = event & CONDITION_CARRY_EVENT_OFFSET_MASK;
+      if (event & CONDITION_CARRY_EVENT_REMOVAL) {
+        const position = carry.activePositions[offset];
+        if (position === -1) {
+          throw new Error("Invalid postDecode condition carry removal");
+        }
+        const lastPosition = carry.activeCount - 1;
+        const lastOffset = carry.activeOffsets[lastPosition];
+        if (position !== lastPosition) {
+          carry.activeOffsets[position] = lastOffset;
+          carry.activePositions[lastOffset] = position;
+        }
+        carry.activePositions[offset] = -1;
+        carry.activeCount = lastPosition;
+      } else {
+        if (carry.activePositions[offset] !== -1) {
+          throw new Error("Invalid postDecode condition carry addition");
+        }
+        carry.activePositions[offset] = carry.activeCount;
+        carry.activeOffsets[carry.activeCount] = offset;
+        carry.activeCount += 1;
       }
-      const lastPosition = carry.activeCount - 1;
-      const lastOffset = carry.activeOffsets[lastPosition];
-      if (position !== lastPosition) {
-        carry.activeOffsets[position] = lastOffset;
-        carry.activePositions[lastOffset] = position;
-      }
-      carry.activePositions[offset] = -1;
-      carry.activeCount = lastPosition;
-    } else {
-      if (carry.activePositions[offset] !== -1) {
-        throw new Error("Invalid postDecode condition carry addition");
-      }
-      carry.activePositions[offset] = carry.activeCount;
-      carry.activeOffsets[carry.activeCount] = offset;
-      carry.activeCount += 1;
     }
+    carry.nextStage += 1;
   }
 }
 
@@ -727,34 +776,475 @@ function enqueueConditionFlowBlock(
   stage: number,
   sourceIndex: number,
 ) {
-  // The array includes the accept terminal. The reject terminal is one past it
-  // and intentionally has no queue because rejected Splats need no more work.
   if (stage < 0 || stage >= heads.length) return;
   nextIndices[sourceIndex] = heads[stage];
   heads[stage] = sourceIndex;
 }
 
-function evaluateProgram(
+function executeRange(
   data: PostDecodeSplatData,
   program: SerializedSplatPostDecode,
   attributeData: DataView,
   splat0Float: Float32Array,
   registers: Float32Array,
   registerBases: Uint32Array,
-  conditionCarryEvents: Uint32Array,
-  processCount: number,
+  instructionStart: number,
+  instructionEnd: number,
+  blockStart: number,
+  blockCount: number,
   blockSize: number,
+  sourceIndices?: Uint16Array,
 ) {
-  const { attributes, constants, instructions } = program;
-  const instructionCount = getInstructionCount(instructions);
-  const { condition } = program;
-  const packedStages = condition?.stages;
-  const conditionStageCount = packedStages
-    ? packedStages.length / SPLAT_POST_DECODE_FLOW_STAGE_STRIDE
-    : 0;
-  if (!Number.isInteger(conditionStageCount)) {
-    throw new Error("Invalid packed postDecode condition flow");
+  const { attributes, instructions } = program;
+  for (
+    let instructionIndex = instructionStart;
+    instructionIndex < instructionEnd;
+    instructionIndex += 1
+  ) {
+    const instructionOffset =
+      instructionIndex * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
+    const opcode =
+      instructions[instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_OPCODE];
+    if (opcode === Opcode.Constant) continue;
+    const width =
+      instructions[instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_WIDTH];
+    const immediate =
+      instructions[instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_IMMEDIATE];
+    const outputBase = registerBases[instructionIndex];
+    const argumentOffset =
+      instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0;
+    const arg0Register = instructions[argumentOffset];
+    const arg1Register = instructions[argumentOffset + 1];
+    const arg2Register = instructions[argumentOffset + 2];
+    const arg3Register = instructions[argumentOffset + 3];
+    const arg0 =
+      arg0Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : registerBases[arg0Register];
+    const arg1 =
+      arg1Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : registerBases[arg1Register];
+    const arg2 =
+      arg2Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : registerBases[arg2Register];
+    const arg3 =
+      arg3Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : registerBases[arg3Register];
+    const arg0Width =
+      arg0Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : instructionWidth(instructions, arg0Register);
+    const arg1Width =
+      arg1Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : instructionWidth(instructions, arg1Register);
+    const arg2Width =
+      arg2Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
+        ? 0
+        : instructionWidth(instructions, arg2Register);
+
+    switch (opcode) {
+      case Opcode.InputField:
+        evaluateInputFieldBlock(
+          immediate,
+          blockStart,
+          blockCount,
+          blockSize,
+          data,
+          splat0Float,
+          registers,
+          outputBase,
+          sourceIndices,
+        );
+        break;
+      case Opcode.InputAttribute:
+        readAttributeBlock(
+          attributeData,
+          attributes[immediate],
+          blockStart,
+          blockCount,
+          blockSize,
+          registers,
+          outputBase,
+          sourceIndices,
+        );
+        break;
+      case Opcode.Negate:
+      case Opcode.Abs:
+      case Opcode.Log:
+      case Opcode.Exp:
+      case Opcode.Floor:
+      case Opcode.Ceil:
+      case Opcode.Round:
+      case Opcode.Sin:
+      case Opcode.Cos:
+      case Opcode.Acos:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const input = arg0 + component * blockSize;
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            const value = registers[input + lane];
+            let result: number;
+            switch (opcode) {
+              case Opcode.Negate:
+                result = -value;
+                break;
+              case Opcode.Abs:
+                result = Math.abs(value);
+                break;
+              case Opcode.Log:
+                result = Math.log(value);
+                break;
+              case Opcode.Exp:
+                result = Math.exp(value);
+                break;
+              case Opcode.Floor:
+                result = Math.floor(value);
+                break;
+              case Opcode.Ceil:
+                result = Math.ceil(value);
+                break;
+              case Opcode.Round:
+                result = roundAwayFromZero(value);
+                break;
+              case Opcode.Sin:
+                result = Math.sin(value);
+                break;
+              case Opcode.Cos:
+                result = Math.cos(value);
+                break;
+              default:
+                result = Math.acos(value);
+            }
+            registers[output + lane] = result;
+          }
+        }
+        break;
+      case Opcode.Sqrt:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const input = arg0 + component * blockSize;
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            registers[output + lane] = Math.sqrt(registers[input + lane]);
+          }
+        }
+        break;
+      case Opcode.Normalize:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          let lengthSquared = 0;
+          for (let component = 0; component < width; component += 1) {
+            const value = registers[arg0 + component * blockSize + lane];
+            lengthSquared += value * value;
+          }
+          const length = Math.sqrt(lengthSquared);
+          for (let component = 0; component < width; component += 1) {
+            const input = registers[arg0 + component * blockSize + lane];
+            registers[outputBase + component * blockSize + lane] =
+              length === 0 || !Number.isFinite(length) ? input : input / length;
+          }
+        }
+        break;
+      case Opcode.Length:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          let lengthSquared = 0;
+          for (let component = 0; component < arg0Width; component += 1) {
+            const value = registers[arg0 + component * blockSize + lane];
+            lengthSquared += value * value;
+          }
+          registers[outputBase + lane] = Math.sqrt(lengthSquared);
+        }
+        break;
+      case Opcode.IsFinite:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          let finite = true;
+          for (let component = 0; component < arg0Width; component += 1) {
+            finite &&= Number.isFinite(
+              registers[arg0 + component * blockSize + lane],
+            );
+          }
+          registers[outputBase + lane] = finite ? 1 : 0;
+        }
+        break;
+      case Opcode.Not:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] = registers[arg0 + lane] === 0 ? 1 : 0;
+        }
+        break;
+      case Opcode.Add:
+      case Opcode.Subtract:
+      case Opcode.Multiply:
+      case Opcode.Divide:
+      case Opcode.Pow:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const left = arg0 + component * blockSize;
+          const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            const leftValue = registers[left + lane];
+            const rightValue = registers[right + lane];
+            let result: number;
+            switch (opcode) {
+              case Opcode.Add:
+                result = leftValue + rightValue;
+                break;
+              case Opcode.Subtract:
+                result = leftValue - rightValue;
+                break;
+              case Opcode.Multiply:
+                result = leftValue * rightValue;
+                break;
+              case Opcode.Divide:
+                result = leftValue / rightValue;
+                break;
+              default:
+                result = leftValue ** rightValue;
+            }
+            registers[output + lane] = result;
+          }
+        }
+        break;
+      case Opcode.Min:
+      case Opcode.Max:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const left = arg0 + component * blockSize;
+          const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            registers[output + lane] =
+              opcode === Opcode.Min
+                ? rustMin(registers[left + lane], registers[right + lane])
+                : rustMax(registers[left + lane], registers[right + lane]);
+          }
+        }
+        break;
+      case Opcode.Dot:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          let dot = 0;
+          for (let component = 0; component < arg0Width; component += 1) {
+            dot +=
+              registers[arg0 + component * blockSize + lane] *
+              registers[arg1 + component * blockSize + lane];
+          }
+          registers[outputBase + lane] = dot;
+        }
+        break;
+      case Opcode.Cross:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] =
+            registers[arg0 + blockSize + lane] *
+              registers[arg1 + blockSize * 2 + lane] -
+            registers[arg0 + blockSize * 2 + lane] *
+              registers[arg1 + blockSize + lane];
+          registers[outputBase + blockSize + lane] =
+            registers[arg0 + blockSize * 2 + lane] * registers[arg1 + lane] -
+            registers[arg0 + lane] * registers[arg1 + blockSize * 2 + lane];
+          registers[outputBase + blockSize * 2 + lane] =
+            registers[arg0 + lane] * registers[arg1 + blockSize + lane] -
+            registers[arg0 + blockSize + lane] * registers[arg1 + lane];
+        }
+        break;
+      case Opcode.Equal:
+      case Opcode.NotEqual:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          let equal = true;
+          for (let component = 0; component < arg0Width; component += 1) {
+            equal &&=
+              registers[arg0 + component * blockSize + lane] ===
+              registers[arg1 + component * blockSize + lane];
+          }
+          registers[outputBase + lane] = (
+            opcode === Opcode.Equal
+              ? equal
+              : !equal
+          )
+            ? 1
+            : 0;
+        }
+        break;
+      case Opcode.Less:
+      case Opcode.LessEqual:
+      case Opcode.Greater:
+      case Opcode.GreaterEqual:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          const left = registers[arg0 + lane];
+          const right = registers[arg1 + lane];
+          const result =
+            opcode === Opcode.Less
+              ? left < right
+              : opcode === Opcode.LessEqual
+                ? left <= right
+                : opcode === Opcode.Greater
+                  ? left > right
+                  : left >= right;
+          registers[outputBase + lane] = result ? 1 : 0;
+        }
+        break;
+      case Opcode.And:
+      case Opcode.Or:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          const result =
+            opcode === Opcode.And
+              ? registers[arg0 + lane] !== 0 && registers[arg1 + lane] !== 0
+              : registers[arg0 + lane] !== 0 || registers[arg1 + lane] !== 0;
+          registers[outputBase + lane] = result ? 1 : 0;
+        }
+        break;
+      case Opcode.QuaternionMultiply:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          const leftX = registers[arg0 + lane];
+          const leftY = registers[arg0 + blockSize + lane];
+          const leftZ = registers[arg0 + blockSize * 2 + lane];
+          const leftW = registers[arg0 + blockSize * 3 + lane];
+          const rightX = registers[arg1 + lane];
+          const rightY = registers[arg1 + blockSize + lane];
+          const rightZ = registers[arg1 + blockSize * 2 + lane];
+          const rightW = registers[arg1 + blockSize * 3 + lane];
+          registers[outputBase + lane] =
+            leftW * rightX + leftX * rightW + leftY * rightZ - leftZ * rightY;
+          registers[outputBase + blockSize + lane] =
+            leftW * rightY - leftX * rightZ + leftY * rightW + leftZ * rightX;
+          registers[outputBase + blockSize * 2 + lane] =
+            leftW * rightZ + leftX * rightY - leftY * rightX + leftZ * rightW;
+          registers[outputBase + blockSize * 3 + lane] =
+            leftW * rightW - leftX * rightX - leftY * rightY - leftZ * rightZ;
+        }
+        break;
+      case Opcode.RotateVector:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          const quaternionX = registers[arg0 + lane];
+          const quaternionY = registers[arg0 + blockSize + lane];
+          const quaternionZ = registers[arg0 + blockSize * 2 + lane];
+          const quaternionW = registers[arg0 + blockSize * 3 + lane];
+          const vectorX = registers[arg1 + lane];
+          const vectorY = registers[arg1 + blockSize + lane];
+          const vectorZ = registers[arg1 + blockSize * 2 + lane];
+          const crossX = 2 * (quaternionY * vectorZ - quaternionZ * vectorY);
+          const crossY = 2 * (quaternionZ * vectorX - quaternionX * vectorZ);
+          const crossZ = 2 * (quaternionX * vectorY - quaternionY * vectorX);
+          registers[outputBase + lane] =
+            vectorX +
+            quaternionW * crossX +
+            quaternionY * crossZ -
+            quaternionZ * crossY;
+          registers[outputBase + blockSize + lane] =
+            vectorY +
+            quaternionW * crossY +
+            quaternionZ * crossX -
+            quaternionX * crossZ;
+          registers[outputBase + blockSize * 2 + lane] =
+            vectorZ +
+            quaternionW * crossZ +
+            quaternionX * crossY -
+            quaternionY * crossX;
+        }
+        break;
+      case Opcode.Select:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const whenTrue = arg1 + component * blockSize;
+          const whenFalse = arg2 + component * blockSize;
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            registers[output + lane] =
+              registers[arg0 + lane] !== 0
+                ? registers[whenTrue + lane]
+                : registers[whenFalse + lane];
+          }
+        }
+        break;
+      case Opcode.Clamp:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const value = arg0 + component * blockSize;
+          const min = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
+          const max = arg2 + (arg2Width === 1 ? 0 : component * blockSize);
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            registers[output + lane] = rustMin(
+              rustMax(registers[value + lane], registers[min + lane]),
+              registers[max + lane],
+            );
+          }
+        }
+        break;
+      case Opcode.Mix:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const left = arg0 + component * blockSize;
+          const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
+          const amount = arg2 + (arg2Width === 1 ? 0 : component * blockSize);
+          for (let lane = 0; lane < blockCount; lane += 1) {
+            const leftValue = registers[left + lane];
+            registers[output + lane] =
+              leftValue +
+              (registers[right + lane] - leftValue) * registers[amount + lane];
+          }
+        }
+        break;
+      case Opcode.Vec2:
+      case Opcode.Vec3:
+      case Opcode.Vec4:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] = registers[arg0 + lane];
+          registers[outputBase + blockSize + lane] = registers[arg1 + lane];
+          if (width >= 3) {
+            registers[outputBase + blockSize * 2 + lane] =
+              registers[arg2 + lane];
+          }
+          if (width === 4) {
+            registers[outputBase + blockSize * 3 + lane] =
+              registers[arg3 + lane];
+          }
+        }
+        break;
+      case Opcode.Component:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          registers[outputBase + lane] =
+            registers[arg0 + immediate * blockSize + lane];
+        }
+        break;
+      case Opcode.MaxComponentIndex:
+        for (let lane = 0; lane < blockCount; lane += 1) {
+          let largest = 0;
+          let largestValue = registers[arg0 + lane];
+          for (let component = 1; component < arg0Width; component += 1) {
+            const value = registers[arg0 + component * blockSize + lane];
+            if (value > largestValue) {
+              largest = component;
+              largestValue = value;
+            }
+          }
+          registers[outputBase + lane] = largest;
+        }
+        break;
+      default:
+        throw new Error(`Unknown postDecode opcode: ${opcode}`);
+    }
   }
+}
+
+function runProgram(
+  data: PostDecodeSplatData,
+  program: SerializedSplatPostDecode,
+  plan: RuntimePlan,
+  attributeData: DataView,
+  splat0Float: Float32Array,
+  registers: Float32Array,
+  processCount: number,
+) {
+  const { constants, instructions } = program;
+  const {
+    registerBases,
+    conditionStages: packedStages,
+    conditionStageCount,
+    outputInstructionStart,
+    conditionCarryStageStarts,
+    conditionCarryEvents,
+    blockSize,
+    outputPlan,
+  } = plan;
+  const instructionCount = getInstructionCount(instructions);
 
   const flow = packedStages
     ? {
@@ -769,41 +1259,29 @@ function evaluateProgram(
     conditionCarryEvents.length === 0
       ? undefined
       : {
+          stageStarts: conditionCarryStageStarts,
           events: conditionCarryEvents,
-          eventIndex: 0,
+          nextStage: 0,
           activeOffsets: new Uint16Array(registers.length / blockSize),
           activePositions: new Int32Array(registers.length / blockSize).fill(
             -1,
           ),
           activeCount: 0,
         };
-  const outputInstructionStart =
-    flow && conditionStageCount !== 0
-      ? flow.stages[
-          (conditionStageCount - 1) * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE +
-            SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION
-        ] + 1
-      : 0;
-  const outputPlan = createOutputWritePlan(data, program, registerBases);
   const outputWordBases = outputPlan.writesOutputs
     ? new Uint32Array(blockSize)
     : undefined;
 
-  // SoA layout: each vector lane owns blockSize contiguous register values.
-  for (
-    let instructionIndex = 0;
-    instructionIndex < instructionCount;
-    instructionIndex += 1
-  ) {
+  for (let instruction = 0; instruction < instructionCount; instruction += 1) {
     const instructionOffset =
-      instructionIndex * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
+      instruction * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
     if (
       instructions[instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_OPCODE] !==
       Opcode.Constant
     ) {
       continue;
     }
-    const outputBase = registerBases[instructionIndex];
+    const outputBase = registerBases[instruction];
     const width =
       instructions[instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_WIDTH];
     const immediate =
@@ -821,12 +1299,10 @@ function evaluateProgram(
     let blockCount = Math.min(blockSize, processCount - blockStart);
     let sourceIndices: Uint16Array | undefined;
     if (carry) {
-      carry.eventIndex = 0;
+      carry.nextStage = 0;
       carry.activeCount = 0;
     }
 
-    // Every condition stage owns one contiguous instruction range. The final
-    // range evaluates patch outputs for the Splats routed to the accept node.
     for (
       let rangeIndex = 0;
       rangeIndex <= conditionStageCount;
@@ -866,501 +1342,21 @@ function evaluateProgram(
           : instructionCount;
 
       if (blockCount !== 0) {
-        for (
-          let instructionIndex = instructionStart;
-          instructionIndex < instructionEnd;
-          instructionIndex += 1
-        ) {
-          const instructionOffset =
-            instructionIndex * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
-          const opcode =
-            instructions[
-              instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_OPCODE
-            ];
-          const immediate =
-            instructions[
-              instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_IMMEDIATE
-            ];
-          if (opcode === Opcode.Constant) continue;
-          const outputBase = registerBases[instructionIndex];
-          const width =
-            instructions[
-              instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_WIDTH
-            ];
-          const argumentOffset =
-            instructionOffset + SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0;
-          const arg0Register = instructions[argumentOffset];
-          const arg1Register = instructions[argumentOffset + 1];
-          const arg2Register = instructions[argumentOffset + 2];
-          const arg3Register = instructions[argumentOffset + 3];
-          const arg0 =
-            arg0Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : registerBases[arg0Register];
-          const arg1 =
-            arg1Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : registerBases[arg1Register];
-          const arg2 =
-            arg2Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : registerBases[arg2Register];
-          const arg3 =
-            arg3Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : registerBases[arg3Register];
-          const arg0Width =
-            arg0Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : instructions[
-                  arg0Register * SPLAT_POST_DECODE_INSTRUCTION_STRIDE +
-                    SPLAT_POST_DECODE_INSTRUCTION_WIDTH
-                ];
-          const arg1Width =
-            arg1Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : instructions[
-                  arg1Register * SPLAT_POST_DECODE_INSTRUCTION_STRIDE +
-                    SPLAT_POST_DECODE_INSTRUCTION_WIDTH
-                ];
-          const arg2Width =
-            arg2Register === SPLAT_POST_DECODE_MISSING_ARGUMENT
-              ? 0
-              : instructions[
-                  arg2Register * SPLAT_POST_DECODE_INSTRUCTION_STRIDE +
-                    SPLAT_POST_DECODE_INSTRUCTION_WIDTH
-                ];
-
-          switch (opcode) {
-            case Opcode.InputField:
-              evaluateInputFieldBlock(
-                immediate,
-                blockStart,
-                blockCount,
-                blockSize,
-                data,
-                splat0Float,
-                registers,
-                outputBase,
-                sourceIndices,
-              );
-              break;
-            case Opcode.InputAttribute:
-              readAttributeBlock(
-                attributeData,
-                attributes[immediate],
-                blockStart,
-                blockCount,
-                blockSize,
-                registers,
-                outputBase,
-                sourceIndices,
-              );
-              break;
-            case Opcode.Negate:
-            case Opcode.Abs:
-            case Opcode.Log:
-            case Opcode.Exp:
-            case Opcode.Floor:
-            case Opcode.Ceil:
-            case Opcode.Round:
-            case Opcode.Sin:
-            case Opcode.Cos:
-            case Opcode.Acos:
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const input = arg0 + lane * blockSize;
-                for (let index = 0; index < blockCount; index += 1) {
-                  const value = registers[input + index];
-                  let result: number;
-                  switch (opcode) {
-                    case Opcode.Negate:
-                      result = -value;
-                      break;
-                    case Opcode.Abs:
-                      result = Math.abs(value);
-                      break;
-                    case Opcode.Log:
-                      result = Math.log(value);
-                      break;
-                    case Opcode.Exp:
-                      result = Math.exp(value);
-                      break;
-                    case Opcode.Floor:
-                      result = Math.floor(value);
-                      break;
-                    case Opcode.Ceil:
-                      result = Math.ceil(value);
-                      break;
-                    case Opcode.Round:
-                      result = roundAwayFromZero(value);
-                      break;
-                    case Opcode.Sin:
-                      result = Math.sin(value);
-                      break;
-                    case Opcode.Cos:
-                      result = Math.cos(value);
-                      break;
-                    default:
-                      result = Math.acos(value);
-                  }
-                  registers[output + index] = result;
-                }
-              }
-              break;
-            case Opcode.Sqrt:
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const input = arg0 + lane * blockSize;
-                for (let index = 0; index < blockCount; index += 1) {
-                  registers[output + index] = Math.sqrt(
-                    registers[input + index],
-                  );
-                }
-              }
-              break;
-            case Opcode.Normalize: {
-              for (let index = 0; index < blockCount; index += 1) {
-                let lengthSquared = 0;
-                for (let lane = 0; lane < width; lane += 1) {
-                  const value = registers[arg0 + lane * blockSize + index];
-                  lengthSquared += value * value;
-                }
-                const length = Math.sqrt(lengthSquared);
-                for (let lane = 0; lane < width; lane += 1) {
-                  const input = registers[arg0 + lane * blockSize + index];
-                  registers[outputBase + lane * blockSize + index] =
-                    length === 0 || !Number.isFinite(length)
-                      ? input
-                      : input / length;
-                }
-              }
-              break;
-            }
-            case Opcode.Length: {
-              const inputWidth = arg0Width;
-              for (let index = 0; index < blockCount; index += 1) {
-                let lengthSquared = 0;
-                for (let lane = 0; lane < inputWidth; lane += 1) {
-                  const value = registers[arg0 + lane * blockSize + index];
-                  lengthSquared += value * value;
-                }
-                registers[outputBase + index] = Math.sqrt(lengthSquared);
-              }
-              break;
-            }
-            case Opcode.IsFinite: {
-              const inputWidth = arg0Width;
-              for (let index = 0; index < blockCount; index += 1) {
-                let finite = true;
-                for (let lane = 0; lane < inputWidth; lane += 1) {
-                  finite &&= Number.isFinite(
-                    registers[arg0 + lane * blockSize + index],
-                  );
-                }
-                registers[outputBase + index] = finite ? 1 : 0;
-              }
-              break;
-            }
-            case Opcode.Not:
-              for (let index = 0; index < blockCount; index += 1) {
-                registers[outputBase + index] =
-                  registers[arg0 + index] === 0 ? 1 : 0;
-              }
-              break;
-            case Opcode.Add:
-            case Opcode.Subtract:
-            case Opcode.Multiply:
-            case Opcode.Divide:
-            case Opcode.Pow:
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const left = arg0 + lane * blockSize;
-                const right = arg1 + (arg1Width === 1 ? 0 : lane * blockSize);
-                for (let index = 0; index < blockCount; index += 1) {
-                  const leftValue = registers[left + index];
-                  const rightValue = registers[right + index];
-                  let result: number;
-                  switch (opcode) {
-                    case Opcode.Add:
-                      result = leftValue + rightValue;
-                      break;
-                    case Opcode.Subtract:
-                      result = leftValue - rightValue;
-                      break;
-                    case Opcode.Multiply:
-                      result = leftValue * rightValue;
-                      break;
-                    case Opcode.Divide:
-                      result = leftValue / rightValue;
-                      break;
-                    default:
-                      result = leftValue ** rightValue;
-                  }
-                  registers[output + index] = result;
-                }
-              }
-              break;
-            case Opcode.Min:
-            case Opcode.Max:
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const left = arg0 + lane * blockSize;
-                const right = arg1 + (arg1Width === 1 ? 0 : lane * blockSize);
-                for (let index = 0; index < blockCount; index += 1) {
-                  registers[output + index] =
-                    opcode === Opcode.Min
-                      ? rustMin(
-                          registers[left + index],
-                          registers[right + index],
-                        )
-                      : rustMax(
-                          registers[left + index],
-                          registers[right + index],
-                        );
-                }
-              }
-              break;
-            case Opcode.Dot: {
-              const inputWidth = arg0Width;
-              for (let index = 0; index < blockCount; index += 1) {
-                let dot = 0;
-                for (let lane = 0; lane < inputWidth; lane += 1) {
-                  dot +=
-                    registers[arg0 + lane * blockSize + index] *
-                    registers[arg1 + lane * blockSize + index];
-                }
-                registers[outputBase + index] = dot;
-              }
-              break;
-            }
-            case Opcode.Cross:
-              for (let index = 0; index < blockCount; index += 1) {
-                registers[outputBase + index] =
-                  registers[arg0 + blockSize + index] *
-                    registers[arg1 + blockSize * 2 + index] -
-                  registers[arg0 + blockSize * 2 + index] *
-                    registers[arg1 + blockSize + index];
-                registers[outputBase + blockSize + index] =
-                  registers[arg0 + blockSize * 2 + index] *
-                    registers[arg1 + index] -
-                  registers[arg0 + index] *
-                    registers[arg1 + blockSize * 2 + index];
-                registers[outputBase + blockSize * 2 + index] =
-                  registers[arg0 + index] *
-                    registers[arg1 + blockSize + index] -
-                  registers[arg0 + blockSize + index] * registers[arg1 + index];
-              }
-              break;
-            case Opcode.Equal:
-            case Opcode.NotEqual: {
-              const inputWidth = arg0Width;
-              for (let index = 0; index < blockCount; index += 1) {
-                let equal = true;
-                for (let lane = 0; lane < inputWidth; lane += 1) {
-                  equal &&=
-                    registers[arg0 + lane * blockSize + index] ===
-                    registers[arg1 + lane * blockSize + index];
-                }
-                registers[outputBase + index] = (
-                  opcode === Opcode.Equal
-                    ? equal
-                    : !equal
-                )
-                  ? 1
-                  : 0;
-              }
-              break;
-            }
-            case Opcode.Less:
-            case Opcode.LessEqual:
-            case Opcode.Greater:
-            case Opcode.GreaterEqual:
-              for (let index = 0; index < blockCount; index += 1) {
-                const left = registers[arg0 + index];
-                const right = registers[arg1 + index];
-                registers[outputBase + index] = (
-                  opcode === Opcode.Less
-                    ? left < right
-                    : opcode === Opcode.LessEqual
-                      ? left <= right
-                      : opcode === Opcode.Greater
-                        ? left > right
-                        : left >= right
-                )
-                  ? 1
-                  : 0;
-              }
-              break;
-            case Opcode.And:
-            case Opcode.Or:
-              for (let index = 0; index < blockCount; index += 1) {
-                registers[outputBase + index] = (
-                  opcode === Opcode.And
-                    ? registers[arg0 + index] !== 0 &&
-                      registers[arg1 + index] !== 0
-                    : registers[arg0 + index] !== 0 ||
-                      registers[arg1 + index] !== 0
-                )
-                  ? 1
-                  : 0;
-              }
-              break;
-            case Opcode.QuaternionMultiply:
-              for (let index = 0; index < blockCount; index += 1) {
-                const leftX = registers[arg0 + index];
-                const leftY = registers[arg0 + blockSize + index];
-                const leftZ = registers[arg0 + blockSize * 2 + index];
-                const leftW = registers[arg0 + blockSize * 3 + index];
-                const rightX = registers[arg1 + index];
-                const rightY = registers[arg1 + blockSize + index];
-                const rightZ = registers[arg1 + blockSize * 2 + index];
-                const rightW = registers[arg1 + blockSize * 3 + index];
-                registers[outputBase + index] =
-                  leftW * rightX +
-                  leftX * rightW +
-                  leftY * rightZ -
-                  leftZ * rightY;
-                registers[outputBase + blockSize + index] =
-                  leftW * rightY -
-                  leftX * rightZ +
-                  leftY * rightW +
-                  leftZ * rightX;
-                registers[outputBase + blockSize * 2 + index] =
-                  leftW * rightZ +
-                  leftX * rightY -
-                  leftY * rightX +
-                  leftZ * rightW;
-                registers[outputBase + blockSize * 3 + index] =
-                  leftW * rightW -
-                  leftX * rightX -
-                  leftY * rightY -
-                  leftZ * rightZ;
-              }
-              break;
-            case Opcode.RotateVector:
-              for (let index = 0; index < blockCount; index += 1) {
-                const quaternionX = registers[arg0 + index];
-                const quaternionY = registers[arg0 + blockSize + index];
-                const quaternionZ = registers[arg0 + blockSize * 2 + index];
-                const quaternionW = registers[arg0 + blockSize * 3 + index];
-                const vectorX = registers[arg1 + index];
-                const vectorY = registers[arg1 + blockSize + index];
-                const vectorZ = registers[arg1 + blockSize * 2 + index];
-                const crossX =
-                  2 * (quaternionY * vectorZ - quaternionZ * vectorY);
-                const crossY =
-                  2 * (quaternionZ * vectorX - quaternionX * vectorZ);
-                const crossZ =
-                  2 * (quaternionX * vectorY - quaternionY * vectorX);
-                registers[outputBase + index] =
-                  vectorX +
-                  quaternionW * crossX +
-                  quaternionY * crossZ -
-                  quaternionZ * crossY;
-                registers[outputBase + blockSize + index] =
-                  vectorY +
-                  quaternionW * crossY +
-                  quaternionZ * crossX -
-                  quaternionX * crossZ;
-                registers[outputBase + blockSize * 2 + index] =
-                  vectorZ +
-                  quaternionW * crossZ +
-                  quaternionX * crossY -
-                  quaternionY * crossX;
-              }
-              break;
-            case Opcode.Select: {
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const whenTrue = arg1 + lane * blockSize;
-                const whenFalse = arg2 + lane * blockSize;
-                for (let index = 0; index < blockCount; index += 1) {
-                  registers[output + index] =
-                    registers[arg0 + index] !== 0
-                      ? registers[whenTrue + index]
-                      : registers[whenFalse + index];
-                }
-              }
-              break;
-            }
-            case Opcode.Clamp: {
-              const secondWidth = arg1Width;
-              const thirdWidth = arg2Width;
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const value = arg0 + lane * blockSize;
-                const min = arg1 + (secondWidth === 1 ? 0 : lane * blockSize);
-                const max = arg2 + (thirdWidth === 1 ? 0 : lane * blockSize);
-                for (let index = 0; index < blockCount; index += 1) {
-                  registers[output + index] = rustMin(
-                    rustMax(registers[value + index], registers[min + index]),
-                    registers[max + index],
-                  );
-                }
-              }
-              break;
-            }
-            case Opcode.Mix: {
-              const secondWidth = arg1Width;
-              const thirdWidth = arg2Width;
-              for (let lane = 0; lane < width; lane += 1) {
-                const output = outputBase + lane * blockSize;
-                const left = arg0 + lane * blockSize;
-                const right = arg1 + (secondWidth === 1 ? 0 : lane * blockSize);
-                const amount = arg2 + (thirdWidth === 1 ? 0 : lane * blockSize);
-                for (let index = 0; index < blockCount; index += 1) {
-                  const leftValue = registers[left + index];
-                  registers[output + index] =
-                    leftValue +
-                    (registers[right + index] - leftValue) *
-                      registers[amount + index];
-                }
-              }
-              break;
-            }
-            case Opcode.Vec2:
-            case Opcode.Vec3:
-            case Opcode.Vec4:
-              for (let index = 0; index < blockCount; index += 1) {
-                registers[outputBase + index] = registers[arg0 + index];
-                registers[outputBase + blockSize + index] =
-                  registers[arg1 + index];
-                if (width >= 3) {
-                  registers[outputBase + blockSize * 2 + index] =
-                    registers[arg2 + index];
-                }
-                if (width === 4) {
-                  registers[outputBase + blockSize * 3 + index] =
-                    registers[arg3 + index];
-                }
-              }
-              break;
-            case Opcode.Component:
-              for (let index = 0; index < blockCount; index += 1) {
-                registers[outputBase + index] =
-                  registers[arg0 + immediate * blockSize + index];
-              }
-              break;
-            case Opcode.MaxComponentIndex: {
-              const inputWidth = arg0Width;
-              for (let index = 0; index < blockCount; index += 1) {
-                let largest = 0;
-                let largestValue = registers[arg0 + index];
-                for (let lane = 1; lane < inputWidth; lane += 1) {
-                  const value = registers[arg0 + lane * blockSize + index];
-                  if (value > largestValue) {
-                    largest = lane;
-                    largestValue = value;
-                  }
-                }
-                registers[outputBase + index] = largest;
-              }
-            }
-          }
-        }
+        executeRange(
+          data,
+          program,
+          attributeData,
+          splat0Float,
+          registers,
+          registerBases,
+          instructionStart,
+          instructionEnd,
+          blockStart,
+          blockCount,
+          blockSize,
+          sourceIndices,
+        );
       }
-
       if (flow && isConditionStage && blockCount !== 0) {
         const conditionRegister =
           flow.stages[stageOffset + SPLAT_POST_DECODE_FLOW_STAGE_REGISTER];
@@ -1380,9 +1376,6 @@ function evaluateProgram(
           (directOnTrue && onFalse === rejectTarget) ||
           (directOnFalse && onTrue === rejectTarget)
         ) {
-          // A direct/reject edge is the common linear-chain case. It needs only
-          // the same survivor compaction loop as a simple guard, regardless of
-          // which truth value continues through the CFG.
           for (let index = 0; index < blockCount; index += 1) {
             const truthy = registers[conditionBase + index] !== 0;
             if (truthy !== directOnTrue) continue;
@@ -1398,8 +1391,6 @@ function evaluateProgram(
             const sourceIndex = currentSourceIndices?.[index] ?? index;
             const target =
               registers[conditionBase + index] !== 0 ? onTrue : onFalse;
-            // The direct successor is compacted in place. More distant branch
-            // targets are queued until their forward stage is reached.
             if (target === nextStage) {
               flow.laneIndices[nextStageCount] = index;
               if (currentSourceIndices) {
@@ -1433,10 +1424,8 @@ function evaluateProgram(
           nextStageCount !== previousCount ||
           currentSourceIndices === flow.laneIndices
         ) {
-          // The lane buffer can temporarily double as the first compacted
-          // source map. Routing writes new lane positions into that buffer, so
-          // switch to the separately preserved source map even when all lanes
-          // continued and the count itself did not change.
+          // laneIndices may be the first compacted source map; routing then
+          // switches to the separately preserved sourceIndices map.
           sourceIndices =
             nextStageCount === 0
               ? undefined
@@ -1608,16 +1597,8 @@ export function applySplatPostDecode(
   }
   if (processCount === 0 || program.instructions.length === 0) return;
 
-  const {
-    registerOffsets: registerBases,
-    registerValueCount,
-    conditionCarryEvents,
-  } = allocateSplatPostDecodeRegisters(program);
-  const blockSize = getBlockSize(registerValueCount, processCount);
-  for (let index = 0; index < registerBases.length; index += 1) {
-    registerBases[index] *= blockSize;
-  }
-  const registers = new Float32Array(registerValueCount * blockSize);
+  const plan = prepareProgram(data, program, processCount);
+  const registers = new Float32Array(plan.registerValueCount * plan.blockSize);
   const attributeData = new DataView(
     program.attributeData.buffer,
     program.attributeData.byteOffset,
@@ -1629,15 +1610,13 @@ export function applySplatPostDecode(
     data.splat0.length,
   );
 
-  evaluateProgram(
+  runProgram(
     data,
     program,
+    plan,
     attributeData,
     splat0Float,
     registers,
-    registerBases,
-    conditionCarryEvents,
     processCount,
-    blockSize,
   );
 }

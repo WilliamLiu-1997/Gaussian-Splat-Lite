@@ -147,8 +147,9 @@ const splat = new SplatMesh({
 });
 ```
 
-Decoded values can be transformed in the worker with a serializable, per-Splat
-expression. The library continues to own packed arrays and encoding:
+**`Experimental`** Decoded values can be transformed in the worker with a
+serializable, per-Splat expression. The library continues to own packed arrays
+and encoding:
 
 ```js
 import { postDecode } from "gaussian-splat-lite";
@@ -201,7 +202,7 @@ await splat.initialized;
 | [`SplatEdit`](docs/SplatEdit.md) / [`SplatEditSdf`](docs/SplatEdit.md) | SDF-region RGBA editing objects |
 | [`SplatAccumulator`](docs/SplatAccumulator.md) | A low-level generation buffer used by the renderer; normally internal |
 | [`SplatFileType`](docs/SplatFileType.md) | File type enum containing `PLY` and `SPZ` |
-| [`postDecode`](docs/PostDecode.md) | Serializable per-Splat expressions executed inside the decode worker |
+| [`postDecode`](docs/PostDecode.md) | **`Experimental`** Serializable per-Splat expressions executed inside the decode worker |
 
 ## Large world coordinates / GIS / ECEF
 

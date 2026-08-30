@@ -3,7 +3,6 @@ export enum Opcode {
   Constant = 1,
   InputField = 2,
   InputAttribute = 3,
-
   Negate = 10,
   Abs = 11,
   Sqrt = 12,
@@ -19,7 +18,6 @@ export enum Opcode {
   Sin = 23,
   Cos = 24,
   Acos = 25,
-
   Add = 30,
   Subtract = 31,
   Multiply = 32,
@@ -39,11 +37,9 @@ export enum Opcode {
   Or = 46,
   QuaternionMultiply = 47,
   RotateVector = 48,
-
   Select = 60,
   Clamp = 61,
   Mix = 62,
-
   Vec2 = 70,
   Vec3 = 71,
   Vec4 = 72,
@@ -102,7 +98,6 @@ type Vec2Value = SplatPostDecodeValue<"vec2">;
 type Vec3Value = SplatPostDecodeValue<"vec3">;
 type Vec4Value = SplatPostDecodeValue<"vec4">;
 type QuaternionValue = SplatPostDecodeValue<"quaternion">;
-
 type FloatLike = number | FloatValue;
 type BoolLike = boolean | BoolValue;
 type Vec2Literal = readonly [number, number];
@@ -122,13 +117,10 @@ type LiteralFor<T extends SplatPostDecodeValueType> = T extends "float"
       : T extends "vec3"
         ? Vec3Literal
         : Vec4Literal;
-
 type ValueLike<T extends SplatPostDecodeValueType> =
   | LiteralFor<T>
   | SplatPostDecodeValue<T>;
-
 type AnyValueLike = ValueLike<SplatPostDecodeValueType>;
-
 type BroadcastLike<T extends NumericValueType> = ValueLike<T> | FloatLike;
 
 /** @internal */
@@ -189,8 +181,6 @@ export const ATTRIBUTE_FORMAT_BYTES: Record<
 };
 
 type AttributeComponents = 1 | 2 | 3 | 4;
-const COMPONENT_TYPES = ["float", "vec2", "vec3", "vec4"] as const;
-
 type SplatPostDecodeAttributeOptions<
   Components extends AttributeComponents = 1,
 > = {
@@ -202,7 +192,6 @@ type SplatPostDecodeAttributeOptions<
   byteOffset?: number;
   byteStride?: number;
 };
-
 type AttributeValue<Components extends AttributeComponents> =
   Components extends 1
     ? FloatValue
@@ -211,7 +200,6 @@ type AttributeValue<Components extends AttributeComponents> =
       : Components extends 3
         ? Vec3Value
         : Vec4Value;
-
 type AttributeBinding = {
   data: ArrayBufferView;
   format: SplatPostDecodeAttributeFormat;
@@ -260,12 +248,12 @@ class SplatPostDecodeShValue {
     let index = 0;
     for (let degree = 1 as 1 | 2 | 3; degree <= 3; degree += 1) {
       for (let order = -degree; order <= degree; order += 1) {
-        const value = transform(this.coefficient(index), {
-          index,
-          degree,
-          order,
-        });
-        coefficients.push(this.owner.coerce(value, "vec3"));
+        coefficients.push(
+          this.owner.coerce(
+            transform(this.coefficient(index), { index, degree, order }),
+            "vec3",
+          ),
+        );
         index += 1;
       }
     }
@@ -284,7 +272,6 @@ type SplatPostDecodeInput = {
   readonly color: Vec3Value;
   readonly sh: SplatPostDecodeShValue;
 };
-
 type SplatPostDecodePatch = {
   /** If false, this splat's packed values are left byte-for-byte unchanged. */
   when?: BoolLike;
@@ -302,24 +289,14 @@ type SplatPostDecodePatch = {
   sh?: SplatPostDecodeShPatch;
 };
 
-type SplatPostDecodeContext = {
-  splat: SplatPostDecodeInput;
-  op: SplatPostDecodeOperations;
-  attribute<Components extends AttributeComponents = 1>(
-    options: SplatPostDecodeAttributeOptions<Components>,
-  ): AttributeValue<Components>;
-};
-
 type VariadicNumericOperation = <T extends NumericValueType>(
   first: ValueLike<T>,
   ...rest: BroadcastLike<T>[]
 ) => SplatPostDecodeValue<T>;
-
 type BinaryNumericOperation = <T extends NumericValueType>(
   left: ValueLike<T>,
   right: BroadcastLike<T>,
 ) => SplatPostDecodeValue<T>;
-
 type UnaryNumericOperation = <T extends NumericValueType>(
   value: ValueLike<T>,
 ) => SplatPostDecodeValue<T>;
@@ -403,6 +380,14 @@ type SplatPostDecodeOperations = {
   rotateVector(quaternion: QuaternionLike, vector: Vec3Like): Vec3Value;
 };
 
+type SplatPostDecodeContext = {
+  splat: SplatPostDecodeInput;
+  op: SplatPostDecodeOperations;
+  attribute<Components extends AttributeComponents = 1>(
+    options: SplatPostDecodeAttributeOptions<Components>,
+  ): AttributeValue<Components>;
+};
+
 /** @internal */
 export type SerializedSplatPostDecodeAttribute = {
   format: SplatPostDecodeAttributeFormat;
@@ -456,6 +441,20 @@ export type SerializedSplatPostDecode = {
 };
 
 const SPLAT_POST_DECODE_PROGRAM = Symbol("SplatPostDecodeProgram");
+export type SplatPostDecodeProgram = {
+  readonly [SPLAT_POST_DECODE_PROGRAM]: true;
+};
+
+const COMPONENT_TYPES = ["float", "vec2", "vec3", "vec4"] as const;
+
+function inferLiteralType(value: unknown): SplatPostDecodeValueType {
+  if (typeof value === "boolean") return "bool";
+  if (typeof value === "number") return "float";
+  if (Array.isArray(value) && value.length >= 2 && value.length <= 4) {
+    return COMPONENT_TYPES[value.length - 1];
+  }
+  throw new Error("Unsupported postDecode literal");
+}
 
 function constantKey(
   type: SplatPostDecodeValueType,
@@ -466,14 +465,13 @@ function constantKey(
     .join(":")}`;
 }
 
-export type SplatPostDecodeProgram = {
-  readonly [SPLAT_POST_DECODE_PROGRAM]: true;
-};
-
 class ProgramBuilder {
   readonly instructions: SplatPostDecodeInstruction[] = [];
   readonly constants: number[] = [];
   readonly attributes: AttributeBinding[] = [];
+  readonly op: SplatPostDecodeOperations;
+  readonly splat: SplatPostDecodeInput;
+
   readonly constantRegisters = new Map<
     string,
     SplatPostDecodeValue<SplatPostDecodeValueType>
@@ -483,42 +481,53 @@ class ProgramBuilder {
     SplatPostDecodeValue<SplatPostDecodeValueType>
   >();
 
-  readonly op: SplatPostDecodeOperations;
-  readonly splat: SplatPostDecodeInput;
-
   constructor() {
     this.op = this.createOperations();
-    const owner = this;
+    const builder = this;
     const sh = new SplatPostDecodeShValue(this);
     this.splat = {
       get position() {
-        return owner.inputField("vec3", InputField.Position);
+        return builder.inputField("vec3", InputField.Position);
       },
       get scale() {
-        return owner.inputField("vec3", InputField.Scale);
+        return builder.inputField("vec3", InputField.Scale);
       },
       get quaternion() {
-        return owner.inputField("quaternion", InputField.Quaternion);
+        return builder.inputField("quaternion", InputField.Quaternion);
       },
       get opacity() {
-        return owner.inputField("float", InputField.Opacity);
+        return builder.inputField("float", InputField.Opacity);
       },
       get alpha() {
-        return owner.inputField("float", InputField.Alpha);
+        return builder.inputField("float", InputField.Alpha);
       },
       get color() {
-        return owner.inputField("vec3", InputField.Color);
+        return builder.inputField("vec3", InputField.Color);
       },
       sh,
     };
+  }
+
+  private instruction<T extends SplatPostDecodeValueType>(
+    type: T,
+    opcode: Opcode,
+    args: readonly number[] = [],
+    immediate = 0,
+  ): SplatPostDecodeValue<T> {
+    if (this.instructions.length >= 4096) {
+      throw new Error("postDecode program exceeds 4096 instructions");
+    }
+    const register = this.instructions.length;
+    this.instructions.push({ opcode, type, args, immediate });
+    return new SplatPostDecodeValue(type, register, this);
   }
 
   inputField<T extends SplatPostDecodeValueType>(
     type: T,
     field: InputField,
   ): SplatPostDecodeValue<T> {
-    const current = this.inputRegisters.get(field);
-    if (current) return current as SplatPostDecodeValue<T>;
+    const existing = this.inputRegisters.get(field);
+    if (existing) return existing as SplatPostDecodeValue<T>;
     const value = this.instruction(type, Opcode.InputField, [], field);
     this.inputRegisters.set(field, value);
     return value;
@@ -531,8 +540,9 @@ class ProgramBuilder {
       throw new Error("postDecode attribute data must be an ArrayBuffer view");
     }
     const componentBytes = ATTRIBUTE_FORMAT_BYTES[options.format];
-    if (!componentBytes)
+    if (!componentBytes) {
       throw new Error(`Unknown postDecode format: ${options.format}`);
+    }
     const count = options.count;
     const components = options.components ?? 1;
     const byteOffset = options.byteOffset ?? 0;
@@ -565,7 +575,6 @@ class ProgramBuilder {
       throw new Error("postDecode attribute data is too small");
     }
 
-    const type = COMPONENT_TYPES[components - 1];
     const index = this.attributes.length;
     this.attributes.push({
       data: options.data,
@@ -576,7 +585,7 @@ class ProgramBuilder {
       byteStride,
     });
     return this.instruction(
-      type,
+      COMPONENT_TYPES[components - 1],
       Opcode.InputAttribute,
       [],
       index,
@@ -594,10 +603,10 @@ class ProgramBuilder {
         );
       }
       if (expectedType && value.type !== expectedType) {
-        const quaternionCompatible =
+        const vec4Quaternion =
           (expectedType === "quaternion" && value.type === "vec4") ||
           (expectedType === "vec4" && value.type === "quaternion");
-        if (!quaternionCompatible) {
+        if (!vec4Quaternion) {
           throw new Error(`Expected ${expectedType}, received ${value.type}`);
         }
       }
@@ -615,52 +624,33 @@ class ProgramBuilder {
     if (numeric.length !== width) {
       throw new Error(`Expected ${width} values for ${type}`);
     }
-    const floatValues = numeric.map((component) => Math.fround(component));
-    if (!floatValues.every(Number.isFinite)) {
+    const values = numeric.map(Math.fround);
+    if (!values.every(Number.isFinite)) {
       throw new Error("postDecode constants must be finite");
     }
-    const key = constantKey(type, floatValues);
-    const current = this.constantRegisters.get(key);
-    if (current) return current as SplatPostDecodeValue<T>;
+    const key = constantKey(type, values);
+    const existing = this.constantRegisters.get(key);
+    if (existing) return existing as SplatPostDecodeValue<T>;
 
-    const constantBase = this.constants.length;
-    this.constants.push(...floatValues);
-    const constant = this.instruction(
-      type as T,
-      Opcode.Constant,
-      [],
-      constantBase,
-    );
-    this.constantRegisters.set(key, constant);
-    return constant;
+    const immediate = this.constants.length;
+    this.constants.push(...values);
+    const result = this.instruction(type as T, Opcode.Constant, [], immediate);
+    this.constantRegisters.set(key, result);
+    return result;
   }
 
-  private instruction<T extends SplatPostDecodeValueType>(
-    type: T,
+  private unary(
     opcode: Opcode,
-    args: readonly number[] = [],
-    immediate = 0,
-  ): SplatPostDecodeValue<T> {
-    if (this.instructions.length >= 4096) {
-      throw new Error("postDecode program exceeds 4096 instructions");
-    }
-    const register = this.instructions.length;
-    this.instructions.push({ opcode, type, args, immediate });
-    return new SplatPostDecodeValue(type, register, this);
-  }
-
-  private unary<T extends SplatPostDecodeValueType>(
-    opcode: Opcode,
-    value: ValueLike<T>,
+    value: AnyValueLike,
     outputType?: SplatPostDecodeValueType,
   ) {
     const input = this.coerce(value);
     return this.instruction(outputType ?? input.type, opcode, [input.register]);
   }
 
-  private binary<T extends SplatPostDecodeValueType>(
+  private binary(
     opcode: Opcode,
-    leftValue: ValueLike<T>,
+    leftValue: AnyValueLike,
     rightValue: AnyValueLike,
     outputType?: SplatPostDecodeValueType,
   ) {
@@ -672,11 +662,11 @@ class ProgramBuilder {
     ]);
   }
 
-  private ternary<T extends SplatPostDecodeValueType>(
+  private ternary(
     opcode: Opcode,
-    firstValue: ValueLike<T>,
-    secondValue: ValueLike<T> | FloatLike,
-    thirdValue: ValueLike<T> | FloatLike,
+    firstValue: AnyValueLike,
+    secondValue: AnyValueLike,
+    thirdValue: AnyValueLike,
   ) {
     const first = this.coerce(firstValue);
     const second = this.coerceForBinary(secondValue, first.type);
@@ -693,10 +683,9 @@ class ProgramBuilder {
     targetType: SplatPostDecodeValueType,
   ) {
     if (value instanceof SplatPostDecodeValue) {
-      if (value.type === "float" && TYPE_WIDTHS[targetType] > 1) {
-        return this.coerce(value);
-      }
-      return this.coerce(value, targetType);
+      return value.type === "float" && TYPE_WIDTHS[targetType] > 1
+        ? this.coerce(value)
+        : this.coerce(value, targetType);
     }
     return this.coerce(
       value,
@@ -713,11 +702,15 @@ class ProgramBuilder {
         first: ValueLike<T>,
         ...rest: BroadcastLike<T>[]
       ) => {
-        let value = this.coerce(first);
+        let result = this.coerce(first);
         for (const right of rest) {
-          value = this.binary(opcode, value, right) as SplatPostDecodeValue<T>;
+          result = this.binary(
+            opcode,
+            result,
+            right,
+          ) as SplatPostDecodeValue<T>;
         }
-        return value;
+        return result;
       };
     const binaryNumeric =
       (opcode: Opcode): BinaryNumericOperation =>
@@ -735,21 +728,23 @@ class ProgramBuilder {
         this.binary(opcode, left, right, "bool") as BoolValue;
     const reduceBoolean =
       (opcode: Opcode) =>
-      (first: BoolLike, ...rest: BoolLike[]) => {
-        let value = this.coerce(first, "bool");
+      (first: BoolLike, ...rest: BoolLike[]): BoolValue => {
+        let result = this.coerce(first, "bool");
         for (const right of rest) {
-          value = this.binary(opcode, value, right, "bool") as BoolValue;
+          result = this.binary(opcode, result, right, "bool") as BoolValue;
         }
-        return value;
+        return result;
       };
     const construct = <T extends VectorValueType | "quaternion">(
       opcode: Opcode,
       type: T,
       values: FloatLike[],
-    ) => {
-      const args = values.map((value) => this.coerce(value, "float").register);
-      return this.instruction(type, opcode, args);
-    };
+    ) =>
+      this.instruction(
+        type,
+        opcode,
+        values.map((value) => this.coerce(value, "float").register),
+      );
 
     return {
       add: reduceNumeric(Opcode.Add),
@@ -759,23 +754,10 @@ class ProgramBuilder {
       min: binaryNumeric(Opcode.Min),
       max: binaryNumeric(Opcode.Max),
       pow: binaryNumeric(Opcode.Pow),
-      clamp: <T extends NumericValueType>(
-        value: ValueLike<T>,
-        min: BroadcastLike<T>,
-        max: BroadcastLike<T>,
-      ) =>
-        this.ternary(Opcode.Clamp, value, min, max) as SplatPostDecodeValue<T>,
-      mix: <T extends NumericValueType>(
-        left: ValueLike<T>,
-        right: ValueLike<T>,
-        amount: BroadcastLike<T>,
-      ) =>
-        this.ternary(
-          Opcode.Mix,
-          left,
-          right,
-          amount,
-        ) as SplatPostDecodeValue<T>,
+      clamp: (value, min, max) =>
+        this.ternary(Opcode.Clamp, value, min, max) as never,
+      mix: (left, right, amount) =>
+        this.ternary(Opcode.Mix, left, right, amount) as never,
       neg: unaryNumeric(Opcode.Negate),
       abs: unaryNumeric(Opcode.Abs),
       sqrt: unaryNumeric(Opcode.Sqrt),
@@ -787,13 +769,11 @@ class ProgramBuilder {
       sin: unaryNumeric(Opcode.Sin),
       cos: unaryNumeric(Opcode.Cos),
       acos: unaryNumeric(Opcode.Acos),
-      normalize: <T extends VectorValueType | "quaternion">(
-        value: ValueLike<T>,
-      ) => this.unary(Opcode.Normalize, value) as SplatPostDecodeValue<T>,
+      normalize: (value) => this.unary(Opcode.Normalize, value) as never,
       length: (value) =>
-        this.unary(Opcode.Length, value as AnyValueLike, "float") as FloatValue,
+        this.unary(Opcode.Length, value, "float") as FloatValue,
       isFinite: (value) =>
-        this.unary(Opcode.IsFinite, value as AnyValueLike, "bool") as BoolValue,
+        this.unary(Opcode.IsFinite, value, "bool") as BoolValue,
       not: (value) =>
         this.unary(Opcode.Not, this.coerce(value, "bool"), "bool") as BoolValue,
       eq: compare(Opcode.Equal),
@@ -804,26 +784,17 @@ class ProgramBuilder {
       gte: compare(Opcode.GreaterEqual),
       and: reduceBoolean(Opcode.And),
       or: reduceBoolean(Opcode.Or),
-      select: <T extends SplatPostDecodeValueType>(
-        condition: BoolLike,
-        whenTrue: ValueLike<T>,
-        whenFalse: ValueLike<T>,
-      ) => {
+      select: (condition, whenTrue, whenFalse) => {
         const trueValue = this.coerce(whenTrue);
         const falseValue = this.coerce(whenFalse, trueValue.type);
         return this.instruction(trueValue.type, Opcode.Select, [
           this.coerce(condition, "bool").register,
           trueValue.register,
           falseValue.register,
-        ]) as SplatPostDecodeValue<T>;
+        ]) as never;
       },
       dot: (left, right) =>
-        this.binary(
-          Opcode.Dot,
-          left as AnyValueLike,
-          right as AnyValueLike,
-          "float",
-        ) as FloatValue,
+        this.binary(Opcode.Dot, left, right, "float") as FloatValue,
       cross: (left, right) =>
         this.binary(Opcode.Cross, left, right) as Vec3Value,
       vec2: (x, y) => construct(Opcode.Vec2, "vec2", [x, y]),
@@ -848,205 +819,487 @@ class ProgramBuilder {
         );
       },
       maxComponentIndex: (value) =>
-        this.unary(
-          Opcode.MaxComponentIndex,
-          value as AnyValueLike,
-          "float",
-        ) as FloatValue,
+        this.unary(Opcode.MaxComponentIndex, value, "float") as FloatValue,
       quatMul: (left, right) => {
-        const leftValue = this.coerce(left, "quaternion");
-        const rightValue = this.coerce(right, "quaternion");
+        const a = this.coerce(left, "quaternion");
+        const b = this.coerce(right, "quaternion");
         return this.instruction("quaternion", Opcode.QuaternionMultiply, [
-          leftValue.register,
-          rightValue.register,
+          a.register,
+          b.register,
         ]);
       },
       rotateVector: (quaternion, vector) => {
-        const quaternionValue = this.coerce(quaternion, "quaternion");
-        const vectorValue = this.coerce(vector, "vec3");
+        const q = this.coerce(quaternion, "quaternion");
+        const v = this.coerce(vector, "vec3");
         return this.instruction("vec3", Opcode.RotateVector, [
-          quaternionValue.register,
-          vectorValue.register,
+          q.register,
+          v.register,
         ]);
       },
     };
   }
 }
 
-function inferLiteralType(value: unknown): SplatPostDecodeValueType {
-  if (typeof value === "boolean") return "bool";
-  if (typeof value === "number") return "float";
-  if (Array.isArray(value)) {
-    if (value.length === 2) return "vec2";
-    if (value.length === 3) return "vec3";
-    if (value.length === 4) return "vec4";
+class GenerationRegisterMap {
+  private readonly values: Int32Array;
+  private readonly generations: Uint32Array;
+  private generation = 1;
+
+  constructor(size: number) {
+    this.values = new Int32Array(size);
+    this.generations = new Uint32Array(size);
   }
-  throw new Error("Unsupported postDecode literal");
+
+  clear() {
+    if (this.generation === 0xffff_ffff) {
+      this.generations.fill(0);
+      this.generation = 1;
+    } else {
+      this.generation += 1;
+    }
+  }
+
+  has(source: number) {
+    return this.generations[source] === this.generation;
+  }
+
+  get(source: number) {
+    return this.has(source) ? this.values[source] : undefined;
+  }
+
+  set(source: number, target: number) {
+    this.generations[source] = this.generation;
+    this.values[source] = target;
+  }
+
+  delete(source: number) {
+    this.generations[source] = 0;
+  }
 }
 
-function pruneProgram(
+type CompiledProgram = {
+  instructions: SplatPostDecodeInstruction[];
+  constants: number[];
+  outputs: Omit<SplatPostDecodeOutputs, "when">;
+  condition?: SerializedSplatPostDecodeCondition;
+  attributes: AttributeBinding[];
+};
+
+function markDependencies(
+  builder: ProgramBuilder,
+  roots: readonly (number | undefined)[],
+  marked: Uint8Array,
+) {
+  const pending: number[] = [];
+  for (const root of roots) {
+    if (root === undefined || marked[root]) continue;
+    marked[root] = 1;
+    pending.push(root);
+  }
+  while (pending.length !== 0) {
+    const register = pending.pop();
+    if (register === undefined) break;
+    for (const argument of builder.instructions[register].args) {
+      if (marked[argument]) continue;
+      marked[argument] = 1;
+      pending.push(argument);
+    }
+  }
+}
+
+/**
+ * Serializes source instructions while remapping only live registers. A
+ * generation map represents the current straight-line path. Branch merges
+ * advance its generation in O(1), while unique predecessors reuse it. One
+ * generation array is also shared by every dependency walk.
+ */
+class InstructionSerializer {
+  readonly instructions: SplatPostDecodeInstruction[] = [];
+  readonly constants: number[] = [];
+  readonly attributes: AttributeBinding[] = [];
+  tooLarge = false;
+
+  private readonly constantMap = new Map<number, number>();
+  private readonly attributeMap = new Map<number, number>();
+  private readonly dependencyMarks: Uint32Array;
+  private dependencyGeneration = 0;
+
+  constructor(private readonly builder: ProgramBuilder) {
+    this.dependencyMarks = new Uint32Array(builder.instructions.length);
+  }
+
+  appendDependencies(
+    roots: readonly (number | undefined)[],
+    registers: GenerationRegisterMap,
+    forceRoots = false,
+  ) {
+    if (forceRoots) {
+      for (const root of roots) {
+        if (
+          root !== undefined &&
+          this.builder.instructions[root].opcode !== Opcode.Constant
+        ) {
+          registers.delete(root);
+        }
+      }
+    }
+
+    this.dependencyGeneration += 1;
+    const generation = this.dependencyGeneration;
+    const pending: number[] = [];
+    const sourceOrder: number[] = [];
+    for (const root of roots) {
+      if (root !== undefined && !registers.has(root)) pending.push(root);
+    }
+    while (pending.length !== 0) {
+      const source = pending.pop();
+      if (
+        source === undefined ||
+        registers.has(source) ||
+        this.dependencyMarks[source] === generation
+      ) {
+        continue;
+      }
+      this.dependencyMarks[source] = generation;
+      sourceOrder.push(source);
+      for (const argument of this.builder.instructions[source].args) {
+        if (!registers.has(argument)) pending.push(argument);
+      }
+    }
+
+    sourceOrder.sort((left, right) => left - right);
+    this.append(sourceOrder, registers);
+    return registers;
+  }
+
+  append(sourceOrder: readonly number[], registers: GenerationRegisterMap) {
+    for (const sourceIndex of sourceOrder) {
+      const source = this.builder.instructions[sourceIndex];
+      if (source.opcode === Opcode.Constant) {
+        let target = this.constantMap.get(sourceIndex);
+        if (target === undefined) {
+          if (!this.reserveInstruction()) break;
+          target = this.instructions.length;
+          this.constantMap.set(sourceIndex, target);
+          const immediate = this.constants.length;
+          this.constants.push(
+            ...this.builder.constants.slice(
+              source.immediate,
+              source.immediate + TYPE_WIDTHS[source.type],
+            ),
+          );
+          this.instructions.push({ ...source, immediate });
+        }
+        registers.set(sourceIndex, target);
+        continue;
+      }
+
+      if (!this.reserveInstruction()) break;
+      let immediate = source.immediate;
+      if (source.opcode === Opcode.InputAttribute) {
+        let target = this.attributeMap.get(immediate);
+        if (target === undefined) {
+          target = this.attributes.length;
+          this.attributeMap.set(immediate, target);
+          this.attributes.push(this.builder.attributes[immediate]);
+        }
+        immediate = target;
+      }
+      const args = source.args.map((argument) => {
+        const target = registers.get(argument);
+        if (target === undefined) {
+          throw new Error("Invalid postDecode instruction dependency");
+        }
+        return target;
+      });
+      registers.set(sourceIndex, this.instructions.length);
+      this.instructions.push({ ...source, args, immediate });
+    }
+  }
+
+  private reserveInstruction() {
+    if (this.instructions.length < 4096) return true;
+    this.tooLarge = true;
+    return false;
+  }
+}
+
+function emptyCompiledProgram(): CompiledProgram {
+  return {
+    instructions: [],
+    constants: [],
+    outputs: {},
+    condition: undefined,
+    attributes: [],
+  };
+}
+
+function remapOutputs(
+  outputs: SplatPostDecodeOutputs,
+  registers: GenerationRegisterMap,
+): Omit<SplatPostDecodeOutputs, "when"> {
+  const remap = (register: number | undefined) =>
+    register === undefined ? undefined : registers.get(register);
+  return {
+    position: remap(outputs.position),
+    scale: remap(outputs.scale),
+    quaternion: remap(outputs.quaternion),
+    opacity: remap(outputs.opacity),
+    alpha: remap(outputs.alpha),
+    color: remap(outputs.color),
+    sh: outputs.sh?.map((register) => {
+      const target = registers.get(register);
+      if (target === undefined) {
+        throw new Error("Invalid postDecode output dependency");
+      }
+      return target;
+    }),
+  };
+}
+
+type FlowNode = {
+  register: number;
+  onTrue: number;
+  onFalse: number;
+};
+
+function tryCompileConditionFlow(
+  builder: ProgramBuilder,
+  outputs: SplatPostDecodeOutputs,
+  outputRoots: readonly (number | undefined)[],
+): CompiledProgram | undefined {
+  const whenRegister = outputs.when;
+  if (whenRegister === undefined) return undefined;
+
+  const FLOW_ACCEPT = -1;
+  const FLOW_REJECT = -2;
+  const FLOW_DYNAMIC = 0;
+  const FLOW_CONSTANT_FALSE = 1;
+  const FLOW_CONSTANT_TRUE = 2;
+  const constantValues = new Uint8Array(builder.instructions.length);
+  for (let register = 0; register <= whenRegister; register += 1) {
+    const instruction = builder.instructions[register];
+    if (instruction.opcode === Opcode.Constant && instruction.type === "bool") {
+      constantValues[register] = builder.constants[instruction.immediate]
+        ? FLOW_CONSTANT_TRUE
+        : FLOW_CONSTANT_FALSE;
+      continue;
+    }
+    const left = constantValues[instruction.args[0]];
+    if (instruction.opcode === Opcode.Not) {
+      constantValues[register] =
+        left === FLOW_CONSTANT_TRUE
+          ? FLOW_CONSTANT_FALSE
+          : left === FLOW_CONSTANT_FALSE
+            ? FLOW_CONSTANT_TRUE
+            : FLOW_DYNAMIC;
+    } else if (instruction.opcode === Opcode.And) {
+      const right = constantValues[instruction.args[1]];
+      constantValues[register] =
+        left === FLOW_CONSTANT_FALSE || right === FLOW_CONSTANT_FALSE
+          ? FLOW_CONSTANT_FALSE
+          : left === FLOW_CONSTANT_TRUE && right === FLOW_CONSTANT_TRUE
+            ? FLOW_CONSTANT_TRUE
+            : FLOW_DYNAMIC;
+    } else if (instruction.opcode === Opcode.Or) {
+      const right = constantValues[instruction.args[1]];
+      constantValues[register] =
+        left === FLOW_CONSTANT_TRUE || right === FLOW_CONSTANT_TRUE
+          ? FLOW_CONSTANT_TRUE
+          : left === FLOW_CONSTANT_FALSE && right === FLOW_CONSTANT_FALSE
+            ? FLOW_CONSTANT_FALSE
+            : FLOW_DYNAMIC;
+    }
+  }
+
+  const reverseNodes: FlowNode[] = [];
+  const FLOW_VISIT = 0;
+  const FLOW_AND_LEFT = 1;
+  const FLOW_OR_LEFT = 2;
+  const FLOW_FRAME_SIZE = 4;
+  // A nested logical instruction adds at most one pending continuation.
+  const frames = new Int32Array((whenRegister + 2) * FLOW_FRAME_SIZE);
+  let frameEnd = 0;
+  const pushFrame = (
+    type: number,
+    register: number,
+    onTrue = 0,
+    onFalse = 0,
+  ) => {
+    if (frameEnd === frames.length) {
+      throw new Error("Invalid postDecode condition depth");
+    }
+    frames[frameEnd] = type;
+    frames[frameEnd + 1] = register;
+    frames[frameEnd + 2] = onTrue;
+    frames[frameEnd + 3] = onFalse;
+    frameEnd += FLOW_FRAME_SIZE;
+  };
+
+  // `compiledTarget` is the return value of the most recently completed
+  // frame. Continuation frames use it to compile the left side of AND/OR
+  // after the right side has established its short-circuit target.
+  let compiledTarget = FLOW_REJECT;
+  pushFrame(FLOW_VISIT, whenRegister, FLOW_ACCEPT, FLOW_REJECT);
+  while (frameEnd !== 0) {
+    frameEnd -= FLOW_FRAME_SIZE;
+    const type = frames[frameEnd];
+    const register = frames[frameEnd + 1];
+    const onTrue = frames[frameEnd + 2];
+    const onFalse = frames[frameEnd + 3];
+
+    if (type === FLOW_AND_LEFT) {
+      pushFrame(FLOW_VISIT, register, compiledTarget, onFalse);
+      continue;
+    }
+    if (type === FLOW_OR_LEFT) {
+      pushFrame(FLOW_VISIT, register, onTrue, compiledTarget);
+      continue;
+    }
+
+    const constant = constantValues[register];
+    if (constant !== FLOW_DYNAMIC) {
+      compiledTarget = constant === FLOW_CONSTANT_TRUE ? onTrue : onFalse;
+      continue;
+    }
+    const instruction = builder.instructions[register];
+    if (instruction.opcode === Opcode.Not) {
+      pushFrame(FLOW_VISIT, instruction.args[0], onFalse, onTrue);
+      continue;
+    }
+    if (instruction.opcode === Opcode.And) {
+      pushFrame(FLOW_AND_LEFT, instruction.args[0], 0, onFalse);
+      pushFrame(FLOW_VISIT, instruction.args[1], onTrue, onFalse);
+      continue;
+    }
+    if (instruction.opcode === Opcode.Or) {
+      pushFrame(FLOW_OR_LEFT, instruction.args[0], onTrue);
+      pushFrame(FLOW_VISIT, instruction.args[1], onTrue, onFalse);
+      continue;
+    }
+    if (reverseNodes.length >= 4096) return undefined;
+    compiledTarget = reverseNodes.length;
+    reverseNodes.push({ register, onTrue, onFalse });
+  }
+
+  const entry = compiledTarget;
+  if (entry === FLOW_REJECT) return emptyCompiledProgram();
+  if (entry === FLOW_ACCEPT) {
+    outputs.when = undefined;
+    return undefined;
+  }
+
+  const reachable = new Uint8Array(reverseNodes.length);
+  const pending = [entry];
+  while (pending.length !== 0) {
+    const node = pending.pop();
+    if (node === undefined || node < 0 || reachable[node]) continue;
+    reachable[node] = 1;
+    pending.push(reverseNodes[node].onTrue, reverseNodes[node].onFalse);
+  }
+  const nodeOrder: number[] = [];
+  for (let node = reverseNodes.length - 1; node >= 0; node -= 1) {
+    if (reachable[node]) nodeOrder.push(node);
+  }
+  const flowMap = new Int32Array(reverseNodes.length).fill(-1);
+  for (let stage = 0; stage < nodeOrder.length; stage += 1) {
+    flowMap[nodeOrder[stage]] = stage;
+  }
+  if (flowMap[entry] !== 0) {
+    throw new Error("Invalid postDecode condition flow");
+  }
+
+  const stageCount = nodeOrder.length;
+  const acceptTarget = stageCount;
+  const rejectTarget = acceptTarget + 1;
+  const stages = new Uint16Array(
+    stageCount * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE,
+  );
+  const predecessors = new Int32Array(stageCount).fill(-1);
+  let acceptPredecessor = -1;
+  const recordPredecessor = (target: number, predecessor: number) => {
+    if (target === rejectTarget) return;
+    if (target === acceptTarget) {
+      acceptPredecessor =
+        acceptPredecessor === -1
+          ? predecessor
+          : acceptPredecessor === predecessor
+            ? predecessor
+            : -2;
+      return;
+    }
+    predecessors[target] =
+      predecessors[target] === -1
+        ? predecessor
+        : predecessors[target] === predecessor
+          ? predecessor
+          : -2;
+  };
+  const remapTarget = (target: number) =>
+    target === FLOW_ACCEPT
+      ? acceptTarget
+      : target === FLOW_REJECT
+        ? rejectTarget
+        : flowMap[target];
+
+  for (let stage = 0; stage < stageCount; stage += 1) {
+    const node = reverseNodes[nodeOrder[stage]];
+    const offset = stage * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
+    const onTrue = remapTarget(node.onTrue);
+    const onFalse = remapTarget(node.onFalse);
+    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_ON_TRUE] = onTrue;
+    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_ON_FALSE] = onFalse;
+    recordPredecessor(onTrue, stage);
+    recordPredecessor(onFalse, stage);
+  }
+
+  const serializer = new InstructionSerializer(builder);
+  const pathRegisters = new GenerationRegisterMap(builder.instructions.length);
+  for (let stage = 0; stage < stageCount; stage += 1) {
+    if (stage === 0 || predecessors[stage] !== stage - 1) {
+      pathRegisters.clear();
+    }
+    const node = reverseNodes[nodeOrder[stage]];
+    const offset = stage * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
+    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_START] =
+      serializer.instructions.length;
+    serializer.appendDependencies([node.register], pathRegisters, true);
+    if (serializer.tooLarge) return undefined;
+    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION] =
+      serializer.instructions.length - 1;
+    const predicateRegister = pathRegisters.get(node.register);
+    if (predicateRegister === undefined) {
+      throw new Error("Invalid postDecode condition register");
+    }
+    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_REGISTER] = predicateRegister;
+  }
+
+  if (acceptPredecessor !== stageCount - 1) pathRegisters.clear();
+  serializer.appendDependencies(outputRoots, pathRegisters);
+  if (serializer.tooLarge) return undefined;
+  return {
+    instructions: serializer.instructions,
+    constants: serializer.constants,
+    outputs: remapOutputs(outputs, pathRegisters),
+    condition: { mode: "flow", stages },
+    attributes: serializer.attributes,
+  };
+}
+
+function compileProgram(
   builder: ProgramBuilder,
   sourceOutputs: SplatPostDecodeOutputs,
-) {
+): CompiledProgram {
   const outputs = { ...sourceOutputs };
   if (outputs.when !== undefined) {
     const condition = builder.instructions[outputs.when];
     if (condition.opcode === Opcode.Constant) {
       if (builder.constants[condition.immediate] === 0) {
-        return {
-          instructions: [],
-          constants: [],
-          outputs: {},
-          condition: undefined,
-          attributes: [],
-        };
+        return emptyCompiledProgram();
       }
       outputs.when = undefined;
     }
   }
-
-  const markDependencies = (
-    roots: readonly (number | undefined)[],
-    marked: Uint8Array,
-  ) => {
-    const pending: number[] = [];
-    for (const register of roots) {
-      if (register === undefined || marked[register]) continue;
-      marked[register] = 1;
-      pending.push(register);
-    }
-    while (pending.length !== 0) {
-      const register = pending.pop();
-      if (register === undefined) break;
-      for (const argument of builder.instructions[register].args) {
-        if (marked[argument]) continue;
-        marked[argument] = 1;
-        pending.push(argument);
-      }
-    }
-  };
-
-  const createSerializer = () => {
-    const instructions: SplatPostDecodeInstruction[] = [];
-    const constants: number[] = [];
-    const attributes: AttributeBinding[] = [];
-    const attributeMap = new Map<number, number>();
-    const constantMap = new Map<number, number>();
-    const dependencyMarks = new Uint32Array(builder.instructions.length);
-    let dependencyGeneration = 0;
-    let tooLarge = false;
-    const append = (
-      sourceOrder: readonly number[],
-      registerMap: Int32Array = new Int32Array(
-        builder.instructions.length,
-      ).fill(-1),
-    ) => {
-      for (const sourceIndex of sourceOrder) {
-        const source = builder.instructions[sourceIndex];
-        if (source.opcode === Opcode.Constant) {
-          let mapped = constantMap.get(sourceIndex);
-          if (mapped === undefined) {
-            if (instructions.length >= 4096) {
-              tooLarge = true;
-              break;
-            }
-            mapped = instructions.length;
-            constantMap.set(sourceIndex, mapped);
-            const immediate = constants.length;
-            constants.push(
-              ...builder.constants.slice(
-                source.immediate,
-                source.immediate + TYPE_WIDTHS[source.type],
-              ),
-            );
-            instructions.push({ ...source, immediate });
-          }
-          registerMap[sourceIndex] = mapped;
-          continue;
-        }
-
-        if (instructions.length >= 4096) {
-          tooLarge = true;
-          break;
-        }
-        let immediate = source.immediate;
-        if (source.opcode === Opcode.InputAttribute) {
-          let mapped = attributeMap.get(immediate);
-          if (mapped === undefined) {
-            mapped = attributes.length;
-            attributeMap.set(immediate, mapped);
-            attributes.push(builder.attributes[immediate]);
-          }
-          immediate = mapped;
-        }
-        registerMap[sourceIndex] = instructions.length;
-        instructions.push({
-          ...source,
-          args: source.args.map((argument) => registerMap[argument]),
-          immediate,
-        });
-      }
-      return registerMap;
-    };
-    const appendDependencies = (
-      roots: readonly (number | undefined)[],
-      registerMap: Int32Array = new Int32Array(
-        builder.instructions.length,
-      ).fill(-1),
-      forceRoots = false,
-    ) => {
-      if (forceRoots) {
-        for (const root of roots) {
-          if (
-            root !== undefined &&
-            builder.instructions[root].opcode !== Opcode.Constant
-          ) {
-            // Every flow stage needs a concrete instruction boundary even if
-            // the same predicate register appeared in its unique predecessor.
-            registerMap[root] = -1;
-          }
-        }
-      }
-
-      dependencyGeneration += 1;
-      const pending: number[] = [];
-      const sourceOrder: number[] = [];
-      for (const root of roots) {
-        if (root !== undefined && registerMap[root] === -1) {
-          pending.push(root);
-        }
-      }
-      while (pending.length !== 0) {
-        const register = pending.pop();
-        if (
-          register === undefined ||
-          registerMap[register] !== -1 ||
-          dependencyMarks[register] === dependencyGeneration
-        ) {
-          continue;
-        }
-        dependencyMarks[register] = dependencyGeneration;
-        sourceOrder.push(register);
-        for (const argument of builder.instructions[register].args) {
-          if (registerMap[argument] === -1) pending.push(argument);
-        }
-      }
-      // Builder register indices are topological. Sorting only the newly found
-      // dependencies preserves that order without rescanning the whole program.
-      sourceOrder.sort((left, right) => left - right);
-      return append(sourceOrder, registerMap);
-    };
-    return {
-      instructions,
-      constants,
-      attributes,
-      append,
-      appendDependencies,
-      get tooLarge() {
-        return tooLarge;
-      },
-    };
-  };
 
   const outputRoots = [
     outputs.position,
@@ -1057,386 +1310,52 @@ function pruneProgram(
     outputs.color,
     ...(outputs.sh ?? []),
   ];
-
-  // Compile every dynamic condition to the same forward flow. Atomic
-  // predicates naturally produce one stage, while AND/OR/NOT recursively wire
-  // those stages to accept/reject continuations without expanding to DNF/CNF.
   if (outputs.when !== undefined) {
-    const whenRegister = outputs.when;
-    const FLOW_ACCEPT = -1;
-    const FLOW_REJECT = -2;
-    const FLOW_DYNAMIC = 0;
-    const FLOW_CONSTANT_FALSE = 1;
-    const FLOW_CONSTANT_TRUE = 2;
-    const MAX_FLOW_STAGE_COUNT = 4096;
-    const constantFlowValues = new Uint8Array(builder.instructions.length);
-    for (let register = 0; register <= whenRegister; register += 1) {
-      const instruction = builder.instructions[register];
-      if (
-        instruction.opcode === Opcode.Constant &&
-        instruction.type === "bool"
-      ) {
-        constantFlowValues[register] = builder.constants[instruction.immediate]
-          ? FLOW_CONSTANT_TRUE
-          : FLOW_CONSTANT_FALSE;
-      } else if (instruction.opcode === Opcode.Not) {
-        const value = constantFlowValues[instruction.args[0]];
-        constantFlowValues[register] =
-          value === FLOW_CONSTANT_TRUE
-            ? FLOW_CONSTANT_FALSE
-            : value === FLOW_CONSTANT_FALSE
-              ? FLOW_CONSTANT_TRUE
-              : FLOW_DYNAMIC;
-      } else if (instruction.opcode === Opcode.And) {
-        const left = constantFlowValues[instruction.args[0]];
-        const right = constantFlowValues[instruction.args[1]];
-        constantFlowValues[register] =
-          left === FLOW_CONSTANT_FALSE || right === FLOW_CONSTANT_FALSE
-            ? FLOW_CONSTANT_FALSE
-            : left === FLOW_CONSTANT_TRUE && right === FLOW_CONSTANT_TRUE
-              ? FLOW_CONSTANT_TRUE
-              : FLOW_DYNAMIC;
-      } else if (instruction.opcode === Opcode.Or) {
-        const left = constantFlowValues[instruction.args[0]];
-        const right = constantFlowValues[instruction.args[1]];
-        constantFlowValues[register] =
-          left === FLOW_CONSTANT_TRUE || right === FLOW_CONSTANT_TRUE
-            ? FLOW_CONSTANT_TRUE
-            : left === FLOW_CONSTANT_FALSE && right === FLOW_CONSTANT_FALSE
-              ? FLOW_CONSTANT_FALSE
-              : FLOW_DYNAMIC;
-      }
-    }
-    type SourceFlowNode = {
-      register: number;
-      onTrue: number;
-      onFalse: number;
-    };
-    const reverseFlowNodes: SourceFlowNode[] = [];
-    let flowTooLarge = false;
-    const compileFlow = (
-      register: number,
-      onTrue: number,
-      onFalse: number,
-    ): number => {
-      if (flowTooLarge) return onFalse;
-
-      const constantValue = constantFlowValues[register];
-      if (constantValue !== FLOW_DYNAMIC) {
-        return constantValue === FLOW_CONSTANT_TRUE ? onTrue : onFalse;
-      }
-
-      const instruction = builder.instructions[register];
-      if (instruction.opcode === Opcode.Not) {
-        return compileFlow(instruction.args[0], onFalse, onTrue);
-      }
-      if (instruction.opcode === Opcode.And) {
-        const right = compileFlow(instruction.args[1], onTrue, onFalse);
-        return compileFlow(instruction.args[0], right, onFalse);
-      }
-      if (instruction.opcode === Opcode.Or) {
-        const right = compileFlow(instruction.args[1], onTrue, onFalse);
-        return compileFlow(instruction.args[0], onTrue, right);
-      }
-
-      // Pure logical constants were folded above, so every remaining expanded
-      // path eventually emits a stage and is bounded here.
-      if (reverseFlowNodes.length >= MAX_FLOW_STAGE_COUNT) {
-        flowTooLarge = true;
-        return onFalse;
-      }
-      const node = reverseFlowNodes.length;
-      reverseFlowNodes.push({ register, onTrue, onFalse });
-      return node;
-    };
-
-    const flowEntry = compileFlow(whenRegister, FLOW_ACCEPT, FLOW_REJECT);
-    if (!flowTooLarge && flowEntry === FLOW_REJECT) {
-      return {
-        instructions: [],
-        constants: [],
-        outputs: {},
-        condition: undefined,
-        attributes: [],
-      };
-    }
-    if (!flowTooLarge && flowEntry === FLOW_ACCEPT) {
-      outputs.when = undefined;
-    } else if (!flowTooLarge) {
-      const reachable = new Uint8Array(reverseFlowNodes.length);
-      const pending = [flowEntry];
-      while (pending.length !== 0) {
-        const node = pending.pop();
-        if (node === undefined || node < 0 || reachable[node]) continue;
-        reachable[node] = 1;
-        const { onTrue, onFalse } = reverseFlowNodes[node];
-        pending.push(onTrue, onFalse);
-      }
-
-      // Nodes are created continuation-first. Reversing reachable nodes puts
-      // every branch target after its source, which lets the runtime execute
-      // the stages once in a simple forward pass.
-      const sourceNodeOrder: number[] = [];
-      for (let node = reverseFlowNodes.length - 1; node >= 0; node -= 1) {
-        if (reachable[node]) sourceNodeOrder.push(node);
-      }
-      const flowMap = new Int32Array(reverseFlowNodes.length).fill(-1);
-      for (let index = 0; index < sourceNodeOrder.length; index += 1) {
-        flowMap[sourceNodeOrder[index]] = index;
-      }
-
-      if (flowMap[flowEntry] !== 0) {
-        throw new Error("Invalid postDecode condition flow");
-      }
-
-      const stageCount = sourceNodeOrder.length;
-      const acceptTarget = stageCount;
-      const rejectTarget = acceptTarget + 1;
-      const packedStages = new Uint16Array(
-        stageCount * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE,
-      );
-      const predecessors = new Int32Array(stageCount).fill(-1);
-      let acceptPredecessor = -1;
-      const recordPredecessor = (target: number, predecessor: number) => {
-        if (target === rejectTarget) return;
-        if (target === acceptTarget) {
-          if (acceptPredecessor === -1) acceptPredecessor = predecessor;
-          else if (acceptPredecessor !== predecessor) acceptPredecessor = -2;
-          return;
-        }
-        const current = predecessors[target];
-        if (current === -1) predecessors[target] = predecessor;
-        else if (current !== predecessor) predecessors[target] = -2;
-      };
-      const remapTarget = (target: number) =>
-        target === FLOW_ACCEPT
-          ? acceptTarget
-          : target === FLOW_REJECT
-            ? rejectTarget
-            : flowMap[target];
-
-      for (let stageIndex = 0; stageIndex < stageCount; stageIndex += 1) {
-        const node = reverseFlowNodes[sourceNodeOrder[stageIndex]];
-        const offset = stageIndex * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
-        const onTrue = remapTarget(node.onTrue);
-        const onFalse = remapTarget(node.onFalse);
-        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_ON_TRUE] = onTrue;
-        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_ON_FALSE] = onFalse;
-        recordPredecessor(onTrue, stageIndex);
-        recordPredecessor(onFalse, stageIndex);
-      }
-
-      const serializer = createSerializer();
-      let previousRegisterMap: Int32Array | undefined;
-      for (let stageIndex = 0; stageIndex < stageCount; stageIndex += 1) {
-        const node = reverseFlowNodes[sourceNodeOrder[stageIndex]];
-        const offset = stageIndex * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
-        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_START] =
-          serializer.instructions.length;
-        const registerMap = serializer.appendDependencies(
-          [node.register],
-          stageIndex > 0 && predecessors[stageIndex] === stageIndex - 1
-            ? previousRegisterMap
-            : undefined,
-          true,
-        );
-        if (serializer.tooLarge) break;
-        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION] =
-          serializer.instructions.length - 1;
-        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_REGISTER] =
-          registerMap[node.register];
-        previousRegisterMap = registerMap;
-      }
-
-      if (!serializer.tooLarge) {
-        const lastStage = stageCount - 1;
-        const outputMap = serializer.appendDependencies(
-          outputRoots,
-          acceptPredecessor === lastStage ? previousRegisterMap : undefined,
-        );
-        if (!serializer.tooLarge) {
-          const remapOutput = (register: number | undefined) =>
-            register === undefined ? undefined : outputMap[register];
-          return {
-            instructions: serializer.instructions,
-            constants: serializer.constants,
-            outputs: {
-              position: remapOutput(outputs.position),
-              scale: remapOutput(outputs.scale),
-              quaternion: remapOutput(outputs.quaternion),
-              opacity: remapOutput(outputs.opacity),
-              alpha: remapOutput(outputs.alpha),
-              color: remapOutput(outputs.color),
-              sh: outputs.sh?.map((register) => outputMap[register]),
-            },
-            condition: { mode: "flow" as const, stages: packedStages },
-            attributes: serializer.attributes,
-          };
-        }
-      }
-      // Pathological DAG expansion can exceed the normal 4096-instruction
-      // bound. In that case the regular eager serializer below remains the
-      // correctness-preserving fallback.
-    }
+    const flow = tryCompileConditionFlow(builder, outputs, outputRoots);
+    if (flow) return flow;
   }
 
   const live = new Uint8Array(builder.instructions.length);
-  markDependencies(outputRoots, live);
+  markDependencies(builder, outputRoots, live);
   const conditionLive = new Uint8Array(builder.instructions.length);
   if (outputs.when !== undefined) {
-    markDependencies([outputs.when], conditionLive);
+    markDependencies(builder, [outputs.when], conditionLive);
   }
-  for (let index = 0; index < live.length; index += 1) {
-    live[index] ||= conditionLive[index];
+  for (let register = 0; register < live.length; register += 1) {
+    live[register] ||= conditionLive[register];
   }
 
-  // The eager fallback keeps the complete condition in one topological prefix.
-  // Reaching this path with a dynamic condition means expanded flow bytecode
-  // exceeded the normal instruction bound.
   const instructionOrder: number[] = [];
   if (outputs.when !== undefined) {
-    for (let index = 0; index < live.length; index += 1) {
-      if (conditionLive[index]) instructionOrder.push(index);
+    for (let register = 0; register < live.length; register += 1) {
+      if (conditionLive[register]) instructionOrder.push(register);
     }
-    for (let index = 0; index < live.length; index += 1) {
-      if (live[index] && !conditionLive[index]) instructionOrder.push(index);
+    for (let register = 0; register < live.length; register += 1) {
+      if (live[register] && !conditionLive[register]) {
+        instructionOrder.push(register);
+      }
     }
   } else {
-    for (let index = 0; index < live.length; index += 1) {
-      if (live[index]) instructionOrder.push(index);
+    for (let register = 0; register < live.length; register += 1) {
+      if (live[register]) instructionOrder.push(register);
     }
   }
 
-  const serializer = createSerializer();
-  const registerMap = serializer.append(instructionOrder);
-  const remap = (register: number | undefined) =>
-    register === undefined ? undefined : registerMap[register];
-  const when = remap(outputs.when);
-
+  const serializer = new InstructionSerializer(builder);
+  const registers = new GenerationRegisterMap(builder.instructions.length);
+  serializer.append(instructionOrder, registers);
+  const when =
+    outputs.when === undefined ? undefined : registers.get(outputs.when);
   return {
     instructions: serializer.instructions,
     constants: serializer.constants,
-    outputs: {
-      position: remap(outputs.position),
-      scale: remap(outputs.scale),
-      quaternion: remap(outputs.quaternion),
-      opacity: remap(outputs.opacity),
-      alpha: remap(outputs.alpha),
-      color: remap(outputs.color),
-      sh: outputs.sh?.map((register) => registerMap[register]),
-    },
+    outputs: remapOutputs(outputs, registers),
     condition:
       when === undefined
         ? undefined
-        : {
-            mode: "flow" as const,
-            stages: new Uint16Array([0, when, when, 1, 2]),
-          },
+        : { mode: "flow", stages: new Uint16Array([0, when, when, 1, 2]) },
     attributes: serializer.attributes,
   };
-}
-
-class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
-  readonly [SPLAT_POST_DECODE_PROGRAM] = true as const;
-
-  constructor(
-    private readonly builder: ProgramBuilder,
-    private readonly outputs: SplatPostDecodeOutputs,
-  ) {}
-
-  static serialize(program: SplatPostDecodeProgram): SerializedSplatPostDecode {
-    if (!(program instanceof SplatPostDecodeProgramImpl)) {
-      throw new Error("Invalid postDecode program");
-    }
-    const { builder } = program;
-    const {
-      instructions,
-      constants,
-      outputs,
-      condition,
-      attributes: attributeBindings,
-    } = pruneProgram(builder, program.outputs);
-    type AttributeRegion = {
-      buffer: ArrayBufferLike;
-      start: number;
-      end: number;
-      outputOffset: number;
-    };
-    const rangesByBuffer = new Map<
-      ArrayBufferLike,
-      { start: number; end: number }[]
-    >();
-    for (const attribute of attributeBindings) {
-      if (attribute.count === 0) continue;
-      const packedBytes =
-        ATTRIBUTE_FORMAT_BYTES[attribute.format] * attribute.components;
-      const start = attribute.data.byteOffset + attribute.byteOffset;
-      const end =
-        start + (attribute.count - 1) * attribute.byteStride + packedBytes;
-      const ranges = rangesByBuffer.get(attribute.data.buffer) ?? [];
-      ranges.push({ start, end });
-      rangesByBuffer.set(attribute.data.buffer, ranges);
-    }
-
-    const regions: AttributeRegion[] = [];
-    for (const [buffer, ranges] of rangesByBuffer) {
-      ranges.sort((left, right) => left.start - right.start);
-      let current: AttributeRegion | undefined;
-      for (const range of ranges) {
-        if (current && range.start <= current.end) {
-          current.end = Math.max(current.end, range.end);
-        } else {
-          current = { buffer, ...range, outputOffset: 0 };
-          regions.push(current);
-        }
-      }
-    }
-
-    let attributeByteLength = 0;
-    for (const region of regions) {
-      region.outputOffset = attributeByteLength;
-      attributeByteLength += region.end - region.start;
-    }
-    const attributeData = new Uint8Array(attributeByteLength);
-    for (const region of regions) {
-      attributeData.set(
-        new Uint8Array(region.buffer, region.start, region.end - region.start),
-        region.outputOffset,
-      );
-    }
-    const attributes = attributeBindings.map((attribute) => {
-      let byteOffset = 0;
-      if (attribute.count !== 0) {
-        const sourceOffset = attribute.data.byteOffset + attribute.byteOffset;
-        const region = regions.find(
-          (candidate) =>
-            candidate.buffer === attribute.data.buffer &&
-            sourceOffset >= candidate.start &&
-            sourceOffset < candidate.end,
-        );
-        if (!region) {
-          throw new Error("postDecode attribute view was not serialized");
-        }
-        byteOffset = region.outputOffset + sourceOffset - region.start;
-      }
-      return {
-        format: attribute.format,
-        components: attribute.components,
-        byteOffset,
-        byteStride: attribute.byteStride,
-        count: attribute.count,
-      };
-    });
-
-    return {
-      instructions: packInstructions(instructions),
-      constants: new Float32Array(constants),
-      outputs,
-      condition,
-      attributeData,
-      attributes,
-    };
-  }
 }
 
 function packInstructions(
@@ -1468,17 +1387,119 @@ function packInstructions(
       TYPE_WIDTHS[instruction.type];
     packed[offset + SPLAT_POST_DECODE_INSTRUCTION_IMMEDIATE] =
       instruction.immediate;
-    for (
-      let argumentIndex = 0;
-      argumentIndex < instruction.args.length;
-      argumentIndex += 1
-    ) {
-      packed[
-        offset + SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0 + argumentIndex
-      ] = instruction.args[argumentIndex];
+    for (let argument = 0; argument < instruction.args.length; argument += 1) {
+      packed[offset + SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0 + argument] =
+        instruction.args[argument];
     }
   }
   return packed;
+}
+
+type AttributeRegion = {
+  buffer: ArrayBufferLike;
+  start: number;
+  end: number;
+  outputOffset: number;
+};
+
+function snapshotAttributes(bindings: readonly AttributeBinding[]) {
+  const rangesByBuffer = new Map<
+    ArrayBufferLike,
+    { start: number; end: number }[]
+  >();
+  for (const binding of bindings) {
+    if (binding.count === 0) continue;
+    const packedBytes =
+      ATTRIBUTE_FORMAT_BYTES[binding.format] * binding.components;
+    const start = binding.data.byteOffset + binding.byteOffset;
+    const end = start + (binding.count - 1) * binding.byteStride + packedBytes;
+    const ranges = rangesByBuffer.get(binding.data.buffer) ?? [];
+    ranges.push({ start, end });
+    rangesByBuffer.set(binding.data.buffer, ranges);
+  }
+
+  const regions: AttributeRegion[] = [];
+  const regionsByBuffer = new Map<ArrayBufferLike, AttributeRegion[]>();
+  for (const [buffer, ranges] of rangesByBuffer) {
+    ranges.sort((left, right) => left.start - right.start);
+    const bufferRegions: AttributeRegion[] = [];
+    for (const range of ranges) {
+      const previous = bufferRegions[bufferRegions.length - 1];
+      if (previous && range.start <= previous.end) {
+        previous.end = Math.max(previous.end, range.end);
+      } else {
+        const region = { buffer, ...range, outputOffset: 0 };
+        bufferRegions.push(region);
+        regions.push(region);
+      }
+    }
+    regionsByBuffer.set(buffer, bufferRegions);
+  }
+
+  let byteLength = 0;
+  for (const region of regions) {
+    region.outputOffset = byteLength;
+    byteLength += region.end - region.start;
+  }
+  const data = new Uint8Array(byteLength);
+  for (const region of regions) {
+    data.set(
+      new Uint8Array(region.buffer, region.start, region.end - region.start),
+      region.outputOffset,
+    );
+  }
+
+  const attributes: SerializedSplatPostDecodeAttribute[] = bindings.map(
+    (binding) => {
+      let byteOffset = 0;
+      if (binding.count !== 0) {
+        const sourceOffset = binding.data.byteOffset + binding.byteOffset;
+        const region = regionsByBuffer
+          .get(binding.data.buffer)
+          ?.find(
+            (candidate) =>
+              sourceOffset >= candidate.start && sourceOffset < candidate.end,
+          );
+        if (!region) {
+          throw new Error("postDecode attribute view was not serialized");
+        }
+        byteOffset = region.outputOffset + sourceOffset - region.start;
+      }
+      return {
+        format: binding.format,
+        components: binding.components,
+        byteOffset,
+        byteStride: binding.byteStride,
+        count: binding.count,
+      };
+    },
+  );
+  return { data, attributes };
+}
+
+class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
+  readonly [SPLAT_POST_DECODE_PROGRAM] = true as const;
+
+  constructor(
+    private readonly builder: ProgramBuilder,
+    private readonly outputs: SplatPostDecodeOutputs,
+  ) {}
+
+  static serialize(program: SplatPostDecodeProgram): SerializedSplatPostDecode {
+    if (!(program instanceof SplatPostDecodeProgramImpl)) {
+      throw new Error("Invalid postDecode program");
+    }
+    const compiled = compileProgram(program.builder, program.outputs);
+    const snapshot = snapshotAttributes(compiled.attributes);
+    return {
+      instructions: packInstructions(compiled.instructions),
+      constants: new Float32Array(compiled.constants),
+      outputs: compiled.outputs,
+      condition: compiled.condition,
+      attributeData: snapshot.data,
+      attributes: snapshot.attributes,
+    };
+  }
 }
 
 /** @internal */
@@ -1492,7 +1513,6 @@ function buildOutputs(builder: ProgramBuilder, patch: SplatPostDecodePatch) {
   if (patch.opacity !== undefined && patch.alpha !== undefined) {
     throw new Error("postDecode opacity cannot be combined with alpha");
   }
-
   const output = <T extends SplatPostDecodeValueType>(
     value: ValueLike<T> | undefined,
     type: T,
@@ -1506,7 +1526,6 @@ function buildOutputs(builder: ProgramBuilder, patch: SplatPostDecodePatch) {
     alpha: output(patch.alpha, "float"),
     color: output(patch.color, "vec3"),
   };
-
   if (patch.sh !== undefined) {
     if (
       !(patch.sh instanceof SplatPostDecodeShPatch) ||
@@ -1533,8 +1552,7 @@ function defineSplatPostDecode(
   if (!patch || typeof patch !== "object") {
     throw new Error("postDecode builder must return a splat patch object");
   }
-  const outputs = buildOutputs(builder, patch);
-  return new SplatPostDecodeProgramImpl(builder, outputs);
+  return new SplatPostDecodeProgramImpl(builder, buildOutputs(builder, patch));
 }
 
 export const postDecode = {
