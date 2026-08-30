@@ -140,6 +140,21 @@ export type SplatPostDecodeInstruction = {
 };
 
 /** @internal */
+export const SPLAT_POST_DECODE_INSTRUCTION_OPCODE = 0;
+/** @internal */
+export const SPLAT_POST_DECODE_INSTRUCTION_WIDTH = 1;
+/** @internal */
+export const SPLAT_POST_DECODE_INSTRUCTION_IMMEDIATE = 2;
+/** @internal */
+export const SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0 = 3;
+/** @internal */
+export const SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_COUNT = 4;
+/** @internal */
+export const SPLAT_POST_DECODE_INSTRUCTION_STRIDE = 7;
+/** @internal */
+export const SPLAT_POST_DECODE_MISSING_ARGUMENT = 0xffff;
+
+/** @internal */
 export type SplatPostDecodeAttributeFormat =
   | "f32"
   | "f16"
@@ -410,10 +425,32 @@ export type SplatPostDecodeOutputs = {
 };
 
 /** @internal */
+export const SPLAT_POST_DECODE_FLOW_STAGE_START = 0;
+/** @internal */
+export const SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION = 1;
+/** @internal */
+export const SPLAT_POST_DECODE_FLOW_STAGE_REGISTER = 2;
+/** @internal */
+export const SPLAT_POST_DECODE_FLOW_STAGE_ON_TRUE = 3;
+/** @internal */
+export const SPLAT_POST_DECODE_FLOW_STAGE_ON_FALSE = 4;
+/** @internal */
+export const SPLAT_POST_DECODE_FLOW_STAGE_STRIDE = 5;
+
+/** @internal */
+export type SerializedSplatPostDecodeCondition = {
+  mode: "flow";
+  /** Packed start/instruction/register/onTrue/onFalse Uint16 records. */
+  stages: Uint16Array;
+};
+
+/** @internal */
 export type SerializedSplatPostDecode = {
-  instructions: readonly SplatPostDecodeInstruction[];
+  /** Packed opcode/width/immediate/arg0/arg1/arg2/arg3 Uint16 records. */
+  instructions: Uint16Array;
   constants: Float32Array;
-  outputs: SplatPostDecodeOutputs;
+  outputs: Omit<SplatPostDecodeOutputs, "when">;
+  condition?: SerializedSplatPostDecodeCondition;
   attributeData: Uint8Array;
   attributes: readonly SerializedSplatPostDecodeAttribute[];
 };
@@ -860,6 +897,7 @@ function pruneProgram(
           instructions: [],
           constants: [],
           outputs: {},
+          condition: undefined,
           attributes: [],
         };
       }
@@ -888,80 +926,397 @@ function pruneProgram(
     }
   };
 
-  const live = new Uint8Array(builder.instructions.length);
-  markDependencies(
-    [
-      outputs.when,
-      outputs.position,
-      outputs.scale,
-      outputs.quaternion,
-      outputs.opacity,
-      outputs.alpha,
-      outputs.color,
-      ...(outputs.sh ?? []),
-    ],
-    live,
-  );
+  const createSerializer = () => {
+    const instructions: SplatPostDecodeInstruction[] = [];
+    const constants: number[] = [];
+    const attributes: AttributeBinding[] = [];
+    const attributeMap = new Map<number, number>();
+    const constantMap = new Map<number, number>();
+    const dependencyMarks = new Uint32Array(builder.instructions.length);
+    let dependencyGeneration = 0;
+    let tooLarge = false;
+    const append = (
+      sourceOrder: readonly number[],
+      registerMap: Int32Array = new Int32Array(
+        builder.instructions.length,
+      ).fill(-1),
+    ) => {
+      for (const sourceIndex of sourceOrder) {
+        const source = builder.instructions[sourceIndex];
+        if (source.opcode === Opcode.Constant) {
+          let mapped = constantMap.get(sourceIndex);
+          if (mapped === undefined) {
+            if (instructions.length >= 4096) {
+              tooLarge = true;
+              break;
+            }
+            mapped = instructions.length;
+            constantMap.set(sourceIndex, mapped);
+            const immediate = constants.length;
+            constants.push(
+              ...builder.constants.slice(
+                source.immediate,
+                source.immediate + TYPE_WIDTHS[source.type],
+              ),
+            );
+            instructions.push({ ...source, immediate });
+          }
+          registerMap[sourceIndex] = mapped;
+          continue;
+        }
 
-  // Dynamic conditions form a topological prefix. The worker can evaluate
-  // that prefix for the full block, compact the matching Splats, and avoid all
-  // output-only work for the rest.
+        if (instructions.length >= 4096) {
+          tooLarge = true;
+          break;
+        }
+        let immediate = source.immediate;
+        if (source.opcode === Opcode.InputAttribute) {
+          let mapped = attributeMap.get(immediate);
+          if (mapped === undefined) {
+            mapped = attributes.length;
+            attributeMap.set(immediate, mapped);
+            attributes.push(builder.attributes[immediate]);
+          }
+          immediate = mapped;
+        }
+        registerMap[sourceIndex] = instructions.length;
+        instructions.push({
+          ...source,
+          args: source.args.map((argument) => registerMap[argument]),
+          immediate,
+        });
+      }
+      return registerMap;
+    };
+    const appendDependencies = (
+      roots: readonly (number | undefined)[],
+      registerMap: Int32Array = new Int32Array(
+        builder.instructions.length,
+      ).fill(-1),
+      forceRoots = false,
+    ) => {
+      if (forceRoots) {
+        for (const root of roots) {
+          if (
+            root !== undefined &&
+            builder.instructions[root].opcode !== Opcode.Constant
+          ) {
+            // Every flow stage needs a concrete instruction boundary even if
+            // the same predicate register appeared in its unique predecessor.
+            registerMap[root] = -1;
+          }
+        }
+      }
+
+      dependencyGeneration += 1;
+      const pending: number[] = [];
+      const sourceOrder: number[] = [];
+      for (const root of roots) {
+        if (root !== undefined && registerMap[root] === -1) {
+          pending.push(root);
+        }
+      }
+      while (pending.length !== 0) {
+        const register = pending.pop();
+        if (
+          register === undefined ||
+          registerMap[register] !== -1 ||
+          dependencyMarks[register] === dependencyGeneration
+        ) {
+          continue;
+        }
+        dependencyMarks[register] = dependencyGeneration;
+        sourceOrder.push(register);
+        for (const argument of builder.instructions[register].args) {
+          if (registerMap[argument] === -1) pending.push(argument);
+        }
+      }
+      // Builder register indices are topological. Sorting only the newly found
+      // dependencies preserves that order without rescanning the whole program.
+      sourceOrder.sort((left, right) => left - right);
+      return append(sourceOrder, registerMap);
+    };
+    return {
+      instructions,
+      constants,
+      attributes,
+      append,
+      appendDependencies,
+      get tooLarge() {
+        return tooLarge;
+      },
+    };
+  };
+
+  const outputRoots = [
+    outputs.position,
+    outputs.scale,
+    outputs.quaternion,
+    outputs.opacity,
+    outputs.alpha,
+    outputs.color,
+    ...(outputs.sh ?? []),
+  ];
+
+  // Compile every dynamic condition to the same forward flow. Atomic
+  // predicates naturally produce one stage, while AND/OR/NOT recursively wire
+  // those stages to accept/reject continuations without expanding to DNF/CNF.
+  if (outputs.when !== undefined) {
+    const whenRegister = outputs.when;
+    const FLOW_ACCEPT = -1;
+    const FLOW_REJECT = -2;
+    const FLOW_DYNAMIC = 0;
+    const FLOW_CONSTANT_FALSE = 1;
+    const FLOW_CONSTANT_TRUE = 2;
+    const MAX_FLOW_STAGE_COUNT = 4096;
+    const constantFlowValues = new Uint8Array(builder.instructions.length);
+    for (let register = 0; register <= whenRegister; register += 1) {
+      const instruction = builder.instructions[register];
+      if (
+        instruction.opcode === Opcode.Constant &&
+        instruction.type === "bool"
+      ) {
+        constantFlowValues[register] = builder.constants[instruction.immediate]
+          ? FLOW_CONSTANT_TRUE
+          : FLOW_CONSTANT_FALSE;
+      } else if (instruction.opcode === Opcode.Not) {
+        const value = constantFlowValues[instruction.args[0]];
+        constantFlowValues[register] =
+          value === FLOW_CONSTANT_TRUE
+            ? FLOW_CONSTANT_FALSE
+            : value === FLOW_CONSTANT_FALSE
+              ? FLOW_CONSTANT_TRUE
+              : FLOW_DYNAMIC;
+      } else if (instruction.opcode === Opcode.And) {
+        const left = constantFlowValues[instruction.args[0]];
+        const right = constantFlowValues[instruction.args[1]];
+        constantFlowValues[register] =
+          left === FLOW_CONSTANT_FALSE || right === FLOW_CONSTANT_FALSE
+            ? FLOW_CONSTANT_FALSE
+            : left === FLOW_CONSTANT_TRUE && right === FLOW_CONSTANT_TRUE
+              ? FLOW_CONSTANT_TRUE
+              : FLOW_DYNAMIC;
+      } else if (instruction.opcode === Opcode.Or) {
+        const left = constantFlowValues[instruction.args[0]];
+        const right = constantFlowValues[instruction.args[1]];
+        constantFlowValues[register] =
+          left === FLOW_CONSTANT_TRUE || right === FLOW_CONSTANT_TRUE
+            ? FLOW_CONSTANT_TRUE
+            : left === FLOW_CONSTANT_FALSE && right === FLOW_CONSTANT_FALSE
+              ? FLOW_CONSTANT_FALSE
+              : FLOW_DYNAMIC;
+      }
+    }
+    type SourceFlowNode = {
+      register: number;
+      onTrue: number;
+      onFalse: number;
+    };
+    const reverseFlowNodes: SourceFlowNode[] = [];
+    let flowTooLarge = false;
+    const compileFlow = (
+      register: number,
+      onTrue: number,
+      onFalse: number,
+    ): number => {
+      if (flowTooLarge) return onFalse;
+
+      const constantValue = constantFlowValues[register];
+      if (constantValue !== FLOW_DYNAMIC) {
+        return constantValue === FLOW_CONSTANT_TRUE ? onTrue : onFalse;
+      }
+
+      const instruction = builder.instructions[register];
+      if (instruction.opcode === Opcode.Not) {
+        return compileFlow(instruction.args[0], onFalse, onTrue);
+      }
+      if (instruction.opcode === Opcode.And) {
+        const right = compileFlow(instruction.args[1], onTrue, onFalse);
+        return compileFlow(instruction.args[0], right, onFalse);
+      }
+      if (instruction.opcode === Opcode.Or) {
+        const right = compileFlow(instruction.args[1], onTrue, onFalse);
+        return compileFlow(instruction.args[0], onTrue, right);
+      }
+
+      // Pure logical constants were folded above, so every remaining expanded
+      // path eventually emits a stage and is bounded here.
+      if (reverseFlowNodes.length >= MAX_FLOW_STAGE_COUNT) {
+        flowTooLarge = true;
+        return onFalse;
+      }
+      const node = reverseFlowNodes.length;
+      reverseFlowNodes.push({ register, onTrue, onFalse });
+      return node;
+    };
+
+    const flowEntry = compileFlow(whenRegister, FLOW_ACCEPT, FLOW_REJECT);
+    if (!flowTooLarge && flowEntry === FLOW_REJECT) {
+      return {
+        instructions: [],
+        constants: [],
+        outputs: {},
+        condition: undefined,
+        attributes: [],
+      };
+    }
+    if (!flowTooLarge && flowEntry === FLOW_ACCEPT) {
+      outputs.when = undefined;
+    } else if (!flowTooLarge) {
+      const reachable = new Uint8Array(reverseFlowNodes.length);
+      const pending = [flowEntry];
+      while (pending.length !== 0) {
+        const node = pending.pop();
+        if (node === undefined || node < 0 || reachable[node]) continue;
+        reachable[node] = 1;
+        const { onTrue, onFalse } = reverseFlowNodes[node];
+        pending.push(onTrue, onFalse);
+      }
+
+      // Nodes are created continuation-first. Reversing reachable nodes puts
+      // every branch target after its source, which lets the runtime execute
+      // the stages once in a simple forward pass.
+      const sourceNodeOrder: number[] = [];
+      for (let node = reverseFlowNodes.length - 1; node >= 0; node -= 1) {
+        if (reachable[node]) sourceNodeOrder.push(node);
+      }
+      const flowMap = new Int32Array(reverseFlowNodes.length).fill(-1);
+      for (let index = 0; index < sourceNodeOrder.length; index += 1) {
+        flowMap[sourceNodeOrder[index]] = index;
+      }
+
+      if (flowMap[flowEntry] !== 0) {
+        throw new Error("Invalid postDecode condition flow");
+      }
+
+      const stageCount = sourceNodeOrder.length;
+      const acceptTarget = stageCount;
+      const rejectTarget = acceptTarget + 1;
+      const packedStages = new Uint16Array(
+        stageCount * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE,
+      );
+      const predecessors = new Int32Array(stageCount).fill(-1);
+      let acceptPredecessor = -1;
+      const recordPredecessor = (target: number, predecessor: number) => {
+        if (target === rejectTarget) return;
+        if (target === acceptTarget) {
+          if (acceptPredecessor === -1) acceptPredecessor = predecessor;
+          else if (acceptPredecessor !== predecessor) acceptPredecessor = -2;
+          return;
+        }
+        const current = predecessors[target];
+        if (current === -1) predecessors[target] = predecessor;
+        else if (current !== predecessor) predecessors[target] = -2;
+      };
+      const remapTarget = (target: number) =>
+        target === FLOW_ACCEPT
+          ? acceptTarget
+          : target === FLOW_REJECT
+            ? rejectTarget
+            : flowMap[target];
+
+      for (let stageIndex = 0; stageIndex < stageCount; stageIndex += 1) {
+        const node = reverseFlowNodes[sourceNodeOrder[stageIndex]];
+        const offset = stageIndex * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
+        const onTrue = remapTarget(node.onTrue);
+        const onFalse = remapTarget(node.onFalse);
+        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_ON_TRUE] = onTrue;
+        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_ON_FALSE] = onFalse;
+        recordPredecessor(onTrue, stageIndex);
+        recordPredecessor(onFalse, stageIndex);
+      }
+
+      const serializer = createSerializer();
+      let previousRegisterMap: Int32Array | undefined;
+      for (let stageIndex = 0; stageIndex < stageCount; stageIndex += 1) {
+        const node = reverseFlowNodes[sourceNodeOrder[stageIndex]];
+        const offset = stageIndex * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE;
+        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_START] =
+          serializer.instructions.length;
+        const registerMap = serializer.appendDependencies(
+          [node.register],
+          stageIndex > 0 && predecessors[stageIndex] === stageIndex - 1
+            ? previousRegisterMap
+            : undefined,
+          true,
+        );
+        if (serializer.tooLarge) break;
+        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION] =
+          serializer.instructions.length - 1;
+        packedStages[offset + SPLAT_POST_DECODE_FLOW_STAGE_REGISTER] =
+          registerMap[node.register];
+        previousRegisterMap = registerMap;
+      }
+
+      if (!serializer.tooLarge) {
+        const lastStage = stageCount - 1;
+        const outputMap = serializer.appendDependencies(
+          outputRoots,
+          acceptPredecessor === lastStage ? previousRegisterMap : undefined,
+        );
+        if (!serializer.tooLarge) {
+          const remapOutput = (register: number | undefined) =>
+            register === undefined ? undefined : outputMap[register];
+          return {
+            instructions: serializer.instructions,
+            constants: serializer.constants,
+            outputs: {
+              position: remapOutput(outputs.position),
+              scale: remapOutput(outputs.scale),
+              quaternion: remapOutput(outputs.quaternion),
+              opacity: remapOutput(outputs.opacity),
+              alpha: remapOutput(outputs.alpha),
+              color: remapOutput(outputs.color),
+              sh: outputs.sh?.map((register) => outputMap[register]),
+            },
+            condition: { mode: "flow" as const, stages: packedStages },
+            attributes: serializer.attributes,
+          };
+        }
+      }
+      // Pathological DAG expansion can exceed the normal 4096-instruction
+      // bound. In that case the regular eager serializer below remains the
+      // correctness-preserving fallback.
+    }
+  }
+
+  const live = new Uint8Array(builder.instructions.length);
+  markDependencies(outputRoots, live);
   const conditionLive = new Uint8Array(builder.instructions.length);
   if (outputs.when !== undefined) {
     markDependencies([outputs.when], conditionLive);
   }
+  for (let index = 0; index < live.length; index += 1) {
+    live[index] ||= conditionLive[index];
+  }
+
+  // The eager fallback keeps the complete condition in one topological prefix.
+  // Reaching this path with a dynamic condition means expanded flow bytecode
+  // exceeded the normal instruction bound.
   const instructionOrder: number[] = [];
   if (outputs.when !== undefined) {
     for (let index = 0; index < live.length; index += 1) {
       if (conditionLive[index]) instructionOrder.push(index);
     }
-  }
-  for (let index = 0; index < live.length; index += 1) {
-    if (live[index] && !conditionLive[index]) instructionOrder.push(index);
-  }
-
-  const registerMap = new Int32Array(builder.instructions.length).fill(-1);
-  for (let index = 0; index < instructionOrder.length; index += 1) {
-    registerMap[instructionOrder[index]] = index;
-  }
-
-  const constants: number[] = [];
-  const attributes: AttributeBinding[] = [];
-  const attributeMap = new Map<number, number>();
-  const instructions = instructionOrder.map((sourceIndex) => {
-    const instruction = builder.instructions[sourceIndex];
-    let immediate = instruction.immediate;
-    if (instruction.opcode === Opcode.Constant) {
-      immediate = constants.length;
-      constants.push(
-        ...builder.constants.slice(
-          instruction.immediate,
-          instruction.immediate + TYPE_WIDTHS[instruction.type],
-        ),
-      );
-    } else if (instruction.opcode === Opcode.InputAttribute) {
-      let mapped = attributeMap.get(instruction.immediate);
-      if (mapped === undefined) {
-        mapped = attributes.length;
-        attributeMap.set(instruction.immediate, mapped);
-        attributes.push(builder.attributes[instruction.immediate]);
-      }
-      immediate = mapped;
+    for (let index = 0; index < live.length; index += 1) {
+      if (live[index] && !conditionLive[index]) instructionOrder.push(index);
     }
-    return {
-      ...instruction,
-      args: instruction.args.map((argument) => registerMap[argument]),
-      immediate,
-    };
-  });
+  } else {
+    for (let index = 0; index < live.length; index += 1) {
+      if (live[index]) instructionOrder.push(index);
+    }
+  }
+
+  const serializer = createSerializer();
+  const registerMap = serializer.append(instructionOrder);
   const remap = (register: number | undefined) =>
     register === undefined ? undefined : registerMap[register];
+  const when = remap(outputs.when);
 
   return {
-    instructions,
-    constants,
+    instructions: serializer.instructions,
+    constants: serializer.constants,
     outputs: {
-      when: remap(outputs.when),
       position: remap(outputs.position),
       scale: remap(outputs.scale),
       quaternion: remap(outputs.quaternion),
@@ -970,7 +1325,14 @@ function pruneProgram(
       color: remap(outputs.color),
       sh: outputs.sh?.map((register) => registerMap[register]),
     },
-    attributes,
+    condition:
+      when === undefined
+        ? undefined
+        : {
+            mode: "flow" as const,
+            stages: new Uint16Array([0, when, when, 1, 2]),
+          },
+    attributes: serializer.attributes,
   };
 }
 
@@ -991,6 +1353,7 @@ class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
       instructions,
       constants,
       outputs,
+      condition,
       attributes: attributeBindings,
     } = pruneProgram(builder, program.outputs);
     type AttributeRegion = {
@@ -1066,13 +1429,56 @@ class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
     });
 
     return {
-      instructions,
+      instructions: packInstructions(instructions),
       constants: new Float32Array(constants),
       outputs,
+      condition,
       attributeData,
       attributes,
     };
   }
+}
+
+function packInstructions(
+  instructions: readonly SplatPostDecodeInstruction[],
+): Uint16Array {
+  const packed = new Uint16Array(
+    instructions.length * SPLAT_POST_DECODE_INSTRUCTION_STRIDE,
+  );
+  packed.fill(SPLAT_POST_DECODE_MISSING_ARGUMENT);
+  for (let index = 0; index < instructions.length; index += 1) {
+    const instruction = instructions[index];
+    if (
+      instruction.args.length > SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_COUNT ||
+      !Number.isInteger(instruction.immediate) ||
+      instruction.immediate < 0 ||
+      instruction.immediate > 0xffff ||
+      instruction.args.some(
+        (argument) =>
+          !Number.isInteger(argument) ||
+          argument < 0 ||
+          argument >= SPLAT_POST_DECODE_MISSING_ARGUMENT,
+      )
+    ) {
+      throw new Error("postDecode instruction exceeds Uint16 bytecode limits");
+    }
+    const offset = index * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
+    packed[offset + SPLAT_POST_DECODE_INSTRUCTION_OPCODE] = instruction.opcode;
+    packed[offset + SPLAT_POST_DECODE_INSTRUCTION_WIDTH] =
+      TYPE_WIDTHS[instruction.type];
+    packed[offset + SPLAT_POST_DECODE_INSTRUCTION_IMMEDIATE] =
+      instruction.immediate;
+    for (
+      let argumentIndex = 0;
+      argumentIndex < instruction.args.length;
+      argumentIndex += 1
+    ) {
+      packed[
+        offset + SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0 + argumentIndex
+      ] = instruction.args[argumentIndex];
+    }
+  }
+  return packed;
 }
 
 /** @internal */

@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Compiled arbitrary nested post-decode `when` AND/OR/NOT expressions into one short-circuited forward flow per worker block, routing and compacting only the Splats that reach each stage without rescanning the full block, including mixed branches, De Morgan negation, and condition values that are also used by patch outputs.
+- Reduced post-decode flow setup and worker overhead by incrementally serializing only new stage dependencies, packing stage and fixed-width instruction records into transferable `Uint16Array` bytecode, encoding register lifetimes as lazy carry events, executing precomputed instruction ranges, and using precompiled field-major output and SH writeback plans that reuse per-block destination word bases.
+- Constant-folded shared logical DAGs before flow construction, preventing exponential serialization of constant AND/OR/NOT subgraphs without imposing a separate traversal-count cutoff beyond the existing 4096-stage and instruction capacity.
+
 ## [0.1.11] - 2026-08-30
 
 ### Changed
