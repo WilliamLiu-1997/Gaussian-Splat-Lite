@@ -45,6 +45,7 @@ const renderOptionsContent = document.querySelector("#render-options-content");
 const renderOptionsReset = document.querySelector("#render-options-reset");
 const performanceFps = document.querySelector("#performance-fps");
 const performanceHeap = document.querySelector("#performance-heap");
+const performanceHeapStat = performanceHeap.closest(".performance-stat");
 
 const EXAMPLE_MODEL = {
   name: "lion.v3.spz",
@@ -86,13 +87,13 @@ function updateHeapStat() {
   const memory = performance.memory;
   if (!memory || !Number.isFinite(memory.usedJSHeapSize)) {
     performanceHeap.value = "N/A";
-    performanceHeap.title =
+    performanceHeapStat.dataset.tooltip =
       "JS heap reporting is not available in this browser.";
     return;
   }
 
   performanceHeap.value = formatHeapSize(memory.usedJSHeapSize);
-  performanceHeap.title = Number.isFinite(memory.jsHeapSizeLimit)
+  performanceHeapStat.dataset.tooltip = Number.isFinite(memory.jsHeapSizeLimit)
     ? `${formatHeapSize(memory.usedJSHeapSize)} used of ${formatHeapSize(memory.jsHeapSizeLimit)}`
     : `${formatHeapSize(memory.usedJSHeapSize)} used`;
 }
