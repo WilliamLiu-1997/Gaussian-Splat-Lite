@@ -24,7 +24,7 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `maxStdDev` | `number` | `Math.sqrt(8)` | Maximum standard deviations drawn from each Gaussian center; lower values improve speed but crop edges |
 | `minPixelRadius` | `number` | `1` | Minimum screen-space Splat radius |
 | `maxPixelRadius` | `number` | `512` | Maximum screen-space Splat radius |
-| `minAlpha` | `number` | `1 / 255` | Fragments below this alpha are discarded |
+| `minAlpha` | `number` | `0.5 / 255` | Fragments below this alpha are discarded |
 | `enable2DGS` | `boolean` | `false` | Treats a Splat with exactly one zero scale axis as a 2D Gaussian |
 | `preBlurAmount` | `number` | `0` | Adds to the covariance diagonal before opacity correction |
 | `blurAmount` | `number` | `0.3` | Anti-aliasing blur amount with opacity correction |

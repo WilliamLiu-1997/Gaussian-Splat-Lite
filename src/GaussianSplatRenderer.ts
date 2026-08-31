@@ -9,7 +9,7 @@ import { resolveTimer, uploadU32DataTextureRows } from "./utils";
 const renderToViewScaleTmp = new THREE.Vector3();
 const ORDERING_TEXTURE_WIDTH = 4096;
 const SPLATS_PER_ORDERING_ROW = ORDERING_TEXTURE_WIDTH * 4;
-const DEFAULT_MIN_ALPHA = 1 / 255;
+const DEFAULT_MIN_ALPHA = 0.5 / 255;
 
 function getOrderingCapacity(maxSplats: number) {
   return (
@@ -87,7 +87,7 @@ export interface GaussianSplatRendererOptions {
   maxPixelRadius?: number;
   /**
    * Minimum alpha value for splat rendering.
-   * @default 1 / 255
+   * @default 0.5 / 255
    */
   minAlpha?: number;
   /**
