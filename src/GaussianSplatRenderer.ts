@@ -91,15 +91,6 @@ export interface GaussianSplatRendererOptions {
    */
   minAlpha?: number;
   /**
-   * Enable 2D Gaussian splatting rendering ability. When this mode is enabled,
-   * any scale x/y/z component that is exactly 0 (minimum quantized value) results
-   * in the other two non-0 axis being interpreted as an oriented 2D Gaussian Splat,
-   * rather instead of the usual projected 3DGS Z-slice. When reading PLY files,
-   * scale values less than e^-30 will be interpreted as 0.
-   * @default false
-   */
-  enable2DGS?: boolean;
-  /**
    * Scalar value to add to 2D splat covariance diagonal, effectively blurring +
    * enlarging splats. In scenes trained without the Gsplat anti-aliasing tweak
    * this value was typically 0.3, but with anti-aliasing it is 0.0
@@ -221,7 +212,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   minPixelRadius: number;
   maxPixelRadius: number;
   minAlpha: number;
-  enable2DGS: boolean;
   preBlurAmount: number;
   blurAmount: number;
   clipXY: number;
@@ -289,7 +279,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       transparent: options.transparent ?? true,
       depthTest: options.depthTest ?? true,
       depthWrite: options.depthWrite ?? false,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
       allowOverride: false,
     });
 
@@ -314,7 +304,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.minPixelRadius = options.minPixelRadius ?? 1.0;
     this.maxPixelRadius = options.maxPixelRadius ?? 512.0;
     this.minAlpha = options.minAlpha ?? DEFAULT_MIN_ALPHA;
-    this.enable2DGS = options.enable2DGS ?? false;
     this.preBlurAmount = options.preBlurAmount ?? 0.0;
     this.blurAmount = options.blurAmount ?? 0.3;
     this.clipXY = options.clipXY ?? 1.25;
@@ -403,8 +392,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       maxPixelRadius: { value: 512.0 },
       // Minimum alpha value for splat rendering
       minAlpha: { value: DEFAULT_MIN_ALPHA },
-      // Enable interpreting 0-thickness Gsplats as 2DGS
-      enable2DGS: { value: false },
       // Add to projected 2D splat covariance diagonal (thickens and brightens)
       preBlurAmount: { value: 0.0 },
       // Add to 2D splat covariance diagonal and adjust opacity (anti-aliasing)
@@ -611,7 +598,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.minPixelRadius.value = gaussianSplatRenderer.minPixelRadius;
     this.uniforms.maxPixelRadius.value = gaussianSplatRenderer.maxPixelRadius;
     this.uniforms.minAlpha.value = gaussianSplatRenderer.minAlpha;
-    this.uniforms.enable2DGS.value = gaussianSplatRenderer.enable2DGS;
     this.uniforms.preBlurAmount.value = gaussianSplatRenderer.preBlurAmount;
     this.uniforms.blurAmount.value = gaussianSplatRenderer.blurAmount;
     this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;

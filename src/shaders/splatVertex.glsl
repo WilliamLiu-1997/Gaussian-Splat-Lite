@@ -7,7 +7,6 @@ precision highp usampler2DArray;
 
 out vec4 vRgba;
 out vec2 vSplatUv;
-out vec3 vNdc;
 flat out uint vSplatIndex;
 flat out float vSupportRadiusSquared;
 flat out float vKernelPower;
@@ -25,7 +24,6 @@ uniform float time;
 uniform float deltaTime;
 uniform bool debugFlag;
 uniform float minAlpha;
-uniform bool enable2DGS;
 uniform float blurAmount;
 uniform float preBlurAmount;
 uniform float clipXY;
@@ -96,8 +94,7 @@ void main() {
     uvec4 splat2 = texelFetch(splats2, texCoord, 0);
     decodeSplatAttributesLnScale(splat2, alpha, lnScales, quaternion, rgba);
     vec3 scales = exp(lnScales);
-    bvec3 zeroScales = equal(scales, vec3(0.0));
-    if (all(zeroScales)) {
+    if (all(equal(scales, vec3(0.0)))) {
         return;
     }
 
@@ -131,30 +128,6 @@ void main() {
 
     // Compute view space quaternion of splat
     vec4 viewQuaternion = quatQuat(renderToViewQuat, quaternion);
-
-    if (enable2DGS && any(zeroScales)) {
-        if (kernelPower == 0.0) {
-            supportRadius = gaussianSupportRadius(alpha, supportRadius);
-        }
-        vSupportRadiusSquared = supportRadius * supportRadius;
-        vSplatUv = position.xy * supportRadius;
-
-        vec3 offset;
-        if (zeroScales.z) {
-            offset = vec3(vSplatUv.xy * scales.xy, 0.0);
-        } else if (zeroScales.y) {
-            offset = vec3(vSplatUv.x * scales.x, 0.0, vSplatUv.y * scales.z);
-        } else {
-            offset = vec3(0.0, vSplatUv.xy * scales.yz);
-        }
-
-        vec3 viewPos = viewCenter + quatVec(viewQuaternion, offset);
-        gl_Position = projectionMatrix * vec4(viewPos, 1.0);
-        vNdc = gl_Position.xyz / gl_Position.w;
-
-        #include <logdepthbuf_vertex>
-        return;
-    }
 
     // Compute the scaled rotation basis of the splat.
     mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);
@@ -241,7 +214,6 @@ void main() {
     vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
-    vNdc = ndc;
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
 
     #include <logdepthbuf_vertex>

@@ -233,14 +233,6 @@ const renderOptionGroups = [
         defaultValue: 2,
         format: (value) => `${value.toFixed(2)}×`,
       },
-      {
-        property: "enable2DGS",
-        description:
-          "Treats splats with one zero scale axis as oriented 2D Gaussians.",
-        defaultValue: false,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
     ],
   },
   {

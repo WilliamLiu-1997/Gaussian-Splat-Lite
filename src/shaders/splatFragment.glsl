@@ -15,7 +15,6 @@ out vec4 fragColor;
 
 in vec4 vRgba;
 in vec2 vSplatUv;
-in vec3 vNdc;
 flat in uint vSplatIndex;
 flat in float vSupportRadiusSquared;
 flat in float vKernelPower;

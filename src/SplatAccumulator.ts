@@ -154,8 +154,8 @@ export class SplatAccumulator {
     // Match PlayCanvas' work-buffer transform: centers use the complete affine
     // basis, while splat shape uses the decomposed rotation and positive
     // per-axis scale. This is intentionally an approximation for non-uniform
-    // transforms, but preserves ordinary scale/quaternion storage and 2DGS
-    // zero axes.
+    // transforms while preserving ordinary scale/quaternion storage and zero
+    // scale axes.
     uniforms.objectLnScale.value.set(
       Math.log(this.transformScale.x),
       Math.log(this.transformScale.y),

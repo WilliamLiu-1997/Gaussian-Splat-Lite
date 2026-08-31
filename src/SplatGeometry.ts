@@ -18,4 +18,6 @@ const QUAD_VERTICES = new Float32Array([
   -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0,
 ]);
 
-const QUAD_INDICES = new Uint16Array([0, 1, 2, 0, 2, 3]);
+// The projected covariance basis reverses handedness, so clockwise local
+// triangles become counter-clockwise screen-space faces for FrontSide culling.
+const QUAD_INDICES = new Uint16Array([0, 2, 1, 0, 3, 2]);

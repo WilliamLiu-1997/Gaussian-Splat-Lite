@@ -25,7 +25,6 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `minPixelRadius` | `number` | `1` | Minimum screen-space Splat radius |
 | `maxPixelRadius` | `number` | `512` | Maximum screen-space Splat radius |
 | `minAlpha` | `number` | `0.5 / 255` | Fragments below this alpha are discarded |
-| `enable2DGS` | `boolean` | `false` | Treats a Splat with exactly one zero scale axis as a 2D Gaussian |
 | `preBlurAmount` | `number` | `0` | Adds to the covariance diagonal before opacity correction |
 | `blurAmount` | `number` | `0.3` | Anti-aliasing blur amount with opacity correction |
 | `clipXY` | `number` | `1.25` | Center-clipping factor relative to the X/Y frustum boundary; `1` clips immediately outside it |

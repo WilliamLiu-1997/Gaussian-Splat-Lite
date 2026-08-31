@@ -23,7 +23,7 @@ It works alongside standard Three.js scenes, cameras, meshes, and render loops, 
 - `.ply` and `.spz` file support
 - URL, in-memory byte, and standard `ReadableStream` inputs
 - Rust/WebAssembly file decoding, depth sorting, and raycasting
-- 3DGS rendering and optional 2DGS support
+- 3DGS rendering with configurable anti-aliasing
 - Spherical harmonics, offscreen rendering, and environment-map rendering
 - SDF-based color and opacity editing
 - Camera-relative rendering for large GIS/ECEF world coordinates

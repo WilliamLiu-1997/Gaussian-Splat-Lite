@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Switched the default Splat material to front-face culling with matching quad winding.
+
+### Removed
+
+- Removed the optional 2DGS rendering path and the `GaussianSplatRenderer.enable2DGS` option.
+
 ## [0.1.14] - 2026-08-31
 
 ### Added

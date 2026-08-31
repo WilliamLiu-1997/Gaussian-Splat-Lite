@@ -12,7 +12,7 @@ const sourceAxis = new THREE.Vector3();
  *
  * Unlike Matrix4.decompose(), this remains finite when a model scale axis is
  * zero. When possible, the missing basis axis is reconstructed from the other
- * two so a model-level collapse can still produce a correctly oriented 2DGS.
+ * two so degenerate transforms retain a stable orientation.
  */
 export function decomposeSplatTransform(
   matrix: THREE.Matrix4,
