@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Switched the default Splat material to front-face culling with matching quad winding.
+- Raycast thin nonzero Splats as ellipsoids, reserving flat-disk intersection for an exact zero scale axis.
 
 ### Removed
 

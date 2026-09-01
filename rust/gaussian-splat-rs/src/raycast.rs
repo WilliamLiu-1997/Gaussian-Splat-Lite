@@ -188,8 +188,12 @@ fn raycast_ellipsoid(
     let local_origin = quat_vec(inv_quat, origin);
     let local_dir = quat_vec(inv_quat, dir);
 
-    let min_scale = scale[0].max(scale[1]).max(scale[2]) * 0.01;
-    if scale[2] < min_scale {
+    let zero_scale_count = scale.iter().filter(|&&value| value == 0.0).count();
+    if zero_scale_count > 1 {
+        return None;
+    }
+
+    if scale[2] == 0.0 {
         // Treat it as a flat elliptical disk
         if local_dir[2].abs() < 1e-6 {
             return None;
@@ -201,7 +205,7 @@ fn raycast_ellipsoid(
             return None;
         }
         raycast_t_in_range(t, near, far)
-    } else if scale[1] < min_scale {
+    } else if scale[1] == 0.0 {
         // Treat it as a flat elliptical disk
         if local_dir[1].abs() < 1e-6 {
             return None;
@@ -213,7 +217,7 @@ fn raycast_ellipsoid(
             return None;
         }
         raycast_t_in_range(t, near, far)
-    } else if scale[0] < min_scale {
+    } else if scale[0] == 0.0 {
         // Treat it as a flat elliptical disk
         if local_dir[0].abs() < 1e-6 {
             return None;
@@ -443,6 +447,46 @@ mod tests {
         );
 
         assert_eq!(distances.len(), 1);
+    }
+
+    #[test]
+    fn raycasts_thin_nonzero_scales_as_ellipsoids() {
+        let distance = raycast_ellipsoid(
+            [-2.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0; 3],
+            [1.0, 1.0, 0.001],
+            [0.0, 0.0, 0.0, 1.0],
+            0.0,
+            10.0,
+        );
+
+        assert_near(distance.unwrap(), 1.0);
+    }
+
+    #[test]
+    fn raycasts_exact_zero_scales_as_flat_disks() {
+        let distance = raycast_ellipsoid(
+            [0.0, 0.0, -2.0],
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            0.0,
+            10.0,
+        );
+
+        assert_near(distance.unwrap(), 2.0);
+        assert!(raycast_ellipsoid(
+            [-2.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0; 3],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            0.0,
+            10.0,
+        )
+        .is_none());
     }
 
     #[test]
