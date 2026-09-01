@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-09-01
+
 ### Changed
 
 - Switched the default Splat material to front-face culling with matching quad winding.
@@ -180,7 +182,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.11...v0.1.12
