@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-09-03
+
+### Changed
+
+- Increased the default `SplatMesh.minRaycastOpacity` from `0.05` to `0.1`.
+- Accepted only the ellipsoid entry intersection, so rays starting inside a Splat or entering before the near plane no longer select its exit surface.
+
+### Fixed
+
+- Updated scene world matrices before Splat renderer updates read camera, mesh, and edit transforms, including explicit `update()` calls made before rendering.
+
 ## [0.1.15] - 2026-09-01
 
 ### Changed
@@ -182,7 +193,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.12...v0.1.13

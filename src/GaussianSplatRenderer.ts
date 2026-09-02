@@ -705,6 +705,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     shrinkResources,
   }: UpdateRequest) {
     const renderer = this.renderer;
+    if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
     if (shrinkResources) {
       this.releaseReadbackBuffers();
     }
