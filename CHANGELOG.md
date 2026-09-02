@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added native WebGPU accumulation and Splat rendering through TSL while retaining the existing Worker/WASM CPU sorting pipeline.
+- Added a WebGL/WebGPU backend toggle to the bundled viewer for direct comparison.
+- Added an optional same-frame sorting mode that uses GPU radix sorting on WebGPU and main-thread WASM sorting on WebGL.
+
+### Changed
+
+- Switched the Three.js development and peer dependency to the latest GitHub `dev` branch required by the WebGPU path.
+- Replaced WebGPU accumulator render passes with fixed compute kernels writing GPU-only storage array textures, and packed per-mesh ranges without row padding.
+- Restored target-aware sRGB decoding for WebGL and added equivalent working-space decoding for WebGPU before transparent compositing.
+
 ## [0.1.16] - 2026-09-03
 
 ### Changed

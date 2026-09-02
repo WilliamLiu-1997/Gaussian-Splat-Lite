@@ -709,7 +709,6 @@ function newUintArrayTexture(
   const texture = new THREE.DataArrayTexture(data, width, height, depth);
   texture.format = THREE.RGBAIntegerFormat;
   texture.type = THREE.UnsignedIntType;
-  texture.internalFormat = "RGBA32UI";
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
   texture.generateMipmaps = false;

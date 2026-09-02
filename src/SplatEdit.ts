@@ -358,7 +358,6 @@ function makeUintTexture(data: Uint32Array, width: number, height: number) {
     THREE.RGBAIntegerFormat,
     THREE.UnsignedIntType,
   );
-  texture.internalFormat = "RGBA32UI";
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
   texture.generateMipmaps = false;

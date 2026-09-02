@@ -12,6 +12,20 @@ import {
   Vector2,
   Vector3,
 } from "three";
+import {
+  Fn,
+  cameraProjectionMatrix,
+  modelViewMatrix,
+  positionGeometry,
+  smoothstep,
+  uniform,
+  uv,
+  varyingProperty,
+  vec2,
+  vec3,
+  vec4,
+} from "three/tsl";
+import { NodeMaterial } from "three/webgpu";
 
 const CAMERA_CENTER_MODE_DISTANCE_SQ = 3000000 ** 2;
 
@@ -286,8 +300,11 @@ class PointerTracker {
 }
 
 class PivotPointMesh extends Mesh {
-  constructor(size = 15, thickness = 3, reversedDepth = false) {
-    super(new PlaneGeometry(0, 0), new PivotMaterial(size, thickness));
+  constructor(renderer, size = 15, thickness = 3, reversedDepth = false) {
+    const material = renderer.isWebGPURenderer
+      ? new PivotNodeMaterial(size, thickness)
+      : new PivotMaterial(size, thickness);
+    super(new PlaneGeometry(0, 0), material);
     // Three.js reverses the transparent render list when reversed depth is
     // active, including explicit renderOrder values. Keep the pivot last in
     // either depth mode so Gaussian splats cannot draw over it.
@@ -314,28 +331,33 @@ class PivotPointMesh extends Mesh {
   }
 }
 
+function makePivotUniforms(size, thickness) {
+  const coreD = size + thickness;
+  const planeD = coreD + 3 * thickness;
+  const normThk = thickness / coreD;
+  const ringR = (coreD - 0.4 * thickness - 4.0) / coreD;
+  const hw = 0.4 * normThk;
+  return {
+    resolution: { value: new Vector2() },
+    opacity: { value: 1 },
+    planeD: { value: planeD },
+    hw: { value: hw },
+    ringR: { value: ringR },
+    shadowW: { value: hw * 5.0 },
+    uvScale: { value: planeD / coreD },
+  };
+}
+
 class PivotMaterial extends ShaderMaterial {
   constructor(size, thickness) {
-    const coreD = size + thickness;
-    const planeD = coreD + 3 * thickness;
-    const normThk = thickness / coreD;
-    const ringR = (coreD - 0.4 * thickness - 4.0) / coreD;
-    const hw = 0.4 * normThk;
+    const uniforms = makePivotUniforms(size, thickness);
 
     super({
       depthWrite: false,
       depthTest: false,
       transparent: true,
 
-      uniforms: {
-        resolution: { value: new Vector2() },
-        opacity: { value: 1 },
-        planeD: { value: planeD },
-        hw: { value: hw },
-        ringR: { value: ringR },
-        shadowW: { value: hw * 5.0 },
-        uvScale: { value: planeD / coreD },
-      },
+      uniforms,
 
       vertexShader: `
         uniform float planeD;
@@ -374,10 +396,77 @@ class PivotMaterial extends ShaderMaterial {
           float black = shadow * (1.0 - white);
           float alpha = (white + black) * opacity;
           if (alpha < 0.001) discard;
-          gl_FragColor = vec4(vec3(white / max(alpha / opacity, 0.001)), alpha);
+          vec4 rgba = vec4(vec3(white / max(alpha / opacity, 0.001)), alpha);
+          gl_FragColor = rgba;
         }
       `,
     });
+  }
+}
+
+class PivotNodeMaterial extends NodeMaterial {
+  constructor(size, thickness) {
+    super();
+    const uniforms = makePivotUniforms(size, thickness);
+    const bindings = Object.fromEntries(
+      Object.entries(uniforms).map(([name, entry]) => [
+        name,
+        uniform(entry.value).onObjectUpdate(() => entry.value),
+      ]),
+    );
+
+    this.depthWrite = false;
+    this.depthTest = false;
+    this.transparent = true;
+    this.uniforms = uniforms;
+
+    this.vertexNode = Fn(() => {
+      const pivotUv = varyingProperty("vec2", "pivotUv");
+      pivotUv.assign(uv());
+      const aspect = bindings.resolution.x.div(bindings.resolution.y);
+      const offset = uv().mul(2).sub(vec2(1)).toVar();
+      offset.y.mulAssign(aspect);
+      const screenPoint = cameraProjectionMatrix
+        .mul(modelViewMatrix)
+        .mul(vec4(positionGeometry, 1))
+        .toVar();
+      screenPoint.xy.addAssign(
+        offset
+          .mul(bindings.planeD)
+          .mul(screenPoint.w)
+          .div(bindings.resolution.x),
+      );
+      return screenPoint;
+    })();
+
+    this.colorNode = Fn(() => {
+      const pivotUv = varyingProperty("vec2", "pivotUv");
+      const localUv = pivotUv.mul(2).sub(1).mul(bindings.uvScale);
+      const length = localUv.length();
+      const fw = length.fwidth().mul(0.5);
+      const distance = length.sub(bindings.ringR).abs();
+      const ring = smoothstep(
+        bindings.hw.sub(fw),
+        bindings.hw.add(fw),
+        distance,
+      ).oneMinus();
+      const shadow = smoothstep(bindings.hw, bindings.shadowW, distance)
+        .oneMinus()
+        .mul(
+          smoothstep(
+            bindings.ringR.sub(fw),
+            bindings.ringR.add(fw),
+            length,
+          ).oneMinus(),
+        )
+        .mul(0.5);
+      const white = ring;
+      const black = shadow.mul(white.oneMinus());
+      const alpha = white.add(black).mul(bindings.opacity);
+      alpha.lessThan(0.001).discard();
+      const color = vec3(white.div(alpha.div(bindings.opacity).max(0.001)));
+      return vec4(color, alpha);
+    })();
   }
 }
 
@@ -513,9 +602,12 @@ class CameraController extends EventDispatcher {
     this.#raycaster = new Raycaster();
     this.#raycaster.params.Points.threshold = 0.1;
     this.#pivotMesh = new PivotPointMesh(
+      renderer,
       PIVOT_SIZE,
       PIVOT_THICKNESS,
-      renderer.capabilities.reversedDepthBuffer,
+      renderer.capabilities?.reversedDepthBuffer ??
+        renderer.reversedDepthBuffer ??
+        false,
     );
     this.#pivotMesh.visible = false;
     this.#pivotShownAt = 0;

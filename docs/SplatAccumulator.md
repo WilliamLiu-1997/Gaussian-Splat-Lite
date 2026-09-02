@@ -26,12 +26,12 @@ new SplatAccumulator()
 
 | API | Description |
 | --- | --- |
-| `getTextures()` | Returns the two generated standard-layout Splat data textures, or empty fallback textures before allocation |
-| `generateMapping(splatCounts)` | Assigns texture-row-aligned ranges and returns their required capacity |
-| `ensureGenerate({ maxSplats })` | Allocates or grows the generation target; returns whether a new target was created |
+| `getTextures()` | Returns the two generated standard-layout Splat textures, or empty fallback textures before allocation |
+| `generateMapping(splatCounts, compact?)` | Assigns ranges and returns their required capacity; compact ranges omit per-mesh row padding |
+| `ensureGenerate({ maxSplats, renderer?, shrinkResources? })` | Allocates, grows, or optionally shrinks the backend-appropriate GPU storage |
 | `generate({ mesh, base, count, renderer })` | Generates one mesh into its assigned accumulator range |
 | `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collects visible meshes, runs frame updates, compares versions, and returns a deferred generation plan |
 | `checkVersions(mapping)` | Reports generated-data, mapping, and sorting changes relative to another mapping |
-| `dispose()` | Releases the render target and drops retained mesh mappings |
+| `dispose()` | Releases accumulator GPU storage and drops retained mesh mappings |
 
 `prepareGenerate()`, `generate()`, and version management are renderer plumbing. Use `GaussianSplatRenderer.update()` for normal manual updates.

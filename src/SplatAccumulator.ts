@@ -3,7 +3,12 @@ import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
 
 import { SplatEdit, SplatEdits } from "./SplatEdit";
 import { SplatMesh } from "./SplatMesh";
+import { WebGPUAccumulatorGenerator } from "./WebGPUAccumulatorGenerator";
 import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "./defines";
+import {
+  type GaussianSplatCompatibleRenderer,
+  isWebGPURenderer,
+} from "./renderer";
 import { getShaders } from "./shaders";
 import splatGenerate from "./shaders/splatGenerate.glsl";
 import { decomposeSplatTransform } from "./splatTransform";
@@ -20,10 +25,7 @@ export type SplatMapping = {
 };
 
 type GenerateUniforms = Record<string, THREE.IUniform>;
-type SplatDataTextures = readonly [
-  THREE.DataArrayTexture,
-  THREE.DataArrayTexture,
-];
+type SplatDataTextures = readonly [THREE.Texture, THREE.Texture];
 
 export class SplatAccumulator {
   time = 0;
@@ -39,6 +41,7 @@ export class SplatAccumulator {
 
   private transformScale = new THREE.Vector3();
   private transformQuaternion = new THREE.Quaternion();
+  private webGPUGenerator: WebGPUAccumulatorGenerator | null = null;
 
   constructor() {
     if (!threeMrtArray) {
@@ -47,30 +50,34 @@ export class SplatAccumulator {
   }
 
   dispose() {
-    this.disposeTarget();
+    this.disposeStorage();
     this.mapping = [];
     this.numSplats = 0;
     this.version = -1;
     this.mappingVersion = -1;
   }
 
-  private disposeTarget() {
+  private disposeStorage() {
     this.target?.dispose();
     this.target = null;
+    this.webGPUGenerator?.dispose();
+    this.webGPUGenerator = null;
     this.maxSplats = 0;
   }
 
   getTextures(): SplatDataTextures {
-    // ensureGenerate() fixes every target to exactly two data attachments.
-    return (this.target?.textures ??
+    return (this.webGPUGenerator?.textures ??
+      this.target?.textures ??
       SplatAccumulator.emptyTextures) as SplatDataTextures;
   }
 
-  generateMapping(splatCounts: number[]) {
+  generateMapping(splatCounts: number[], compact = false) {
     let maxSplats = 0;
     const mapping = splatCounts.map((count) => {
       const base = maxSplats;
-      maxSplats += Math.ceil(count / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
+      maxSplats += compact
+        ? count
+        : Math.ceil(count / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
       return { base, count };
     });
     return { maxSplats, mapping };
@@ -78,26 +85,49 @@ export class SplatAccumulator {
 
   ensureGenerate({
     maxSplats,
+    renderer,
     shrinkResources = false,
   }: {
     maxSplats: number;
+    renderer?: GaussianSplatCompatibleRenderer;
     shrinkResources?: boolean;
   }) {
-    const textureSize = getTextureSize(Math.max(1, maxSplats));
-    if (
-      this.target &&
-      (shrinkResources
-        ? textureSize.maxSplats === this.maxSplats
-        : textureSize.maxSplats <= this.maxSplats)
-    ) {
+    const {
+      width,
+      height,
+      depth,
+      maxSplats: capacity,
+    } = getTextureSize(Math.max(1, maxSplats));
+    const reusable = shrinkResources
+      ? capacity === this.maxSplats
+      : capacity <= this.maxSplats;
+
+    if (renderer && isWebGPURenderer(renderer)) {
+      if (this.webGPUGenerator && reusable) return false;
+
+      if (this.webGPUGenerator) {
+        this.webGPUGenerator.setSize(width, height, depth);
+      } else {
+        this.disposeStorage();
+        this.webGPUGenerator = new WebGPUAccumulatorGenerator({
+          uniforms: makeGenerateUniforms(),
+          width,
+          height,
+          depth,
+        });
+      }
+      this.maxSplats = capacity;
+      return true;
+    }
+
+    if (this.target && reusable) {
       return false;
     }
     // Keep the prepared mapping and versions while replacing only its GPU
     // storage. Full dispose() also severs references to source meshes.
-    this.disposeTarget();
+    this.disposeStorage();
 
-    const { width, height, depth } = textureSize;
-    this.maxSplats = textureSize.maxSplats;
+    this.maxSplats = capacity;
     this.target = new THREE.WebGLArrayRenderTarget(width, height, depth, {
       depthBuffer: false,
       stencilBuffer: false,
@@ -115,7 +145,7 @@ export class SplatAccumulator {
   }
 
   private getMaterial() {
-    let material = SplatAccumulator.material;
+    let material = SplatAccumulator.webGLMaterial;
     if (!material) {
       getShaders();
       material = new THREE.RawShaderMaterial({
@@ -126,18 +156,16 @@ export class SplatAccumulator {
         depthTest: false,
         depthWrite: false,
       });
-      SplatAccumulator.material = material;
+      SplatAccumulator.webGLMaterial = material;
     }
     return material;
   }
 
-  private prepareMaterial(mesh: SplatMesh) {
+  private prepareUniforms(mesh: SplatMesh, uniforms: GenerateUniforms) {
     const source = mesh.splats;
     if (!source) {
       throw new Error("SplatMesh has no source");
     }
-    const material = this.getMaterial();
-    const uniforms = material.uniforms as GenerateUniforms;
     source.setTextureUniforms(uniforms);
     uniforms.numSh.value = Math.min(mesh.maxSh, source.getNumSh());
 
@@ -174,9 +202,6 @@ export class SplatAccumulator {
     uniforms.numEdits.value = edits?.numEdits ?? 0;
     uniforms.sdfTexture.value = edits?.sdfTexture ?? SplatEdits.emptyTexture;
     uniforms.editTexture.value = edits?.editTexture ?? SplatEdits.emptyTexture;
-
-    SplatAccumulator.fullScreenQuad.material = material;
-    return material;
   }
 
   generate({
@@ -188,15 +213,26 @@ export class SplatAccumulator {
     mesh: SplatMesh;
     base: number;
     count: number;
-    renderer: THREE.WebGLRenderer;
+    renderer: GaussianSplatCompatibleRenderer;
   }) {
-    if (!this.target) throw new Error("Accumulator target is not initialized");
     if (base + count > this.maxSplats) {
       throw new Error("Splat generation range exceeds accumulator capacity");
     }
 
-    const material = this.prepareMaterial(mesh);
+    if (isWebGPURenderer(renderer)) {
+      if (!this.webGPUGenerator) {
+        throw new Error("WebGPU accumulator is not initialized");
+      }
+      this.prepareUniforms(mesh, this.webGPUGenerator.uniforms);
+      this.webGPUGenerator.generate({ renderer, base, count });
+      return;
+    }
+
+    if (!this.target) throw new Error("Accumulator target is not initialized");
+    const material = this.getMaterial();
     const uniforms = material.uniforms as GenerateUniforms;
+    this.prepareUniforms(mesh, uniforms);
+    SplatAccumulator.fullScreenQuad.material = material;
     const renderState = this.saveRenderState(renderer);
     const nextBase =
       Math.ceil((base + count) / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
@@ -204,23 +240,26 @@ export class SplatAccumulator {
     uniforms.targetBase.value = base;
     uniforms.targetCount.value = count;
 
-    while (base < nextBase) {
-      const layer = Math.floor(base / layerSize);
-      uniforms.targetLayer.value = layer;
-      const layerBase = layer * layerSize;
-      const yStart = Math.floor((base - layerBase) / SPLAT_TEX_WIDTH);
-      const yEnd = Math.min(
-        SPLAT_TEX_HEIGHT,
-        Math.ceil((nextBase - layerBase) / SPLAT_TEX_WIDTH),
-      );
-      this.target.scissor.set(0, yStart, SPLAT_TEX_WIDTH, yEnd - yStart);
-      renderer.setRenderTarget(this.target, layer);
-      renderer.xr.enabled = false;
-      renderer.autoClear = false;
-      SplatAccumulator.fullScreenQuad.render(renderer);
-      base += SPLAT_TEX_WIDTH * (yEnd - yStart);
+    try {
+      while (base < nextBase) {
+        const layer = Math.floor(base / layerSize);
+        uniforms.targetLayer.value = layer;
+        const layerBase = layer * layerSize;
+        const yStart = Math.floor((base - layerBase) / SPLAT_TEX_WIDTH);
+        const yEnd = Math.min(
+          SPLAT_TEX_HEIGHT,
+          Math.ceil((nextBase - layerBase) / SPLAT_TEX_WIDTH),
+        );
+        this.target.scissor.set(0, yStart, SPLAT_TEX_WIDTH, yEnd - yStart);
+        renderer.setRenderTarget(this.target, layer);
+        renderer.xr.enabled = false;
+        renderer.autoClear = false;
+        SplatAccumulator.fullScreenQuad.render(renderer);
+        base += SPLAT_TEX_WIDTH * (yEnd - yStart);
+      }
+    } finally {
+      this.resetRenderState(renderer, renderState);
     }
-    this.resetRenderState(renderer, renderState);
   }
 
   prepareGenerate({
@@ -230,12 +269,20 @@ export class SplatAccumulator {
     camera,
     previous,
   }: {
-    renderer: THREE.WebGLRenderer;
+    renderer: GaussianSplatCompatibleRenderer;
     scene: THREE.Scene;
     timer: THREE.Timer;
     camera: THREE.Camera;
     previous: SplatAccumulator;
   }) {
+    // Preserve the previous metadata before replacing this accumulator's
+    // mapping. In synchronous-sort mode `previous` and `this` are the same
+    // accumulator, so reading these values later would compare the new mapping
+    // with itself and suppress required regeneration/sorting.
+    const previousMapping = previous.mapping;
+    const previousVersion = previous.version;
+    const previousMappingVersion = previous.mappingVersion;
+
     camera.getWorldPosition(this.viewOrigin);
     camera.getWorldDirection(this.viewDirection);
     this.time = timer.getElapsed();
@@ -285,6 +332,7 @@ export class SplatAccumulator {
     });
     const { maxSplats, mapping: ranges } = this.generateMapping(
       visibleMeshes.map((mesh) => mesh.numSplats),
+      isWebGPURenderer(renderer),
     );
 
     this.mapping = [];
@@ -304,17 +352,19 @@ export class SplatAccumulator {
       this.numSplats = Math.max(this.numSplats, base + count);
     });
 
-    const { splatsUpdated, mappingUpdated, sortUpdated } =
-      previous.checkVersions(this.mapping);
-    this.version = previous.version + (splatsUpdated ? 1 : 0);
-    this.mappingVersion = previous.mappingVersion + (mappingUpdated ? 1 : 0);
+    const { splatsUpdated, mappingUpdated, sortUpdated } = checkMappingVersions(
+      previousMapping,
+      this.mapping,
+    );
+    this.version = previousVersion + (splatsUpdated ? 1 : 0);
+    this.mappingVersion = previousMappingVersion + (mappingUpdated ? 1 : 0);
 
     return {
       version: this.version,
       sortUpdated,
       requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
       generate: (shrinkResources = false) => {
-        this.ensureGenerate({ maxSplats, shrinkResources });
+        this.ensureGenerate({ maxSplats, renderer, shrinkResources });
         for (const { node, base, count } of this.mapping) {
           this.generate({ mesh: node, base, count, renderer });
         }
@@ -323,30 +373,7 @@ export class SplatAccumulator {
   }
 
   checkVersions(other: SplatMapping[]) {
-    if (this.mapping.length !== other.length) {
-      return { splatsUpdated: true, mappingUpdated: true, sortUpdated: true };
-    }
-    const mappingUpdated = this.mapping.some((item, index) => {
-      const previous = other[index];
-      return (
-        item.node !== previous.node ||
-        item.base !== previous.base ||
-        item.count !== previous.count ||
-        item.mappingVersion !== previous.mappingVersion
-      );
-    });
-    if (mappingUpdated) {
-      return { splatsUpdated: true, mappingUpdated: true, sortUpdated: true };
-    }
-    return {
-      splatsUpdated: this.mapping.some(
-        (item, index) => item.version !== other[index].version,
-      ),
-      mappingUpdated: false,
-      sortUpdated: this.mapping.some(
-        (item, index) => item.sortVersion !== other[index].sortVersion,
-      ),
-    };
+    return checkMappingVersions(this.mapping, other);
   }
 
   private saveRenderState(renderer: THREE.WebGLRenderer) {
@@ -382,7 +409,6 @@ export class SplatAccumulator {
     );
     texture.format = THREE.RGBAIntegerFormat;
     texture.type = THREE.UnsignedIntType;
-    texture.internalFormat = "RGBA32UI";
     texture.needsUpdate = true;
     return texture;
   })();
@@ -391,10 +417,40 @@ export class SplatAccumulator {
     SplatAccumulator.emptyTexture,
     SplatAccumulator.emptyTexture,
   ];
-  private static material: THREE.RawShaderMaterial | null = null;
+  private static webGLMaterial: THREE.RawShaderMaterial | null = null;
   private static fullScreenQuad = new FullScreenQuad(
     new THREE.RawShaderMaterial({ visible: false }),
   );
+}
+
+function checkMappingVersions(
+  previousMapping: SplatMapping[],
+  nextMapping: SplatMapping[],
+) {
+  if (previousMapping.length !== nextMapping.length) {
+    return { splatsUpdated: true, mappingUpdated: true, sortUpdated: true };
+  }
+  const mappingUpdated = previousMapping.some((item, index) => {
+    const next = nextMapping[index];
+    return (
+      item.node !== next.node ||
+      item.base !== next.base ||
+      item.count !== next.count ||
+      item.mappingVersion !== next.mappingVersion
+    );
+  });
+  if (mappingUpdated) {
+    return { splatsUpdated: true, mappingUpdated: true, sortUpdated: true };
+  }
+  return {
+    splatsUpdated: previousMapping.some(
+      (item, index) => item.version !== nextMapping[index].version,
+    ),
+    mappingUpdated: false,
+    sortUpdated: previousMapping.some(
+      (item, index) => item.sortVersion !== nextMapping[index].sortVersion,
+    ),
+  };
 }
 
 function makeGenerateUniforms(): GenerateUniforms {

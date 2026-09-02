@@ -6,7 +6,7 @@ export const WASM_MODULE = WebAssembly.compile(wasmBytes);
 let initialized = false;
 
 /** Initializes the main-thread WASM instance used by raycasting. */
-initWasm({ module_or_path: WASM_MODULE }).then(() => {
+export const WASM_READY = initWasm({ module_or_path: WASM_MODULE }).then(() => {
   initialized = true;
 });
 

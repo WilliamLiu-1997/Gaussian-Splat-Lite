@@ -6,16 +6,21 @@
 new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 ```
 
+Stored Splat colors are decoded from sRGB before blending into linear render
+targets. WebGPU performs this decode into `THREE.ColorManagement.workingColorSpace`
+and lets the renderer apply its normal working-to-output conversion. WebGL keeps
+the established behavior of decoding only for linear and offscreen targets.
+
 ## Basic options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `renderer` | `THREE.WebGLRenderer` | Required | The Three.js WebGL renderer |
+| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | A WebGL renderer or an initialized renderer from `three/webgpu` using its native WebGPU backend |
 | `onDirty` | `() => void` | `undefined` | Called when loading, generation, or sorting requires another render |
 | `premultipliedAlpha` | `boolean` | `true` | Uses premultiplied alpha while accumulating Splat RGB |
 | `timer` | `THREE.Timer` | New internal timer | Shares time with another animation system; caller owns and updates a supplied timer |
 | `autoUpdate` | `boolean` | `true` | Automatically checks the Splat collection each frame |
-| `preUpdate` | `boolean` | `true` | Updates before drawing; WebXR presentation automatically uses an asynchronous post-render update |
+| `preUpdate` | `boolean` | `true` | Updates before drawing; WebXR automatic updates run after the active render pass |
 
 ## Quality and appearance options
 
@@ -36,12 +41,13 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | --- | --- | --- | --- |
 | `sortRadial` | `boolean` | `false` | Sorts by geometric distance when `true`, or by Z depth when `false` |
 | `minSortIntervalMs` | `number` | `0` | Minimum interval between sort calls, in milliseconds |
+| `synchronousSort` | `boolean` | `false` | Uses one accumulator and sorts before drawing: GPU radix sort on WebGPU, main-thread WASM sort on WebGL |
 | `transparent` | `boolean` | `true` | Places the Splat material in the Three.js transparent render pass |
 | `depthTest` | `boolean` | `true` | Reads the depth buffer for occlusion with regular meshes |
 | `depthWrite` | `boolean` | `false` | Writes depth; normally undesirable for transparent Splats |
 | `extraUniforms` | `Record<string, unknown>` | `undefined` | Additional values merged into the default shader uniforms |
-| `vertexShader` | `string` | Built in | Replaces the default Splat vertex shader |
-| `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader |
+| `vertexShader` | `string` | Built in | Replaces the default Splat vertex shader in WebGL; custom GLSL is rejected by WebGPU |
+| `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGL; custom GLSL is rejected by WebGPU |
 | `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
 
 The `target` structure is:
@@ -77,6 +83,7 @@ type TargetOptions = {
 | `transparent` | A read/write property that controls whether Splats use the transparent render pass and recompiles the material when changed |
 | `depthTest` | A read/write property that controls whether Splats are tested against the depth buffer |
 | `depthWrite` | A read/write property that controls whether Splats write to the depth buffer |
+| `synchronousSort` | Switches between the default double-accumulator Worker pipeline and same-frame sorting with one accumulator; WebGPU sorts on the GPU |
 
 For an on-demand render loop, connect `onDirty` to the application's render scheduler:
 

@@ -23,6 +23,7 @@ It works alongside standard Three.js scenes, cameras, meshes, and render loops, 
 - `.ply` and `.spz` file support
 - URL, in-memory byte, and standard `ReadableStream` inputs
 - Rust/WebAssembly file decoding, depth sorting, and raycasting
+- WebGL2 rendering with CPU sorting and native WebGPU rendering with optional GPU radix sorting
 - 3DGS rendering with configurable anti-aliasing
 - Spherical harmonics, offscreen rendering, and environment-map rendering
 - SDF-based color and opacity editing
@@ -31,14 +32,14 @@ It works alongside standard Three.js scenes, cameras, meshes, and render loops, 
 
 ## Requirements
 
-- A modern browser with WebGL2, WebAssembly, Web Workers, and ES modules
-- Three.js `0.185.1` or newer
+- A modern browser with WebGL2 or WebGPU, WebAssembly, Web Workers, and ES modules
+- The current Three.js `dev` branch (the lockfile pins the tested commit)
 - Correct CORS headers when loading Splat files from another origin
 
 ## Installation
 
 ```sh
-npm install gaussian-splat-lite three
+npm install gaussian-splat-lite github:mrdoob/three.js#dev
 ```
 
 ## Quick start

@@ -13,9 +13,26 @@ if (!fs.existsSync(wasmPackage)) {
   process.exit(1);
 }
 
+function externalizeThreeCoreForCommonJS() {
+  return {
+    name: "externalize-three-core-for-commonjs",
+    enforce: "pre" as const,
+    resolveId(source: string, importer?: string) {
+      if (
+        source === "./three.core.js" &&
+        importer?.endsWith("/three/build/three.webgpu.js")
+      ) {
+        return { id: "three", external: true };
+      }
+      return null;
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
-  const isMinify = mode === "production";
-  const isFirstPass = mode === "production";
+  const isMinify = mode.startsWith("production");
+  const isCommonJS = mode.endsWith("-cjs");
+  const isFirstPass = mode === "production-es";
 
   return {
     appType: "mpa",
@@ -26,7 +43,8 @@ export default defineConfig(({ mode }) => {
         include: ["**/*.glsl"],
       }),
 
-      dts({ outDir: "dist/types" }),
+      ...(isCommonJS ? [] : [dts({ outDir: "dist/types" })]),
+      ...(isCommonJS ? [externalizeThreeCoreForCommonJS()] : []),
     ],
 
     build: {
@@ -34,7 +52,7 @@ export default defineConfig(({ mode }) => {
       lib: {
         entry: path.resolve(__dirname, "src/index.ts"),
         name: "GaussianSplatLite",
-        formats: ["es", "cjs"],
+        formats: [isCommonJS ? "cjs" : "es"],
         fileName: (format) => {
           if (format === "es") {
             const base = "gaussian-splat-lite.module";
@@ -47,7 +65,9 @@ export default defineConfig(({ mode }) => {
       },
       sourcemap: true,
       rollupOptions: {
-        external: ["three", /^three\/addons/],
+        // Three's WebGPU/TSL entries are ESM-only. Keep them external in the
+        // ESM artifact and bundle them into CJS while preserving core identity.
+        external: isCommonJS ? ["three"] : ["three", /^three\//],
         output: {
           globals: {
             three: "THREE",
@@ -77,7 +97,7 @@ export default defineConfig(({ mode }) => {
 
     optimizeDeps: {
       force: true,
-      exclude: ["three"], // prevent Vite pre-bundling
+      exclude: ["three", "three/webgpu", "three/tsl"],
     },
   };
 });

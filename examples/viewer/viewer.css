@@ -573,6 +573,11 @@ button {
   transform: translateX(0.92rem);
 }
 
+.toggle-input:disabled + .toggle-track {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .toggle-input:focus-visible + .toggle-track {
   outline: 2px solid #b9d9ff;
   outline-offset: 2px;

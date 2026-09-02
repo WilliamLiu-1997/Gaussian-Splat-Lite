@@ -4,6 +4,7 @@ import {
   SplatMesh,
 } from "gaussian-splat-lite";
 import * as THREE from "three";
+import { WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
 
 const viewport = document.querySelector("#viewport");
@@ -58,16 +59,30 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(52, 1, 0.001, 10000);
 camera.position.set(0, 0, 3);
 
-const renderer = new THREE.WebGLRenderer({
+const rendererParameters = {
   alpha: true,
   powerPreference: "high-performance",
-});
-renderer.setClearColor(0x000000, 0);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
+};
+THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
+
+function configureRenderer(value) {
+  value.setClearColor(0x000000, 0);
+  value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  value.outputColorSpace = THREE.SRGBColorSpace;
+}
+
+function activateRendererColorSpace(value) {
+  THREE.ColorManagement.workingColorSpace = value.isWebGPURenderer
+    ? THREE.SRGBColorSpace
+    : THREE.LinearSRGBColorSpace;
+}
+
+let renderer = new THREE.WebGLRenderer(rendererParameters);
+activateRendererColorSpace(renderer);
+configureRenderer(renderer);
 viewport.append(renderer.domElement);
 
-const controls = new CameraController(renderer, scene, camera, {
+let controls = new CameraController(renderer, scene, camera, {
   worldUp: camera.up,
 });
 
@@ -119,19 +134,26 @@ function requestRender() {
 
 function renderFrame(time) {
   controls.update(time);
-  const rendered = !renderOnDemand || needsRender;
-  if (rendered) {
-    needsRender = false;
-    renderer.render(scene, camera);
+  const shouldRender = !renderOnDemand || needsRender;
+  if (!shouldRender) {
+    updateStats(time, false);
+    return;
   }
-  updateStats(time, rendered);
+
+  // void splatRenderer.update({ scene, camera });
+  // Synchronous preparation is consumed by this draw; worker completion can
+  // still request a later frame through onDirty.
+  needsRender = false;
+  renderer.render(scene, camera);
+  updateStats(time, true);
 }
 
 controls.addEventListener("update", requestRender);
 
-const splatRenderer = new GaussianSplatRenderer({
+let splatRenderer = new GaussianSplatRenderer({
   renderer,
   onDirty: requestRender,
+  // autoUpdate: false,
 });
 scene.add(splatRenderer);
 
@@ -140,6 +162,16 @@ const renderOptionGroups = [
     title: "Performance & diagnostics",
     description: "Frame scheduling and live metrics.",
     options: [
+      {
+        property: "rendererBackend",
+        description: "Switches the scene between WebGL and native WebGPU.",
+        defaultValue: false,
+        falseLabel: "WebGL",
+        trueLabel: "WebGPU",
+        apply: (enabled) => {
+          void switchRendererBackend(enabled);
+        },
+      },
       {
         property: "renderOnDemand",
         description:
@@ -154,10 +186,53 @@ const renderOptionGroups = [
       {
         property: "preUpdate",
         description:
-          "Updates splats before drawing. Disable it to defer updates until after the frame.",
+          "Updates splats before drawing so the current frame uses the latest accumulator.",
         defaultValue: true,
-        falseLabel: "Post-render",
-        trueLabel: "Pre-render",
+        falseLabel: "After render",
+        trueLabel: "Before render",
+      },
+    ],
+  },
+  {
+    title: "Culling & sorting",
+    description: "Trade image stability for rendering work.",
+    options: [
+      {
+        property: "synchronousSort",
+        label: "Synchronous sorting",
+        description:
+          "Uses one accumulator and sorts before drawing: GPU on WebGPU, main thread on WebGL.",
+        defaultValue: false,
+        falseLabel: "Async",
+        trueLabel: "Sync",
+      },
+      {
+        property: "sortRadial",
+        description:
+          "Radial is stable while orbiting; Z-depth can match trained scenes more accurately.",
+        defaultValue: false,
+        falseLabel: "Z-depth",
+        trueLabel: "Radial",
+      },
+      {
+        property: "minSortIntervalMs",
+        description:
+          "Limits how often depth sorting runs. Higher values save work but may lag while moving.",
+        min: 0,
+        max: 500,
+        step: 10,
+        defaultValue: 0,
+        format: (value) => `${Math.round(value)} ms`,
+      },
+      {
+        property: "clipXY",
+        description:
+          "Keeps splat centers this far beyond the viewport before culling them.",
+        min: 1,
+        max: 3,
+        step: 0.05,
+        defaultValue: 1.25,
+        format: (value) => `${value.toFixed(2)}×`,
       },
     ],
   },
@@ -236,40 +311,6 @@ const renderOptionGroups = [
     ],
   },
   {
-    title: "Culling & sorting",
-    description: "Trade image stability for rendering work.",
-    options: [
-      {
-        property: "clipXY",
-        description:
-          "Keeps splat centers this far beyond the viewport before culling them.",
-        min: 1,
-        max: 3,
-        step: 0.05,
-        defaultValue: 1.25,
-        format: (value) => `${value.toFixed(2)}×`,
-      },
-      {
-        property: "minSortIntervalMs",
-        description:
-          "Limits how often depth sorting runs. Higher values save work but may lag while moving.",
-        min: 0,
-        max: 500,
-        step: 10,
-        defaultValue: 0,
-        format: (value) => `${Math.round(value)} ms`,
-      },
-      {
-        property: "sortRadial",
-        description:
-          "Radial is stable while orbiting; Z-depth can match trained scenes more accurately.",
-        defaultValue: false,
-        falseLabel: "Z-depth",
-        trueLabel: "Radial",
-      },
-    ],
-  },
-  {
     title: "Material pipeline",
     description: "How splats blend with the Three.js scene.",
     options: [
@@ -310,6 +351,118 @@ const renderOptionGroups = [
 ];
 
 const renderOptionInputs = new Map();
+let rendererSwitchToken = 0;
+
+function usesWebGPU(value) {
+  return value.isWebGPURenderer === true;
+}
+
+function syncRendererOption(enabled, disabled = false) {
+  const entry = renderOptionInputs.get("rendererBackend");
+  if (!entry) return;
+  const { input } = entry;
+  input.checked = enabled;
+  input.disabled = disabled;
+  input.syncOption();
+}
+
+async function switchRendererBackend(webGPU) {
+  const switchToken = ++rendererSwitchToken;
+  if (webGPU === usesWebGPU(renderer)) {
+    syncRendererOption(webGPU);
+    return;
+  }
+
+  syncRendererOption(webGPU, true);
+  let nextRenderer;
+  let nextControls;
+  let nextSplatRenderer;
+  try {
+    if (webGPU) {
+      nextRenderer = new WebGPURenderer(rendererParameters);
+      await nextRenderer.init();
+      if (nextRenderer.backend?.isWebGPUBackend !== true) {
+        throw new Error("WebGPU is not available in this browser");
+      }
+      configureRenderer(nextRenderer);
+    } else {
+      // WebGL requires a linear working space when it configures texture
+      // unpacking. Preserve the active WebGPU setting until the final handoff.
+      const activeWorkingColorSpace = THREE.ColorManagement.workingColorSpace;
+      try {
+        THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
+        nextRenderer = new THREE.WebGLRenderer(rendererParameters);
+        configureRenderer(nextRenderer);
+      } finally {
+        THREE.ColorManagement.workingColorSpace = activeWorkingColorSpace;
+      }
+    }
+
+    nextSplatRenderer = new GaussianSplatRenderer({
+      renderer: nextRenderer,
+      onDirty: requestRender,
+      // autoUpdate: false,
+    });
+    for (const group of renderOptionGroups) {
+      for (const option of group.options) {
+        if (!option.apply) {
+          nextSplatRenderer[option.property] = splatRenderer[option.property];
+        }
+      }
+    }
+    nextRenderer.setSize(viewport.clientWidth, viewport.clientHeight, false);
+    await nextSplatRenderer.update({ scene, camera });
+
+    nextControls = new CameraController(nextRenderer, scene, camera, {
+      worldUp: camera.up,
+    });
+    nextControls.minDistance = controls.minDistance;
+  } catch (error) {
+    nextControls?.dispose();
+    nextSplatRenderer?.dispose();
+    nextRenderer?.dispose();
+    if (switchToken !== rendererSwitchToken) return;
+    syncRendererOption(usesWebGPU(renderer));
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("Could not switch renderer", error);
+    showToast(`Could not switch renderer: ${detail}`);
+    return;
+  }
+
+  if (switchToken !== rendererSwitchToken) {
+    nextControls.dispose();
+    nextSplatRenderer.dispose();
+    nextRenderer.dispose();
+    return;
+  }
+
+  const previousRenderer = renderer;
+  const previousControls = controls;
+  const previousSplatRenderer = splatRenderer;
+
+  previousRenderer.setAnimationLoop(null);
+  previousControls.removeEventListener("update", requestRender);
+  previousControls.dispose();
+  scene.remove(previousSplatRenderer);
+
+  renderer = nextRenderer;
+  // Match the global working space to the active renderer backend.
+  activateRendererColorSpace(renderer);
+  configureRenderer(renderer);
+  controls = nextControls;
+  controls.addEventListener("update", requestRender);
+  splatRenderer = nextSplatRenderer;
+  scene.add(splatRenderer);
+
+  resizeRenderer();
+  previousRenderer.domElement.replaceWith(renderer.domElement);
+
+  previousSplatRenderer.dispose();
+  previousRenderer.dispose();
+  syncRendererOption(webGPU);
+  renderer.setAnimationLoop(renderFrame);
+  requestRender();
+}
 
 function applyRenderOption(option, value) {
   if (option.apply) {
@@ -339,7 +492,7 @@ function createRenderOptions() {
       copy.className = "option-copy";
       const label = document.createElement("label");
       label.htmlFor = `render-option-${option.property}`;
-      label.textContent = option.property;
+      label.textContent = option.label ?? option.property;
       const description = document.createElement("p");
       description.textContent = option.description;
       copy.append(label, description);
@@ -362,13 +515,17 @@ function createRenderOptions() {
         const value = document.createElement("output");
         value.className = "toggle-value";
         value.setAttribute("for", input.id);
-        const update = () => {
+        const sync = () => {
           value.value = input.checked ? option.trueLabel : option.falseLabel;
           value.textContent = value.value;
+        };
+        const update = () => {
+          sync();
           applyRenderOption(option, input.checked);
         };
         input.addEventListener("change", update);
         control.append(value, input, toggle);
+        input.syncOption = sync;
         input.updateOption = update;
       } else {
         input.type = "range";
@@ -440,14 +597,22 @@ function setSourcePanelOpen(open, { moveFocus = false } = {}) {
 }
 
 function resetRenderOptions() {
-  for (const { input, option } of renderOptionInputs.values()) {
+  const entries = Array.from(renderOptionInputs.values());
+  for (const { input, option } of entries) {
     if (typeof option.defaultValue === "boolean") {
       input.checked = option.defaultValue;
     } else {
       input.value = String(option.defaultValue);
     }
+  }
+
+  // Apply material properties before the asynchronous backend switch copies
+  // them to its replacement renderer.
+  for (const { input, option } of entries) {
+    if (option.property === "rendererBackend") continue;
     input.updateOption();
   }
+  renderOptionInputs.get("rendererBackend")?.input.updateOption();
 }
 
 createRenderOptions();
