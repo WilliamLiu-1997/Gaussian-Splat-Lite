@@ -26,7 +26,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `onLoad` | `(mesh) => void \| Promise<void>` | `undefined` | Called after initialization completes |
 | `editable` | `boolean` | `true` | Applies global and local SDF edits |
 | `raycastable` | `boolean` | `true` | Participates in Three.js raycasting |
-| `minRaycastOpacity` | `number` | `0.05` | Per-Splat kernel-alpha threshold; clips the raycast hit area at this opacity, including special-shape Splats |
+| `minRaycastOpacity` | `number` | `0.1` | Per-Splat kernel-alpha threshold; clips the raycast hit area at this opacity, including special-shape Splats |
 | `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before Splat generation for a frame |
 
 Choose at most one initialization input from `url`, `fileBytes`, `stream`, `splats`, and `constructSplats`; mixing them throws an error.

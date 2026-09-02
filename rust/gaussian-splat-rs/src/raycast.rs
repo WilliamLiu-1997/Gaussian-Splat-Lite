@@ -242,19 +242,8 @@ fn raycast_ellipsoid(
             return None;
         }
 
-        let sqrt_discriminant = discriminant.sqrt();
-        let entry_t = (-b - sqrt_discriminant) / a;
-        if entry_t > far {
-            None
-        } else if entry_t >= near {
-            Some(entry_t)
-        } else {
-            // The ray starts inside the ellipsoid, or enters it before the
-            // Raycaster near plane. Return the exit surface when it is the
-            // first ellipsoid boundary inside the accepted ray interval.
-            let exit_t = (-b + sqrt_discriminant) / a;
-            raycast_t_in_range(exit_t, near, far)
-        }
+        let entry_t = (-b - discriminant.sqrt()) / a;
+        raycast_t_in_range(entry_t, near, far)
     }
 }
 
@@ -490,10 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn returns_the_exit_surface_when_the_ray_starts_inside() {
+    fn rejects_the_exit_surface_when_the_ray_starts_inside() {
         let (splat_a, splat_b) = unit_splat();
         let threshold = 0.1;
-        let radius = splat_isosurface_radius(1.0, 0.0, threshold).unwrap();
         let mut distances = Vec::new();
         let mut tables = RaycastTables::default();
 
@@ -509,15 +497,13 @@ mod tests {
             10.0,
         );
 
-        assert_eq!(distances.len(), 1);
-        assert_near(distances[0], radius);
+        assert!(distances.is_empty());
     }
 
     #[test]
-    fn returns_the_exit_surface_when_entry_precedes_near() {
+    fn rejects_the_exit_surface_when_entry_precedes_near() {
         let (splat_a, splat_b) = unit_splat();
         let threshold = 0.1;
-        let radius = splat_isosurface_radius(1.0, 0.0, threshold).unwrap();
         let mut distances = Vec::new();
         let mut tables = RaycastTables::default();
 
@@ -533,8 +519,7 @@ mod tests {
             10.0,
         );
 
-        assert_eq!(distances.len(), 1);
-        assert_near(distances[0], 5.0 + radius);
+        assert!(distances.is_empty());
     }
 
     #[test]
