@@ -13,9 +13,18 @@ import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
   isWebGPURenderer,
+  isXRRenderTarget,
   setRendererRenderTarget,
 } from "./renderer";
 import { getShaders } from "./shaders";
+import {
+  type StochasticMotionPhase,
+  StochasticMotionState,
+} from "./stochasticMotion";
+import {
+  stochasticResolveMarker,
+  stochasticResolveRequired,
+} from "./stochasticResolveMarker";
 import { resolveTimer, uploadU32DataTextureRows } from "./utils";
 import { WASM_READY, isInitialized as isWasmInitialized } from "./wasm";
 import {
@@ -64,7 +73,11 @@ type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
   shrinkResources: boolean;
+  skipSort: boolean;
+  settleRevision: number | null;
 };
+
+type StochasticRenderPhase = StochasticMotionPhase | "forced";
 
 // Average (uniform) world scale of a camera.
 function getCameraWorldScale(camera: THREE.Camera): number {
@@ -179,6 +192,26 @@ export interface GaussianSplatRendererOptions {
    */
   synchronousSort?: boolean;
   /**
+   * Automatically uses sorting-free stochastic transparency while the camera
+   * is moving, then requests one clean sorted frame after it settles. Sorted
+   * frames use the depth-only companion draw when depthWrite is disabled.
+   * @default false
+   */
+  autoStochastic?: boolean;
+  /**
+   * Forces sorting-free stochastic transparency independently of camera motion.
+   * WebXR and dedicated capture paths still use their normal sorted fallback.
+   * @default false
+   */
+  stochastic?: boolean;
+  /**
+   * Forces the depth-only companion draw after non-stochastic color frames,
+   * even when autoStochastic is disabled. It has no effect when depthWrite is
+   * already enabled.
+   * @default false
+   */
+  renderDepth?: boolean;
+  /**
    * Configures an offline render target for the GaussianSplatRenderer (as opposed to
    * rendering to the canvas). This is useful for rendering environment maps,
    * additional viewpoints, or video frame rendering.
@@ -226,7 +259,8 @@ export interface GaussianSplatRendererOptions {
   /**
    * Set the splat shader material to be transparent which determines if the
    * splats are rendered during the first opaque THREE.js render pass or the
-   * second transparent render pass.
+   * second transparent render pass. Stochastic/depth companion modes keep the
+   * material at the end of the opaque list for deterministic draw ordering.
    * @default undefined = true
    */
   transparent?: boolean;
@@ -266,6 +300,15 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   sortRadial: boolean;
   minSortIntervalMs: number;
   private _synchronousSort: boolean;
+  private _autoStochastic: boolean;
+  private _stochastic: boolean;
+  private _renderDepth: boolean;
+  private _premultipliedAlpha: boolean;
+  private _transparent: boolean;
+  private readonly supportsStochasticShaders: boolean;
+  private readonly sortedBlending: THREE.Blending;
+  private _depthTest: boolean;
+  private _depthWrite: boolean;
 
   readonly timer: THREE.Timer;
   private readonly ownsTimer: boolean;
@@ -302,6 +345,16 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   private queuedUpdate: UpdateRequest | null = null;
   private disposed = false;
   private sortModeRevision = 0;
+  private readonly stochasticMotion = new StochasticMotionState();
+  private stochasticPhase: StochasticRenderPhase | null = null;
+  private requestMotionFollowup = false;
+  private forceSortedRenderDepth = 0;
+  private stochasticResolveMarkerUsers = 0;
+  private stochasticPreviousRenderOrder: number | null = null;
+  private _depthMesh: THREE.Mesh<
+    SplatGeometry,
+    THREE.ShaderMaterial | WebGPUSplatMaterial
+  > | null = null;
 
   private static synchronousSortOwner: GaussianSplatRenderer | null = null;
 
@@ -324,6 +377,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     Object.assign(uniforms, options.extraUniforms ?? {});
 
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
+    uniforms.premultipliedAlpha.value = premultipliedAlpha;
+    const autoStochastic = options.autoStochastic ?? false;
+    const stochastic = options.stochastic ?? false;
+    const renderDepth = options.renderDepth ?? false;
+    const supportsStochasticShaders =
+      options.vertexShader === undefined &&
+      options.fragmentShader === undefined;
+    if (
+      (autoStochastic || stochastic || renderDepth) &&
+      !supportsStochasticShaders
+    ) {
+      throw new Error(
+        "Stochastic and renderDepth modes require the built-in Splat shaders",
+      );
+    }
     const geometry = new SplatGeometry();
     const webGPU = isWebGPURenderer(options.renderer);
     let material: THREE.ShaderMaterial | WebGPUSplatMaterial;
@@ -358,8 +426,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
 
     super(geometry, material);
+    this.renderer = options.renderer;
     this.material = material;
     this.uniforms = uniforms;
+    this.supportsStochasticShaders = supportsStochasticShaders;
+    this.sortedBlending = material.blending;
+    this._depthTest = options.depthTest ?? true;
+    this._depthWrite = options.depthWrite ?? false;
+    this._premultipliedAlpha = premultipliedAlpha;
+    this._transparent = options.transparent ?? true;
+    this._autoStochastic = autoStochastic;
+    this._stochastic = stochastic;
+    this._renderDepth = renderDepth;
+    this.stochasticPhase = stochastic ? "forced" : null;
+    this.applyStochasticRenderOrder();
+    this.applyStochasticMaterialState(this.stochasticFrame);
     if (webGPU) {
       this.orderingAttribute = (
         material as WebGPUSplatMaterial
@@ -373,7 +454,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     // this.layers.enableAll();
 
     // gaussianSplatRendererInstance = this;
-    this.renderer = options.renderer;
     this.onDirty = options.onDirty;
     this.dirty = true;
     this.autoUpdate = options.autoUpdate ?? true;
@@ -499,6 +579,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       focalAdjustment: { value: 2.0 },
       // Whether to decode stored sRGB Splat colors before blending
       encodeLinear: { value: false },
+      // Mirrors the material flag for WebGPU's output premultiplication.
+      premultipliedAlpha: { value: true },
       // Back-to-front sort ordering of splat indices
       ordering: { type: "t", value: GaussianSplatRenderer.emptyOrdering },
       // Gsplat collection to render
@@ -510,6 +592,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       deltaTime: { value: 0 },
       // Debug flag that alternates each frame
       debugFlag: { value: false },
+      // Sorting-free stochastic transparency for automatic or forced frames
+      stochastic: { value: false },
+      // Tags accepted samples for an attached StochasticResolvePass.
+      stochasticResolve: { value: false },
+      // Fast depth-only pass after sorted stochastic-mode frames
+      depthOnly: { value: false },
     };
     return uniforms;
   }
@@ -541,6 +629,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.orderingAttribute = null;
     this.webGPUSort?.dispose();
     this.webGPUSort = null;
+    this._depthMesh?.removeFromParent();
+    this._depthMesh?.material.dispose();
+    this._depthMesh = null;
+    this.stochasticMotion.reset();
 
     const accumulators = new Set<SplatAccumulator>();
     accumulators.add(this.display);
@@ -669,6 +761,187 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
   }
 
+  private prepareStochasticFrame(
+    camera: THREE.Camera,
+    renderer: GaussianSplatCompatibleRenderer,
+  ) {
+    if (!this.canRenderStochastic(renderer)) {
+      const wasActive = this.stochasticFrame;
+      this.stochasticPhase = null;
+      this.requestMotionFollowup = false;
+      if (wasActive && !this.stochasticModeEnabled) {
+        this.applyStochasticRenderOrder();
+        this.applyStochasticMaterialState(false);
+      }
+      return;
+    }
+
+    if (this._stochastic) {
+      this.stochasticMotion.observe(camera);
+      this.stochasticPhase = "forced";
+    } else if (this._autoStochastic && this.autoUpdate) {
+      this.stochasticPhase = this.stochasticMotion.observe(camera);
+    }
+    this.requestMotionFollowup = this.stochasticPhase === "moving";
+  }
+
+  private get stochasticModeEnabled() {
+    return this._autoStochastic || this._stochastic;
+  }
+
+  private get renderDepthEnabled() {
+    return this._autoStochastic || this._renderDepth;
+  }
+
+  private get managedRenderPipeline() {
+    return (
+      this.stochasticModeEnabled ||
+      (this.renderDepthEnabled && !this._depthWrite) ||
+      this.stochasticFrame
+    );
+  }
+
+  private get stochasticFrame() {
+    return this.stochasticPhase !== null && this.stochasticPhase !== "sorted";
+  }
+
+  private get frameSkipSort() {
+    return (
+      this.stochasticPhase === "moving" || this.stochasticPhase === "forced"
+    );
+  }
+
+  private get frameSettleRevision() {
+    return this.stochasticPhase === "settling"
+      ? this.stochasticMotion.revision
+      : null;
+  }
+
+  private canRenderStochastic(renderer: GaussianSplatCompatibleRenderer) {
+    return (
+      // A forced mode remains stochastic until its pending sorted replacement
+      // is ready, even after the public switch is turned off.
+      (this._stochastic ||
+        (this._autoStochastic && this.autoUpdate) ||
+        (this.stochasticPhase === "settling" && this.autoUpdate)) &&
+      this.forceSortedRenderDepth === 0 &&
+      !renderer.xr.isPresenting
+    );
+  }
+
+  private ensureDepthMesh() {
+    if (this.disposed) throw new Error("GaussianSplatRenderer is disposed");
+    if (this._depthMesh) return this._depthMesh;
+
+    const depthUniforms = {
+      ...this.uniforms,
+      stochastic: { value: false },
+      stochasticResolve: { value: false },
+      depthOnly: { value: true },
+    };
+    let material: THREE.ShaderMaterial | WebGPUSplatMaterial;
+    if (isWebGPURenderer(this.renderer)) {
+      material = createWebGPUSplatMaterial({
+        uniforms: depthUniforms,
+        orderingNode: (this.material as WebGPUSplatMaterial).orderingNode,
+        premultipliedAlpha: false,
+        transparent: false,
+        depthTest: true,
+        depthWrite: true,
+      });
+    } else {
+      const shaders = getShaders();
+      material = new THREE.ShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: shaders.splatVertex,
+        fragmentShader: shaders.splatFragment,
+        uniforms: depthUniforms,
+        premultipliedAlpha: false,
+        transparent: false,
+        depthTest: true,
+        depthWrite: true,
+        side: THREE.FrontSide,
+        allowOverride: false,
+      });
+    }
+    material.blending = THREE.NoBlending;
+    material.colorWrite = false;
+
+    const mesh = new THREE.Mesh(this.geometry as SplatGeometry, material);
+    mesh.frustumCulled = false;
+    mesh.matrixAutoUpdate = false;
+    mesh.layers = this.layers;
+    mesh.renderOrder = Number.POSITIVE_INFINITY;
+    mesh.visible = this.renderDepthEnabled && !this._depthWrite;
+    mesh.onBeforeRender = () => {
+      const owner = GaussianSplatRenderer.gaussianSplatOverride ?? this;
+      mesh.geometry.instanceCount =
+        owner.stochasticFrame || owner.activeSplats === 0
+          ? 0
+          : owner.display.numSplats;
+    };
+    this._depthMesh = mesh;
+    this.add(mesh);
+    return mesh;
+  }
+
+  private applyStochasticRenderOrder() {
+    if (this.managedRenderPipeline) {
+      if (this.stochasticPreviousRenderOrder === null) {
+        this.stochasticPreviousRenderOrder = this.renderOrder;
+      }
+      // Managed modes keep the Splat in the opaque list so blend/depth state
+      // can change in onBeforeRender without rebuilding the render list.
+      // Draw after conventional opaque geometry, immediately followed by the
+      // optional depth-only bridge.
+      this.renderOrder = Number.MAX_SAFE_INTEGER;
+      return;
+    }
+
+    if (this.stochasticPreviousRenderOrder !== null) {
+      if (this.renderOrder === Number.MAX_SAFE_INTEGER) {
+        this.renderOrder = this.stochasticPreviousRenderOrder;
+      }
+      this.stochasticPreviousRenderOrder = null;
+    }
+  }
+
+  private applyStochasticMaterialState(active: boolean) {
+    // Keep stochastic-enabled Splats in a stable render list. onBeforeRender is
+    // early enough to change GPU blend/depth state, but too late to move an
+    // object between Three.js's opaque and transparent lists.
+    const managedAsOpaque = this.managedRenderPipeline;
+    const transparent = managedAsOpaque ? false : this._transparent;
+    const blending = active
+      ? THREE.NoBlending
+      : managedAsOpaque && this._transparent
+        ? THREE.CustomBlending
+        : this.sortedBlending;
+    const wasOpaque = isOpaqueMaterial(this.material);
+    this.material.transparent = transparent;
+    this.material.blending = blending;
+    if (managedAsOpaque && this._transparent) {
+      this.material.blendEquation = THREE.AddEquation;
+      this.material.blendSrc = this._premultipliedAlpha
+        ? THREE.OneFactor
+        : THREE.SrcAlphaFactor;
+      this.material.blendDst = THREE.OneMinusSrcAlphaFactor;
+      this.material.blendEquationAlpha = THREE.AddEquation;
+      this.material.blendSrcAlpha = THREE.OneFactor;
+      this.material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+    }
+    this.material.depthTest = active ? true : this._depthTest;
+    this.material.depthWrite = active ? true : this._depthWrite;
+    if (this.renderDepthEnabled && !this._depthWrite) {
+      this.ensureDepthMesh().visible = true;
+    } else if (this._depthMesh) {
+      this._depthMesh.visible = false;
+    }
+    if (wasOpaque !== isOpaqueMaterial(this.material)) {
+      this.material.needsUpdate = true;
+    }
+  }
+
   onBeforeRender(
     renderer: GaussianSplatCompatibleRenderer,
     scene: THREE.Scene,
@@ -684,7 +957,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     gaussianSplatRenderer.lastFrame = frame;
 
     const currentRenderTarget = renderer.getRenderTarget();
-    const isXRRenderTarget = checkIsXRRenderTarget(currentRenderTarget);
+    const xrRenderTarget = isXRRenderTarget(currentRenderTarget);
     if (currentRenderTarget) {
       gaussianSplatRenderer.renderSize.set(
         currentRenderTarget.width,
@@ -694,7 +967,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // WebXR mode on Apple Vision Pro returns 1x1 when presenting.
       // Use a different means to figure out the render size.
       if (
-        isXRRenderTarget &&
+        xrRenderTarget &&
         gaussianSplatRenderer.renderSize.x === 1 &&
         gaussianSplatRenderer.renderSize.y === 1
       ) {
@@ -709,6 +982,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
     this.uniforms.renderSize.value.copy(gaussianSplatRenderer.renderSize);
 
+    let useCamera = camera;
+    if (renderer.xr.isPresenting) {
+      const xrCamera = renderer.xr.getCamera();
+      // Keep the per-eye camera parented to the XR rig so its world transform
+      // includes any scale applied to that rig.
+      useCamera = xrCamera.cameras[0] ?? xrCamera;
+    }
+
+    if (isNewFrame) {
+      gaussianSplatRenderer.prepareStochasticFrame(useCamera, renderer);
+    }
+
     // Trigger update after refreshing renderSize but before any uniforms that
     // depend on the active accumulator, avoiding both size and display latency.
     if (gaussianSplatRenderer.autoUpdate && isNewFrame) {
@@ -716,27 +1001,19 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // latest accumulator. WebXR updates after the active render pass.
       const preUpdate =
         gaussianSplatRenderer.preUpdate && !renderer.xr.isPresenting;
-      let useCamera = camera;
-      if (renderer.xr.isPresenting) {
-        const xrCamera = renderer.xr.getCamera();
-        // Keep the per-eye camera parented to the XR rig so its world transform
-        // includes any scale applied to that rig.
-        useCamera = xrCamera.cameras[0] ?? xrCamera;
-      }
+      const updateRequest = {
+        scene,
+        camera: useCamera,
+        shrinkResources: false,
+        skipSort: gaussianSplatRenderer.frameSkipSort,
+        settleRevision: gaussianSplatRenderer.frameSettleRevision,
+      };
       if (preUpdate) {
-        gaussianSplatRenderer.updateInternal({
-          scene,
-          camera: useCamera,
-          shrinkResources: false,
-        });
+        gaussianSplatRenderer.updateInternal(updateRequest);
       } else if (gaussianSplatRenderer.updateTimeoutId === -1) {
         gaussianSplatRenderer.updateTimeoutId = setTimeout(() => {
           gaussianSplatRenderer.updateTimeoutId = -1;
-          gaussianSplatRenderer.updateInternal({
-            scene,
-            camera: useCamera,
-            shrinkResources: false,
-          });
+          gaussianSplatRenderer.updateInternal(updateRequest);
         }, 1);
       }
     }
@@ -748,10 +1025,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.near.value = typedCamera.near;
     this.uniforms.far.value = typedCamera.far;
 
-    const geometry = this.geometry as SplatGeometry;
-    geometry.instanceCount = gaussianSplatRenderer.activeSplats;
-
     const display = gaussianSplatRenderer.display;
+    const geometry = this.geometry as SplatGeometry;
+    geometry.instanceCount = gaussianSplatRenderer.stochasticFrame
+      ? display.numSplats
+      : gaussianSplatRenderer.activeSplats;
+
     // Accumulator centers are stored camera-relative.
     const accumToWorld = new THREE.Matrix4().makeTranslation(
       display.viewOrigin,
@@ -777,13 +1056,17 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.blurAmount.value = gaussianSplatRenderer.blurAmount;
     this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;
     this.uniforms.focalAdjustment.value = gaussianSplatRenderer.focalAdjustment;
+    this.uniforms.stochastic.value = gaussianSplatRenderer.stochasticFrame;
+    if (this.stochasticModeEnabled) {
+      this.applyStochasticMaterialState(gaussianSplatRenderer.stochasticFrame);
+    }
 
     const webGPU = isWebGPURenderer(renderer);
     let blendColorSpace = THREE.ColorManagement.workingColorSpace;
     if (!webGPU) {
       if (currentRenderTarget === null) {
         blendColorSpace = renderer.outputColorSpace;
-      } else if (isXRRenderTarget) {
+      } else if (xrRenderTarget) {
         blendColorSpace = currentRenderTarget.texture.colorSpace;
       }
     }
@@ -812,6 +1095,15 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     gaussianSplatRenderer.dirty = false;
   }
 
+  onAfterRender() {
+    const gaussianSplatRenderer =
+      GaussianSplatRenderer.gaussianSplatOverride ?? this;
+    if (gaussianSplatRenderer.requestMotionFollowup) {
+      gaussianSplatRenderer.requestMotionFollowup = false;
+      gaussianSplatRenderer.setDirty();
+    }
+  }
+
   clearSplats() {
     this.activeSplats = 0;
     this.display.numSplats = 0;
@@ -829,6 +1121,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       scene,
       camera,
       shrinkResources: false,
+      skipSort: false,
+      settleRevision: null,
     });
   }
 
@@ -844,6 +1138,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       scene,
       camera,
       shrinkResources: true,
+      skipSort: false,
+      settleRevision: null,
     });
   }
 
@@ -851,11 +1147,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (this.disposed) return Promise.resolve();
 
     const pending = this.queuedUpdate;
+    const shrinkResources =
+      request.shrinkResources || (pending?.shrinkResources ?? false);
     this.queuedUpdate = {
       scene: request.scene,
       camera: request.camera,
-      shrinkResources:
-        request.shrinkResources || (pending?.shrinkResources ?? false),
+      shrinkResources,
+      skipSort: shrinkResources ? false : request.skipSort,
+      settleRevision: shrinkResources ? null : request.settleRevision,
     };
 
     if (!this.updateRunning) {
@@ -884,8 +1183,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     scene,
     camera,
     shrinkResources,
+    skipSort,
+    settleRevision,
   }: UpdateRequest) {
-    if (this._synchronousSort) {
+    if (this._synchronousSort && !skipSort) {
       const webGPU = isWebGPURenderer(this.renderer);
       const initialization = webGPU
         ? this.webGPUSortPrecompile
@@ -978,7 +1279,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         this.sortStateRevision += 1;
       }
 
-      if (inPlace) {
+      if (skipSort) {
+        if (!inPlace) {
+          if (this.display !== next) this.releaseAccumulator(this.display);
+          if (this.current !== next && this.current !== this.display) {
+            this.releaseAccumulator(this.current);
+          }
+        }
+        // The stochastic shader reads identity indices, so the latest generated
+        // accumulator is immediately displayable without a matching ordering.
+        this.display = next;
+        this.current = next;
+      } else if (inPlace) {
         // Generation and sorting both complete on this accumulator before the
         // caller resumes, so no pending display/current pair is required.
         this.display = next;
@@ -1006,6 +1318,15 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.setDirty();
     }
 
+    if (skipSort) {
+      // Even sub-threshold camera movement owes a fresh exact ordering once it
+      // stops. Padding in a WebGL accumulator is zero-alpha and safe to visit.
+      this.sortDirty = true;
+      this.activeSplats = this.display.numSplats;
+      this.setDirty();
+      return;
+    }
+
     const sortCapacity = getOrderingCapacity(requiredMaxSplats, true);
     if (
       shrinkResources &&
@@ -1026,13 +1347,30 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
     }
 
-    await this.driveSort(orderingNeedsShrink);
+    await this.driveSort(
+      orderingNeedsShrink,
+      shrinkResources || settleRevision !== null,
+    );
+
+    if (
+      settleRevision !== null &&
+      !this.sortDirty &&
+      this.current === this.display &&
+      this.stochasticMotion.complete(settleRevision)
+    ) {
+      // An async sort may finish after the camera starts moving again. The
+      // revision check above keeps that stale result from ending motion mode.
+      this.stochasticPhase = null;
+      this.applyStochasticRenderOrder();
+      this.applyStochasticMaterialState(false);
+      this.setDirty();
+    }
     if (shrinkResources) {
       this.disposeOversizedAccumulators(this.current.maxSplats);
     }
   }
 
-  private async driveSort(shrinkOrdering = false) {
+  private async driveSort(shrinkOrdering = false, forceSort = false) {
     if (this.disposed || this.sorting || !this.sortDirty) {
       return;
     }
@@ -1045,7 +1383,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       : now;
     // Synchronous mode must keep the in-place accumulator and its ordering in
     // lockstep, so it intentionally ignores asynchronous sort throttling.
-    if (!synchronousSort && now < nextSortTime) {
+    if (!synchronousSort && !forceSort && now < nextSortTime) {
       await new Promise((resolve) => setTimeout(resolve, nextSortTime - now));
       if (
         this.disposed ||
@@ -1370,10 +1708,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const previousTarget = this.renderer.getRenderTarget();
     const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
     try {
+      this.forceSortedRenderDepth += 1;
       this.renderer.setRenderTarget(target);
       GaussianSplatRenderer.gaussianSplatOverride = this;
       this.renderer.render(scene, camera);
     } finally {
+      this.forceSortedRenderDepth -= 1;
       GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
       setRendererRenderTarget(this.renderer, previousTarget);
     }
@@ -1544,6 +1884,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
     const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
     try {
+      this.forceSortedRenderDepth += 1;
       if (update) {
         const tempCamera = new THREE.Camera();
         tempCamera.position.copy(worldCenter);
@@ -1555,6 +1896,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       cubeCamera.update(this.renderer as THREE.WebGLRenderer, scene);
       return target.texture;
     } finally {
+      this.forceSortedRenderDepth -= 1;
       GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
       for (const [object, visible] of objectVisibility.entries()) {
         object.visible = visible;
@@ -1664,45 +2006,157 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     });
   }
 
+  /** Depth-only companion mesh, created lazily and owned by this renderer. */
+  get depthMesh(): THREE.Mesh {
+    return this.ensureDepthMesh();
+  }
+
+  private assertBuiltInSplatShaders(enabled: boolean) {
+    if (enabled && !this.supportsStochasticShaders) {
+      throw new Error(
+        "Stochastic and renderDepth modes require the built-in Splat shaders",
+      );
+    }
+  }
+
+  private refreshStochasticConfiguration(settle: boolean) {
+    this.requestMotionFollowup = false;
+    if (this._stochastic) {
+      this.stochasticMotion.reset();
+      this.stochasticPhase = "forced";
+    } else if (settle) {
+      this.stochasticMotion.requestSettle();
+      this.stochasticPhase = "settling";
+    } else {
+      this.stochasticMotion.reset();
+      this.stochasticPhase = null;
+    }
+    this.applyStochasticRenderOrder();
+    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.setDirty();
+  }
+
   get premultipliedAlpha(): boolean {
-    return this.material.premultipliedAlpha;
+    return this._premultipliedAlpha;
   }
 
   set premultipliedAlpha(value: boolean) {
-    if (this.material.premultipliedAlpha !== value) {
-      this.material.premultipliedAlpha = value;
+    const nextValue = Boolean(value);
+    if (this._premultipliedAlpha !== nextValue) {
+      this._premultipliedAlpha = nextValue;
+      this.uniforms.premultipliedAlpha.value = nextValue;
+      this.material.premultipliedAlpha = nextValue;
+      this.applyStochasticMaterialState(this.stochasticFrame);
       this.material.needsUpdate = true;
     }
   }
 
   get transparent(): boolean {
-    return this.material.transparent;
+    return this._transparent;
   }
 
   set transparent(value: boolean) {
-    if (this.material.transparent !== value) {
-      this.material.transparent = value;
-      this.material.needsUpdate = true;
+    const nextValue = Boolean(value);
+    if (this._transparent !== nextValue) {
+      this._transparent = nextValue;
+      this.applyStochasticMaterialState(this.stochasticFrame);
     }
   }
 
+  get autoStochastic(): boolean {
+    return this._autoStochastic;
+  }
+
+  set autoStochastic(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._autoStochastic) return;
+    this.assertBuiltInSplatShaders(nextValue);
+    const settle =
+      this.stochasticPhase === "settling" ||
+      (!nextValue && this.stochasticFrame);
+    this._autoStochastic = nextValue;
+    this.refreshStochasticConfiguration(settle);
+  }
+
+  get stochastic(): boolean {
+    return this._stochastic;
+  }
+
+  /** Whether the current frame uses sorting-free stochastic transparency. */
+  get stochasticActive(): boolean {
+    return this.stochasticFrame;
+  }
+
+  [stochasticResolveMarker](enabled: boolean) {
+    this.stochasticResolveMarkerUsers = Math.max(
+      0,
+      this.stochasticResolveMarkerUsers + (enabled ? 1 : -1),
+    );
+    this.uniforms.stochasticResolve.value =
+      this.stochasticResolveMarkerUsers > 0;
+  }
+
+  [stochasticResolveRequired](
+    camera: THREE.Camera,
+    renderer: GaussianSplatCompatibleRenderer,
+  ) {
+    return (
+      this.canRenderStochastic(renderer) &&
+      (this._stochastic ||
+        this.stochasticFrame ||
+        this.stochasticMotion.wouldUseStochastic(camera))
+    );
+  }
+
+  set stochastic(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._stochastic) return;
+    this.assertBuiltInSplatShaders(nextValue);
+    const settle =
+      this.stochasticPhase === "settling" ||
+      (!nextValue && this.stochasticFrame);
+    this._stochastic = nextValue;
+    this.refreshStochasticConfiguration(settle);
+  }
+
+  get renderDepth(): boolean {
+    return this._renderDepth;
+  }
+
+  set renderDepth(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._renderDepth) return;
+    this.assertBuiltInSplatShaders(nextValue);
+    this._renderDepth = nextValue;
+    this.applyStochasticRenderOrder();
+    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.setDirty();
+  }
+
   get depthTest(): boolean {
-    return this.material.depthTest;
+    return this._depthTest;
   }
 
   set depthTest(value: boolean) {
-    this.material.depthTest = value;
+    this._depthTest = Boolean(value);
+    this.applyStochasticMaterialState(this.stochasticFrame);
   }
 
   get depthWrite(): boolean {
-    return this.material.depthWrite;
+    return this._depthWrite;
   }
 
   set depthWrite(value: boolean) {
-    this.material.depthWrite = value;
+    this._depthWrite = Boolean(value);
+    this.applyStochasticRenderOrder();
+    this.applyStochasticMaterialState(this.stochasticFrame);
   }
 }
 
-function checkIsXRRenderTarget(renderTarget: THREE.RenderTarget | null) {
-  return (renderTarget as unknown as Record<string, boolean>)?.isXRRenderTarget;
+function isOpaqueMaterial(material: THREE.Material) {
+  return (
+    material.transparent === false &&
+    material.blending === THREE.NormalBlending &&
+    material.alphaToCoverage === false
+  );
 }

@@ -2,6 +2,7 @@ import {
   GaussianSplatRenderer,
   SplatFileType,
   SplatMesh,
+  StochasticResolvePass,
 } from "gaussian-splat-lite";
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
@@ -49,13 +50,37 @@ const performanceHeap = document.querySelector("#performance-heap");
 const performanceHeapStat = performanceHeap.closest(".performance-stat");
 
 const EXAMPLE_MODEL = {
-  name: "lion.v3.spz",
-  size: 4303196,
-  url: new URL("../lion.v3.spz", import.meta.url),
-  credit: "Renaud",
+  name: "galaxy-explorer.v3.spz",
+  size: 12385826,
+  url: new URL("../galaxy-explorer.v3.spz", import.meta.url),
+  credit: "renderbricks",
+  showExampleCube: true,
 };
 
 const scene = new THREE.Scene();
+const exampleCube = new THREE.Mesh(
+  new THREE.BoxGeometry(2,1,0.33),
+  new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  }),
+);
+exampleCube.position.set(0, 0.25, 0);
+//exampleCube.rotation.x = -THREE.MathUtils.degToRad(30);
+
+function setExampleCubeVisible(visible) {
+  exampleCube.visible = visible;
+  if (visible) {
+    if (exampleCube.parent !== scene) scene.add(exampleCube);
+  } else {
+    exampleCube.removeFromParent();
+  }
+}
+
+setExampleCubeVisible(false);
+
 const camera = new THREE.PerspectiveCamera(52, 1, 0.001, 10000);
 camera.position.set(0, 0, 3);
 
@@ -63,22 +88,16 @@ const rendererParameters = {
   alpha: true,
   powerPreference: "high-performance",
 };
+let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
 
 function configureRenderer(value) {
   value.setClearColor(0x000000, 0);
   value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  value.outputColorSpace = THREE.SRGBColorSpace;
-}
-
-function activateRendererColorSpace(value) {
-  THREE.ColorManagement.workingColorSpace = value.isWebGPURenderer
-    ? THREE.SRGBColorSpace
-    : THREE.LinearSRGBColorSpace;
+  value.outputColorSpace = outputColorSpace;
 }
 
 let renderer = new THREE.WebGLRenderer(rendererParameters);
-activateRendererColorSpace(renderer);
 configureRenderer(renderer);
 viewport.append(renderer.domElement);
 
@@ -144,7 +163,7 @@ function renderFrame(time) {
   // Synchronous preparation is consumed by this draw; worker completion can
   // still request a later frame through onDirty.
   needsRender = false;
-  renderer.render(scene, camera);
+  stochasticResolvePass.compose(renderer, scene, camera);
   updateStats(time, true);
 }
 
@@ -153,9 +172,13 @@ controls.addEventListener("update", requestRender);
 let splatRenderer = new GaussianSplatRenderer({
   renderer,
   onDirty: requestRender,
+  autoStochastic: true,
   // autoUpdate: false,
 });
 scene.add(splatRenderer);
+
+const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
+stochasticResolvePass.enabled = true;
 
 const renderOptionGroups = [
   {
@@ -173,6 +196,24 @@ const renderOptionGroups = [
         },
       },
       {
+        property: "outputColorSpace",
+        label: "Output color space",
+        description:
+          "Chooses whether the canvas presents linear RGB values directly or encodes them for an sRGB display.",
+        defaultValue: true,
+        falseLabel: "Linear",
+        trueLabel: "sRGB",
+        apply: (enabled) => {
+          outputColorSpace = enabled
+            ? THREE.SRGBColorSpace
+            : THREE.LinearSRGBColorSpace;
+          renderer.outputColorSpace = outputColorSpace;
+          if (usesWebGPU(renderer)) {
+            THREE.ColorManagement.workingColorSpace = outputColorSpace;
+          }
+        },
+      },
+      {
         property: "renderOnDemand",
         description:
           "Skips unchanged frames. Disable it to render continuously for profiling.",
@@ -183,13 +224,38 @@ const renderOptionGroups = [
           renderOnDemand = value;
         },
       },
+    ],
+  },
+  {
+    title: "Rendering",
+    description: "Stochastic transparency and depth output.",
+    options: [
       {
-        property: "preUpdate",
+        property: "autoStochastic",
+        label: "Automatic stochastic",
         description:
-          "Updates splats before drawing so the current frame uses the latest accumulator.",
+          "Uses sorting-free rendering while the camera moves and until a fresh sort is ready.",
         defaultValue: true,
-        falseLabel: "After render",
-        trueLabel: "Before render",
+        falseLabel: "Disabled",
+        trueLabel: "Enabled",
+      },
+      {
+        property: "stochastic",
+        label: "Force stochastic",
+        description:
+          "Keeps the sorting-free stochastic path active independently of camera motion.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "renderDepth",
+        label: "Force Splat depth",
+        description:
+          "Keeps the depth-only companion draw enabled when automatic stochastic is off.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
       },
     ],
   },
@@ -201,7 +267,7 @@ const renderOptionGroups = [
         property: "synchronousSort",
         label: "Synchronous sorting",
         description:
-          "Uses one accumulator and sorts before drawing: GPU on WebGPU, main thread on WebGL.",
+          "Sorts before drawing and ignores the asynchronous sort interval.",
         defaultValue: false,
         falseLabel: "Async",
         trueLabel: "Sync",
@@ -217,7 +283,7 @@ const renderOptionGroups = [
       {
         property: "minSortIntervalMs",
         description:
-          "Limits how often depth sorting runs. Higher values save work but may lag while moving.",
+          "Limits asynchronous depth sorting. Higher values save work but may lag while moving.",
         min: 0,
         max: 500,
         step: 10,
@@ -446,13 +512,16 @@ async function switchRendererBackend(webGPU) {
   scene.remove(previousSplatRenderer);
 
   renderer = nextRenderer;
-  // Match the global working space to the active renderer backend.
-  activateRendererColorSpace(renderer);
+  THREE.ColorManagement.workingColorSpace = webGPU
+    ? outputColorSpace
+    : THREE.LinearSRGBColorSpace;
   configureRenderer(renderer);
   controls = nextControls;
   controls.addEventListener("update", requestRender);
   splatRenderer = nextSplatRenderer;
   scene.add(splatRenderer);
+  stochasticResolvePass.addSplatRenderer(splatRenderer);
+  stochasticResolvePass.removeSplatRenderer(previousSplatRenderer);
 
   resizeRenderer();
   previousRenderer.domElement.replaceWith(renderer.domElement);
@@ -464,6 +533,35 @@ async function switchRendererBackend(webGPU) {
   requestRender();
 }
 
+function setRenderOptionRowHidden(property, hidden) {
+  const entry = renderOptionInputs.get(property);
+  if (entry) entry.row.hidden = hidden;
+}
+
+function clearBooleanRenderOption(property) {
+  const entry = renderOptionInputs.get(property);
+  if (!entry?.input.checked) return;
+  entry.input.checked = false;
+  entry.input.updateOption();
+}
+
+function syncRenderOptionDependencies(changedProperty) {
+  const autoStochastic =
+    renderOptionInputs.get("autoStochastic")?.input.checked === true;
+
+  if (changedProperty === "autoStochastic" && autoStochastic) {
+    clearBooleanRenderOption("stochastic");
+    clearBooleanRenderOption("renderDepth");
+  }
+
+  setRenderOptionRowHidden("stochastic", autoStochastic);
+  setRenderOptionRowHidden("renderDepth", autoStochastic);
+
+  const synchronousSort =
+    renderOptionInputs.get("synchronousSort")?.input.checked === true;
+  setRenderOptionRowHidden("minSortIntervalMs", synchronousSort);
+}
+
 function applyRenderOption(option, value) {
   if (option.apply) {
     option.apply(value);
@@ -471,6 +569,7 @@ function applyRenderOption(option, value) {
     splatRenderer[option.property] = value;
     splatRenderer.setDirty();
   }
+  syncRenderOptionDependencies(option.property);
   requestRender();
 }
 
@@ -548,7 +647,7 @@ function createRenderOptions() {
         input.updateOption = update;
       }
 
-      renderOptionInputs.set(option.property, { input, option });
+      renderOptionInputs.set(option.property, { input, option, row });
       input.updateOption();
       row.append(copy, control);
       section.append(row);
@@ -556,6 +655,8 @@ function createRenderOptions() {
 
     renderOptionsContent.append(section);
   }
+
+  syncRenderOptionDependencies();
 }
 
 function setRenderOptionsOpen(open) {
@@ -799,7 +900,12 @@ function frameSplat(splat) {
 
 async function loadFile(
   file,
-  { credit = "", remoteController = null, loadToken = null } = {},
+  {
+    credit = "",
+    remoteController = null,
+    loadToken = null,
+    showExampleCube = false,
+  } = {},
 ) {
   const fileType = fileTypeFor(file);
   if (!fileType) {
@@ -846,6 +952,7 @@ async function loadFile(
 
     const previousSplat = activeSplat;
     activeSplat = candidate;
+    setExampleCubeVisible(showExampleCube);
     scene.add(activeSplat);
     if (previousSplat) {
       scene.remove(previousSplat);
@@ -913,6 +1020,7 @@ async function loadRemoteModel(model, button) {
       credit: model.credit,
       remoteController: controller,
       loadToken: requestId,
+      showExampleCube: model.showExampleCube,
     });
   } catch (error) {
     if (requestId !== activeLoad || controller.signal.aborted) return;
@@ -1077,6 +1185,7 @@ window.addEventListener("beforeunload", () => {
   controls.removeEventListener("update", requestRender);
   controls.dispose();
   activeSplat?.dispose();
+  stochasticResolvePass.dispose();
   splatRenderer.dispose();
   renderer.dispose();
 });

@@ -12,6 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Added native WebGPU accumulation and Splat rendering through TSL while retaining the existing Worker/WASM CPU sorting pipeline.
 - Added a WebGL/WebGPU backend toggle to the bundled viewer for direct comparison.
 - Added an optional same-frame sorting mode that uses GPU radix sorting on WebGPU and main-thread WASM sorting on WebGL.
+- Added optional stochastic rendering, depth-only drawing, and `StochasticResolvePass`.
 
 ### Changed
 

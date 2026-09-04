@@ -12,6 +12,21 @@ export function isWebGPURenderer(
   return "isWebGPURenderer" in renderer && renderer.isWebGPURenderer === true;
 }
 
+type XRRenderTarget = THREE.RenderTarget & { isXRRenderTarget?: boolean };
+
+export function isXRRenderTarget(
+  renderTarget: THREE.RenderTarget | null,
+): boolean {
+  return (renderTarget as XRRenderTarget | null)?.isXRRenderTarget === true;
+}
+
+export function setXRRenderTargetFlag(
+  renderTarget: THREE.RenderTarget,
+  value: boolean,
+) {
+  (renderTarget as XRRenderTarget).isXRRenderTarget = value;
+}
+
 export function assertSupportedRenderer(
   renderer: GaussianSplatCompatibleRenderer,
 ) {

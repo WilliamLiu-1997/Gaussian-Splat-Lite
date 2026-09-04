@@ -47,6 +47,12 @@ function textureBinding(uniforms: Uniforms, name: string, array = false) {
   return N.textureLoad(placeholder).onObjectUpdate(getTexture);
 }
 
+function createDefaultOrderingNode() {
+  const ordering = new StorageBufferAttribute(new Uint32Array([0xffffffff]), 1);
+  ordering.name = "GaussianSplatOrdering";
+  return N.storage(ordering, "uint").toReadOnly();
+}
+
 function load2D(binding: TSLNode, coord: TSLNode) {
   const texel = binding.load(coord);
   texel.setUpdateMatrix(false);
@@ -210,6 +216,16 @@ const gaussianSupportRadius = N.Fn(
   },
 );
 
+const stochasticHash = N.Fn(([input]: TSLNode[]) => {
+  const value = N.uint(input).toVar();
+  value.bitXorAssign(value.shiftRight(16));
+  value.mulAssign(N.uint(0x7feb352d));
+  value.bitXorAssign(value.shiftRight(15));
+  value.mulAssign(N.uint(0x846ca68b));
+  value.bitXorAssign(value.shiftRight(16));
+  return value;
+});
+
 const decodeShRgb = N.Fn(([encoded]: TSLNode[]) => {
   const biasedBase = encoded.shiftRight(27).bitAnd(0x1f);
   const divisor = N.uintBitsToFloat(biasedBase.add(112).shiftLeft(23)).div(255);
@@ -260,9 +276,24 @@ const encodeWideSemanticOpacity = N.Fn(([opacity]: TSLNode[]) => {
     .mul(0.25);
 });
 
-function createSplatFragment(minAlpha: TSLNode, encodeLinear: TSLNode) {
+function createSplatFragment({
+  minAlpha,
+  encodeLinear,
+  stochastic,
+  stochasticResolve,
+  depthOnly,
+  premultipliedAlpha,
+}: {
+  minAlpha: TSLNode;
+  encodeLinear: TSLNode;
+  stochastic: TSLNode;
+  stochasticResolve: TSLNode;
+  depthOnly: TSLNode;
+  premultipliedAlpha: TSLNode;
+}) {
   const vRgba = N.varyingProperty("vec4", "gslRgba");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
+  const vSplatIndex = N.varyingProperty("uint", "gslSplatIndex");
   const vSupportRadiusSquared = N.varyingProperty(
     "float",
     "gslSupportRadiusSquared",
@@ -281,8 +312,37 @@ function createSplatFragment(minAlpha: TSLNode, encodeLinear: TSLNode) {
     });
     rgba.a.mulAssign(kernelAlpha);
     rgba.a.lessThan(minAlpha).discard();
-    N.If(encodeLinear, () => {
-      rgba.rgb.assign(rgba.rgb.pow(2.2));
+    N.If(stochastic.or(depthOnly), () => {
+      const pixel = N.uvec2(N.screenCoordinate.xy);
+      const quad = pixel.shiftRight(N.uvec2(1));
+      const hash = stochasticHash(
+        quad.x
+          .mul(N.uint(1973))
+          .bitXor(quad.y.mul(N.uint(9277)))
+          .bitXor(vSplatIndex.add(1).mul(N.uint(26699))),
+      );
+      const stratum = pixel.y
+        .bitAnd(1)
+        .mul(2)
+        .add(pixel.x.bitAnd(1))
+        .bitXor(hash.bitAnd(3));
+      const randomValue = N.float(stratum)
+        .add(N.float(hash.shiftRight(8)).mul(1 / 16777216))
+        .mul(0.25);
+      randomValue.greaterThanEqual(rgba.a).discard();
+    });
+    N.If(depthOnly.not(), () => {
+      N.If(encodeLinear, () => {
+        rgba.rgb.assign(rgba.rgb.pow(2.2));
+      });
+      N.If(stochastic, () => {
+        // NodeMaterial premultiplies its output when requested. Cancel the
+        // alpha-2 marker here so the stored stochastic RGB remains straight.
+        N.If(premultipliedAlpha.and(stochasticResolve), () => {
+          rgba.rgb.mulAssign(0.5);
+        });
+        rgba.a.assign(N.select(stochasticResolve, 2, 1));
+      });
     });
     return rgba;
   })();
@@ -290,6 +350,7 @@ function createSplatFragment(minAlpha: TSLNode, encodeLinear: TSLNode) {
   return {
     vRgba,
     vSplatUv,
+    vSplatIndex,
     vSupportRadiusSquared,
     vKernelPower,
     fragmentNode,
@@ -298,23 +359,20 @@ function createSplatFragment(minAlpha: TSLNode, encodeLinear: TSLNode) {
 
 export function createWebGPUSplatMaterial({
   uniforms,
+  orderingNode: providedOrderingNode,
   premultipliedAlpha,
   transparent,
   depthTest,
   depthWrite,
 }: {
   uniforms: Uniforms;
+  orderingNode?: TSLNode;
   premultipliedAlpha: boolean;
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
 }): WebGPUSplatMaterial {
-  const initialOrdering = new StorageBufferAttribute(
-    new Uint32Array([0xffffffff]),
-    1,
-  );
-  initialOrdering.name = "GaussianSplatOrdering";
-  const orderingNode = N.storage(initialOrdering, "uint").toReadOnly();
+  const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
   const splats2 = textureBinding(uniforms, "splats2", true);
   const renderSize = uniformBinding(uniforms, "renderSize", "vec2");
@@ -336,19 +394,46 @@ export function createWebGPUSplatMaterial({
   const clipXY = uniformBinding(uniforms, "clipXY", "float");
   const focalAdjustment = uniformBinding(uniforms, "focalAdjustment", "float");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
-  const { vRgba, vSplatUv, vSupportRadiusSquared, vKernelPower, fragmentNode } =
-    createSplatFragment(minAlpha, encodeLinear);
+  const premultipliedAlphaNode = uniformBinding(
+    uniforms,
+    "premultipliedAlpha",
+    "bool",
+  );
+  const stochastic = uniformBinding(uniforms, "stochastic", "bool");
+  const stochasticResolve = uniformBinding(
+    uniforms,
+    "stochasticResolve",
+    "bool",
+  );
+  const depthOnly = uniformBinding(uniforms, "depthOnly", "bool");
+  const {
+    vRgba,
+    vSplatUv,
+    vSplatIndex,
+    vSupportRadiusSquared,
+    vKernelPower,
+    fragmentNode,
+  } = createSplatFragment({
+    minAlpha,
+    encodeLinear,
+    stochastic,
+    stochasticResolve,
+    depthOnly,
+    premultipliedAlpha: premultipliedAlphaNode,
+  });
 
   const vertexNode = N.Fn(() => {
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
     vSplatUv.assign(N.vec2(0));
+    vSplatIndex.assign(N.uint(0));
     vSupportRadiusSquared.assign(0);
     vKernelPower.assign(0);
 
-    const splatIndex = N.uint(
-      orderingNode.element(N.uint(N.instanceIndex)),
-    ).toVar();
+    const splatIndex = N.uint(N.instanceIndex).toVar();
+    N.If(stochastic.or(depthOnly).not(), () => {
+      splatIndex.assign(orderingNode.element(N.uint(N.instanceIndex)));
+    });
 
     N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {
       const texCoord = splatTexCoord(splatIndex);
@@ -503,6 +588,7 @@ export function createWebGPUSplatMaterial({
                   );
                   vRgba.assign(N.vec4(rgba.rgb, alpha));
                   vSplatUv.assign(N.positionGeometry.xy.mul(supportRadius));
+                  vSplatIndex.assign(splatIndex);
                   vSupportRadiusSquared.assign(
                     supportRadius.mul(supportRadius),
                   );

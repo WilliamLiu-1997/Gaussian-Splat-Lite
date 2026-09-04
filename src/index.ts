@@ -2,6 +2,7 @@ export {
   GaussianSplatRenderer,
   type GaussianSplatRendererOptions,
 } from "./GaussianSplatRenderer";
+export { StochasticResolvePass } from "./StochasticResolvePass";
 export {
   SplatAccumulator,
   type SplatMapping,

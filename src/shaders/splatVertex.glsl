@@ -28,6 +28,8 @@ uniform float blurAmount;
 uniform float preBlurAmount;
 uniform float clipXY;
 uniform float focalAdjustment;
+uniform bool stochastic;
+uniform bool depthOnly;
 
 uniform usampler2D ordering;
 uniform usampler2DArray splats;
@@ -50,8 +52,14 @@ void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 
-    ivec2 orderingCoord = ivec2((gl_InstanceID >> 2) & 4095, gl_InstanceID >> 14);
-    uint splatIndex = texelFetch(ordering, orderingCoord, 0)[gl_InstanceID & 3];
+    uint splatIndex;
+    if (stochastic || depthOnly) {
+        // Motion and depth-only rendering do not need sorted indices.
+        splatIndex = uint(gl_InstanceID);
+    } else {
+        ivec2 orderingCoord = ivec2((gl_InstanceID >> 2) & 4095, gl_InstanceID >> 14);
+        splatIndex = texelFetch(ordering, orderingCoord, 0)[gl_InstanceID & 3];
+    }
     if (splatIndex == 0xffffffffu) {
         // Special value reserved for "no splat"
         return;

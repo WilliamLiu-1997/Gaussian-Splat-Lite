@@ -1,0 +1,6 @@
+Title: LEGO® 10497 Galaxy Explorer (LDraw)
+Author: renderbricks (https://superspl.at/user/renderbricks)
+Source: https://superspl.at/scene/5f3f4050
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+Requirements: Author attribution and a link to the license are required. Commercial use and adaptations are allowed.

@@ -24,6 +24,7 @@ It works alongside standard Three.js scenes, cameras, meshes, and render loops, 
 - URL, in-memory byte, and standard `ReadableStream` inputs
 - Rust/WebAssembly file decoding, depth sorting, and raycasting
 - WebGL2 rendering with CPU sorting and native WebGPU rendering with optional GPU radix sorting
+- Optional sorting-free stochastic transparency and spatial resolve pass
 - 3DGS rendering with configurable anti-aliasing
 - Spherical harmonics, offscreen rendering, and environment-map rendering
 - SDF-based color and opacity editing
@@ -88,6 +89,31 @@ window.addEventListener("resize", () => {
 ```
 
 `GaussianSplatRenderer` is itself a Three.js scene object. It collects visible `SplatMesh` objects, generates GPU data, sorts the combined collection, and draws it. Application code continues to use the standard `renderer.render(scene, camera)` call; it does not need to issue a separate draw call for each Splat.
+
+### Rendering options
+
+Enable `autoStochastic` to use sorting-free rendering while the camera moves
+and until a fresh sort is ready. Use `stochastic` to force the same path, or
+`renderDepth` to force the companion depth draw:
+
+```js
+const splatRenderer = new GaussianSplatRenderer({
+  renderer,
+  autoStochastic: true,
+});
+scene.add(splatRenderer);
+```
+
+Add the optional resolve pass after the scene `RenderPass` to reduce stochastic noise:
+
+```js
+import { StochasticResolvePass } from "gaussian-splat-lite";
+
+composer.addPass(new StochasticResolvePass(splatRenderer));
+```
+
+See [`GaussianSplatRenderer`](docs/GaussianSplatRenderer.md#rendering-options)
+for on-demand rendering and custom render-graph examples.
 
 Some PLY/SPZ data uses a `+Y`-down, `+Z`-forward convention. If a model appears upside down or faces the wrong direction, rotate the object without changing its decoded data:
 
