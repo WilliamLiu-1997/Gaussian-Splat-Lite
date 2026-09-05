@@ -57,7 +57,7 @@ scene.add(splatRenderer);
 
 - `stochastic: true` forces the stochastic path.
 - `renderDepth: true` forces the companion depth draw; `autoStochastic` enables it automatically.
-- All three options require built-in shaders; `autoStochastic` also requires `autoUpdate`. WebXR and capture methods stay sorted.
+- All three options require built-in shaders; `autoStochastic` also requires `autoUpdate` and remains disabled in WebXR. Manual `stochastic` works in WebXR; capture methods stay sorted.
 
 ### Stochastic resolve
 
@@ -80,6 +80,28 @@ resolvePass.resolve(renderer, inputTarget, outputTarget); // Custom render graph
 
 Place the pass after the complete scene render and use a half-float or float
 input. The pass is enabled by default; call `dispose()` when finished.
+
+For WebGL or native WebGPU XR, use `compose()` in the XR animation loop:
+
+```js
+splatRenderer.stochastic = true; // Manual mode; autoStochastic stays off in XR.
+const resolvePass = new StochasticResolvePass(splatRenderer);
+renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
+```
+
+The pass reuses a half-float target containing the eyes side by side, resolves
+each eye independently into its XR viewport or texture layer, and copies sample
+depth when the XR output has a depth buffer. Color and alpha are converted before
+submission. Switching the pass off retains raw stochastic rendering; switching
+manual stochastic off waits for a sorted replacement when `autoUpdate` is enabled.
+
+For an explicit XR render graph, restore the XR output target before calling
+`resolve(renderer, input, null)`. It accepts the same layout: eye order from
+`renderer.xr.getCamera().cameras`, packed horizontally
+without gaps, with each eye at y = 0. Input width is the sum of eye viewport widths;
+height is their maximum height. Render with eye-local viewport coordinates and
+include a `DepthTexture` to copy depth. `compose()` handles this setup automatically.
+The EffectComposer example above is for non-XR rendering.
 
 ## Sorting, material, and offscreen options
 

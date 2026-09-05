@@ -36,6 +36,7 @@ function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
   if (!arrayCamera.isArrayCamera || arrayCamera.cameras.length === 0) {
     return {
       renderSize: uniformBinding(uniforms, "renderSize", "vec2"),
+      viewportOrigin: uniformBinding(uniforms, "viewportOrigin", "vec2"),
       renderToViewQuat: uniformBinding(uniforms, "renderToViewQuat", "vec4"),
       renderToViewPos: uniformBinding(uniforms, "renderToViewPos", "vec3"),
       renderToViewScale: uniformBinding(uniforms, "renderToViewScale", "float"),
@@ -45,8 +46,9 @@ function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
   }
 
   // ArrayCamera draws do not call onBeforeRender separately for each eye.
-  // Pack rotation, position/scale and viewport/clipping into three vec4s per eye.
+  // Pack rotation, position/scale, viewport/clipping and pixel origin per eye.
   const views = arrayCamera.cameras.flatMap(() => [
+    new THREE.Vector4(),
     new THREE.Vector4(),
     new THREE.Vector4(),
     new THREE.Vector4(),
@@ -62,20 +64,21 @@ function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
         matrix.makeTranslation(uniforms.renderOrigin.value);
         matrix.premultiply(eye.matrixWorldInverse);
         matrix.decompose(position, rotation, scale);
-        views[i * 3].set(rotation.x, rotation.y, rotation.z, rotation.w);
-        views[i * 3 + 1].set(
+        views[i * 4].set(rotation.x, rotation.y, rotation.z, rotation.w);
+        views[i * 4 + 1].set(
           position.x,
           position.y,
           position.z,
           (scale.x + scale.y + scale.z) / 3,
         );
         const size = uniforms.renderSize.value;
-        views[i * 3 + 2].set(
+        views[i * 4 + 2].set(
           eye.viewport?.z ?? size.x,
           eye.viewport?.w ?? size.y,
           eye.near,
           eye.far,
         );
+        views[i * 4 + 3].set(eye.viewport?.x ?? 0, eye.viewport?.y ?? 0, 0, 0);
       });
     },
   );
@@ -83,11 +86,12 @@ function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
     .isMultiViewCamera
     ? N.builtin("gl_ViewID_OVR")
     : N.cameraIndex;
-  const offset = index.mul(3);
+  const offset = index.mul(4);
   const positionScale = viewData.element(offset.add(1));
   const viewportClip = viewData.element(offset.add(2));
   return {
     renderSize: viewportClip.xy,
+    viewportOrigin: viewData.element(offset.add(3)).xy,
     renderToViewQuat: viewData.element(offset),
     renderToViewPos: positionScale.xyz,
     renderToViewScale: positionScale.w,
@@ -364,6 +368,7 @@ function createSplatFragment({
     "gslSupportRadiusSquared",
   );
   const vKernelPower = N.varyingProperty("float", "gslKernelPower");
+  const vViewportOrigin = N.varyingProperty("vec2", "gslViewportOrigin");
 
   const fragmentNode = N.Fn(() => {
     const rgba = vRgba.toVar();
@@ -378,7 +383,7 @@ function createSplatFragment({
     rgba.a.mulAssign(kernelAlpha);
     rgba.a.lessThan(minAlpha).discard();
     N.If(stochastic.or(depthOnly), () => {
-      const pixel = N.uvec2(N.screenCoordinate.xy);
+      const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
       const quad = pixel.shiftRight(N.uvec2(1));
       const hash = stochasticHash(
         quad.x
@@ -418,6 +423,7 @@ function createSplatFragment({
     vSplatIndex,
     vSupportRadiusSquared,
     vKernelPower,
+    vViewportOrigin,
     fragmentNode,
   };
 }
@@ -467,6 +473,7 @@ export function createWebGPUSplatMaterial({
     vSplatIndex,
     vSupportRadiusSquared,
     vKernelPower,
+    vViewportOrigin,
     fragmentNode,
   } = createSplatFragment({
     minAlpha,
@@ -480,12 +487,14 @@ export function createWebGPUSplatMaterial({
   const vertexNode = N.Fn(({ camera }: { camera: THREE.Camera }) => {
     const {
       renderSize,
+      viewportOrigin,
       renderToViewQuat,
       renderToViewPos,
       renderToViewScale,
       near,
       far,
     } = splatViewUniforms(uniforms, camera);
+    vViewportOrigin.assign(viewportOrigin);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
     vSplatUv.assign(N.vec2(0));

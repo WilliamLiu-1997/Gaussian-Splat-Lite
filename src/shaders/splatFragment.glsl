@@ -13,6 +13,7 @@ uniform float minAlpha;
 uniform bool stochastic;
 uniform bool stochasticResolve;
 uniform bool depthOnly;
+uniform vec2 viewportOrigin;
 
 out vec4 fragColor;
 
@@ -57,7 +58,7 @@ void main() {
         // each 2x2 quad use a scrambled set of four strata to decorrelate
         // adjacent coverage decisions. The sorted depth-only pass reuses it
         // so transparent edges do not become solid.
-        uvec2 pixel = uvec2(gl_FragCoord.xy);
+        uvec2 pixel = uvec2(gl_FragCoord.xy - viewportOrigin);
         uvec2 quad = pixel >> 1u;
         uint hash = hashU32(
             (quad.x * 1973u) ^

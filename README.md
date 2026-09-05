@@ -112,6 +112,9 @@ import { StochasticResolvePass } from "gaussian-splat-lite";
 composer.addPass(new StochasticResolvePass(splatRenderer));
 ```
 
+In WebXR, manual `stochastic` is supported while `autoStochastic` stays disabled.
+Use `resolvePass.compose(renderer, scene, camera)` for per-eye spatial resolve.
+
 See [`GaussianSplatRenderer`](docs/GaussianSplatRenderer.md#rendering-options)
 for on-demand rendering and custom render-graph examples.
 

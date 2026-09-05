@@ -200,7 +200,7 @@ export interface GaussianSplatRendererOptions {
   autoStochastic?: boolean;
   /**
    * Forces sorting-free stochastic transparency independently of camera motion.
-   * WebXR and dedicated capture paths still use their normal sorted fallback.
+   * Supported in WebXR; dedicated capture paths still use sorted rendering.
    * @default false
    */
   stochastic?: boolean;
@@ -347,6 +347,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   private sortModeRevision = 0;
   private readonly stochasticMotion = new StochasticMotionState();
   private stochasticPhase: StochasticRenderPhase | null = null;
+  private stochasticWasForced = false;
   private requestMotionFollowup = false;
   private forceSortedRenderDepth = 0;
   private stochasticResolveMarkerUsers = 0;
@@ -556,6 +557,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // numSplats: { value: 0 },
       // Size of render viewport in pixels
       renderSize: { value: new THREE.Vector2() },
+      viewportOrigin: { value: new THREE.Vector2() },
       renderOrigin: { value: new THREE.Vector3() },
       // Near and far plane distances
       near: { value: 0.1 },
@@ -773,9 +775,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
 
     if (this._stochastic) {
+      this.stochasticWasForced = true;
       this.stochasticMotion.observe(camera);
       this.stochasticPhase = "forced";
-    } else if (this._autoStochastic && this.autoUpdate) {
+    } else if (
+      this._autoStochastic &&
+      this.autoUpdate &&
+      !renderer.xr.isPresenting
+    ) {
       this.stochasticPhase = this.stochasticMotion.observe(camera);
     }
     this.requestMotionFollowup = this.stochasticPhase === "moving";
@@ -821,7 +828,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         (this._autoStochastic && this.autoUpdate) ||
         (this.stochasticPhase === "settling" && this.autoUpdate)) &&
       this.forceSortedRenderDepth === 0 &&
-      !renderer.xr.isPresenting
+      (!renderer.xr.isPresenting ||
+        this._stochastic ||
+        (this.stochasticWasForced && this.stochasticPhase === "settling"))
     );
   }
 
@@ -964,6 +973,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
 
     let useCamera = camera;
+    this.uniforms.viewportOrigin.value.set(0, 0);
     if (renderer.xr.isPresenting) {
       const xrCamera = renderer.xr.getCamera();
       // Keep the per-eye camera parented to the XR rig so its world transform
@@ -975,6 +985,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       if (viewport) {
         // WebGPU selects each eye's size in the shader; updates use the first.
         gaussianSplatRenderer.renderSize.set(viewport.z, viewport.w);
+        this.uniforms.viewportOrigin.value.set(viewport.x, viewport.y);
       }
     }
     this.uniforms.renderSize.value.copy(gaussianSplatRenderer.renderSize);
@@ -1047,6 +1058,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;
     this.uniforms.focalAdjustment.value = gaussianSplatRenderer.focalAdjustment;
     this.uniforms.stochastic.value = gaussianSplatRenderer.stochasticFrame;
+    // Alpha-2 markers belong only in float intermediates, never the XR layer.
+    const xrOutput = isWebGPURenderer(renderer)
+      ? currentRenderTarget === renderer.getOutputRenderTarget() ||
+        (
+          currentRenderTarget as
+            | (THREE.RenderTarget & { isPostProcessingRenderTarget?: boolean })
+            | null
+        )?.isPostProcessingRenderTarget
+      : xrRenderTarget && renderer.xr.enabled;
+    this.uniforms.stochasticResolve.value =
+      this.stochasticResolveMarkerUsers > 0 &&
+      (!renderer.xr.isPresenting ||
+        (!xrOutput &&
+          (currentRenderTarget?.texture.type === THREE.HalfFloatType ||
+            currentRenderTarget?.texture.type === THREE.FloatType)));
     if (this.stochasticModeEnabled) {
       this.applyStochasticMaterialState(gaussianSplatRenderer.stochasticFrame);
     }
@@ -1351,6 +1377,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // An async sort may finish after the camera starts moving again. The
       // revision check above keeps that stale result from ending motion mode.
       this.stochasticPhase = null;
+      this.stochasticWasForced = false;
       this.applyStochasticRenderOrder();
       this.applyStochasticMaterialState(false);
       this.setDirty();

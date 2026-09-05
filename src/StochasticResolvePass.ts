@@ -33,7 +33,10 @@ precision highp float;
 precision highp int;
 
 uniform sampler2D sourceTexture;
-uniform ivec2 sourceSize;
+uniform sampler2D sourceDepth;
+uniform ivec4 sourceRect;
+uniform ivec2 outputOrigin;
+uniform bool copyDepth;
 uniform bool resolveStochastic;
 uniform bool perceptualResolve;
 uniform bool sourceEncoded;
@@ -41,7 +44,8 @@ uniform bool sourceEncoded;
 out vec4 fragColor;
 
 vec4 loadSource(ivec2 coord) {
-    return texelFetch(sourceTexture, clamp(coord, ivec2(0), sourceSize - 1), 0);
+    return texelFetch(sourceTexture,
+        sourceRect.xy + clamp(coord, ivec2(0), sourceRect.zw - 1), 0);
 }
 
 vec3 linearToPerceptual(vec3 color) {
@@ -130,17 +134,25 @@ vec4 workingToOutput(vec4 texel) {
 }
 
 void main() {
-    ivec2 source = ivec2(gl_FragCoord.xy);
+    ivec2 source = ivec2(gl_FragCoord.xy) - outputOrigin;
     vec4 result = resolveStochastic
         ? resolveStochasticFrame(source)
         : physicalSource(loadSource(source));
     fragColor = workingToOutput(result);
+    gl_FragDepth = copyDepth
+        ? texelFetch(sourceDepth, sourceRect.xy + source, 0).r
+        : gl_FragCoord.z;
 }
 `;
 
 type ResolveState = {
   sourceTexture: { value: THREE.Texture };
-  sourceSize: THREE.Vector2;
+  sourceDepth: { value: THREE.DepthTexture };
+  sourceRect: THREE.Vector4;
+  sourceViews: THREE.Vector4[];
+  outputOrigins: THREE.Vector2[];
+  outputOrigin: THREE.Vector2;
+  copyDepth: { value: boolean };
   resolve: { value: boolean };
   perceptual: { value: boolean };
   sourceEncoded: { value: boolean };
@@ -149,9 +161,6 @@ type ResolveState = {
 function createWebGPUResolveMaterial(state: ResolveState) {
   const source = N.textureLoad(state.sourceTexture.value).onObjectUpdate(
     () => state.sourceTexture.value,
-  );
-  const size = N.uniform(state.sourceSize, "ivec2").onObjectUpdate(
-    () => state.sourceSize,
   );
   const resolve = N.uniform(false, "bool").onObjectUpdate(
     () => state.resolve.value,
@@ -162,8 +171,6 @@ function createWebGPUResolveMaterial(state: ResolveState) {
       THREE.ColorManagement.workingColorSpace !== THREE.SRGBColorSpace,
   );
 
-  const load = (coord: TSLNode) =>
-    source.load(coord.clamp(N.ivec2(0), size.sub(1)));
   const linearToPerceptual = (color: TSLNode) => color.max(0).pow(1 / 2.2);
   const perceptualToLinear = (color: TSLNode) => color.max(0).pow(2.2);
 
@@ -201,8 +208,24 @@ function createWebGPUResolveMaterial(state: ResolveState) {
     return N.vec4(workingColor.mul(alpha), alpha);
   };
 
+  const view = N.Fn(({ camera }: { camera: THREE.Camera }) => {
+    if ((camera as THREE.ArrayCamera).isArrayCamera) {
+      return N.uniformArray(state.sourceViews, "vec4").element(N.cameraIndex);
+    }
+    return N.uniform(state.sourceRect, "vec4");
+  })();
+  const origin = N.Fn(({ camera }: { camera: THREE.Camera }) =>
+    (camera as THREE.ArrayCamera).isArrayCamera
+      ? N.uniformArray(state.outputOrigins, "vec2").element(N.cameraIndex)
+      : N.uniform(state.outputOrigin, "vec2"),
+  )();
+  const sourceCoord = N.ivec2(N.screenCoordinate.xy.sub(origin));
+  const sourceRect = N.ivec4(view);
+  const load = (coord: TSLNode) =>
+    source.load(
+      sourceRect.xy.add(coord.clamp(N.ivec2(0), sourceRect.zw.sub(1))),
+    );
   const fragmentNode = N.Fn(() => {
-    const sourceCoord = N.ivec2(N.screenCoordinate.xy);
     const result = N.vec4(0).toVar();
     const copySource = () => {
       result.assign(physicalSource(load(sourceCoord)));
@@ -247,10 +270,30 @@ function createWebGPUResolveMaterial(state: ResolveState) {
   })();
 
   const material = new NodeMaterial();
+  material.vertexNode = N.vec4(N.positionLocal, 1);
   material.colorNode = fragmentNode;
+  material.outputNode = N.renderOutput(
+    N.output,
+    THREE.NoToneMapping,
+    THREE.NoColorSpace,
+  );
+  const depth = N.textureLoad(state.sourceDepth.value).onObjectUpdate(
+    () => state.sourceDepth.value,
+  );
+  const copyDepth = N.uniform(false, "bool").onObjectUpdate(
+    () => state.copyDepth.value,
+  );
+  material.depthNode = N.Fn(() => {
+    const value = N.float(1).toVar();
+    N.If(copyDepth, () => {
+      value.assign(depth.load(sourceRect.xy.add(sourceCoord)).r);
+    });
+    return value;
+  })();
   material.blending = THREE.NoBlending;
   material.depthTest = false;
   material.depthWrite = false;
+  material.depthFunc = THREE.AlwaysDepth;
   material.transparent = true;
   material.premultipliedAlpha = true;
   material.toneMapped = true;
@@ -279,6 +322,9 @@ export class StochasticResolvePass {
     THREE.FloatType,
   );
   private readonly state: ResolveState;
+  private readonly depthFallback = new THREE.DepthTexture(1, 1);
+  private readonly xrCamera = new THREE.ArrayCamera();
+  private outputCamera: THREE.ArrayCamera | null = null;
   private readonly geometry = new THREE.BufferGeometry();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly webGLMaterial: THREE.ShaderMaterial;
@@ -291,7 +337,12 @@ export class StochasticResolvePass {
     this.sourceFallback.needsUpdate = true;
     this.state = {
       sourceTexture: { value: this.sourceFallback },
-      sourceSize: new THREE.Vector2(1, 1),
+      sourceDepth: { value: this.depthFallback },
+      sourceRect: new THREE.Vector4(0, 0, 1, 1),
+      sourceViews: [],
+      outputOrigins: [],
+      outputOrigin: new THREE.Vector2(),
+      copyDepth: { value: false },
       resolve: { value: false },
       perceptual: { value: false },
       sourceEncoded: { value: false },
@@ -304,7 +355,10 @@ export class StochasticResolvePass {
       fragmentShader: resolveFragmentShader,
       uniforms: {
         sourceTexture: this.state.sourceTexture,
-        sourceSize: { value: this.state.sourceSize },
+        sourceDepth: this.state.sourceDepth,
+        sourceRect: { value: this.state.sourceRect },
+        outputOrigin: { value: this.state.outputOrigin },
+        copyDepth: this.state.copyDepth,
         resolveStochastic: this.state.resolve,
         perceptualResolve: this.state.perceptual,
         sourceEncoded: this.state.sourceEncoded,
@@ -312,6 +366,7 @@ export class StochasticResolvePass {
       blending: THREE.NoBlending,
       depthTest: false,
       depthWrite: false,
+      depthFunc: THREE.AlwaysDepth,
       transparent: true,
       premultipliedAlpha: true,
       toneMapped: true,
@@ -324,6 +379,18 @@ export class StochasticResolvePass {
     );
     this.mesh = new THREE.Mesh(this.geometry, this.webGLMaterial);
     this.mesh.frustumCulled = false;
+    this.mesh.layers.enableAll();
+    this.mesh.onBeforeRender = (_renderer, _scene, camera) => {
+      const index = this.outputCamera?.cameras.indexOf(
+        camera as THREE.PerspectiveCamera,
+      );
+      const viewport = (camera as THREE.PerspectiveCamera).viewport;
+      if (index !== undefined && index >= 0 && viewport) {
+        this.state.sourceRect.copy(this.state.sourceViews[index]);
+        this.state.outputOrigin.set(viewport.x, viewport.y);
+        this.webGLMaterial.uniformsNeedUpdate = true;
+      }
+    };
 
     if (Symbol.iterator in Object(splats)) {
       for (const splat of splats as Iterable<GaussianSplatRenderer>) {
@@ -379,6 +446,43 @@ export class StochasticResolvePass {
     return false;
   }
 
+  private xrTarget(renderer: GaussianSplatCompatibleRenderer) {
+    if (!renderer.xr.isPresenting) return null;
+    return isWebGPURenderer(renderer)
+      ? renderer.getOutputRenderTarget()
+      : isXRRenderTarget(renderer.getRenderTarget())
+        ? renderer.getRenderTarget()
+        : null;
+  }
+
+  /** Pack the eyes into one reusable 2D input, independent of XR layer layout. */
+  private prepareXRViews(camera: THREE.ArrayCamera) {
+    this.xrCamera.copy(camera, false);
+    this.xrCamera.matrixWorldAutoUpdate = false;
+    this.xrCamera.cameras.length = camera.cameras.length;
+    this.state.sourceViews.length = camera.cameras.length;
+    this.state.outputOrigins.length = camera.cameras.length;
+    let width = 0;
+    let height = 0;
+    camera.cameras.forEach((eye, i) => {
+      const viewport = eye.viewport;
+      if (!viewport) throw new Error("XR views must have a viewport");
+      this.state.outputOrigins[i] ??= new THREE.Vector2();
+      this.state.outputOrigins[i].set(viewport.x, viewport.y);
+      this.xrCamera.cameras[i] ??= new THREE.PerspectiveCamera();
+      const copy = this.xrCamera.cameras[i];
+      copy.copy(eye, false);
+      copy.matrixWorldAutoUpdate = false;
+      this.state.sourceViews[i] ??= new THREE.Vector4();
+      copy.viewport = this.state.sourceViews[i];
+      copy.viewport.set(width, 0, viewport.z, viewport.w);
+      width += viewport.z;
+      height = Math.max(height, viewport.w);
+    });
+    this.drawingBufferSize.set(width, height);
+    return this.xrCamera;
+  }
+
   /** Renders a complete scene, then resolves its marked Splat pixels. */
   compose(
     renderer: GaussianSplatCompatibleRenderer,
@@ -387,15 +491,20 @@ export class StochasticResolvePass {
   ) {
     if (this.disposed) throw new Error("StochasticResolvePass is disposed");
     assertSupportedRenderer(renderer);
-    if (renderer.getRenderTarget() !== null) {
+    const previousTarget = renderer.getRenderTarget();
+    const xrTarget = this.xrTarget(renderer);
+    if (previousTarget !== null && previousTarget !== xrTarget) {
       throw new Error(
         "StochasticResolvePass.compose() renders to the canvas; use resolve() inside a custom render graph",
       );
     }
 
     const previousAutoClear = renderer.autoClear;
+    const previousXREnabled = renderer.xr.enabled;
+    const previousCubeFace = renderer.getActiveCubeFace();
+    const previousMipmapLevel = renderer.getActiveMipmapLevel();
     try {
-      if (!this._enabled || renderer.xr.isPresenting) {
+      if (!this._enabled) {
         renderer.render(scene, camera);
       } else {
         // A WebGL canvas blends the library's stored sRGB Splat colors in the
@@ -408,7 +517,18 @@ export class StochasticResolvePass {
           return;
         }
 
-        renderer.getDrawingBufferSize(this.drawingBufferSize);
+        let renderCamera = camera;
+        if (xrTarget) {
+          if (renderer.xr.cameraAutoUpdate)
+            renderer.xr.updateCamera(camera as THREE.PerspectiveCamera);
+          const xrCamera = renderer.xr.getCamera();
+          if (xrCamera.cameras.length === 0) return;
+          renderCamera = this.prepareXRViews(xrCamera);
+          // Render the packed eyes without Three replacing them with the XR views.
+          renderer.xr.enabled = false;
+        } else {
+          renderer.getDrawingBufferSize(this.drawingBufferSize);
+        }
         const width = this.drawingBufferSize.x;
         const height = this.drawingBufferSize.y;
         if (!this.composeTarget) {
@@ -420,6 +540,13 @@ export class StochasticResolvePass {
             "StochasticResolvePass.composeColor";
         } else {
           this.composeTarget.setSize(width, height);
+        }
+        if (xrTarget && !this.composeTarget.depthTexture) {
+          this.composeTarget.depthTexture = new THREE.DepthTexture(
+            width,
+            height,
+          );
+          this.composeTarget.dispose();
         }
 
         // WebGL's canvas applies its sRGB conversion before fixed-function
@@ -441,12 +568,19 @@ export class StochasticResolvePass {
           renderer.autoClearDepth,
           renderer.autoClearStencil,
         );
-        renderer.render(scene, camera);
-        setRendererRenderTarget(renderer, null);
-        this.resolve(renderer, this.composeTarget, null);
+        renderer.render(scene, renderCamera);
+        renderer.xr.enabled = previousXREnabled;
+        setRendererRenderTarget(renderer, previousTarget);
+        this.resolve(renderer, this.composeTarget, xrTarget);
       }
     } finally {
-      setRendererRenderTarget(renderer, null);
+      setRendererRenderTarget(
+        renderer,
+        previousTarget,
+        previousCubeFace,
+        previousMipmapLevel,
+      );
+      renderer.xr.enabled = previousXREnabled;
       renderer.autoClear = previousAutoClear;
     }
   }
@@ -482,15 +616,34 @@ export class StochasticResolvePass {
         "StochasticResolvePass requires a HalfFloatType or FloatType input target",
       );
     }
-    if (destination === input || destination?.texture === input.texture) {
+    const width = input.width;
+    const height = input.height;
+    const xrTarget =
+      this.xrTarget(renderer) ??
+      (renderer.xr.isPresenting && isXRRenderTarget(destination)
+        ? destination
+        : null);
+    const xrOutput =
+      xrTarget !== null && (destination === null || destination === xrTarget);
+    const outputCamera = xrOutput ? renderer.xr.getCamera() : null;
+    const outputTarget = xrOutput ? xrTarget : destination;
+    if (outputTarget === input || outputTarget?.texture === input.texture) {
       throw new Error(
         "StochasticResolvePass input and destination must differ",
       );
     }
-
-    const width = input.width;
-    const height = input.height;
-    if (destination) {
+    if (outputCamera) {
+      if (outputCamera.cameras.length === 0) return;
+      this.prepareXRViews(outputCamera);
+      if (
+        width !== this.drawingBufferSize.x ||
+        height !== this.drawingBufferSize.y
+      ) {
+        throw new Error(
+          "XR resolve input must pack the eye viewports horizontally",
+        );
+      }
+    } else if (destination) {
       if (destination.width !== width || destination.height !== height) {
         throw new Error(
           "StochasticResolvePass input and destination sizes must match",
@@ -509,7 +662,11 @@ export class StochasticResolvePass {
     }
 
     this.state.sourceTexture.value = input.texture;
-    this.state.sourceSize.set(width, height);
+    this.state.sourceRect.set(0, 0, width, height);
+    this.state.outputOrigin.set(0, 0);
+    this.state.sourceDepth.value = input.depthTexture ?? this.depthFallback;
+    this.state.copyDepth.value =
+      xrOutput && !!outputTarget?.depthBuffer && input.depthTexture !== null;
     this.state.resolve.value = this._enabled && this.hasActiveStochasticSplat();
 
     const webGPU = isWebGPURenderer(renderer);
@@ -524,13 +681,43 @@ export class StochasticResolvePass {
     this.state.sourceEncoded.value = !webGPU && sourceIsPerceptual;
 
     const material = webGPU ? this.webGPUMaterial : this.webGLMaterial;
+    material.depthTest = this.state.copyDepth.value;
+    material.depthWrite = this.state.copyDepth.value;
     this.mesh.material = material;
 
     const previousTarget = renderer.getRenderTarget();
     const previousCubeFace = renderer.getActiveCubeFace();
     const previousMipmapLevel = renderer.getActiveMipmapLevel();
+    const previousXREnabled = renderer.xr.enabled;
+    const previousAutoClear = renderer.autoClear;
+    const previousToneMapping = renderer.toneMapping;
+    const previousColorSpace = renderer.outputColorSpace;
     try {
-      setRendererRenderTarget(renderer, destination);
+      this.outputCamera = outputCamera;
+      renderer.xr.enabled = false;
+      renderer.autoClear = false;
+      if (webGPU) {
+        // Convert in the resolve shader so Three's output blit does not drop
+        // the per-eye depth or allocate another full-resolution intermediate.
+        const output = this.webGPUMaterial.outputNode as TSLNode;
+        const toneMapping = xrOutput
+          ? previousToneMapping
+          : THREE.NoToneMapping;
+        const colorSpace = xrOutput ? previousColorSpace : THREE.NoColorSpace;
+        if (
+          output.getToneMapping() !== toneMapping ||
+          output.outputColorSpace !== colorSpace
+        ) {
+          output.setToneMapping(toneMapping);
+          output.outputColorSpace = colorSpace;
+          this.webGPUMaterial.needsUpdate = true;
+        }
+        if (xrOutput) {
+          renderer.toneMapping = THREE.NoToneMapping;
+          renderer.outputColorSpace = THREE.ColorManagement.workingColorSpace;
+        }
+      }
+      setRendererRenderTarget(renderer, outputTarget);
       if (this.clear) {
         renderer.clear(
           renderer.autoClearColor,
@@ -538,7 +725,7 @@ export class StochasticResolvePass {
           renderer.autoClearStencil,
         );
       }
-      renderer.render(this.mesh, this.camera);
+      renderer.render(this.mesh, outputCamera ?? this.camera);
     } finally {
       setRendererRenderTarget(
         renderer,
@@ -546,6 +733,11 @@ export class StochasticResolvePass {
         previousCubeFace,
         previousMipmapLevel,
       );
+      this.outputCamera = null;
+      renderer.xr.enabled = previousXREnabled;
+      renderer.autoClear = previousAutoClear;
+      renderer.toneMapping = previousToneMapping;
+      renderer.outputColorSpace = previousColorSpace;
     }
   }
 
@@ -561,6 +753,7 @@ export class StochasticResolvePass {
     this.webGPUMaterial.dispose();
     this.geometry.dispose();
     this.sourceFallback.dispose();
+    this.depthFallback.dispose();
     this.composeTarget?.dispose();
     this.composeTarget = null;
     this.disposed = true;

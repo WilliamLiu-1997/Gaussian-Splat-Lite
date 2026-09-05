@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Added a WebGL/WebGPU backend toggle to the bundled viewer for direct comparison.
 - Added an optional same-frame sorting mode that uses GPU radix sorting on WebGPU and main-thread WASM sorting on WebGL.
 - Added optional stochastic rendering, depth-only drawing, and `StochasticResolvePass`.
+- Enabled manual stochastic rendering and per-eye spatial resolve in WebGL/WebGPU XR, while keeping automatic stochastic switching disabled in XR.
 
 ### Changed
 
