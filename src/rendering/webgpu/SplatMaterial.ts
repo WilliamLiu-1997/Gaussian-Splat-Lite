@@ -136,6 +136,21 @@ const gaussianSupportRadius = N.Fn(
   },
 );
 
+const wideSupportRadius = N.Fn(
+  ([alpha, power, maximumRadius, minimumAlpha]: TSLNode[]) => {
+    const radius = maximumRadius.toVar();
+    N.If(minimumAlpha.greaterThan(0), () => {
+      // 1 - (1 - x)^power <= power * x for power >= 1.
+      radius.assign(
+        maximumRadius.min(
+          alpha.mul(power).div(minimumAlpha).log().mul(2).max(0).sqrt(),
+        ),
+      );
+    });
+    return radius;
+  },
+);
+
 const stochasticHash = N.Fn(([input]: TSLNode[]) => {
   const value = N.uint(input).toVar();
   value.bitXorAssign(value.shiftRight(16));
@@ -401,6 +416,15 @@ export function createWebGPUSplatMaterial({
                 supportRadius.assign(
                   gaussianSupportRadius(alpha, supportRadius, minAlpha),
                 );
+              }).Else(() => {
+                supportRadius.assign(
+                  wideSupportRadius(
+                    alpha,
+                    kernelPower,
+                    supportRadius,
+                    minAlpha,
+                  ),
+                );
               });
               const eigenAverage = a.add(d).mul(0.5);
               const eigenDelta = eigenAverage
@@ -427,17 +451,24 @@ export function createWebGPUSplatMaterial({
                 supportRadius.div(maximumSupportRadius),
                 0,
               );
-              const scale1 = maxPixelRadius
-                .min(maximumSupportRadius.mul(eigen1.sqrt()))
-                .mul(supportScale);
-              const scale2 = maxPixelRadius
-                .min(maximumSupportRadius.mul(eigen2.sqrt()))
-                .mul(supportScale);
+              const fullScale1 = maxPixelRadius.min(
+                maximumSupportRadius.mul(eigen1.sqrt()),
+              );
+              const fullScale2 = maxPixelRadius.min(
+                maximumSupportRadius.mul(eigen2.sqrt()),
+              );
+              const scale1 = fullScale1.mul(supportScale);
+              const scale2 = fullScale2.mul(supportScale);
+              // Preserve the original wide-kernel minimum-size cutoff.
+              const cullScale = N.select(kernelPower.equal(0), supportScale, 1);
 
               N.If(
-                scale1
+                fullScale1
+                  .mul(cullScale)
                   .greaterThanEqual(minPixelRadius)
-                  .or(scale2.greaterThanEqual(minPixelRadius)),
+                  .or(
+                    fullScale2.mul(cullScale).greaterThanEqual(minPixelRadius),
+                  ),
                 () => {
                   const pixelOffset = eigenVector1
                     .mul(N.positionGeometry.x)

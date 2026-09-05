@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Moved built-in Splat color conversion to the vertex shader in WebGPU and WebGL.
+- Trimmed wide-kernel coverage using a conservative alpha bound in both rendering backends. Wide kernels retain their original minimum-pixel-radius visibility cutoff.
 - Simplified documentation into a README quick start and focused API references, consolidating duplicate guides and examples.
 - Changed the required Three.js dependency from the npm version range to the tested development snapshot `d2fc542d58f5c91fa7b585e6a3efb7ba67b295ca`, which the WebGPU compatibility code depends on.
 - Replaced the bundled Lion example with Multi Material Splats by hybridherbst, distributed as SPZ v4 with SH3 data and CC BY 4.0 attribution.

@@ -50,6 +50,14 @@ float gaussianSupportRadius(float alpha, float maximumRadius) {
     return min(maximumRadius, sqrt(max(0.0, radiusSquared)));
 }
 
+float wideSupportRadius(float alpha, float power, float maximumRadius) {
+    if (minAlpha <= 0.0) return maximumRadius;
+    // 1 - (1 - x)^power <= power * x for power >= 1. Only remove
+    // coverage that cannot reach minAlpha, without inverting pow near 1.
+    float radiusSquared = 2.0 * log(alpha * power / minAlpha);
+    return min(maximumRadius, sqrt(max(0.0, radiusSquared)));
+}
+
 void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -185,10 +193,11 @@ void main() {
     }
     vRgba.a = alpha;
 
-    // Ordinary Gaussians need only cover fragments that can reach minAlpha.
-    // Wide kernels retain their separately expanded support radius.
+    // Only cover fragments that can reach minAlpha for either kernel.
     if (kernelPower == 0.0) {
         supportRadius = gaussianSupportRadius(alpha, supportRadius);
+    } else {
+        supportRadius = wideSupportRadius(alpha, kernelPower, supportRadius);
     }
     vSupportRadiusSquared = supportRadius * supportRadius;
     vSplatUv = position.xy * supportRadius;
@@ -210,11 +219,14 @@ void main() {
     float supportScale = (maximumSupportRadius > 0.0)
         ? supportRadius / maximumSupportRadius
         : 0.0;
-    scale1 *= supportScale;
-    scale2 *= supportScale;
-    if (scale1 < minPixelRadius && scale2 < minPixelRadius) {
+    // Wide kernels previously used their full support for the size cutoff.
+    // Keep that visibility decision when trimming only their transparent tails.
+    float cullScale = (kernelPower == 0.0) ? supportScale : 1.0;
+    if (scale1 * cullScale < minPixelRadius && scale2 * cullScale < minPixelRadius) {
         return;
     }
+    scale1 *= supportScale;
+    scale2 *= supportScale;
 
     // RGB is constant across the quad, so convert before rasterization.
     #ifdef GSL_COLOR_IN_VERTEX
