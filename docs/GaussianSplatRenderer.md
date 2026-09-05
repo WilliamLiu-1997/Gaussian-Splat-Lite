@@ -167,16 +167,21 @@ renderer.render(scene, camera);
 
 ## On-demand rendering
 
-Connect `onDirty` and camera controls to the same render scheduler:
+Connect `onDirty` and `OrbitControls` to the same render scheduler. This example assumes `renderer`, `scene`, and `camera` already exist; use it in place of the earlier Splat renderer setup and render loop.
 
 ```js
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GaussianSplatRenderer, SplatMesh } from "gaussian-splat-lite";
+
 let needsRender = true;
 
 function requestRender() {
   needsRender = true;
 }
 
-controls.addEventListener("update", requestRender);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.addEventListener("change", requestRender);
 
 const splatRenderer = new GaussianSplatRenderer({
   renderer,
@@ -184,12 +189,24 @@ const splatRenderer = new GaussianSplatRenderer({
 });
 scene.add(splatRenderer);
 
-renderer.setAnimationLoop((time) => {
-  controls.update(time);
+renderer.setAnimationLoop(() => {
+  // Keep damping active even when the previous frame needed no render.
+  controls.update();
   if (!needsRender) return;
 
   // Clear the flag before rendering so a new onDirty call is preserved.
   needsRender = false;
   renderer.render(scene, camera);
 });
+
+const splat = new SplatMesh({ url: "/assets/model.spz" });
+scene.add(splat);
+requestRender();
+await splat.initialized;
+requestRender(); // Loading may finish after the render scheduler becomes idle.
+```
+
+```js
+splat.opacity = 0.5;
+requestRender();
 ```

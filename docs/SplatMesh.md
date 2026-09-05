@@ -101,6 +101,17 @@ mesh.dispose();
 
 Batch inputs contain `center`, `scales`, `quaternion`, `opacity`, `color`, and optional `sh` (0, 3, 8, or 15 coefficients for SH0/1/2/3). Bounds require initialization; mutation throws after disposal.
 
+`mesh.dispose()` also disposes its `Splats`, including caller-supplied data. To keep shared or reusable data:
+
+```js
+await mesh.initialized;
+const data = mesh.splats;
+mesh.removeFromParent();
+mesh.splats = undefined;
+mesh.dispose();
+// Call data?.dispose() when no users need it anymore.
+```
+
 ## Raycasting
 
 Use the standard Three.js raycaster:
