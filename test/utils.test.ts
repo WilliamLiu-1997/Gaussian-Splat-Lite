@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fromHalf, toHalf } from "../src/utils.js";
+import { fromHalf, toHalf } from "../src/utils/index.js";
 
 test("half-float conversion handles representative values", () => {
   assert.equal(toHalf(0), 0x0000);

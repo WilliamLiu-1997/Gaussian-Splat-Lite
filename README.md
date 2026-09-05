@@ -223,6 +223,8 @@ await splat.initialized;
 
 ## Core concepts and public API
 
+For implementation layout and backend responsibilities, see [Source architecture](docs/Architecture.md).
+
 | API | Purpose |
 | --- | --- |
 | [`GaussianSplatRenderer`](docs/GaussianSplatRenderer.md) | Integrates with Three.js and generates, sorts, and draws every visible Splat |

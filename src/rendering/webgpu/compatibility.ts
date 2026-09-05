@@ -1,10 +1,10 @@
-import { IntType, UnsignedIntType } from "three";
 import type * as THREE from "three";
+import { IntType, UnsignedIntType } from "three";
 
 import {
   type GaussianSplatCompatibleRenderer,
   isWebGPURenderer,
-} from "./renderer";
+} from "../rendererUtils";
 
 type WebGPURenderer = import("three/webgpu").WebGPURenderer;
 

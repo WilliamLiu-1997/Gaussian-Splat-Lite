@@ -1,10 +1,11 @@
 import * as THREE from "three";
 
+import type { SplatPostDecodeProgram } from "../loaders/postDecode";
+import { toHalf } from "../utils/numeric";
 import type { SplatFileType } from "./defines";
-import { toHalf } from "./float16";
-import type { SplatPostDecodeProgram } from "./postDecode";
 import { encodeQuatOctXy1010R12, encodeSplatOpacity } from "./splatCodec";
-import { decodeSplat, getTextureSize } from "./utils";
+import { getTextureSize } from "./textureLayout";
+import { decodeSplat } from "./unpack";
 
 type SplatShTextures = {
   sh1?: THREE.DataArrayTexture;
@@ -240,7 +241,7 @@ export class Splats {
 
   private async asyncInitialize(options: SplatsOptions): Promise<Splats> {
     if (hasFileInput(options)) {
-      const { SplatLoader } = await import("./SplatLoader");
+      const { SplatLoader } = await import("../loaders/SplatLoader");
       return new SplatLoader().loadInternalAsync({
         url: options.url,
         fileBytes: options.fileBytes,

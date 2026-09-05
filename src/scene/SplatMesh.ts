@@ -5,11 +5,11 @@ import {
   get_raycast_buffer2,
   raycast_splat_buffers,
 } from "gaussian-splat-rs";
+import { type SplatInput, Splats } from "../data/Splats";
+import type { SplatFileType } from "../data/defines";
+import type { SplatPostDecodeProgram } from "../loaders/postDecode";
+import * as wasm from "../runtime/wasm";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
-import { type SplatInput, Splats } from "./Splats";
-import type { SplatFileType } from "./defines";
-import type { SplatPostDecodeProgram } from "./postDecode";
-import * as wasm from "./wasm";
 
 const raycastWorldToMesh = new THREE.Matrix4();
 const raycastDirectionMatrix = new THREE.Matrix3();

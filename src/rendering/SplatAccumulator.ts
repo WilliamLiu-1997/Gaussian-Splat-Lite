@@ -1,18 +1,22 @@
 import * as THREE from "three";
-import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
 
-import { SplatEdit, SplatEdits } from "./SplatEdit";
-import { SplatMesh } from "./SplatMesh";
-import { WebGPUAccumulatorGenerator } from "./WebGPUAccumulatorGenerator";
-import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "./defines";
+import { SPLAT_TEX_WIDTH } from "../data/defines";
+import { emptySplatTexture, getTextureSize } from "../data/textureLayout";
+import { SplatEdit, SplatEdits } from "../scene/SplatEdit";
+import { SplatMesh } from "../scene/SplatMesh";
+import { threeMrtArray } from "../utils/three";
+import { decomposeSplatTransform } from "../utils/transforms";
 import {
   type GaussianSplatCompatibleRenderer,
   isWebGPURenderer,
-} from "./renderer";
-import { getShaders } from "./shaders";
-import splatGenerate from "./shaders/splatGenerate.glsl";
-import { decomposeSplatTransform } from "./splatTransform";
-import { IDENT_VERTEX_SHADER, getTextureSize, threeMrtArray } from "./utils";
+} from "./rendererUtils";
+import { makeGenerateUniforms } from "./uniforms";
+import {
+  createWebGLAccumulatorTarget,
+  generateWebGLAccumulator,
+  getWebGLGenerateUniforms,
+} from "./webgl/AccumulatorGenerator";
+import { WebGPUAccumulatorGenerator } from "./webgpu/AccumulatorGenerator";
 
 export type SplatMapping = {
   node: SplatMesh;
@@ -128,37 +132,8 @@ export class SplatAccumulator {
     this.disposeStorage();
 
     this.maxSplats = capacity;
-    this.target = new THREE.WebGLArrayRenderTarget(width, height, depth, {
-      depthBuffer: false,
-      stencilBuffer: false,
-      generateMipmaps: false,
-      magFilter: THREE.NearestFilter,
-      minFilter: THREE.NearestFilter,
-      format: THREE.RGBAIntegerFormat,
-      type: THREE.UnsignedIntType,
-    });
-    this.target.scissorTest = true;
-
-    const second = this.target.texture.clone();
-    this.target.textures = [this.target.texture, second];
+    this.target = createWebGLAccumulatorTarget(width, height, depth);
     return true;
-  }
-
-  private getMaterial() {
-    let material = SplatAccumulator.webGLMaterial;
-    if (!material) {
-      getShaders();
-      material = new THREE.RawShaderMaterial({
-        glslVersion: THREE.GLSL3,
-        vertexShader: IDENT_VERTEX_SHADER,
-        fragmentShader: splatGenerate,
-        uniforms: makeGenerateUniforms(),
-        depthTest: false,
-        depthWrite: false,
-      });
-      SplatAccumulator.webGLMaterial = material;
-    }
-    return material;
   }
 
   private prepareUniforms(mesh: SplatMesh, uniforms: GenerateUniforms) {
@@ -229,37 +204,8 @@ export class SplatAccumulator {
     }
 
     if (!this.target) throw new Error("Accumulator target is not initialized");
-    const material = this.getMaterial();
-    const uniforms = material.uniforms as GenerateUniforms;
-    this.prepareUniforms(mesh, uniforms);
-    SplatAccumulator.fullScreenQuad.material = material;
-    const renderState = this.saveRenderState(renderer);
-    const nextBase =
-      Math.ceil((base + count) / SPLAT_TEX_WIDTH) * SPLAT_TEX_WIDTH;
-    const layerSize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
-    uniforms.targetBase.value = base;
-    uniforms.targetCount.value = count;
-
-    try {
-      while (base < nextBase) {
-        const layer = Math.floor(base / layerSize);
-        uniforms.targetLayer.value = layer;
-        const layerBase = layer * layerSize;
-        const yStart = Math.floor((base - layerBase) / SPLAT_TEX_WIDTH);
-        const yEnd = Math.min(
-          SPLAT_TEX_HEIGHT,
-          Math.ceil((nextBase - layerBase) / SPLAT_TEX_WIDTH),
-        );
-        this.target.scissor.set(0, yStart, SPLAT_TEX_WIDTH, yEnd - yStart);
-        renderer.setRenderTarget(this.target, layer);
-        renderer.xr.enabled = false;
-        renderer.autoClear = false;
-        SplatAccumulator.fullScreenQuad.render(renderer);
-        base += SPLAT_TEX_WIDTH * (yEnd - yStart);
-      }
-    } finally {
-      this.resetRenderState(renderer, renderState);
-    }
+    this.prepareUniforms(mesh, getWebGLGenerateUniforms());
+    generateWebGLAccumulator({ renderer, target: this.target, base, count });
   }
 
   prepareGenerate({
@@ -376,51 +322,12 @@ export class SplatAccumulator {
     return checkMappingVersions(this.mapping, other);
   }
 
-  private saveRenderState(renderer: THREE.WebGLRenderer) {
-    return {
-      target: renderer.getRenderTarget(),
-      activeCubeFace: renderer.getActiveCubeFace(),
-      activeMipmapLevel: renderer.getActiveMipmapLevel(),
-      xrEnabled: renderer.xr.enabled,
-      autoClear: renderer.autoClear,
-    };
-  }
-
-  private resetRenderState(
-    renderer: THREE.WebGLRenderer,
-    state: ReturnType<SplatAccumulator["saveRenderState"]>,
-  ) {
-    renderer.setRenderTarget(
-      state.target,
-      state.activeCubeFace,
-      state.activeMipmapLevel,
-    );
-    renderer.xr.enabled = state.xrEnabled;
-    renderer.autoClear = state.autoClear;
-  }
-
-  static emptyTexture = (() => {
-    const { width, height, depth, maxSplats } = getTextureSize(1);
-    const texture = new THREE.DataArrayTexture(
-      new Uint32Array(maxSplats * 4),
-      width,
-      height,
-      depth,
-    );
-    texture.format = THREE.RGBAIntegerFormat;
-    texture.type = THREE.UnsignedIntType;
-    texture.needsUpdate = true;
-    return texture;
-  })();
+  static emptyTexture = emptySplatTexture;
 
   static emptyTextures: SplatDataTextures = [
     SplatAccumulator.emptyTexture,
     SplatAccumulator.emptyTexture,
   ];
-  private static webGLMaterial: THREE.RawShaderMaterial | null = null;
-  private static fullScreenQuad = new FullScreenQuad(
-    new THREE.RawShaderMaterial({ visible: false }),
-  );
 }
 
 function checkMappingVersions(
@@ -450,29 +357,5 @@ function checkMappingVersions(
     sortUpdated: previousMapping.some(
       (item, index) => item.sortVersion !== nextMapping[index].sortVersion,
     ),
-  };
-}
-
-function makeGenerateUniforms(): GenerateUniforms {
-  return {
-    targetLayer: { value: 0 },
-    targetBase: { value: 0 },
-    targetCount: { value: 0 },
-    sourceSplats: { value: SplatAccumulator.emptyTexture },
-    sourceSplats2: { value: SplatAccumulator.emptyTexture },
-    numSh: { value: 0 },
-    sh1Texture: { value: SplatAccumulator.emptyTexture },
-    sh2Texture: { value: SplatAccumulator.emptyTexture },
-    sh3TextureA: { value: SplatAccumulator.emptyTexture },
-    sh3TextureB: { value: SplatAccumulator.emptyTexture },
-    objectBasis: { value: new THREE.Matrix3() },
-    objectOffset: { value: new THREE.Vector3() },
-    objectLnScale: { value: new THREE.Vector3() },
-    objectQuaternion: { value: new THREE.Quaternion() },
-    recolor: { value: new THREE.Vector4(1, 1, 1, 1) },
-    numSdfs: { value: 0 },
-    numEdits: { value: 0 },
-    sdfTexture: { value: SplatEdits.emptyTexture },
-    editTexture: { value: SplatEdits.emptyTexture },
   };
 }

@@ -1,8 +1,8 @@
 import { Loader } from "three";
-import { SplatMesh } from "./SplatMesh";
-import { workerPool } from "./SplatWorker";
-import { Splats, type SplatsOptions } from "./Splats";
-import type { SplatFileType } from "./defines";
+import { Splats, type SplatsOptions } from "../data/Splats";
+import type { SplatFileType } from "../data/defines";
+import { workerPool } from "../runtime/SplatWorker";
+import { SplatMesh } from "../scene/SplatMesh";
 import {
   type SplatPostDecodeProgram,
   serializeSplatPostDecode,

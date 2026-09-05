@@ -69,3 +69,18 @@ function fromHalfJs(value: number): number {
 
 export const toHalf = supportsFloat16Array ? toHalfNative : toHalfJs;
 export const fromHalf = supportsFloat16Array ? fromHalfNative : fromHalfJs;
+
+const f32buffer = new Float32Array(1);
+const u32buffer = new Uint32Array(f32buffer.buffer);
+
+// Reinterpret the bits of a float32 as a uint32
+export function floatBitsToUint(f: number): number {
+  f32buffer[0] = f;
+  return u32buffer[0];
+}
+
+// Reinterpret the bits of a uint32 as a float32
+export function uintBitsToFloat(u: number): number {
+  u32buffer[0] = u;
+  return f32buffer[0];
+}

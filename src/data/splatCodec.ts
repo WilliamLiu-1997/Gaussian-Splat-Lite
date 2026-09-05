@@ -1,4 +1,4 @@
-import { fromHalf, toHalf } from "./float16";
+import { fromHalf, toHalf } from "../utils/numeric";
 
 const MAX_SPLAT_OPACITY = 1000;
 const F32_EPSILON = 1.192_092_895_507_812_5e-7;

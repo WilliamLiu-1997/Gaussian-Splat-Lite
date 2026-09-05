@@ -2,9 +2,9 @@ import * as THREE from "three";
 import * as TSL from "three/tsl";
 import type { WebGPURenderer } from "three/webgpu";
 
-import { SplatAccumulator } from "./SplatAccumulator";
-import { splatTexCoord } from "./webgpuMaterials";
-import { WebGPURadixSort } from "./webgpuRadixSort";
+import { emptySplatTexture } from "../../data/textureLayout";
+import { WebGPURadixSort } from "./RadixSort";
+import { splatTexCoord } from "./shaderUtils";
 
 // biome-ignore lint/suspicious/noExplicitAny: Three does not expose one public compute-node type.
 type TSLNode = any;
@@ -21,7 +21,7 @@ type SortUniforms = {
 };
 
 function createKeyGenerator(uniforms: SortUniforms) {
-  const splats = N.textureLoad(SplatAccumulator.emptyTexture).onObjectUpdate(
+  const splats = N.textureLoad(emptySplatTexture).onObjectUpdate(
     () => uniforms.splats.value,
   );
   const direction = N.uniform(new THREE.Vector3(), "vec3").onObjectUpdate(
@@ -59,7 +59,7 @@ export class WebGPUAccumulatorSort {
 
   constructor(capacity: number) {
     this.uniforms = {
-      splats: { value: SplatAccumulator.emptyTexture },
+      splats: { value: emptySplatTexture },
       direction: { value: new THREE.Vector3() },
       radial: { value: false },
     };

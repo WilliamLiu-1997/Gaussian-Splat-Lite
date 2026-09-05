@@ -14,6 +14,9 @@ npm run build:wasm
 
 Start the local viewer with `npm run dev`.
 
+See [Source architecture](docs/Architecture.md) for directory responsibilities
+and the boundary between shared rendering flow and WebGL/WebGPU implementations.
+
 ## Validation
 
 Run the complete release check before opening a pull request:

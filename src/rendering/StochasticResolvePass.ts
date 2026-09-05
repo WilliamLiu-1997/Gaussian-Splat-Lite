@@ -1,6 +1,4 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
-import { NodeMaterial } from "three/webgpu";
 
 import type { GaussianSplatRenderer } from "./GaussianSplatRenderer";
 import {
@@ -10,110 +8,19 @@ import {
   isXRRenderTarget,
   setRendererRenderTarget,
   setXRRenderTargetFlag,
-} from "./renderer";
+} from "./rendererUtils";
 import {
   stochasticResolveMarker,
   stochasticResolveRequired,
-} from "./stochasticResolveMarker";
+} from "./stochastic";
 
-// biome-ignore lint/suspicious/noExplicitAny: TSL nodes expose a dynamic fluent API.
-type TSLNode = any;
-const N = TSL as Record<string, TSLNode>;
+import { createWebGLResolveMaterial } from "./webgl/ResolveMaterial";
+import {
+  configureWebGPUResolveOutput,
+  createWebGPUResolveMaterial,
+} from "./webgpu/ResolveMaterial";
 
-const resolveVertexShader = /* glsl */ `
-precision highp float;
-
-void main() {
-    gl_Position = vec4(position, 1.0);
-}
-`;
-
-const resolveFragmentShader = /* glsl */ `
-precision highp float;
-precision highp int;
-
-uniform sampler2D sourceTexture;
-uniform sampler2D sourceDepth;
-uniform ivec4 sourceRect;
-uniform ivec2 outputOrigin;
-uniform bool copyDepth;
-uniform bool resolveStochastic;
-uniform bool sourceEncoded;
-
-out vec4 fragColor;
-
-vec4 loadSource(ivec2 coord) {
-    return texelFetch(sourceTexture,
-        sourceRect.xy + clamp(coord, ivec2(0), sourceRect.zw - 1), 0);
-}
-
-vec3 perceptualToLinear(vec3 color) {
-    return pow(max(color, vec3(0.0)), vec3(2.2));
-}
-
-vec4 physicalSource(vec4 texel) {
-    float alpha = clamp(texel.a, 0.0, 1.0);
-    vec3 color = texel.rgb;
-    if (sourceEncoded) {
-        vec3 straight = alpha > 0.0 ? color / alpha : vec3(0.0);
-        color = perceptualToLinear(straight) * alpha;
-    }
-    return vec4(color, alpha);
-}
-
-vec4 resolveStochasticFrame(ivec2 source) {
-    vec2 u = (vec2(source) - vec2(0.5)) * 0.5;
-    vec2 quad = floor(u);
-    vec2 fraction = u - quad;
-    ivec2 base = ivec2(quad) * 2;
-
-    vec2 nearWeights = (vec2(1.0) - fraction) * 0.5;
-    vec2 farWeights = fraction * 0.5;
-
-    float coverage = 0.0;
-    vec4 accumulated = vec4(0.0);
-
-    for (int y = 0; y < 4; ++y) {
-        float weightY = y < 2 ? nearWeights.y : farWeights.y;
-        for (int x = 0; x < 4; ++x) {
-            float weightX = x < 2 ? nearWeights.x : farWeights.x;
-            vec4 sourceTexel = loadSource(base + ivec2(x, y));
-            float weight = weightX * weightY;
-            float isSplat = float(sourceTexel.a > 1.0);
-            // Filter in the source's blend space. Alpha-2 marks an opaque sample.
-            float alpha = clamp(sourceTexel.a, 0.0, 1.0);
-            vec4 texel = vec4(alpha > 0.0 ? sourceTexel.rgb : vec3(0.0), alpha);
-            coverage += weight * isSplat;
-            accumulated += weight * texel;
-        }
-    }
-
-    return physicalSource(coverage > 0.0 ? accumulated : loadSource(source));
-}
-
-vec4 workingToOutput(vec4 texel) {
-    float alpha = clamp(texel.a, 0.0, 1.0);
-    vec3 color = alpha > 0.0 ? texel.rgb / alpha : vec3(0.0);
-    #if defined(TONE_MAPPING)
-        if (!sourceEncoded) color = toneMapping(color);
-    #endif
-    color = linearToOutputTexel(vec4(color, 1.0)).rgb;
-    return vec4(color * alpha, alpha);
-}
-
-void main() {
-    ivec2 source = ivec2(gl_FragCoord.xy) - outputOrigin;
-    vec4 result = resolveStochastic
-        ? resolveStochasticFrame(source)
-        : physicalSource(loadSource(source));
-    fragColor = workingToOutput(result);
-    gl_FragDepth = copyDepth
-        ? texelFetch(sourceDepth, sourceRect.xy + source, 0).r
-        : gl_FragCoord.z;
-}
-`;
-
-type ResolveState = {
+export type ResolveState = {
   sourceTexture: { value: THREE.Texture };
   sourceDepth: { value: THREE.DepthTexture };
   sourceRect: THREE.Vector4;
@@ -124,139 +31,6 @@ type ResolveState = {
   resolve: { value: boolean };
   sourceEncoded: { value: boolean };
 };
-
-function createWebGPUResolveMaterial(state: ResolveState) {
-  const source = N.textureLoad(state.sourceTexture.value).onObjectUpdate(
-    () => state.sourceTexture.value,
-  );
-  const resolve = N.uniform(false, "bool").onObjectUpdate(
-    () => state.resolve.value,
-  );
-  const perceptual = N.uniform(false, "bool").onObjectUpdate(() => {
-    const working = THREE.ColorManagement.workingColorSpace;
-    return (
-      working !== THREE.SRGBColorSpace &&
-      THREE.ColorManagement.getTransfer(working) === THREE.SRGBTransfer
-    );
-  });
-
-  const linearToPerceptual = (color: TSLNode) => color.max(0).pow(1 / 2.2);
-  const perceptualToLinear = (color: TSLNode) => color.max(0).pow(2.2);
-
-  const physicalSource = (texel: TSLNode) =>
-    N.vec4(texel.rgb, texel.a.clamp(0, 1));
-
-  const sourceToResolve = (texel: TSLNode) => {
-    const alpha = texel.a.clamp(0, 1);
-    const straight = N.select(
-      alpha.greaterThan(0),
-      texel.rgb.div(alpha),
-      N.vec3(0),
-    );
-    const resolved = straight.toVar();
-    N.If(perceptual, () => {
-      resolved.assign(linearToPerceptual(straight));
-    });
-    return N.vec4(resolved.mul(alpha), alpha);
-  };
-
-  const resolveToWorking = (texel: TSLNode) => {
-    const alpha = texel.a.clamp(0, 1);
-    const resolved = N.select(
-      alpha.greaterThan(0),
-      texel.rgb.div(alpha),
-      N.vec3(0),
-    );
-    const workingColor = resolved.toVar();
-    N.If(perceptual, () => {
-      workingColor.assign(perceptualToLinear(resolved));
-    });
-    return N.vec4(workingColor.mul(alpha), alpha);
-  };
-
-  const view = N.Fn(({ camera }: { camera: THREE.Camera }) => {
-    if ((camera as THREE.ArrayCamera).isArrayCamera) {
-      return N.uniformArray(state.sourceViews, "vec4").element(N.cameraIndex);
-    }
-    return N.uniform(state.sourceRect, "vec4");
-  })();
-  const origin = N.Fn(({ camera }: { camera: THREE.Camera }) =>
-    (camera as THREE.ArrayCamera).isArrayCamera
-      ? N.uniformArray(state.outputOrigins, "vec2").element(N.cameraIndex)
-      : N.uniform(state.outputOrigin, "vec2"),
-  )();
-  const sourceCoord = N.ivec2(N.screenCoordinate.xy.sub(origin));
-  const sourceRect = N.ivec4(view);
-  const load = (coord: TSLNode) =>
-    source.load(
-      sourceRect.xy.add(coord.clamp(N.ivec2(0), sourceRect.zw.sub(1))),
-    );
-  const fragmentNode = N.Fn(() => {
-    const result = N.vec4(0).toVar();
-    const copySource = () => {
-      result.assign(physicalSource(load(sourceCoord)));
-    };
-
-    N.If(resolve, () => {
-      const u = N.vec2(sourceCoord).sub(0.5).mul(0.5);
-      const quad = u.floor();
-      const fraction = u.sub(quad);
-      const base = N.ivec2(quad).mul(2);
-      const nearWeights = N.vec2(1).sub(fraction).mul(0.5);
-      const farWeights = fraction.mul(0.5);
-      const coverage = N.float(0).toVar();
-      const accumulated = N.vec4(0).toVar();
-
-      for (let y = 0; y < 4; y += 1) {
-        const weightY = y < 2 ? nearWeights.y : farWeights.y;
-        for (let x = 0; x < 4; x += 1) {
-          const weightX = x < 2 ? nearWeights.x : farWeights.x;
-          const weight = weightX.mul(weightY);
-          const sourceTexel = load(base.add(N.ivec2(x, y)));
-          const splatSample = sourceTexel.a.greaterThan(1);
-          const isSplat = N.select(splatSample, 1, 0);
-          const texel = sourceToResolve(sourceTexel);
-          coverage.addAssign(weight.mul(isSplat));
-          accumulated.addAssign(texel.mul(weight));
-        }
-      }
-
-      N.If(coverage.greaterThan(0), () => {
-        result.assign(resolveToWorking(accumulated));
-      }).Else(copySource);
-    }).Else(copySource);
-
-    const alpha = result.a.clamp(0, 1);
-    const straight = N.select(
-      alpha.greaterThan(0),
-      result.rgb.div(alpha),
-      N.vec3(0),
-    );
-    return N.vec4(straight, alpha);
-  })();
-
-  const material = new NodeMaterial();
-  material.vertexNode = N.vec4(N.positionLocal, 1);
-  material.colorNode = fragmentNode;
-  material.outputNode = N.renderOutput(
-    N.output,
-    THREE.NoToneMapping,
-    THREE.NoColorSpace,
-  );
-  const depth = N.textureLoad(state.sourceDepth.value).onObjectUpdate(
-    () => state.sourceDepth.value,
-  );
-  // NodeMaterial includes this node only when depthTest/depthWrite are enabled.
-  material.depthNode = depth.load(sourceRect.xy.add(sourceCoord)).r;
-  material.blending = THREE.NoBlending;
-  material.depthTest = false;
-  material.depthWrite = false;
-  material.depthFunc = THREE.AlwaysDepth;
-  material.transparent = true;
-  material.premultipliedAlpha = true;
-  material.toneMapped = true;
-  return material;
-}
 
 /**
  * Optional stochastic spatial filter. It is structurally compatible with
@@ -286,7 +60,9 @@ export class StochasticResolvePass {
   private readonly geometry = new THREE.BufferGeometry();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly webGLMaterial: THREE.ShaderMaterial;
-  private readonly webGPUMaterial: NodeMaterial;
+  private readonly webGPUMaterial: ReturnType<
+    typeof createWebGPUResolveMaterial
+  >;
   private readonly mesh: THREE.Mesh;
   private readonly drawingBufferSize = new THREE.Vector2();
   private composeTarget: THREE.RenderTarget | null = null;
@@ -305,28 +81,7 @@ export class StochasticResolvePass {
       sourceEncoded: { value: false },
     };
 
-    this.webGLMaterial = new THREE.ShaderMaterial({
-      name: "GaussianSplatStochasticResolve",
-      glslVersion: THREE.GLSL3,
-      vertexShader: resolveVertexShader,
-      fragmentShader: resolveFragmentShader,
-      uniforms: {
-        sourceTexture: this.state.sourceTexture,
-        sourceDepth: this.state.sourceDepth,
-        sourceRect: { value: this.state.sourceRect },
-        outputOrigin: { value: this.state.outputOrigin },
-        copyDepth: this.state.copyDepth,
-        resolveStochastic: this.state.resolve,
-        sourceEncoded: this.state.sourceEncoded,
-      },
-      blending: THREE.NoBlending,
-      depthTest: false,
-      depthWrite: false,
-      depthFunc: THREE.AlwaysDepth,
-      transparent: true,
-      premultipliedAlpha: true,
-      toneMapped: true,
-    });
+    this.webGLMaterial = createWebGLResolveMaterial(this.state);
     this.webGPUMaterial = createWebGPUResolveMaterial(this.state);
 
     this.geometry.setAttribute(
@@ -656,25 +411,7 @@ export class StochasticResolvePass {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
       if (webGPU) {
-        // Convert in the resolve shader so Three's output blit does not drop
-        // the per-eye depth or allocate another full-resolution intermediate.
-        const output = this.webGPUMaterial.outputNode as TSLNode;
-        const toneMapping = xrOutput
-          ? previousToneMapping
-          : THREE.NoToneMapping;
-        const colorSpace = xrOutput ? previousColorSpace : THREE.NoColorSpace;
-        if (
-          output.getToneMapping() !== toneMapping ||
-          output.outputColorSpace !== colorSpace
-        ) {
-          output.setToneMapping(toneMapping);
-          output.outputColorSpace = colorSpace;
-          this.webGPUMaterial.needsUpdate = true;
-        }
-        if (xrOutput) {
-          renderer.toneMapping = THREE.NoToneMapping;
-          renderer.outputColorSpace = THREE.ColorManagement.workingColorSpace;
-        }
+        configureWebGPUResolveOutput(this.webGPUMaterial, renderer, xrOutput);
       }
       setRendererRenderTarget(renderer, outputTarget);
       if (this.clear) {

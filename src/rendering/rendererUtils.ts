@@ -12,6 +12,12 @@ export function isWebGPURenderer(
   return "isWebGPURenderer" in renderer && renderer.isWebGPURenderer === true;
 }
 
+export function getRenderFrame(renderer: GaussianSplatCompatibleRenderer) {
+  return isWebGPURenderer(renderer)
+    ? renderer.info.render.calls
+    : renderer.info.render.frame;
+}
+
 type XRRenderTarget = THREE.RenderTarget & { isXRRenderTarget?: boolean };
 
 export function isXRRenderTarget(

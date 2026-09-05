@@ -1,76 +1,37 @@
 import { set_sort_center_state, sort32_centers } from "gaussian-splat-rs";
 import * as THREE from "three";
+import { SplatWorker } from "../runtime/SplatWorker";
 import {
-  StorageBufferAttribute,
-  PMREMGenerator as WebGPUPMREMGenerator,
-} from "three/webgpu";
+  WASM_READY,
+  isInitialized as isWasmInitialized,
+} from "../runtime/wasm";
+import { resolveTimer } from "../utils/three";
+import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
 import { SplatGeometry } from "./SplatGeometry";
-import { SplatWorker } from "./SplatWorker";
-import { WebGPUAccumulatorSort } from "./WebGPUAccumulatorSort";
-import { SortCenterCache } from "./cameraRelative";
+import {
+  type SplatBackend,
+  type SplatMaterial,
+  configureSplatOutput,
+  createSplatBackend,
+} from "./backend";
 import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
-  isWebGPURenderer,
-  isXRRenderTarget,
+  getRenderFrame,
   setRendererRenderTarget,
-} from "./renderer";
-import { getShaders } from "./shaders";
+} from "./rendererUtils";
 import {
   type StochasticMotionPhase,
   StochasticMotionState,
-} from "./stochasticMotion";
-import {
   stochasticResolveMarker,
   stochasticResolveRequired,
-} from "./stochasticResolveMarker";
-import { resolveTimer, uploadU32DataTextureRows } from "./utils";
-import { WASM_READY, isInitialized as isWasmInitialized } from "./wasm";
-import {
-  type WebGPUSplatMaterial,
-  createWebGPUSplatMaterial,
-} from "./webgpuMaterials";
-import { installWebGPUCompatibilityPatches } from "./webgpuPatches";
+} from "./stochastic";
+import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms";
 
 const renderToViewScaleTmp = new THREE.Vector3();
 const renderToViewMatrixTmp = new THREE.Matrix4();
 const renderTranslationTmp = new THREE.Matrix4();
-const ORDERING_TEXTURE_WIDTH = 4096;
-const SPLATS_PER_ORDERING_ROW = ORDERING_TEXTURE_WIDTH * 4;
-const DEFAULT_MIN_ALPHA = 0.5 / 255;
-
-function getOrderingCapacity(maxSplats: number, webGPU = false) {
-  if (webGPU) return Math.max(1, maxSplats);
-  return (
-    Math.max(1, Math.ceil(maxSplats / SPLATS_PER_ORDERING_ROW)) *
-    SPLATS_PER_ORDERING_ROW
-  );
-}
-
-function copyCommonRendererReadbackRGBA(
-  target: Uint8Array,
-  readback: ArrayBufferView,
-  width: number,
-  height: number,
-) {
-  const source = new Uint8Array(
-    readback.buffer,
-    readback.byteOffset,
-    readback.byteLength,
-  );
-  const rowBytes = width * 4;
-  const rowStride =
-    height > 1 ? (source.byteLength - rowBytes) / (height - 1) : rowBytes;
-  for (let y = 0; y < height; y++) {
-    const sourceRow = height - y - 1;
-    target.set(
-      source.subarray(sourceRow * rowStride, sourceRow * rowStride + rowBytes),
-      y * rowBytes,
-    );
-  }
-}
-
 type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
@@ -283,7 +244,7 @@ export interface GaussianSplatRendererOptions {
 
 export class GaussianSplatRenderer extends THREE.Mesh {
   readonly renderer: GaussianSplatCompatibleRenderer;
-  readonly material: THREE.ShaderMaterial | WebGPUSplatMaterial;
+  readonly material: SplatMaterial;
   readonly uniforms: ReturnType<typeof GaussianSplatRenderer.makeUniforms>;
 
   autoUpdate: boolean;
@@ -319,11 +280,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   onDirty?: () => void;
   dirty: boolean;
 
-  private orderingTexture: THREE.DataTexture | null = null;
-  private orderingAttribute: StorageBufferAttribute | null = null;
-  private webGPUSort: WebGPUAccumulatorSort | null = null;
-  private webGPUSortPrecompile: Promise<void> | null = null;
-  private webGPUSortError: unknown = null;
+  private readonly backend: SplatBackend;
   private orderingBuffer: Uint32Array = new Uint32Array(0);
   maxSplats = 0;
   activeSplats = 0;
@@ -354,10 +311,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   private forceSortedRenderDepth = 0;
   private stochasticResolveMarkerUsers = 0;
   private stochasticPreviousRenderOrder: number | null = null;
-  private _depthMesh: THREE.Mesh<
-    SplatGeometry,
-    THREE.ShaderMaterial | WebGPUSplatMaterial
-  > | null = null;
+  private _depthMesh: THREE.Mesh<SplatGeometry, SplatMaterial> | null = null;
 
   private static synchronousSortOwner: GaussianSplatRenderer | null = null;
 
@@ -396,40 +350,19 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       );
     }
     const geometry = new SplatGeometry();
-    const webGPU = isWebGPURenderer(options.renderer);
-    let material: THREE.ShaderMaterial | WebGPUSplatMaterial;
-    if (webGPU) {
-      if (options.vertexShader || options.fragmentShader) {
-        throw new Error(
-          "Custom GLSL shaders are only supported by WebGLRenderer",
-        );
-      }
-      installWebGPUCompatibilityPatches(options.renderer);
-      material = createWebGPUSplatMaterial({
-        uniforms,
-        premultipliedAlpha,
-        transparent: options.transparent ?? true,
-        depthTest: options.depthTest ?? true,
-        depthWrite: options.depthWrite ?? false,
-      });
-    } else {
-      const shaders = getShaders();
-      material = new THREE.ShaderMaterial({
-        glslVersion: THREE.GLSL3,
-        vertexShader: options.vertexShader ?? shaders.splatVertex,
-        fragmentShader: options.fragmentShader ?? shaders.splatFragment,
-        uniforms,
-        premultipliedAlpha,
-        transparent: options.transparent ?? true,
-        depthTest: options.depthTest ?? true,
-        depthWrite: options.depthWrite ?? false,
-        side: THREE.FrontSide,
-        allowOverride: false,
-      });
-    }
+    const backend = createSplatBackend(options.renderer, uniforms, {
+      premultipliedAlpha,
+      transparent: options.transparent ?? true,
+      depthTest: options.depthTest ?? true,
+      depthWrite: options.depthWrite ?? false,
+      vertexShader: options.vertexShader,
+      fragmentShader: options.fragmentShader,
+    });
+    const material = backend.material;
 
     super(geometry, material);
     this.renderer = options.renderer;
+    this.backend = backend;
     this.material = material;
     this.uniforms = uniforms;
     this.supportsStochasticShaders = supportsStochasticShaders;
@@ -444,11 +377,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.stochasticPhase = stochastic ? "forced" : null;
     this.applyStochasticRenderOrder();
     this.applyStochasticMaterialState(this.stochasticFrame);
-    if (webGPU) {
-      this.orderingAttribute = (
-        material as WebGPUSplatMaterial
-      ).orderingNode.value;
-    }
     // Disable frustum culling because we want to always draw them all
     // and cull Gsplats individually in the shader
     this.frustumCulled = false;
@@ -474,22 +402,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.minSortIntervalMs = options.minSortIntervalMs ?? 0;
     this._synchronousSort = options.synchronousSort ?? false;
 
-    if (isWebGPURenderer(options.renderer)) {
-      const sorter = new WebGPUAccumulatorSort(1);
-      this.webGPUSort = sorter;
-      this.webGPUSortPrecompile = sorter
-        .precompile(options.renderer)
-        .catch((error: unknown) => {
-          this.webGPUSortError = error;
-        })
-        .finally(() => {
-          this.webGPUSortPrecompile = null;
-          // Three's asynchronous compiler may create resources after dispose().
-          // Release the sorter only after its last compilation has finished.
-          if (this.disposed) sorter.dispose();
-        });
-    }
-
     const { timer, ownsTimer } = resolveTimer(options.timer);
     this.timer = timer;
     this.ownsTimer = ownsTimer;
@@ -498,18 +410,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.current = this.display;
     if (!this._synchronousSort) {
       this.accumulators.push(this.createAccumulator());
-    }
-
-    // Check if the provoking vertex convention should be changed.
-    if (!isWebGPURenderer(this.renderer)) {
-      const provokingVertexExt = this.renderer
-        .getContext()
-        .getExtension("WEBGL_provoking_vertex");
-      if (provokingVertexExt) {
-        provokingVertexExt.provokingVertexWEBGL(
-          provokingVertexExt.FIRST_VERTEX_CONVENTION_WEBGL,
-        );
-      }
     }
 
     if (options.target) {
@@ -553,62 +453,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]) {}
 
   static makeUniforms() {
-    const emptySplats: THREE.Texture = SplatAccumulator.emptyTexture;
-    const uniforms = {
-      // // number of active splats to render
-      // numSplats: { value: 0 },
-      // Size of render viewport in pixels
-      renderSize: { value: new THREE.Vector2() },
-      viewportOrigin: { value: new THREE.Vector2() },
-      renderOrigin: { value: new THREE.Vector3() },
-      // Near and far plane distances
-      near: { value: 0.1 },
-      far: { value: 1000.0 },
-      // SplatAccumulator to view transformation quaternion
-      renderToViewQuat: { value: new THREE.Quaternion() },
-      // SplatAccumulator to view transformation translation
-      renderToViewPos: { value: new THREE.Vector3() },
-      // SplatAccumulator to view transformation uniform scale
-      renderToViewScale: { value: 1 },
-      // Maximum distance (in stddevs) from Gsplat center to render
-      maxStdDev: { value: 1.0 },
-      // Minimum pixel radius for splat rendering
-      minPixelRadius: { value: 1.0 },
-      // Maximum pixel radius for splat rendering
-      maxPixelRadius: { value: 512.0 },
-      // Minimum alpha value for splat rendering
-      minAlpha: { value: DEFAULT_MIN_ALPHA },
-      // Add to projected 2D splat covariance diagonal (thickens and brightens)
-      preBlurAmount: { value: 0.0 },
-      // Add to 2D splat covariance diagonal and adjust opacity (anti-aliasing)
-      blurAmount: { value: 0.3 },
-      // Clip Gsplats that are clipXY times beyond the +-1 frustum bounds
-      clipXY: { value: 1.25 },
-      // Debug renderSize scale factor
-      focalAdjustment: { value: 2.0 },
-      // Whether to decode stored sRGB Splat colors before blending
-      encodeLinear: { value: false },
-      // Mirrors the material flag for WebGPU's output premultiplication.
-      premultipliedAlpha: { value: true },
-      // Back-to-front sort ordering of splat indices
-      ordering: { type: "t", value: GaussianSplatRenderer.emptyOrdering },
-      // Gsplat collection to render
-      splats: { type: "t", value: emptySplats },
-      splats2: { type: "t", value: emptySplats },
-      // Time in seconds for time-based effects
-      time: { value: 0 },
-      // Delta time in seconds since last frame
-      deltaTime: { value: 0 },
-      // Debug flag that alternates each frame
-      debugFlag: { value: false },
-      // Sorting-free stochastic transparency for automatic or forced frames
-      stochastic: { value: false },
-      // Tags accepted samples for an attached StochasticResolvePass.
-      stochasticResolve: { value: false },
-      // Fast depth-only pass after sorted stochastic-mode frames
-      depthOnly: { value: false },
-    };
-    return uniforms;
+    return makeSplatUniforms();
   }
 
   dispose() {
@@ -629,17 +474,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.backTarget.dispose();
       this.backTarget = undefined;
     }
-    if (this.orderingTexture) {
-      this.orderingTexture.dispose();
-      this.orderingTexture = null;
-    }
-    const webGPUOrdering = this.webGPUSort?.ordering;
-    if (this.orderingAttribute && this.orderingAttribute !== webGPUOrdering) {
-      this.orderingAttribute.dispose();
-    }
-    this.orderingAttribute = null;
-    if (!this.webGPUSortPrecompile) this.webGPUSort?.dispose();
-    this.webGPUSort = null;
+    this.backend.dispose();
     this._depthMesh?.removeFromParent();
     this._depthMesh?.material.dispose();
     this._depthMesh = null;
@@ -698,7 +533,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
       for (const accumulator of this.accumulators) accumulator.dispose();
       this.accumulators.length = 0;
-      if (isWebGPURenderer(this.renderer)) {
+      if (this.backend.kind === "webgpu") {
         this.orderingBuffer = new Uint32Array(0);
       }
     } else if (this.accumulators.length === 0) {
@@ -721,21 +556,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.sortWorker = null;
     this.sortCenterCache.dispose();
     this.uploadedSortStateRevision = -1;
-  }
-
-  private setWebGPUOrdering(
-    ordering: StorageBufferAttribute,
-    sorterOwnedPrevious?: StorageBufferAttribute,
-  ) {
-    if (this.orderingAttribute === ordering) return;
-    if (
-      this.orderingAttribute &&
-      this.orderingAttribute !== sorterOwnedPrevious
-    ) {
-      this.orderingAttribute.dispose();
-    }
-    this.orderingAttribute = ordering;
-    (this.material as WebGPUSplatMaterial).orderingNode.value = ordering;
   }
 
   private releaseReadbackBuffers() {
@@ -845,31 +665,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       stochasticResolve: { value: false },
       depthOnly: { value: true },
     };
-    let material: THREE.ShaderMaterial | WebGPUSplatMaterial;
-    if (isWebGPURenderer(this.renderer)) {
-      material = createWebGPUSplatMaterial({
-        uniforms: depthUniforms,
-        orderingNode: (this.material as WebGPUSplatMaterial).orderingNode,
-        premultipliedAlpha: false,
-        transparent: false,
-        depthTest: true,
-        depthWrite: true,
-      });
-    } else {
-      const shaders = getShaders();
-      material = new THREE.ShaderMaterial({
-        glslVersion: THREE.GLSL3,
-        vertexShader: shaders.splatVertex,
-        fragmentShader: shaders.splatFragment,
-        uniforms: depthUniforms,
-        premultipliedAlpha: false,
-        transparent: false,
-        depthTest: true,
-        depthWrite: true,
-        side: THREE.FrontSide,
-        allowOverride: false,
-      });
-    }
+    const material = this.backend.createDepthMaterial(depthUniforms);
     material.blending = THREE.NoBlending;
     material.colorWrite = false;
 
@@ -956,14 +752,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const gaussianSplatRenderer =
       GaussianSplatRenderer.gaussianSplatOverride ?? this;
 
-    const frame = isWebGPURenderer(renderer)
-      ? renderer.info.render.calls
-      : renderer.info.render.frame;
+    const frame = getRenderFrame(renderer);
     const isNewFrame = frame !== gaussianSplatRenderer.lastFrame;
     gaussianSplatRenderer.lastFrame = frame;
 
     const currentRenderTarget = renderer.getRenderTarget();
-    const xrRenderTarget = isXRRenderTarget(currentRenderTarget);
     if (currentRenderTarget) {
       gaussianSplatRenderer.renderSize.set(
         currentRenderTarget.width,
@@ -1057,47 +850,17 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;
     this.uniforms.focalAdjustment.value = gaussianSplatRenderer.focalAdjustment;
     this.uniforms.stochastic.value = gaussianSplatRenderer.stochasticFrame;
-    // Alpha-2 markers belong only in float intermediates, never the XR layer.
-    const xrOutput = isWebGPURenderer(renderer)
-      ? currentRenderTarget === renderer.getOutputRenderTarget() ||
-        (
-          currentRenderTarget as
-            | (THREE.RenderTarget & { isPostProcessingRenderTarget?: boolean })
-            | null
-        )?.isPostProcessingRenderTarget
-      : xrRenderTarget && renderer.xr.enabled;
-    this.uniforms.stochasticResolve.value =
-      this.stochasticResolveMarkerUsers > 0 &&
-      (!renderer.xr.isPresenting ||
-        (!xrOutput &&
-          (currentRenderTarget?.texture.type === THREE.HalfFloatType ||
-            currentRenderTarget?.texture.type === THREE.FloatType)));
+    configureSplatOutput(
+      renderer,
+      currentRenderTarget,
+      this.uniforms,
+      this.stochasticResolveMarkerUsers,
+    );
     if (this.stochasticModeEnabled) {
       this.applyStochasticMaterialState(gaussianSplatRenderer.stochasticFrame);
     }
 
-    const webGPU = isWebGPURenderer(renderer);
-    let blendColorSpace = THREE.ColorManagement.workingColorSpace;
-    if (!webGPU) {
-      if (currentRenderTarget === null) {
-        blendColorSpace = renderer.outputColorSpace;
-      } else if (xrRenderTarget) {
-        blendColorSpace = currentRenderTarget.texture.colorSpace;
-      }
-    }
-    this.uniforms.encodeLinear.value = blendColorSpace !== THREE.SRGBColorSpace;
-
-    if (webGPU) {
-      const orderingAttribute = gaussianSplatRenderer.orderingAttribute;
-      if (orderingAttribute) {
-        (this.material as WebGPUSplatMaterial).orderingNode.value =
-          orderingAttribute;
-      }
-    } else {
-      this.uniforms.ordering.value =
-        gaussianSplatRenderer.orderingTexture ??
-        GaussianSplatRenderer.emptyOrdering;
-    }
+    gaussianSplatRenderer.backend.bindOrdering(this.material, this.uniforms);
     const splatTextures = display.getTextures();
     this.uniforms.splats.value = splatTextures[0];
     this.uniforms.splats2.value = splatTextures[1];
@@ -1202,12 +965,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     settleRevision,
   }: UpdateRequest) {
     if (this._synchronousSort && !skipSort) {
-      const webGPU = isWebGPURenderer(this.renderer);
-      const initialization = webGPU
-        ? this.webGPUSortPrecompile
-        : isWasmInitialized()
-          ? null
-          : WASM_READY;
+      const initialization =
+        this.backend.kind === "webgpu"
+          ? this.backend.precompile
+          : isWasmInitialized()
+            ? null
+            : WASM_READY;
       if (initialization) {
         const sortModeRevision = this.sortModeRevision;
         await initialization;
@@ -1219,7 +982,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
           return;
         }
       }
-      if (webGPU && this.webGPUSortError) throw this.webGPUSortError;
+      if (this.backend.kind === "webgpu" && this.backend.sortError)
+        throw this.backend.sortError;
     }
 
     const renderer = this.renderer;
@@ -1269,8 +1033,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const { version, sortUpdated, requiredMaxSplats, generate } = preparation;
     const orderingNeedsShrink =
       shrinkResources &&
-      getOrderingCapacity(requiredMaxSplats, isWebGPURenderer(this.renderer)) <
-        this.maxSplats;
+      this.backend.getOrderingCapacity(requiredMaxSplats) < this.maxSplats;
     const doUpdate =
       shrinkResources || viewChanged || version !== previousVersion;
     const needsSort = orderingNeedsShrink || viewChanged || sortUpdated;
@@ -1342,23 +1105,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       return;
     }
 
-    const sortCapacity = getOrderingCapacity(requiredMaxSplats, true);
-    if (
-      shrinkResources &&
-      this.webGPUSort &&
-      sortCapacity < this.webGPUSort.capacity
-    ) {
-      const precompile = this.webGPUSortPrecompile;
-      if (precompile) await precompile;
-      const webGPUSort = this.webGPUSort;
-      if (!this.disposed && webGPUSort) {
-        const previousOrdering = webGPUSort.ordering;
-        const orderingWasActive = this.orderingAttribute === previousOrdering;
-        webGPUSort.resize(sortCapacity, true);
-        if (orderingWasActive) {
-          this.setWebGPUOrdering(webGPUSort.ordering, previousOrdering);
-          this.sortDirty = true;
-        }
+    if (shrinkResources && this.backend.kind === "webgpu") {
+      if (
+        await this.backend.shrinkSort(
+          this.backend.getOrderingCapacity(requiredMaxSplats),
+        )
+      ) {
+        this.sortDirty = true;
       }
     }
 
@@ -1418,12 +1171,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
     try {
       const sortRadial = this.sortRadial;
-      const webGPURenderer =
-        synchronousSort && isWebGPURenderer(this.renderer)
-          ? this.renderer
-          : null;
+      const gpuBackend =
+        synchronousSort && this.backend.kind === "webgpu" ? this.backend : null;
       let sortWorker: SplatWorker | null = null;
-      if (synchronousSort && !webGPURenderer) {
+      if (synchronousSort && !gpuBackend) {
         if (!isWasmInitialized()) {
           await WASM_READY;
           if (
@@ -1452,29 +1203,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
 
       const { numSplats, maxSplats } = current;
-      const orderingMaxSplats = getOrderingCapacity(
-        maxSplats,
-        isWebGPURenderer(this.renderer),
-      );
+      const orderingMaxSplats = this.backend.getOrderingCapacity(maxSplats);
       this.maxSplats = shrinkOrdering
         ? orderingMaxSplats
         : Math.max(this.maxSplats, orderingMaxSplats);
 
-      if (webGPURenderer) {
-        if (!this.webGPUSort) {
-          throw new Error("WebGPU sort was not initialized");
-        }
-        const webGPUSort = this.webGPUSort;
-        const previousOrdering = webGPUSort.ordering;
-        webGPUSort.resize(this.maxSplats, shrinkOrdering);
-        this.setWebGPUOrdering(webGPUSort.ordering, previousOrdering);
-        webGPUSort.sort({
-          renderer: webGPURenderer,
-          splats: current.getTextures()[0],
-          count: numSplats,
-          direction: current.viewDirection,
-          radial: sortRadial,
-        });
+      if (gpuBackend) {
+        gpuBackend.sortAccumulator(
+          current,
+          this.maxSplats,
+          shrinkOrdering,
+          sortRadial,
+        );
         this.activeSplats = numSplats;
         this.sortedCenter.copy(current.viewOrigin);
         this.sortedDir.copy(current.viewDirection);
@@ -1487,7 +1227,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         return;
       }
 
-      const rows = orderingMaxSplats / SPLATS_PER_ORDERING_ROW;
       if (this.orderingBuffer.length !== this.maxSplats) {
         this.orderingBuffer = new Uint32Array(this.maxSplats);
       }
@@ -1566,77 +1305,16 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
 
       this.activeSplats = result.activeSplats;
-      const activeRows = Math.ceil(
-        result.activeSplats / SPLATS_PER_ORDERING_ROW,
-      );
-      const webGPU = isWebGPURenderer(this.renderer);
-      const cpuOrderingAttribute =
-        this.orderingAttribute === this.webGPUSort?.ordering
-          ? null
-          : this.orderingAttribute;
       const previousOrdering = synchronousSort
         ? null
-        : webGPU
-          ? cpuOrderingAttribute?.array
-          : this.orderingTexture?.image.data;
-
-      if (webGPU) {
-        let orderingAttribute = cpuOrderingAttribute;
-        if (
-          !orderingAttribute ||
-          orderingAttribute.array.length !== this.maxSplats
-        ) {
-          // Keep the GPU ordering visible until the first worker result arrives.
-          // Its CPU array is only allocation storage, not the computed indices,
-          // and must never be transferred to the worker or overwritten here.
-          orderingAttribute = new StorageBufferAttribute(result.ordering, 1);
-          orderingAttribute.name = "GaussianSplatOrdering";
-          this.setWebGPUOrdering(orderingAttribute, this.webGPUSort?.ordering);
-        } else {
-          orderingAttribute.array = result.ordering;
-          orderingAttribute.clearUpdateRanges();
-          if (result.activeSplats > 0) {
-            orderingAttribute.addUpdateRange(0, result.activeSplats);
-            orderingAttribute.needsUpdate = true;
-          }
-        }
-      } else {
-        if (
-          this.orderingTexture &&
-          (rows > this.orderingTexture.image.height ||
-            (shrinkOrdering && rows !== this.orderingTexture.image.height))
-        ) {
-          this.orderingTexture.dispose();
-          this.orderingTexture = null;
-        }
-
-        if (!this.orderingTexture) {
-          // console.log(`Allocating orderingTexture: ${ORDERING_TEXTURE_WIDTH}x${rows}`);
-          const orderingTexture = new THREE.DataTexture(
-            result.ordering,
-            ORDERING_TEXTURE_WIDTH,
-            rows,
-            THREE.RGBAIntegerFormat,
-            THREE.UnsignedIntType,
-          );
-          orderingTexture.needsUpdate = true;
-          this.orderingTexture = orderingTexture;
-        } else {
-          this.orderingTexture.image.data = result.ordering;
-          const renderer = this.renderer;
-          if (!renderer.properties.has(this.orderingTexture)) {
-            this.orderingTexture.needsUpdate = true;
-          } else if (activeRows > 0) {
-            uploadU32DataTextureRows(
-              renderer,
-              this.orderingTexture,
-              ORDERING_TEXTURE_WIDTH,
-              activeRows,
-              result.ordering,
-            );
-          }
-        }
-      }
+        : this.backend.cpuOrdering;
+      this.backend.setCPUOrdering({
+        ordering: result.ordering,
+        activeSplats: result.activeSplats,
+        capacity: this.maxSplats,
+        requiredCapacity: orderingMaxSplats,
+        shrink: shrinkOrdering,
+      });
 
       if (synchronousSort) {
         // WASM and the GPU resource retain the same CPU-side array. It is
@@ -1692,20 +1370,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
   }
 
-  private static emptyOrdering = (() => {
-    const numIndices = 4 * ORDERING_TEXTURE_WIDTH;
-    const emptyArray = new Uint32Array(numIndices);
-    const texture = new THREE.DataTexture(
-      emptyArray,
-      ORDERING_TEXTURE_WIDTH,
-      1,
-    );
-    texture.format = THREE.RGBAIntegerFormat;
-    texture.type = THREE.UnsignedIntType;
-    texture.needsUpdate = true;
-    return texture;
-  })();
-
   render(scene: THREE.Scene, camera: THREE.Camera) {
     const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
     try {
@@ -1760,25 +1424,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
     const superPixels = this.superPixels;
 
-    if (isWebGPURenderer(this.renderer)) {
-      const readback = await this.renderer.readRenderTargetPixelsAsync(
-        this.target,
-        0,
-        0,
-        width,
-        height,
-      );
-      copyCommonRendererReadbackRGBA(superPixels, readback, width, height);
-    } else {
-      await this.renderer.readRenderTargetPixelsAsync(
-        this.target,
-        0,
-        0,
-        width,
-        height,
-        superPixels,
-      );
-    }
+    await this.backend.readPixels(this.target, superPixels);
 
     const { superXY } = this;
     if (superXY === 1) {
@@ -1938,21 +1584,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       const byteSize = width * height * 4;
       const readback = new Uint8Array(byteSize);
       buffers.push(readback);
-      const promise = isWebGPURenderer(this.renderer)
-        ? this.renderer
-            .readRenderTargetPixelsAsync(target, 0, 0, width, height, 0, i)
-            .then((pixels) => {
-              copyCommonRendererReadbackRGBA(readback, pixels, width, height);
-            })
-        : this.renderer.readRenderTargetPixelsAsync(
-            target,
-            0,
-            0,
-            width,
-            height,
-            readback,
-            i,
-          );
+      const promise = this.backend.readPixels(target, readback, i);
       promises.push(promise);
     }
 
@@ -1995,9 +1627,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     // Pre-filter the cube map using THREE.PMREMGenerator if requested
     if (GaussianSplatRenderer.pmremRenderer !== this.renderer) {
       GaussianSplatRenderer.pmrem?.dispose();
-      GaussianSplatRenderer.pmrem = isWebGPURenderer(this.renderer)
-        ? new WebGPUPMREMGenerator(this.renderer)
-        : new THREE.PMREMGenerator(this.renderer);
+      GaussianSplatRenderer.pmrem = this.backend.createPMREMGenerator();
       GaussianSplatRenderer.pmremRenderer = this.renderer;
     }
 

@@ -4,12 +4,12 @@ import init_wasm, {
   set_sort_center_state,
   sort32_centers,
 } from "gaussian-splat-rs";
-import type { SplatResult } from "./defines";
-import type { SerializedSplatPostDecode } from "./postDecode";
+import type { SplatResult } from "../data/defines";
+import type { SerializedSplatPostDecode } from "../loaders/postDecode";
 import {
   type PostDecodeSplatData,
   applySplatPostDecode,
-} from "./postDecodeRuntime";
+} from "../loaders/postDecodeRuntime";
 import { getTransferable } from "./transferable";
 
 const rpcHandlers = {

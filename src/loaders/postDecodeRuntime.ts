@@ -1,4 +1,10 @@
-import { fromHalf, toHalf } from "./float16";
+import {
+  decodeQuatOctXy1010R12ToArray,
+  decodeSplatOpacity,
+  encodeSplatOpacity,
+  tryEncodeQuatOctXy1010R12,
+} from "../data/splatCodec";
+import { fromHalf, toHalf } from "../utils/numeric";
 import {
   ATTRIBUTE_FORMAT_BYTES,
   InputField,
@@ -20,12 +26,6 @@ import {
   type SerializedSplatPostDecode,
   type SerializedSplatPostDecodeAttribute,
 } from "./postDecode";
-import {
-  decodeQuatOctXy1010R12ToArray,
-  decodeSplatOpacity,
-  encodeSplatOpacity,
-  tryEncodeQuatOctXy1010R12,
-} from "./splatCodec";
 
 export type PostDecodeSplatData = {
   numSplats: number;

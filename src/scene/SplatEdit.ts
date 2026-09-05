@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-import { rebaseAffineTransform } from "./cameraRelative";
+import { rebaseAffineTransform } from "../utils/transforms";
 
 export enum SplatEditSdfType {
   ALL = "all",

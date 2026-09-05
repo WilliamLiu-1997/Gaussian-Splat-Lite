@@ -17,6 +17,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Organized source files by responsibility and separated WebGL/WebGPU materials, accumulation, ordering resources and readback from shared renderer orchestration, preserving the package API.
 - Pinned the Three.js development and peer dependency to the tested GitHub development snapshot `d2fc542d`, keeping the built WebGPU/TSL code and its compatibility patches reproducible.
 - Replaced WebGPU accumulator render passes with fixed compute kernels writing GPU-only storage array textures, and packed per-mesh ranges without row padding.
 - Restored target-aware sRGB decoding for WebGL and added equivalent working-space decoding for WebGPU before transparent compositing.
