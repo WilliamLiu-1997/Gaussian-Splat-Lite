@@ -12,19 +12,20 @@
 
 </div>
 
-`Gaussian-Splat-Lite` is a lightweight 3D Gaussian Splatting renderer for Three.js. It is based on the overall architecture of [SparkJS](https://github.com/sparkjsdev/spark), simplified and adapted to retain a stable, general-purpose Gaussian Splat rendering pipeline while removing LoD, paging, dynamic shader graphs, and broad format compatibility layers. It also fixes SparkJS precision issues with large GIS/ECEF world coordinates and provides faster depth sorting and raycasting implementations.
+`Gaussian-Splat-Lite` is a lightweight 3D Gaussian Splatting renderer for Three.js, supporting both WebGL2 and native WebGPU with depth rendering for scene occlusion. Based on a simplified [SparkJS](https://github.com/sparkjsdev/spark) architecture, it provides precise rendering at large GIS/ECEF coordinates, fast depth sorting, and raycasting.
 
 It works alongside standard Three.js scenes, cameras, meshes, and render loops, and supports unified generation, sorting, and blended rendering of multiple Splat objects.
 
 ## Features
 
+- **WebGL2 and native WebGPU rendering**, with Worker/WASM CPU sorting and optional GPU radix sorting on WebGPU
+- **Depth rendering**, with front-to-back ordering and dedicated depth shaders
+- Optional sorting-free stochastic transparency and spatial resolve pass
 - Native integration with the Three.js scene graph and rendering pipeline
 - Multiple `SplatMesh` objects rendered with correct global sorting
 - `.ply` and `.spz` file support
 - URL, in-memory byte, and standard `ReadableStream` inputs
 - Rust/WebAssembly file decoding, depth sorting, and raycasting
-- WebGL2 rendering with CPU sorting and native WebGPU rendering with optional GPU radix sorting
-- Optional sorting-free stochastic transparency and spatial resolve pass
 - 3DGS rendering with configurable anti-aliasing
 - Spherical harmonics, offscreen rendering, and environment-map rendering
 - SDF-based color and opacity editing
