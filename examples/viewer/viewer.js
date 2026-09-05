@@ -7,6 +7,7 @@ import {
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
+import { createFrameGate } from "./frameGate.js";
 
 const viewport = document.querySelector("#viewport");
 const interfaceRoot = document.querySelector(".interface");
@@ -98,6 +99,7 @@ function configureRenderer(value) {
 }
 
 let renderer = new THREE.WebGLRenderer(rendererParameters);
+let frameGate = createFrameGate(renderer);
 configureRenderer(renderer);
 viewport.append(renderer.domElement);
 
@@ -154,7 +156,8 @@ function requestRender() {
 function renderFrame(time) {
   controls.update(time);
   const shouldRender = !renderOnDemand || needsRender;
-  if (!shouldRender) {
+  // Keep input current while the GPU is busy, retaining any redraw request.
+  if (!shouldRender || !frameGate.isReady()) {
     updateStats(time, false);
     return;
   }
@@ -164,6 +167,7 @@ function renderFrame(time) {
   // still request a later frame through onDirty.
   needsRender = false;
   stochasticResolvePass.compose(renderer, scene, camera);
+  frameGate.submitted();
   updateStats(time, true);
 }
 
@@ -507,11 +511,13 @@ async function switchRendererBackend(webGPU) {
   const previousSplatRenderer = splatRenderer;
 
   previousRenderer.setAnimationLoop(null);
+  frameGate.dispose();
   previousControls.removeEventListener("update", requestRender);
   previousControls.dispose();
   scene.remove(previousSplatRenderer);
 
   renderer = nextRenderer;
+  frameGate = createFrameGate(renderer);
   THREE.ColorManagement.workingColorSpace = webGPU
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
@@ -1182,6 +1188,7 @@ window.addEventListener("resize", resizeRenderer);
 window.addEventListener("beforeunload", () => {
   activeLoadController?.abort();
   renderer.setAnimationLoop(null);
+  frameGate.dispose();
   controls.removeEventListener("update", requestRender);
   controls.dispose();
   activeSplat?.dispose();
