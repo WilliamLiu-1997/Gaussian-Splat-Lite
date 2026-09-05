@@ -21,10 +21,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Replaced WebGPU accumulator render passes with fixed compute kernels writing GPU-only storage array textures, and packed per-mesh ranges without row padding.
 - Restored target-aware sRGB decoding for WebGL and added equivalent working-space decoding for WebGPU before transparent compositing.
 - Reuse radix dispatch lists while the workgroup count is unchanged and configure the shared prefix scan once per list, retaining fixed compute nodes through resize.
+- Simplified stochastic resolve filtering and configuration changes, and removed redundant XR camera copies and per-draw matrix allocations.
 
 ### Fixed
 
 - Use per-eye camera-relative transforms for WebGPU XR and per-eye viewport sizes for WebGL/WebGPU XR.
+- Clear the manual stochastic state when automatic camera motion takes over, so it cannot enable automatic stochastic rendering in XR.
 - Preserve the displayed GPU ordering until the first asynchronous worker result is ready, without transferring or overwriting the sorter's allocation buffers.
 - Update WebGPU Splats for each render call, including multiple renders within one animation frame.
 - Defer sorter disposal until outstanding GPU precompilation finishes and cancel pending deferred renderer updates on disposal.

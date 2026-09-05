@@ -38,7 +38,6 @@ uniform ivec4 sourceRect;
 uniform ivec2 outputOrigin;
 uniform bool copyDepth;
 uniform bool resolveStochastic;
-uniform bool perceptualResolve;
 uniform bool sourceEncoded;
 
 out vec4 fragColor;
@@ -48,43 +47,18 @@ vec4 loadSource(ivec2 coord) {
         sourceRect.xy + clamp(coord, ivec2(0), sourceRect.zw - 1), 0);
 }
 
-vec3 linearToPerceptual(vec3 color) {
-    return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-}
-
 vec3 perceptualToLinear(vec3 color) {
     return pow(max(color, vec3(0.0)), vec3(2.2));
 }
 
 vec4 physicalSource(vec4 texel) {
-    float alpha = texel.a > 1.0 ? 1.0 : clamp(texel.a, 0.0, 1.0);
+    float alpha = clamp(texel.a, 0.0, 1.0);
     vec3 color = texel.rgb;
     if (sourceEncoded) {
         vec3 straight = alpha > 0.0 ? color / alpha : vec3(0.0);
         color = perceptualToLinear(straight) * alpha;
     }
     return vec4(color, alpha);
-}
-
-vec4 sourceToResolve(vec4 texel, float isSplat) {
-    // Stochastic samples carry straight RGB while ordinary framebuffer pixels
-    // are premultiplied.
-    float alpha = mix(clamp(texel.a, 0.0, 1.0), 1.0, isSplat);
-    vec3 straight = alpha > 0.0 ? texel.rgb / alpha : vec3(0.0);
-    vec3 resolved = straight;
-    if (perceptualResolve && !sourceEncoded) {
-        resolved = linearToPerceptual(straight);
-    } else if (!perceptualResolve && sourceEncoded) {
-        resolved = perceptualToLinear(straight);
-    }
-    return vec4(resolved * alpha, alpha);
-}
-
-vec4 resolveToWorking(vec4 texel) {
-    float alpha = clamp(texel.a, 0.0, 1.0);
-    vec3 resolved = alpha > 0.0 ? texel.rgb / alpha : vec3(0.0);
-    vec3 working = perceptualResolve ? perceptualToLinear(resolved) : resolved;
-    return vec4(working * alpha, alpha);
 }
 
 vec4 resolveStochasticFrame(ivec2 source) {
@@ -97,8 +71,7 @@ vec4 resolveStochasticFrame(ivec2 source) {
     vec2 farWeights = fraction * 0.5;
 
     float coverage = 0.0;
-    vec3 splat = vec3(0.0);
-    vec4 background = vec4(0.0);
+    vec4 accumulated = vec4(0.0);
 
     for (int y = 0; y < 4; ++y) {
         float weightY = y < 2 ? nearWeights.y : farWeights.y;
@@ -107,20 +80,15 @@ vec4 resolveStochasticFrame(ivec2 source) {
             vec4 sourceTexel = loadSource(base + ivec2(x, y));
             float weight = weightX * weightY;
             float isSplat = float(sourceTexel.a > 1.0);
-            vec4 texel = sourceToResolve(sourceTexel, isSplat);
+            // Filter in the source's blend space. Alpha-2 marks an opaque sample.
+            float alpha = clamp(sourceTexel.a, 0.0, 1.0);
+            vec4 texel = vec4(alpha > 0.0 ? sourceTexel.rgb : vec3(0.0), alpha);
             coverage += weight * isSplat;
-            splat += weight * isSplat * texel.rgb;
-            background += weight * (1.0 - isSplat) * texel;
+            accumulated += weight * texel;
         }
     }
 
-    if (coverage <= 0.0) {
-        return physicalSource(loadSource(source));
-    }
-
-    return resolveToWorking(
-        vec4(splat + background.rgb, coverage + background.a)
-    );
+    return physicalSource(coverage > 0.0 ? accumulated : loadSource(source));
 }
 
 vec4 workingToOutput(vec4 texel) {
@@ -154,7 +122,6 @@ type ResolveState = {
   outputOrigin: THREE.Vector2;
   copyDepth: { value: boolean };
   resolve: { value: boolean };
-  perceptual: { value: boolean };
   sourceEncoded: { value: boolean };
 };
 
@@ -165,23 +132,22 @@ function createWebGPUResolveMaterial(state: ResolveState) {
   const resolve = N.uniform(false, "bool").onObjectUpdate(
     () => state.resolve.value,
   );
-  const perceptual = N.uniform(false, "bool").onObjectUpdate(
-    () =>
-      state.perceptual.value &&
-      THREE.ColorManagement.workingColorSpace !== THREE.SRGBColorSpace,
-  );
+  const perceptual = N.uniform(false, "bool").onObjectUpdate(() => {
+    const working = THREE.ColorManagement.workingColorSpace;
+    return (
+      working !== THREE.SRGBColorSpace &&
+      THREE.ColorManagement.getTransfer(working) === THREE.SRGBTransfer
+    );
+  });
 
   const linearToPerceptual = (color: TSLNode) => color.max(0).pow(1 / 2.2);
   const perceptualToLinear = (color: TSLNode) => color.max(0).pow(2.2);
 
-  const physicalSource = (texel: TSLNode) => {
-    const isSplat = texel.a.greaterThan(1);
-    const alpha = N.select(isSplat, 1, texel.a.clamp(0, 1));
-    return N.vec4(texel.rgb, alpha);
-  };
+  const physicalSource = (texel: TSLNode) =>
+    N.vec4(texel.rgb, texel.a.clamp(0, 1));
 
-  const sourceToResolve = (texel: TSLNode, isSplat: TSLNode) => {
-    const alpha = N.select(isSplat, 1, texel.a.clamp(0, 1));
+  const sourceToResolve = (texel: TSLNode) => {
+    const alpha = texel.a.clamp(0, 1);
     const straight = N.select(
       alpha.greaterThan(0),
       texel.rgb.div(alpha),
@@ -249,7 +215,7 @@ function createWebGPUResolveMaterial(state: ResolveState) {
           const sourceTexel = load(base.add(N.ivec2(x, y)));
           const splatSample = sourceTexel.a.greaterThan(1);
           const isSplat = N.select(splatSample, 1, 0);
-          const texel = sourceToResolve(sourceTexel, splatSample);
+          const texel = sourceToResolve(sourceTexel);
           coverage.addAssign(weight.mul(isSplat));
           accumulated.addAssign(texel.mul(weight));
         }
@@ -280,16 +246,8 @@ function createWebGPUResolveMaterial(state: ResolveState) {
   const depth = N.textureLoad(state.sourceDepth.value).onObjectUpdate(
     () => state.sourceDepth.value,
   );
-  const copyDepth = N.uniform(false, "bool").onObjectUpdate(
-    () => state.copyDepth.value,
-  );
-  material.depthNode = N.Fn(() => {
-    const value = N.float(1).toVar();
-    N.If(copyDepth, () => {
-      value.assign(depth.load(sourceRect.xy.add(sourceCoord)).r);
-    });
-    return value;
-  })();
+  // NodeMaterial includes this node only when depthTest/depthWrite are enabled.
+  material.depthNode = depth.load(sourceRect.xy.add(sourceCoord)).r;
   material.blending = THREE.NoBlending;
   material.depthTest = false;
   material.depthWrite = false;
@@ -344,7 +302,6 @@ export class StochasticResolvePass {
       outputOrigin: new THREE.Vector2(),
       copyDepth: { value: false },
       resolve: { value: false },
-      perceptual: { value: false },
       sourceEncoded: { value: false },
     };
 
@@ -360,7 +317,6 @@ export class StochasticResolvePass {
         outputOrigin: { value: this.state.outputOrigin },
         copyDepth: this.state.copyDepth,
         resolveStochastic: this.state.resolve,
-        perceptualResolve: this.state.perceptual,
         sourceEncoded: this.state.sourceEncoded,
       },
       blending: THREE.NoBlending,
@@ -446,20 +402,28 @@ export class StochasticResolvePass {
     return false;
   }
 
-  private xrTarget(renderer: GaussianSplatCompatibleRenderer) {
+  private xrTarget(
+    renderer: GaussianSplatCompatibleRenderer,
+    target = renderer.getRenderTarget(),
+  ) {
     if (!renderer.xr.isPresenting) return null;
     return isWebGPURenderer(renderer)
       ? renderer.getOutputRenderTarget()
-      : isXRRenderTarget(renderer.getRenderTarget())
-        ? renderer.getRenderTarget()
+      : isXRRenderTarget(target)
+        ? target
         : null;
   }
 
   /** Pack the eyes into one reusable 2D input, independent of XR layer layout. */
-  private prepareXRViews(camera: THREE.ArrayCamera) {
-    this.xrCamera.copy(camera, false);
-    this.xrCamera.matrixWorldAutoUpdate = false;
-    this.xrCamera.cameras.length = camera.cameras.length;
+  private prepareXRViews(
+    camera: THREE.ArrayCamera,
+    renderCamera?: THREE.ArrayCamera,
+  ) {
+    if (renderCamera) {
+      renderCamera.copy(camera, false);
+      renderCamera.matrixWorldAutoUpdate = false;
+      renderCamera.cameras.length = camera.cameras.length;
+    }
     this.state.sourceViews.length = camera.cameras.length;
     this.state.outputOrigins.length = camera.cameras.length;
     let width = 0;
@@ -469,18 +433,19 @@ export class StochasticResolvePass {
       if (!viewport) throw new Error("XR views must have a viewport");
       this.state.outputOrigins[i] ??= new THREE.Vector2();
       this.state.outputOrigins[i].set(viewport.x, viewport.y);
-      this.xrCamera.cameras[i] ??= new THREE.PerspectiveCamera();
-      const copy = this.xrCamera.cameras[i];
-      copy.copy(eye, false);
-      copy.matrixWorldAutoUpdate = false;
       this.state.sourceViews[i] ??= new THREE.Vector4();
-      copy.viewport = this.state.sourceViews[i];
-      copy.viewport.set(width, 0, viewport.z, viewport.w);
+      this.state.sourceViews[i].set(width, 0, viewport.z, viewport.w);
+      if (renderCamera) {
+        renderCamera.cameras[i] ??= new THREE.PerspectiveCamera();
+        const copy = renderCamera.cameras[i];
+        copy.copy(eye, false);
+        copy.matrixWorldAutoUpdate = false;
+        copy.viewport = this.state.sourceViews[i];
+      }
       width += viewport.z;
       height = Math.max(height, viewport.w);
     });
     this.drawingBufferSize.set(width, height);
-    return this.xrCamera;
   }
 
   /** Renders a complete scene, then resolves its marked Splat pixels. */
@@ -523,7 +488,8 @@ export class StochasticResolvePass {
             renderer.xr.updateCamera(camera as THREE.PerspectiveCamera);
           const xrCamera = renderer.xr.getCamera();
           if (xrCamera.cameras.length === 0) return;
-          renderCamera = this.prepareXRViews(xrCamera);
+          this.prepareXRViews(xrCamera, this.xrCamera);
+          renderCamera = this.xrCamera;
           // Render the packed eyes without Three replacing them with the XR views.
           renderer.xr.enabled = false;
         } else {
@@ -569,8 +535,6 @@ export class StochasticResolvePass {
           renderer.autoClearStencil,
         );
         renderer.render(scene, renderCamera);
-        renderer.xr.enabled = previousXREnabled;
-        setRendererRenderTarget(renderer, previousTarget);
         this.resolve(renderer, this.composeTarget, xrTarget);
       }
     } finally {
@@ -618,11 +582,7 @@ export class StochasticResolvePass {
     }
     const width = input.width;
     const height = input.height;
-    const xrTarget =
-      this.xrTarget(renderer) ??
-      (renderer.xr.isPresenting && isXRRenderTarget(destination)
-        ? destination
-        : null);
+    const xrTarget = this.xrTarget(renderer, destination ?? undefined);
     const xrOutput =
       xrTarget !== null && (destination === null || destination === xrTarget);
     const outputCamera = xrOutput ? renderer.xr.getCamera() : null;
@@ -674,11 +634,10 @@ export class StochasticResolvePass {
       !webGPU && isXRRenderTarget(input)
         ? input.texture.colorSpace
         : THREE.ColorManagement.workingColorSpace;
-    const sourceIsPerceptual =
+    this.state.sourceEncoded.value =
+      !webGPU &&
       THREE.ColorManagement.getTransfer(sourceColorSpace) ===
-      THREE.SRGBTransfer;
-    this.state.perceptual.value = sourceIsPerceptual;
-    this.state.sourceEncoded.value = !webGPU && sourceIsPerceptual;
+        THREE.SRGBTransfer;
 
     const material = webGPU ? this.webGPUMaterial : this.webGLMaterial;
     material.depthTest = this.state.copyDepth.value;

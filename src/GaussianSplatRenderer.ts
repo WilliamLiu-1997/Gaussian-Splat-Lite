@@ -34,6 +34,8 @@ import {
 import { installWebGPUCompatibilityPatches } from "./webgpuPatches";
 
 const renderToViewScaleTmp = new THREE.Vector3();
+const renderToViewMatrixTmp = new THREE.Matrix4();
+const renderTranslationTmp = new THREE.Matrix4();
 const ORDERING_TEXTURE_WIDTH = 4096;
 const SPLATS_PER_ORDERING_ROW = ORDERING_TEXTURE_WIDTH * 4;
 const DEFAULT_MIN_ALPHA = 0.5 / 255;
@@ -766,6 +768,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (!this.canRenderStochastic(renderer)) {
       const wasActive = this.stochasticFrame;
       this.stochasticPhase = null;
+      this.stochasticWasForced = false;
       this.requestMotionFollowup = false;
       if (wasActive && !this.stochasticModeEnabled) {
         this.applyStochasticRenderOrder();
@@ -784,6 +787,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       !renderer.xr.isPresenting
     ) {
       this.stochasticPhase = this.stochasticMotion.observe(camera);
+      if (this.stochasticPhase !== "settling") this.stochasticWasForced = false;
     }
     this.requestMotionFollowup = this.stochasticPhase === "moving";
   }
@@ -821,17 +825,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   private canRenderStochastic(renderer: GaussianSplatCompatibleRenderer) {
-    return (
-      // A forced mode remains stochastic until its pending sorted replacement
-      // is ready, even after the public switch is turned off.
-      (this._stochastic ||
-        (this._autoStochastic && this.autoUpdate) ||
-        (this.stochasticPhase === "settling" && this.autoUpdate)) &&
-      this.forceSortedRenderDepth === 0 &&
-      (!renderer.xr.isPresenting ||
-        this._stochastic ||
-        (this.stochasticWasForced && this.stochasticPhase === "settling"))
-    );
+    if (this.forceSortedRenderDepth > 0) return false;
+    if (this._stochastic) return true;
+    if (!this.autoUpdate) return false;
+    const settling = this.stochasticPhase === "settling";
+    // XR permits only a manual mode's pending sorted replacement.
+    return renderer.xr.isPresenting
+      ? settling && this.stochasticWasForced
+      : settling || this._autoStochastic;
   }
 
   private ensureDepthMesh() {
@@ -1032,18 +1033,16 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       ? display.numSplats
       : gaussianSplatRenderer.activeSplats;
 
-    // Accumulator centers are stored camera-relative.
-    const accumToWorld = new THREE.Matrix4().makeTranslation(
-      display.viewOrigin,
-    );
-    const cameraToWorld = camera.matrixWorld.clone();
-    const worldToCamera = cameraToWorld.invert();
-    const accumToCamera = worldToCamera.multiply(accumToWorld);
-    accumToCamera.decompose(
-      this.uniforms.renderToViewPos.value,
-      this.uniforms.renderToViewQuat.value,
-      renderToViewScaleTmp,
-    );
+    // Keep rig scale: Camera.matrixWorldInverse can strip it in Three.js.
+    renderToViewMatrixTmp
+      .copy(camera.matrixWorld)
+      .invert()
+      .multiply(renderTranslationTmp.makeTranslation(display.viewOrigin))
+      .decompose(
+        this.uniforms.renderToViewPos.value,
+        this.uniforms.renderToViewQuat.value,
+        renderToViewScaleTmp,
+      );
     this.uniforms.renderToViewScale.value =
       (renderToViewScaleTmp.x +
         renderToViewScaleTmp.y +
@@ -2040,17 +2039,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
   }
 
-  private refreshStochasticConfiguration(settle: boolean) {
+  private refreshStochasticConfiguration() {
     this.requestMotionFollowup = false;
     if (this._stochastic) {
       this.stochasticMotion.reset();
       this.stochasticPhase = "forced";
-    } else if (settle) {
+    } else if (this.stochasticFrame) {
       this.stochasticMotion.requestSettle();
       this.stochasticPhase = "settling";
     } else {
       this.stochasticMotion.reset();
       this.stochasticPhase = null;
+      this.stochasticWasForced = false;
     }
     this.applyStochasticRenderOrder();
     this.applyStochasticMaterialState(this.stochasticFrame);
@@ -2092,11 +2092,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const nextValue = Boolean(value);
     if (nextValue === this._autoStochastic) return;
     this.assertBuiltInSplatShaders(nextValue);
-    const settle =
-      this.stochasticPhase === "settling" ||
-      (!nextValue && this.stochasticFrame);
     this._autoStochastic = nextValue;
-    this.refreshStochasticConfiguration(settle);
+    this.refreshStochasticConfiguration();
   }
 
   get stochastic(): boolean {
@@ -2133,11 +2130,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const nextValue = Boolean(value);
     if (nextValue === this._stochastic) return;
     this.assertBuiltInSplatShaders(nextValue);
-    const settle =
-      this.stochasticPhase === "settling" ||
-      (!nextValue && this.stochasticFrame);
     this._stochastic = nextValue;
-    this.refreshStochasticConfiguration(settle);
+    this.refreshStochasticConfiguration();
   }
 
   get renderDepth(): boolean {
