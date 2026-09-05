@@ -9,37 +9,29 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added model-scaled grid and X/Z axes with a toolbar visibility toggle and consistent WebGL/WebGPU colors.
-- Added native WebGPU accumulation and Splat rendering through TSL while retaining the existing Worker/WASM CPU sorting pipeline.
-- Added a WebGL/WebGPU backend toggle to the bundled viewer for direct comparison.
-- Added an optional same-frame sorting mode that uses GPU radix sorting on WebGPU and main-thread WASM sorting on WebGL.
-- Added optional stochastic rendering, depth-only drawing, and `StochasticResolvePass`.
-- Enabled manual stochastic rendering and per-eye spatial resolve in WebGL/WebGPU XR, while keeping automatic stochastic switching disabled in XR.
+- Added native WebGPU rendering with TSL shaders and compute-based Splat accumulation into compact GPU storage. WebGL2 remains supported.
+- Added `synchronousSort` for same-frame GPU radix sorting on WebGPU or main-thread WASM sorting on WebGL. Asynchronous Worker/WASM sorting remains the default.
+- Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Depth draws reuse the existing sort order from near to far.
+- Added `StochasticResolvePass` for spatial noise reduction through EffectComposer, direct scene composition, or a custom render graph. Manual stochastic rendering and per-eye resolve are supported in WebGL/WebGPU XR; automatic stochastic switching remains disabled in XR.
+- Added viewer controls for rendering backend, output color space, synchronous sorting, and stochastic rendering.
+- Added a viewer grid and red/blue X/Z axes using screen-space wide lines, with a shared visibility toggle. References span 1.5 times the model's largest dimension, have 20 divisions per axis, and do not intercept picking.
 
 ### Changed
 
-- Replaced the bundled example with the SH3 Multi Material Splats model in SPZ v4 format.
-- Reuse the existing Splat ordering front-to-back for depth companion draws and specialize depth-only shaders.
-- Run the development viewer directly from source with Vite and use one cross-platform Node script to build WASM.
-- Share PLY batch storage, SH codecs, loading flow, and texture compatibility checks across their callers.
-- Organized source files by responsibility and separated WebGL/WebGPU materials, accumulation, ordering resources and readback from shared renderer orchestration, preserving the package API.
-- Pinned the Three.js development and peer dependency to the tested GitHub development snapshot `d2fc542d`, keeping the built WebGPU/TSL code and its compatibility patches reproducible.
-- Replaced WebGPU accumulator render passes with fixed compute kernels writing GPU-only storage array textures, and packed per-mesh ranges without row padding.
-- Restored target-aware sRGB decoding for WebGL and added equivalent working-space decoding for WebGPU before transparent compositing.
-- Reuse radix dispatch lists while the workgroup count is unchanged and configure the shared prefix scan once per list, retaining fixed compute nodes through resize.
-- Simplified stochastic resolve filtering and configuration changes, and removed redundant XR camera copies and per-draw matrix allocations.
+- Changed the required Three.js dependency from the npm version range to the tested development snapshot `d2fc542d58f5c91fa7b585e6a3efb7ba67b295ca`, which the WebGPU compatibility code depends on.
+- Replaced the bundled Lion example with Multi Material Splats by hybridherbst, distributed as SPZ v4 with SH3 data and CC BY 4.0 attribution.
+- Limited the viewer to one GPU frame in flight, retaining pending redraws and processing camera input while the GPU is busy.
+- Reused PLY output batches and SPZ decompression buffers, and shared loading, spherical-harmonic codecs, and texture compatibility checks to reduce duplicate work and temporary allocations.
+- Reorganized source files into data, loaders, runtime, scene, rendering, and utility modules, with separate WebGL/WebGPU backends and an architecture guide. Existing package entry-point exports remain available.
+- Changed `npm run dev` to serve source directly through Vite and consolidated WASM builds into a cross-platform Node script. Removed the separate `build:watch` command and platform-specific WASM scripts; ES module and CommonJS bundles now build separately.
 
 ### Fixed
 
-- Preserve finite SH channels when another channel is NaN, using the same encoding rules for `Splats` and `postDecode`.
-- Rebuild texture pairs when either Splat buffer changes and detect changes to typed-array view offsets.
-- Use per-eye camera-relative transforms for WebGPU XR and per-eye viewport sizes for WebGL/WebGPU XR.
-- Clear the manual stochastic state when automatic camera motion takes over, so it cannot enable automatic stochastic rendering in XR.
-- Preserve the displayed GPU ordering until the first asynchronous worker result is ready, without transferring or overwriting the sorter's allocation buffers.
-- Update WebGPU Splats for each render call, including multiple renders within one animation frame.
-- Defer sorter disposal until outstanding GPU precompilation finishes and cancel pending deferred renderer updates on disposal.
-- Keep stochastic motion revisions monotonic across resets so an old sort cannot complete a newer settle request.
-- Reject radix sort counts outside allocated buffer capacity.
+- Validated gzip header checksums, payload checksums, and decoded sizes for legacy SPZ files, rejecting missing trailers and trailing data. Optional gzip headers remain supported across input chunks.
+- Validated SPZ v4 Zstandard checksums and declared frame sizes against the stream table, rejecting corrupt or inconsistent files.
+- Preserved finite SH color channels when another channel is NaN, using the same packing rules in `Splats` and `postDecode`.
+- Rebuilt Splat textures when either source buffer changes, including changes to typed-array offsets and lengths, instead of retaining stale GPU data.
+- Corrected per-eye viewport sizing in WebXR so Splat projection uses each eye's dimensions rather than the full drawing buffer.
 
 ## [0.1.16] - 2026-09-03
 
