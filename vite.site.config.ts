@@ -22,6 +22,15 @@ export default defineConfig({
     sourcemap: true,
   },
 
+  server: {
+    watch: { usePolling: true },
+    port: 8080,
+  },
+
+  optimizeDeps: {
+    exclude: ["three", "three/webgpu", "three/tsl"],
+  },
+
   worker: {
     rollupOptions: {
       treeshake: "smallest",

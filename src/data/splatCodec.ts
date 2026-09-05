@@ -30,11 +30,50 @@ export function encodeSplatOpacity(opacity: number) {
   return toHalf(value);
 }
 
-type QuaternionOutput = Float32Array | number[];
+type CodecOutput = Float32Array | number[];
+
+// NaN channels encode as zero without affecting the shared exponent. All
+// magnitudes are nonnegative, so Math.round also gives ties away from zero.
+// Keep JS precision here; the destination array controls decode precision.
+export function encodeShRgb(red: number, green: number, blue: number) {
+  const maxAbsolute = Math.max(
+    Math.abs(red) || 0,
+    Math.abs(green) || 0,
+    Math.abs(blue) || 0,
+  );
+  const exponent = clamp(Math.floor(Math.log2(maxAbsolute)) + 15, 0, 31);
+  const divisor = 2 ** (exponent - 15) / 255;
+  const encodedRed = Math.round(clamp(Math.abs(red) / divisor, 0, 255));
+  const encodedGreen = Math.round(clamp(Math.abs(green) / divisor, 0, 255));
+  const encodedBlue = Math.round(clamp(Math.abs(blue) / divisor, 0, 255));
+  const signs = (red < 0 ? 1 : 0) | (green < 0 ? 2 : 0) | (blue < 0 ? 4 : 0);
+  return (
+    (encodedRed |
+      (encodedGreen << 8) |
+      (encodedBlue << 16) |
+      (((exponent << 3) | signs) << 24)) >>>
+    0
+  );
+}
+
+export function decodeShRgbToArray(
+  word: number,
+  output: CodecOutput,
+  base = 0,
+  stride = 1,
+) {
+  const exponentAndSigns = word >>> 24;
+  const multiplier = 2 ** ((exponentAndSigns >>> 3) - 15) / 255;
+  for (let component = 0; component < 3; component += 1) {
+    const magnitude = ((word >>> (component * 8)) & 0xff) * multiplier;
+    output[base + component * stride] =
+      exponentAndSigns & (1 << component) ? -magnitude : magnitude;
+  }
+}
 
 export function decodeQuatOctXy1010R12ToArray(
   word: number,
-  output: QuaternionOutput,
+  output: CodecOutput,
   base = 0,
   stride = 1,
 ) {

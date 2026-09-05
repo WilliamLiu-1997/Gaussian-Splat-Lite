@@ -309,7 +309,6 @@ Open the local URL printed by Vite, normally `http://localhost:8080/`. Drag a `.
 Other useful commands:
 
 ```sh
-npm run build:watch
 npm run check
 npm run lint
 npm run format

@@ -17,6 +17,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Run the development viewer directly from source with Vite and use one cross-platform Node script to build WASM.
+- Share PLY batch storage, SH codecs, loading flow, and texture compatibility checks across their callers.
 - Organized source files by responsibility and separated WebGL/WebGPU materials, accumulation, ordering resources and readback from shared renderer orchestration, preserving the package API.
 - Pinned the Three.js development and peer dependency to the tested GitHub development snapshot `d2fc542d`, keeping the built WebGPU/TSL code and its compatibility patches reproducible.
 - Replaced WebGPU accumulator render passes with fixed compute kernels writing GPU-only storage array textures, and packed per-mesh ranges without row padding.
@@ -26,6 +28,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Preserve finite SH channels when another channel is NaN, using the same encoding rules for `Splats` and `postDecode`.
+- Rebuild texture pairs when either Splat buffer changes and detect changes to typed-array view offsets.
 - Use per-eye camera-relative transforms for WebGPU XR and per-eye viewport sizes for WebGL/WebGPU XR.
 - Clear the manual stochastic state when automatic camera motion takes over, so it cannot enable automatic stochastic rendering in XR.
 - Preserve the displayed GPU ordering until the first asynchronous worker result is ready, without transferring or overwriting the sorter's allocation buffers.

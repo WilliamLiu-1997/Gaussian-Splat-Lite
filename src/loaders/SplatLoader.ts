@@ -1,12 +1,24 @@
 import { Loader } from "three";
 import { Splats, type SplatsOptions } from "../data/Splats";
-import type { SplatFileType } from "../data/defines";
 import { workerPool } from "../runtime/SplatWorker";
 import { SplatMesh } from "../scene/SplatMesh";
-import {
-  type SplatPostDecodeProgram,
-  serializeSplatPostDecode,
-} from "./postDecode";
+import { serializeSplatPostDecode } from "./postDecode";
+
+type SplatLoadOptions = Pick<
+  SplatsOptions,
+  | "url"
+  | "fileBytes"
+  | "fileType"
+  | "fileName"
+  | "stream"
+  | "streamLength"
+  | "postDecode"
+  | "onProgress"
+> & {
+  splats?: Splats;
+  onLoad?: (decoded: Splats) => void;
+  onError?: (error: unknown) => void;
+};
 
 // SplatLoader implements the THREE.Loader interface for PLY and SPZ files.
 export class SplatLoader extends Loader {
@@ -19,20 +31,22 @@ export class SplatLoader extends Loader {
     return this.loadInternal({ url, onLoad, onProgress, onError });
   }
 
-  async loadAsync(
+  loadAsync(
     url: string,
     onProgress?: (event: ProgressEvent) => void,
   ): Promise<Splats> {
-    return new Promise((resolve, reject) => {
-      this.load(url, resolve, onProgress, reject);
-    });
+    return this.loadInternalAsync({ url, onProgress });
   }
 
   parse(splats: Splats): SplatMesh {
     return new SplatMesh({ splats });
   }
 
-  loadInternal({
+  loadInternal(options: SplatLoadOptions) {
+    void this.loadInternalAsync(options).catch(() => {});
+  }
+
+  async loadInternalAsync({
     splats,
     url,
     fileBytes,
@@ -44,41 +58,23 @@ export class SplatLoader extends Loader {
     onLoad,
     onProgress,
     onError,
-  }: {
-    splats?: Splats;
-    url?: string;
-    fileBytes?: Uint8Array | ArrayBuffer;
-    fileType?: SplatFileType;
-    fileName?: string;
-    stream?: ReadableStream;
-    streamLength?: number;
-    postDecode?: SplatPostDecodeProgram;
-    onLoad?: (decoded: Splats) => void;
-    onProgress?: (event: ProgressEvent) => void;
-    onError?: (error: unknown) => void;
-  }) {
-    const byteArray =
-      fileBytes instanceof ArrayBuffer ? new Uint8Array(fileBytes) : fileBytes;
-    const resolvedURL = byteArray
-      ? undefined
-      : this.manager.resolveURL((this.path ?? "") + (url ?? ""));
-    let streamReader = stream?.getReader();
-    const cancelStreamReader = async (reason: unknown) => {
-      const reader = streamReader;
-      streamReader = undefined;
-      if (!reader) return;
-      try {
-        await reader.cancel(reason);
-      } catch {
-        // Preserve the original error if stream cancellation fails.
-      }
-      reader.releaseLock();
-    };
+  }: SplatLoadOptions): Promise<Splats> {
+    let resolvedURL: string | undefined;
+    let streamReader: ReadableStreamDefaultReader | undefined;
+    let started = false;
+    try {
+      const byteArray =
+        fileBytes instanceof ArrayBuffer
+          ? new Uint8Array(fileBytes)
+          : fileBytes;
+      resolvedURL = byteArray
+        ? undefined
+        : this.manager.resolveURL((this.path ?? "") + (url ?? ""));
+      streamReader = stream?.getReader();
+      started = true;
+      this.manager.itemStart(resolvedURL ?? "");
 
-    this.manager.itemStart(resolvedURL ?? "");
-
-    workerPool
-      .withWorker(async (worker) => {
+      return await workerPool.withWorker(async (worker) => {
         const readStreamChunk = async () => {
           const reader = streamReader;
           if (!reader) return new Uint8Array(0);
@@ -145,52 +141,20 @@ export class SplatLoader extends Loader {
         const result = splats ?? new Splats();
         result.initialize(decoded as SplatsOptions);
         onLoad?.(result);
-      })
-      .catch(async (error) => {
-        await cancelStreamReader(error);
-        this.manager.itemError(resolvedURL ?? "");
-        onError?.(error);
-      })
-      .finally(() => {
-        this.manager.itemEnd(resolvedURL ?? "");
+        return result;
       });
-  }
-
-  async loadInternalAsync({
-    splats,
-    url,
-    fileBytes,
-    fileType,
-    fileName,
-    stream,
-    streamLength,
-    postDecode,
-    onProgress,
-  }: {
-    splats?: Splats;
-    url?: string;
-    fileBytes?: Uint8Array | ArrayBuffer;
-    fileType?: SplatFileType;
-    fileName?: string;
-    stream?: ReadableStream;
-    streamLength?: number;
-    postDecode?: SplatPostDecodeProgram;
-    onProgress?: (event: ProgressEvent) => void;
-  }): Promise<Splats> {
-    return new Promise((resolve, reject) => {
-      this.loadInternal({
-        splats,
-        url,
-        fileBytes,
-        fileType,
-        fileName,
-        stream,
-        streamLength,
-        postDecode,
-        onLoad: resolve,
-        onProgress,
-        onError: reject,
-      });
-    });
+    } catch (error) {
+      try {
+        await streamReader?.cancel(error);
+      } catch {
+        // Preserve the original error if stream cancellation fails.
+      }
+      streamReader?.releaseLock();
+      if (started) this.manager.itemError(resolvedURL ?? "");
+      onError?.(error);
+      throw error;
+    } finally {
+      if (started) this.manager.itemEnd(resolvedURL ?? "");
+    }
   }
 }

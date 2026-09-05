@@ -3,7 +3,12 @@ import * as THREE from "three";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode";
 import { toHalf } from "../utils/numeric";
 import type { SplatFileType } from "./defines";
-import { encodeQuatOctXy1010R12, encodeSplatOpacity } from "./splatCodec";
+import {
+  decodeShRgbToArray,
+  encodeQuatOctXy1010R12,
+  encodeShRgb,
+  encodeSplatOpacity,
+} from "./splatCodec";
 import { getTextureSize } from "./textureLayout";
 import { decodeSplat } from "./unpack";
 
@@ -622,14 +627,16 @@ export class Splats {
     }
 
     const { width, height, depth } = getTextureSize(this.maxSplats);
-    const textureData = this.textures[0].image.data;
-    const incompatible =
-      this.textures[0] === Splats.emptyTexture ||
-      this.textures[0].image.width !== width ||
-      this.textures[0].image.height !== height ||
-      this.textures[0].image.depth !== depth ||
-      textureData === null ||
-      textureData.buffer !== this.splatArrays[0].buffer;
+    const incompatible = this.textures.some(
+      (texture, index) =>
+        !matchesUintArrayTexture(
+          texture,
+          this.splatArrays[index],
+          width,
+          height,
+          depth,
+        ),
+    );
     if (incompatible) {
       this.disposeMainTextures();
       this.textures = [
@@ -653,21 +660,19 @@ export class Splats {
   }
 
   private getShTextures(): SplatShTextures {
-    this.shTextures.sh1 = this.ensureShTexture("sh1", this.shTextures.sh1);
-    this.shTextures.sh2 = this.ensureShTexture("sh2", this.shTextures.sh2);
-    this.shTextures.sh3a = this.ensureShTexture("sh3a", this.shTextures.sh3a);
-    this.shTextures.sh3b = this.ensureShTexture("sh3b", this.shTextures.sh3b);
+    for (const key of SH_KEYS) {
+      this.shTextures[key] = this.ensureShTexture(key, this.shTextures[key]);
+    }
     return this.shTextures;
   }
 
   private ensureShTexture(
-    key: "sh1" | "sh2" | "sh3a" | "sh3b",
+    key: (typeof SH_KEYS)[number],
     current?: THREE.DataArrayTexture,
   ) {
-    let texture = current;
     const data = this.extra[key] as Uint32Array | undefined;
     if (!data) {
-      texture?.dispose();
+      current?.dispose();
       return undefined;
     }
     const { width, height, depth, maxSplats } = getTextureSize(
@@ -679,26 +684,37 @@ export class Splats {
       padded.set(data);
       this.extra[key] = padded;
     }
-    const incompatible =
-      texture &&
-      (texture.image.width !== width ||
-        texture.image.height !== height ||
-        texture.image.depth !== depth ||
-        texture.image.data === null ||
-        texture.image.data.buffer !== padded.buffer);
-    if (incompatible) {
-      texture?.dispose();
-      texture = undefined;
+    if (
+      !current ||
+      !matchesUintArrayTexture(current, padded, width, height, depth)
+    ) {
+      current?.dispose();
+      return newUintArrayTexture(padded, width, height, depth);
     }
-    if (!texture) {
-      texture = newUintArrayTexture(padded, width, height, depth);
-    } else if (this.needsUpdate) {
-      texture.needsUpdate = true;
-    }
-    return texture;
+    if (this.needsUpdate) current.needsUpdate = true;
+    return current;
   }
 
   static emptyTexture = newUintArrayTexture(new Uint32Array(4), 1, 1, 1);
+}
+
+function matchesUintArrayTexture(
+  texture: THREE.DataArrayTexture | undefined,
+  data: Uint32Array,
+  width: number,
+  height: number,
+  depth: number,
+) {
+  const image = texture?.image;
+  return (
+    texture !== Splats.emptyTexture &&
+    image?.width === width &&
+    image.height === height &&
+    image.depth === depth &&
+    image.data?.buffer === data.buffer &&
+    image.data.byteOffset === data.byteOffset &&
+    image.data.byteLength === data.byteLength
+  );
 }
 
 function newUintArrayTexture(
@@ -724,12 +740,14 @@ function decodeSplatSh(
 ) {
   const count = SH_COUNTS[degree] ?? 0;
   const result = new Array<THREE.Color>(count);
+  const rgb = [0, 0, 0];
   const base = index * 4;
   for (let coefficient = 0; coefficient < count; coefficient += 1) {
     const data = extra[SH_KEYS[coefficient >> 2]];
     const word =
       data instanceof Uint32Array ? data[base + (coefficient & 3)] : 0;
-    result[coefficient] = decodeShColor(word);
+    decodeShRgbToArray(word, rgb);
+    result[coefficient] = new THREE.Color(rgb[0], rgb[1], rgb[2]);
   }
   return result;
 }
@@ -844,47 +862,7 @@ function encodeSplatSh(
   for (let coefficient = 0; coefficient < sh.length; coefficient += 1) {
     const data = shArrays[coefficient >> 2];
     if (!data) continue;
-    data[base + (coefficient & 3)] = encodeShColor(sh[coefficient]);
+    const { r, g, b } = sh[coefficient];
+    data[base + (coefficient & 3)] = encodeShRgb(r, g, b);
   }
-}
-
-function encodeShColor(color: THREE.Color) {
-  const maxAbs = Math.max(
-    Math.abs(color.r),
-    Math.abs(color.g),
-    Math.abs(color.b),
-  );
-  const exponent = Math.round(
-    Math.min(31, Math.max(0, Math.floor(Math.log2(maxAbs)) + 15)),
-  );
-  const divisor = 2 ** (exponent - 15) / 255;
-  const encodedR = Math.round(
-    Math.min(255, Math.max(0, Math.abs(color.r) / divisor)),
-  );
-  const encodedG = Math.round(
-    Math.min(255, Math.max(0, Math.abs(color.g) / divisor)),
-  );
-  const encodedB = Math.round(
-    Math.min(255, Math.max(0, Math.abs(color.b) / divisor)),
-  );
-  const signs =
-    (color.r < 0 ? 1 : 0) | (color.g < 0 ? 2 : 0) | (color.b < 0 ? 4 : 0);
-  return (
-    encodedR |
-    (encodedG << 8) |
-    (encodedB << 16) |
-    (((exponent << 3) | signs) << 24)
-  );
-}
-
-function decodeShColor(word: number) {
-  const exponentAndSigns = word >>> 24;
-  const multiplier = 2 ** ((exponentAndSigns >>> 3) - 15) / 255;
-  let r = (word & 0xff) * multiplier;
-  let g = ((word >>> 8) & 0xff) * multiplier;
-  let b = ((word >>> 16) & 0xff) * multiplier;
-  if (exponentAndSigns & 1) r = -r;
-  if (exponentAndSigns & 2) g = -g;
-  if (exponentAndSigns & 4) b = -b;
-  return new THREE.Color(r, g, b);
 }

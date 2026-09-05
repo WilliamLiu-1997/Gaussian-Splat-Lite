@@ -1,6 +1,8 @@
 import {
   decodeQuatOctXy1010R12ToArray,
+  decodeShRgbToArray,
   decodeSplatOpacity,
+  encodeShRgb,
   encodeSplatOpacity,
   tryEncodeQuatOctXy1010R12,
 } from "../data/splatCodec";
@@ -416,42 +418,11 @@ function encodeQuaternion(
   );
 }
 
-function decodeSh(
-  word: number,
-  output: Float32Array,
-  base: number,
-  stride: number,
-) {
-  const exponentAndSigns = word >>> 24;
-  const multiplier = 2 ** ((exponentAndSigns >>> 3) - 15) / 255;
-  for (let component = 0; component < 3; component += 1) {
-    const magnitude = ((word >>> (component * 8)) & 0xff) * multiplier;
-    output[base + component * stride] =
-      exponentAndSigns & (1 << component) ? -magnitude : magnitude;
-  }
-}
-
 function encodeSh(registers: Float32Array, base: number, stride: number) {
-  const red = registers[base];
-  const green = registers[base + stride];
-  const blue = registers[base + stride * 2];
-  const maxAbsolute = rustMax(
-    Math.abs(red),
-    rustMax(Math.abs(green), Math.abs(blue)),
-  );
-  const exponent = roundAwayFromZero(
-    clamp(Math.floor(Math.log2(maxAbsolute)) + 15, 0, 31),
-  );
-  const divisor = 2 ** (exponent - 15) / 255;
-  const encodeComponent = (value: number) =>
-    roundAwayFromZero(clamp(Math.abs(value) / divisor, 0, 255));
-  const signs = (red < 0 ? 1 : 0) | (green < 0 ? 2 : 0) | (blue < 0 ? 4 : 0);
-  return (
-    (encodeComponent(red) |
-      (encodeComponent(green) << 8) |
-      (encodeComponent(blue) << 16) |
-      (((exponent << 3) | signs) << 24)) >>>
-    0
+  return encodeShRgb(
+    registers[base],
+    registers[base + stride],
+    registers[base + stride * 2],
   );
 }
 
@@ -619,7 +590,7 @@ function evaluateInputFieldBlock(
       if (location) {
         for (let index = 0; index < blockCount; index += 1) {
           const sourceIndex = sourceIndices?.[index] ?? index;
-          decodeSh(
+          decodeShRgbToArray(
             location[0][(blockStart + sourceIndex) * 4 + location[1]],
             registers,
             outputBase + index,

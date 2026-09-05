@@ -65,6 +65,7 @@ Return any subset of `position`, `scale`, `quaternion`, `opacity`, `alpha`, `col
 - `opacity` and `alpha` cannot be output together.
 - Output quaternions are normalized by the library. An invalid or zero-length result preserves the decoded quaternion.
 - Position and scale changes automatically keep worker sorting centers synchronized.
+- SH packing uses the same codec as `Splats`: NaN channels encode as zero without affecting the shared exponent, and nonnegative magnitudes round to the nearest integer with ties rounded up. Worker registers retain float32 precision.
 
 Nested `op.and()`, `op.or()`, and `op.not()` expressions in `when` are compiled into one forward control flow and short-circuited per Splat inside each worker block. Each stage directly compacts its continuing Splats and queues only Splats that branch to a later stage, without rescanning the full block for every predicate. Consecutive stages with a unique predecessor reuse live values; branch merges start an independent dense subgraph because no single register layout can represent every incoming path. NOT is pushed through logical branches using De Morgan's laws, so `op.not(op.and(A, B))` short-circuits like `op.or(op.not(A), op.not(B))`. Put cheap, selective predicates first so resolved Splats skip later attribute reads and arithmetic. Expression nesting defines grouping; for `A || B && C`, use `op.or(A, op.and(B, C))`, so the AND branch is evaluated before it participates in the OR. There is no fixed limit on the number of operands beyond the existing 4096-instruction program limit.
 

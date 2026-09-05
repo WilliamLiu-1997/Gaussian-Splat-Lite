@@ -82,7 +82,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             let state = PointCloudDecoderState::new(
                 parsed.num_splats,
                 parsed.vertex.record_size,
-                parsed.vertex.properties.clone(),
+                &parsed.vertex.properties,
             )?;
             self.splats.init_splats(&SplatInit {
                 num_splats: parsed.num_splats,
@@ -93,7 +93,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             let state = PlyDecoderState::new(
                 parsed.num_splats,
                 parsed.vertex.record_size,
-                parsed.vertex.properties.clone(),
+                &parsed.vertex.properties,
             )?;
             self.splats.init_splats(&SplatInit {
                 num_splats: parsed.num_splats,
@@ -129,43 +129,32 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 break;
             }
 
-            state.ensure_out(count);
+            state.output.ensure(count, 0);
 
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
                 let base = offset + i * state.record_size;
 
                 for d in 0..3 {
-                    state.out_center[i3 + d] = state.xyz[d].get_f32(&self.buffer, base);
+                    state.output.center[i3 + d] = state.xyz[d].get_f32(&self.buffer, base);
                 }
-                state.out_opacity[i] = match state.alpha {
+                state.output.opacity[i] = match state.alpha {
                     Some(alpha) => alpha.get_f32(&self.buffer, base),
                     None => 1.0,
                 };
                 for d in 0..3 {
-                    state.out_rgb[i3 + d] = state.rgb[d].get_f32(&self.buffer, base);
+                    state.output.rgb[i3 + d] = state.rgb[d].get_f32(&self.buffer, base);
                 }
-                state.out_scale.splice(
-                    i3..i3 + 3,
-                    [
-                        DEFAULT_POINT_SCALE,
-                        DEFAULT_POINT_SCALE,
-                        DEFAULT_POINT_SCALE,
-                    ],
-                );
-                state.out_quat.splice(i4..i4 + 4, [0.0, 0.0, 0.0, 1.0]);
+                state.output.scale[i3..i3 + 3].fill(DEFAULT_POINT_SCALE);
+                state.output.quat[i4..i4 + 4].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
             }
 
             self.splats.set_batch(
                 state.next_splat,
                 count,
                 &SplatProps {
-                    center: &state.out_center[..count * 3],
-                    opacity: &state.out_opacity[..count],
-                    rgb: &state.out_rgb[..count * 3],
-                    scale: &state.out_scale[..count * 3],
-                    quat: &state.out_quat[..count * 4],
-                    ..Default::default()
+                    scale: &state.output.scale[..count * 3],
+                    ..state.output.props(count, 0)
                 },
             );
 
@@ -190,45 +179,46 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 break;
             }
 
-            state.ensure_out(count);
+            state.output.ensure(count, state.max_sh_degree);
 
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
                 let base = offset + i * state.record_size;
 
                 for d in 0..3 {
-                    state.out_center[i3 + d] = state.xyz[d].get_f32(&self.buffer, base);
+                    state.output.center[i3 + d] = state.xyz[d].get_f32(&self.buffer, base);
                 }
                 let op_logistic = state.op_logi.get_f32(&self.buffer, base);
-                state.out_opacity[i] = 1.0 / (1.0 + (-op_logistic).exp());
+                state.output.opacity[i] = 1.0 / (1.0 + (-op_logistic).exp());
                 for d in 0..3 {
-                    state.out_rgb[i3 + d] = 0.5 + state.f_dc[d].get_f32(&self.buffer, base) * SH_C0;
+                    state.output.rgb[i3 + d] =
+                        0.5 + state.f_dc[d].get_f32(&self.buffer, base) * SH_C0;
                 }
                 for d in 0..3 {
-                    state.out_scale[i3 + d] = state.scale[d].get_f32(&self.buffer, base);
+                    state.output.scale[i3 + d] = state.scale[d].get_f32(&self.buffer, base);
                 }
                 let quat: [f32; 4] = array::from_fn(|d| state.rot[d].get_f32(&self.buffer, base));
                 let quat_magnitude = quat.map(|x| x.powi(2)).iter().sum::<f32>().sqrt();
                 for d in 0..4 {
-                    state.out_quat[i4 + d] = quat[d] / quat_magnitude;
+                    state.output.quat[i4 + d] = quat[d] / quat_magnitude;
                 }
 
                 if let Some(sh1) = state.sh1 {
                     let i9 = i * 9;
                     for d in 0..9 {
-                        state.out_sh1[i9 + d] = sh1[d].get_f32(&self.buffer, base);
+                        state.output.sh1[i9 + d] = sh1[d].get_f32(&self.buffer, base);
                     }
                 }
                 if let Some(sh2) = state.sh2 {
                     let i15 = i * 15;
                     for d in 0..15 {
-                        state.out_sh2[i15 + d] = sh2[d].get_f32(&self.buffer, base);
+                        state.output.sh2[i15 + d] = sh2[d].get_f32(&self.buffer, base);
                     }
                 }
                 if let Some(sh3) = state.sh3 {
                     let i21 = i * 21;
                     for d in 0..21 {
-                        state.out_sh3[i21 + d] = sh3[d].get_f32(&self.buffer, base);
+                        state.output.sh3[i21 + d] = sh3[d].get_f32(&self.buffer, base);
                     }
                 }
             }
@@ -236,29 +226,8 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             self.splats.set_batch_ln_scale(
                 state.next_splat,
                 count,
-                &SplatProps {
-                    center: &state.out_center[..count * 3],
-                    opacity: &state.out_opacity[..count],
-                    rgb: &state.out_rgb[..count * 3],
-                    quat: &state.out_quat[..count * 4],
-                    sh1: &state.out_sh1[..(if state.max_sh_degree >= 1 {
-                        count * 9
-                    } else {
-                        0
-                    })],
-                    sh2: &state.out_sh2[..(if state.max_sh_degree >= 2 {
-                        count * 15
-                    } else {
-                        0
-                    })],
-                    sh3: &state.out_sh3[..(if state.max_sh_degree >= 3 {
-                        count * 21
-                    } else {
-                        0
-                    })],
-                    ..Default::default()
-                },
-                &state.out_scale[..count * 3],
+                &state.output.props(count, state.max_sh_degree),
+                &state.output.scale[..count * 3],
             );
 
             state.next_splat += count;
@@ -312,14 +281,8 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     self.splats.set_batch_ln_scale(
                         elem_read,
                         chunk,
-                        &SplatProps {
-                            center: &state.out_center[..chunk * 3],
-                            opacity: &state.out_opacity[..chunk],
-                            rgb: &state.out_rgb[..chunk * 3],
-                            quat: &state.out_quat[..chunk * 4],
-                            ..Default::default()
-                        },
-                        &state.out_scale[..chunk * 3],
+                        &state.output.props(chunk, 0),
+                        &state.output.scale[..chunk * 3],
                     );
                 }
                 PlyElementKind::Sh => {
@@ -328,14 +291,14 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                         self.splats.set_sh(
                             elem_read,
                             chunk,
-                            &state.out_sh1[..chunk * 9],
+                            &state.output.sh1[..chunk * 9],
                             if state.max_sh_degree >= 2 {
-                                &state.out_sh2[..chunk * 15]
+                                &state.output.sh2[..chunk * 15]
                             } else {
                                 &[][..]
                             },
                             if state.max_sh_degree >= 3 {
-                                &state.out_sh3[..chunk * 21]
+                                &state.output.sh3[..chunk * 21]
                             } else {
                                 &[][..]
                             },
@@ -664,6 +627,52 @@ struct SuperSplatShProps {
     num_f_rest: usize,
 }
 
+#[derive(Debug, Default)]
+struct PlyOutput {
+    center: Vec<f32>,
+    opacity: Vec<f32>,
+    rgb: Vec<f32>,
+    scale: Vec<f32>,
+    quat: Vec<f32>,
+    sh1: Vec<f32>,
+    sh2: Vec<f32>,
+    sh3: Vec<f32>,
+}
+
+impl PlyOutput {
+    fn ensure(&mut self, count: usize, sh_degree: usize) {
+        for (output, width) in [
+            (&mut self.center, 3),
+            (&mut self.opacity, 1),
+            (&mut self.rgb, 3),
+            (&mut self.scale, 3),
+            (&mut self.quat, 4),
+            (&mut self.sh1, if sh_degree >= 1 { 9 } else { 0 }),
+            (&mut self.sh2, if sh_degree >= 2 { 15 } else { 0 }),
+            (&mut self.sh3, if sh_degree >= 3 { 21 } else { 0 }),
+        ] {
+            if output.len() < count * width {
+                output.resize(count * width, 0.0);
+            }
+        }
+    }
+
+    // Scale is supplied separately: point clouds use linear scale, while
+    // standard and SuperSplat PLY records provide natural-log scale.
+    fn props(&self, count: usize, sh_degree: usize) -> SplatProps<'_> {
+        SplatProps {
+            center: &self.center[..count * 3],
+            opacity: &self.opacity[..count],
+            rgb: &self.rgb[..count * 3],
+            quat: &self.quat[..count * 4],
+            sh1: &self.sh1[..if sh_degree >= 1 { count * 9 } else { 0 }],
+            sh2: &self.sh2[..if sh_degree >= 2 { count * 15 } else { 0 }],
+            sh3: &self.sh3[..if sh_degree >= 3 { count * 21 } else { 0 }],
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SuperSplatState {
     elements: Vec<PlyElementState>,
@@ -674,14 +683,7 @@ struct SuperSplatState {
     vertex_props: SuperSplatVertexProps,
     sh_props: Option<SuperSplatShProps>,
     chunks: Vec<SuperSplatChunk>,
-    out_center: Vec<f32>,
-    out_opacity: Vec<f32>,
-    out_rgb: Vec<f32>,
-    out_scale: Vec<f32>,
-    out_quat: Vec<f32>,
-    out_sh1: Vec<f32>,
-    out_sh2: Vec<f32>,
-    out_sh3: Vec<f32>,
+    output: PlyOutput,
     temp_rest: Vec<f32>,
 }
 
@@ -701,54 +703,18 @@ impl SuperSplatState {
         }
 
         let chunk_props = SuperSplatChunkProps {
-            min_x: *chunk_desc
-                .properties
-                .get("min_x")
-                .ok_or(anyhow!("Missing min_x property"))?,
-            min_y: *chunk_desc
-                .properties
-                .get("min_y")
-                .ok_or(anyhow!("Missing min_y property"))?,
-            min_z: *chunk_desc
-                .properties
-                .get("min_z")
-                .ok_or(anyhow!("Missing min_z property"))?,
-            max_x: *chunk_desc
-                .properties
-                .get("max_x")
-                .ok_or(anyhow!("Missing max_x property"))?,
-            max_y: *chunk_desc
-                .properties
-                .get("max_y")
-                .ok_or(anyhow!("Missing max_y property"))?,
-            max_z: *chunk_desc
-                .properties
-                .get("max_z")
-                .ok_or(anyhow!("Missing max_z property"))?,
-            min_scale_x: *chunk_desc
-                .properties
-                .get("min_scale_x")
-                .ok_or(anyhow!("Missing min_scale_x property"))?,
-            min_scale_y: *chunk_desc
-                .properties
-                .get("min_scale_y")
-                .ok_or(anyhow!("Missing min_scale_y property"))?,
-            min_scale_z: *chunk_desc
-                .properties
-                .get("min_scale_z")
-                .ok_or(anyhow!("Missing min_scale_z property"))?,
-            max_scale_x: *chunk_desc
-                .properties
-                .get("max_scale_x")
-                .ok_or(anyhow!("Missing max_scale_x property"))?,
-            max_scale_y: *chunk_desc
-                .properties
-                .get("max_scale_y")
-                .ok_or(anyhow!("Missing max_scale_y property"))?,
-            max_scale_z: *chunk_desc
-                .properties
-                .get("max_scale_z")
-                .ok_or(anyhow!("Missing max_scale_z property"))?,
+            min_x: required_property(&chunk_desc.properties, "min_x")?,
+            min_y: required_property(&chunk_desc.properties, "min_y")?,
+            min_z: required_property(&chunk_desc.properties, "min_z")?,
+            max_x: required_property(&chunk_desc.properties, "max_x")?,
+            max_y: required_property(&chunk_desc.properties, "max_y")?,
+            max_z: required_property(&chunk_desc.properties, "max_z")?,
+            min_scale_x: required_property(&chunk_desc.properties, "min_scale_x")?,
+            min_scale_y: required_property(&chunk_desc.properties, "min_scale_y")?,
+            min_scale_z: required_property(&chunk_desc.properties, "min_scale_z")?,
+            max_scale_x: required_property(&chunk_desc.properties, "max_scale_x")?,
+            max_scale_y: required_property(&chunk_desc.properties, "max_scale_y")?,
+            max_scale_z: required_property(&chunk_desc.properties, "max_scale_z")?,
             min_r: chunk_desc.properties.get("min_r").copied(),
             min_g: chunk_desc.properties.get("min_g").copied(),
             min_b: chunk_desc.properties.get("min_b").copied(),
@@ -758,24 +724,18 @@ impl SuperSplatState {
         };
 
         let vertex_props = SuperSplatVertexProps {
-            packed_position: *vertex_desc
-                .properties
-                .get("packed_position")
-                .ok_or(anyhow!("Missing packed_position property"))?,
-            packed_rotation: *vertex_desc
-                .properties
-                .get("packed_rotation")
-                .ok_or(anyhow!("Missing packed_rotation property"))?,
-            packed_scale: *vertex_desc
-                .properties
-                .get("packed_scale")
-                .ok_or(anyhow!("Missing packed_scale property"))?,
-            packed_color: *vertex_desc
-                .properties
-                .get("packed_color")
-                .ok_or(anyhow!("Missing packed_color property"))?,
+            packed_position: required_property(&vertex_desc.properties, "packed_position")?,
+            packed_rotation: required_property(&vertex_desc.properties, "packed_rotation")?,
+            packed_scale: required_property(&vertex_desc.properties, "packed_scale")?,
+            packed_color: required_property(&vertex_desc.properties, "packed_color")?,
         };
 
+        let max_sh_degree = parsed
+            .sh
+            .as_ref()
+            .map(|desc| sh_degree(&desc.properties))
+            .transpose()?
+            .unwrap_or(0);
         let sh_props = if let Some(sh_desc) = parsed.sh.as_ref() {
             if sh_desc.count != vertex_desc.count {
                 return Err(anyhow!(
@@ -784,44 +744,11 @@ impl SuperSplatState {
                     vertex_desc.count
                 ));
             }
-            let mut num_f_rest = 0;
-            while sh_desc
-                .properties
-                .contains_key(&format!("f_rest_{}", num_f_rest))
-            {
-                num_f_rest += 1;
-            }
-            let max_sh_degree = match num_f_rest {
-                0 => 0,
-                9 => 1,
-                24 => 2,
-                45 => 3,
-                _ => {
-                    return Err(anyhow!(
-                        "Invalid number of f_rest properties: {}",
-                        num_f_rest
-                    ))
-                }
-            };
-
+            let num_f_rest = f_rest_offset(max_sh_degree) * 3;
             (max_sh_degree > 0).then(|| {
-                let mut f_rest: Vec<PlyProperty> = vec![
-                    PlyProperty {
-                        ty: PlyPropertyType::Uchar,
-                        offset: 0
-                    };
-                    num_f_rest
-                ];
-                for (name, prop) in sh_desc.properties.iter() {
-                    if let Some(idx) = name
-                        .strip_prefix("f_rest_")
-                        .and_then(|s| s.parse::<usize>().ok())
-                    {
-                        if idx < num_f_rest {
-                            f_rest[idx] = *prop;
-                        }
-                    }
-                }
+                let f_rest = (0..num_f_rest)
+                    .map(|index| sh_desc.properties[&format!("f_rest_{index}")])
+                    .collect();
 
                 let stride = num_f_rest / 3;
                 let sh1_props: Vec<usize> = (0..3)
@@ -845,17 +772,6 @@ impl SuperSplatState {
         } else {
             None
         };
-
-        let max_sh_degree = sh_props
-            .as_ref()
-            .map(|p| match p.num_f_rest {
-                0 => 0,
-                9 => 1,
-                24 => 2,
-                45 => 3,
-                _ => 0,
-            })
-            .unwrap_or(0);
 
         let elements = parsed
             .elements
@@ -884,43 +800,9 @@ impl SuperSplatState {
             vertex_props,
             sh_props,
             chunks: Vec::new(),
-            out_center: Vec::new(),
-            out_opacity: Vec::new(),
-            out_rgb: Vec::new(),
-            out_scale: Vec::new(),
-            out_quat: Vec::new(),
-            out_sh1: Vec::new(),
-            out_sh2: Vec::new(),
-            out_sh3: Vec::new(),
+            output: PlyOutput::default(),
             temp_rest: Vec::new(),
         })
-    }
-
-    fn ensure_out(&mut self, count: usize) {
-        if self.out_center.len() < count * 3 {
-            self.out_center.resize(count * 3, 0.0);
-        }
-        if self.out_opacity.len() < count {
-            self.out_opacity.resize(count, 0.0);
-        }
-        if self.out_rgb.len() < count * 3 {
-            self.out_rgb.resize(count * 3, 0.0);
-        }
-        if self.out_scale.len() < count * 3 {
-            self.out_scale.resize(count * 3, 0.0);
-        }
-        if self.out_quat.len() < count * 4 {
-            self.out_quat.resize(count * 4, 0.0);
-        }
-        if self.max_sh_degree >= 1 && self.out_sh1.len() < count * 9 {
-            self.out_sh1.resize(count * 9, 0.0);
-        }
-        if self.max_sh_degree >= 2 && self.out_sh2.len() < count * 15 {
-            self.out_sh2.resize(count * 15, 0.0);
-        }
-        if self.max_sh_degree >= 3 && self.out_sh3.len() < count * 21 {
-            self.out_sh3.resize(count * 21, 0.0);
-        }
     }
 
     fn decode_chunks(
@@ -989,7 +871,7 @@ impl SuperSplatState {
         record_size: usize,
         data: &[u8],
     ) -> anyhow::Result<()> {
-        self.ensure_out(count);
+        self.output.ensure(count, self.max_sh_degree);
 
         for i in 0..count {
             let splat_index = base_index + i;
@@ -1054,20 +936,20 @@ impl SuperSplatState {
 
             let i3 = i * 3;
             let i4 = i * 4;
-            self.out_center[i3] = x;
-            self.out_center[i3 + 1] = y;
-            self.out_center[i3 + 2] = z;
-            self.out_scale[i3] = scale_x;
-            self.out_scale[i3 + 1] = scale_y;
-            self.out_scale[i3 + 2] = scale_z;
-            self.out_rgb[i3] = r;
-            self.out_rgb[i3 + 1] = g;
-            self.out_rgb[i3 + 2] = b;
-            self.out_opacity[i] = opacity;
-            self.out_quat[i4] = quat_x;
-            self.out_quat[i4 + 1] = quat_y;
-            self.out_quat[i4 + 2] = quat_z;
-            self.out_quat[i4 + 3] = quat_w;
+            self.output.center[i3] = x;
+            self.output.center[i3 + 1] = y;
+            self.output.center[i3 + 2] = z;
+            self.output.scale[i3] = scale_x;
+            self.output.scale[i3 + 1] = scale_y;
+            self.output.scale[i3 + 2] = scale_z;
+            self.output.rgb[i3] = r;
+            self.output.rgb[i3 + 1] = g;
+            self.output.rgb[i3 + 2] = b;
+            self.output.opacity[i] = opacity;
+            self.output.quat[i4] = quat_x;
+            self.output.quat[i4 + 1] = quat_y;
+            self.output.quat[i4 + 2] = quat_z;
+            self.output.quat[i4 + 3] = quat_w;
         }
         Ok(())
     }
@@ -1087,7 +969,7 @@ impl SuperSplatState {
         if self.temp_rest.len() < num_f_rest {
             self.temp_rest.resize(num_f_rest, 0.0);
         }
-        self.ensure_out(count);
+        self.output.ensure(count, self.max_sh_degree);
         let Some(sh_props) = self.sh_props.as_ref() else {
             return;
         };
@@ -1101,19 +983,19 @@ impl SuperSplatState {
             if self.max_sh_degree >= 1 {
                 let start = i * 9;
                 for (j, idx) in sh_props.sh1_props.iter().enumerate() {
-                    self.out_sh1[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
+                    self.output.sh1[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
                 }
             }
             if self.max_sh_degree >= 2 {
                 let start = i * 15;
                 for (j, idx) in sh_props.sh2_props.iter().enumerate() {
-                    self.out_sh2[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
+                    self.output.sh2[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
                 }
             }
             if self.max_sh_degree >= 3 {
                 let start = i * 21;
                 for (j, idx) in sh_props.sh3_props.iter().enumerate() {
-                    self.out_sh3[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
+                    self.output.sh3[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
                 }
             }
         }
@@ -1141,8 +1023,6 @@ struct PlyDecoderState {
     record_size: usize,
     next_splat: usize,
 
-    #[allow(unused)]
-    properties: HashMap<String, PlyProperty>,
     xyz: [PlyProperty; 3],
     scale: [PlyProperty; 3],
     rot: [PlyProperty; 4],
@@ -1153,117 +1033,30 @@ struct PlyDecoderState {
     sh2: Option<[PlyProperty; 15]>,
     sh3: Option<[PlyProperty; 21]>,
 
-    out_center: Vec<f32>,
-    out_opacity: Vec<f32>,
-    out_rgb: Vec<f32>,
-    out_scale: Vec<f32>,
-    out_quat: Vec<f32>,
-    out_sh1: Vec<f32>,
-    out_sh2: Vec<f32>,
-    out_sh3: Vec<f32>,
+    output: PlyOutput,
 }
 
 impl PlyDecoderState {
     fn new(
         num_splats: usize,
         record_size: usize,
-        properties: HashMap<String, PlyProperty>,
+        properties: &HashMap<String, PlyProperty>,
     ) -> anyhow::Result<Self> {
-        let xyz = [
-            *properties.get("x").ok_or(anyhow!("Missing x property"))?,
-            *properties.get("y").ok_or(anyhow!("Missing y property"))?,
-            *properties.get("z").ok_or(anyhow!("Missing z property"))?,
-        ];
-        let scale = [
-            *properties
-                .get("scale_0")
-                .ok_or(anyhow!("Missing scale_0 property"))?,
-            *properties
-                .get("scale_1")
-                .ok_or(anyhow!("Missing scale_1 property"))?,
-            *properties
-                .get("scale_2")
-                .ok_or(anyhow!("Missing scale_2 property"))?,
-        ];
-        let rot = [
-            *properties
-                .get("rot_1")
-                .ok_or(anyhow!("Missing rot_0 property"))?,
-            *properties
-                .get("rot_2")
-                .ok_or(anyhow!("Missing rot_1 property"))?,
-            *properties
-                .get("rot_3")
-                .ok_or(anyhow!("Missing rot_2 property"))?,
-            *properties
-                .get("rot_0")
-                .ok_or(anyhow!("Missing rot_3 property"))?,
-        ];
-        let op_logi = *properties
-            .get("opacity")
-            .ok_or(anyhow!("Missing opacity property"))?;
-        let f_dc = [
-            *properties
-                .get("f_dc_0")
-                .ok_or(anyhow!("Missing f_dc_0 property"))?,
-            *properties
-                .get("f_dc_1")
-                .ok_or(anyhow!("Missing f_dc_1 property"))?,
-            *properties
-                .get("f_dc_2")
-                .ok_or(anyhow!("Missing f_dc_2 property"))?,
-        ];
+        let xyz = required_properties(properties, ["x", "y", "z"])?;
+        let scale = required_properties(properties, ["scale_0", "scale_1", "scale_2"])?;
+        let rot = required_properties(properties, ["rot_1", "rot_2", "rot_3", "rot_0"])?;
+        let op_logi = required_property(properties, "opacity")?;
+        let f_dc = required_properties(properties, ["f_dc_0", "f_dc_1", "f_dc_2"])?;
 
-        let mut num_f_rest = 0;
-        while properties.contains_key(&format!("f_rest_{}", num_f_rest)) {
-            num_f_rest += 1;
-        }
-        let max_sh_degree = match num_f_rest {
-            0 => 0,
-            9 => 1,
-            24 => 2,
-            45 => 3,
-            _ => {
-                return Err(anyhow!(
-                    "Invalid number of f_rest properties: {}",
-                    num_f_rest
-                ))
-            }
-        };
-
-        let sh1 = if max_sh_degree >= 1 {
-            let sh1 = array::from_fn(|i| {
-                let name = f_rest_name(max_sh_degree, 1, i / 3, i % 3);
-                *properties.get(&name).unwrap()
-            });
-            Some(sh1)
-        } else {
-            None
-        };
-        let sh2 = if max_sh_degree >= 2 {
-            let sh2 = array::from_fn(|i| {
-                let name = f_rest_name(max_sh_degree, 2, i / 3, i % 3);
-                *properties.get(&name).unwrap()
-            });
-            Some(sh2)
-        } else {
-            None
-        };
-        let sh3 = if max_sh_degree >= 3 {
-            let sh3 = array::from_fn(|i| {
-                let name = f_rest_name(max_sh_degree, 3, i / 3, i % 3);
-                *properties.get(&name).unwrap()
-            });
-            Some(sh3)
-        } else {
-            None
-        };
+        let max_sh_degree = sh_degree(properties)?;
+        let sh1 = sh_properties(properties, max_sh_degree, 1);
+        let sh2 = sh_properties(properties, max_sh_degree, 2);
+        let sh3 = sh_properties(properties, max_sh_degree, 3);
 
         Ok(Self {
             num_splats,
             record_size,
             next_splat: 0,
-            properties,
             xyz,
             scale,
             rot,
@@ -1273,42 +1066,8 @@ impl PlyDecoderState {
             sh1,
             sh2,
             sh3,
-            out_center: Vec::new(),
-            out_opacity: Vec::new(),
-            out_rgb: Vec::new(),
-            out_scale: Vec::new(),
-            out_quat: Vec::new(),
-            out_sh1: Vec::new(),
-            out_sh2: Vec::new(),
-            out_sh3: Vec::new(),
+            output: PlyOutput::default(),
         })
-    }
-
-    fn ensure_out(&mut self, count: usize) {
-        if self.out_center.len() < (count * 3) {
-            self.out_center.resize(count * 3, 0.0);
-        }
-        if self.out_opacity.len() < count {
-            self.out_opacity.resize(count, 0.0);
-        }
-        if self.out_rgb.len() < (count * 3) {
-            self.out_rgb.resize(count * 3, 0.0);
-        }
-        if self.out_scale.len() < (count * 3) {
-            self.out_scale.resize(count * 3, 0.0);
-        }
-        if self.out_quat.len() < (count * 4) {
-            self.out_quat.resize(count * 4, 0.0);
-        }
-        if self.max_sh_degree >= 1 && self.out_sh1.len() < (count * 9) {
-            self.out_sh1.resize(count * 9, 0.0);
-        }
-        if self.max_sh_degree >= 2 && self.out_sh2.len() < (count * 15) {
-            self.out_sh2.resize(count * 15, 0.0);
-        }
-        if self.max_sh_degree >= 3 && self.out_sh3.len() < (count * 21) {
-            self.out_sh3.resize(count * 21, 0.0);
-        }
     }
 }
 
@@ -1318,75 +1077,32 @@ struct PointCloudDecoderState {
     record_size: usize,
     next_splat: usize,
 
-    #[allow(unused)]
-    properties: HashMap<String, PlyProperty>,
     xyz: [PlyProperty; 3],
     rgb: [PlyProperty; 3],
     alpha: Option<PlyProperty>,
 
-    out_center: Vec<f32>,
-    out_opacity: Vec<f32>,
-    out_rgb: Vec<f32>,
-    out_scale: Vec<f32>,
-    out_quat: Vec<f32>,
+    output: PlyOutput,
 }
 
 impl PointCloudDecoderState {
     fn new(
         num_splats: usize,
         record_size: usize,
-        properties: HashMap<String, PlyProperty>,
+        properties: &HashMap<String, PlyProperty>,
     ) -> anyhow::Result<Self> {
-        let xyz = [
-            *properties.get("x").ok_or(anyhow!("Missing x property"))?,
-            *properties.get("y").ok_or(anyhow!("Missing y property"))?,
-            *properties.get("z").ok_or(anyhow!("Missing z property"))?,
-        ];
-        let rgb = [
-            *properties
-                .get("red")
-                .ok_or(anyhow!("Missing red property"))?,
-            *properties
-                .get("green")
-                .ok_or(anyhow!("Missing green property"))?,
-            *properties
-                .get("blue")
-                .ok_or(anyhow!("Missing blue property"))?,
-        ];
+        let xyz = required_properties(properties, ["x", "y", "z"])?;
+        let rgb = required_properties(properties, ["red", "green", "blue"])?;
         let alpha = properties.get("alpha").copied();
 
         Ok(Self {
             num_splats,
             record_size,
             next_splat: 0,
-            properties,
             xyz,
             rgb,
             alpha,
-            out_center: Vec::new(),
-            out_opacity: Vec::new(),
-            out_rgb: Vec::new(),
-            out_scale: Vec::new(),
-            out_quat: Vec::new(),
+            output: PlyOutput::default(),
         })
-    }
-
-    fn ensure_out(&mut self, count: usize) {
-        if self.out_center.len() < (count * 3) {
-            self.out_center.resize(count * 3, 0.0);
-        }
-        if self.out_opacity.len() < count {
-            self.out_opacity.resize(count, 0.0);
-        }
-        if self.out_rgb.len() < (count * 3) {
-            self.out_rgb.resize(count * 3, 0.0);
-        }
-        if self.out_scale.len() < (count * 3) {
-            self.out_scale.resize(count * 3, 0.0);
-        }
-        if self.out_quat.len() < (count * 4) {
-            self.out_quat.resize(count * 4, 0.0);
-        }
     }
 }
 
@@ -1413,37 +1129,16 @@ impl PlyPropertyType {
     }
 
     pub fn get_f32(&self, data: &[u8], offset: usize) -> f32 {
-        match self {
-            PlyPropertyType::Float => {
-                let u8_4: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
-                f32::from_le_bytes(u8_4)
-            }
-            PlyPropertyType::Double => {
-                let u8_8: [u8; 8] = data[offset..offset + 8].try_into().unwrap();
-                f64::from_le_bytes(u8_8) as f32
-            }
-            PlyPropertyType::Char => data[offset] as i8 as f32 / 255.0,
-            PlyPropertyType::Uchar => data[offset] as f32 / 255.0,
-            PlyPropertyType::Short => {
-                let bytes: [u8; 2] = data[offset..offset + 2].try_into().unwrap();
-                i16::from_le_bytes(bytes) as f32
-            }
-            PlyPropertyType::Ushort => {
-                let bytes: [u8; 2] = data[offset..offset + 2].try_into().unwrap();
-                u16::from_le_bytes(bytes) as f32
-            }
-            PlyPropertyType::Int => {
-                let bytes: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
-                i32::from_le_bytes(bytes) as f32
-            }
-            PlyPropertyType::Uint => {
-                let bytes: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
-                u32::from_le_bytes(bytes) as f32
-            }
-        }
+        self.read_f32::<true>(data, offset)
     }
 
     pub fn get_raw_f32(&self, data: &[u8], offset: usize) -> f32 {
+        self.read_f32::<false>(data, offset)
+    }
+
+    // Specialize at compile time so non-byte fields avoid normalization work
+    // and an extra type dispatch in the decode loop.
+    fn read_f32<const NORMALIZE_BYTES: bool>(&self, data: &[u8], offset: usize) -> f32 {
         match self {
             PlyPropertyType::Float => {
                 let bytes: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
@@ -1453,6 +1148,8 @@ impl PlyPropertyType {
                 let bytes: [u8; 8] = data[offset..offset + 8].try_into().unwrap();
                 f64::from_le_bytes(bytes) as f32
             }
+            PlyPropertyType::Char if NORMALIZE_BYTES => data[offset] as i8 as f32 / 255.0,
+            PlyPropertyType::Uchar if NORMALIZE_BYTES => data[offset] as f32 / 255.0,
             PlyPropertyType::Char => data[offset] as i8 as f32,
             PlyPropertyType::Uchar => data[offset] as f32,
             PlyPropertyType::Short => {
@@ -1521,6 +1218,52 @@ impl PlyProperty {
     pub fn get_u32(&self, data: &[u8], record_offset: usize) -> u32 {
         self.ty.get_u32(data, record_offset + self.offset)
     }
+}
+
+fn required_property(
+    properties: &HashMap<String, PlyProperty>,
+    name: &str,
+) -> anyhow::Result<PlyProperty> {
+    properties
+        .get(name)
+        .copied()
+        .ok_or_else(|| anyhow!("Missing {name} property"))
+}
+
+fn required_properties<const N: usize>(
+    properties: &HashMap<String, PlyProperty>,
+    names: [&str; N],
+) -> anyhow::Result<[PlyProperty; N]> {
+    let mut result = [PlyProperty {
+        ty: PlyPropertyType::Float,
+        offset: 0,
+    }; N];
+    for (property, name) in result.iter_mut().zip(names) {
+        *property = required_property(properties, name)?;
+    }
+    Ok(result)
+}
+
+fn sh_degree(properties: &HashMap<String, PlyProperty>) -> anyhow::Result<usize> {
+    let count = (0..)
+        .take_while(|i| properties.contains_key(&format!("f_rest_{i}")))
+        .count();
+    match count {
+        0 => Ok(0),
+        9 => Ok(1),
+        24 => Ok(2),
+        45 => Ok(3),
+        _ => Err(anyhow!("Invalid number of f_rest properties: {count}")),
+    }
+}
+
+fn sh_properties<const N: usize>(
+    properties: &HashMap<String, PlyProperty>,
+    max_degree: usize,
+    degree: usize,
+) -> Option<[PlyProperty; N]> {
+    (max_degree >= degree)
+        .then(|| array::from_fn(|i| properties[&f_rest_name(max_degree, degree, i / 3, i % 3)]))
 }
 
 fn f_rest_offset(degree: usize) -> usize {

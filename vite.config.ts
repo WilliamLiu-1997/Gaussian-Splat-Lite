@@ -87,17 +87,5 @@ export default defineConfig(({ mode }) => {
         }),
       ],
     },
-
-    server: {
-      watch: {
-        usePolling: true,
-      },
-      port: 8080,
-    },
-
-    optimizeDeps: {
-      force: true,
-      exclude: ["three", "three/webgpu", "three/tsl"],
-    },
   };
 });
