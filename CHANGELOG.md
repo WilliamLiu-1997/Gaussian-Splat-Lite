@@ -11,7 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Added WebGPU rendering with TSL shaders and compute-based Splat accumulation into compact GPU storage. WebGL2 remains supported.
 - Added `synchronousSort` for same-frame GPU radix sorting on WebGPU or main-thread WASM sorting on WebGL. Asynchronous Worker/WASM sorting remains the default.
-- Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Depth draws reuse the existing sort order from near to far.
+- Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Companion depth draws process Splats in input order with stochastic coverage.
 - Added `StochasticResolvePass` for spatial noise reduction through EffectComposer, direct scene composition, or a custom render graph. Manual stochastic rendering and per-eye resolve are supported in WebGL/WebGPU XR; automatic stochastic switching remains disabled in XR.
 - Added viewer controls for rendering backend, output color space, synchronous sorting, and stochastic rendering.
 - Added a viewer grid and red/blue X/Z axes using screen-space wide lines, with a shared visibility toggle. References span 1.5 times the model's largest dimension, have 20 divisions per axis, and do not intercept picking.

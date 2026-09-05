@@ -21,7 +21,7 @@ A lightweight 3D Gaussian Splatting renderer for Three.js, with **WebGPU**, **de
 | Focus | What you get |
 | --- | --- |
 | **WebGPU / WebGL2** | Shared scene API and Worker/WASM sorting; WebGPU adds TSL shaders, compute-based generation, and optional GPU radix sorting |
-| **Depth Rendering** | Dedicated front-to-back depth draw with stochastic coverage at transparent edges |
+| **Depth Rendering** | Separate depth draw in input order with stochastic coverage at transparent edges |
 | **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
 | **Three.js integration** | Standard scenes, cameras, transforms, raycasting, and global sorting across multiple `SplatMesh` objects |
 | **Data and precision** | PLY/SPZ from URLs, bytes, or streams; camera-relative rendering for large GIS/ECEF coordinates |
@@ -102,7 +102,7 @@ Keep the rest of the example, including `renderDepth`.
 | `stochastic` | `false` | Forces sorting-free stochastic rendering with direct depth writes |
 | `autoStochastic` | `false` | Uses stochastic rendering during motion and enables companion depth on sorted frames |
 
-With default depth settings, the companion draw runs on non-stochastic frames, traverses the existing order near to far, and samples alpha coverage so transparent edges do not become solid. Stochastic frames already write their own depth.
+With default depth settings, the companion draw runs on non-stochastic frames in input order and samples alpha coverage so transparent edges do not become solid. Stochastic frames already write their own depth.
 
 ## Documentation
 

@@ -156,7 +156,7 @@ function createSplatFragment({
   minAlpha: TSLNode;
   stochastic: TSLNode;
   stochasticResolve: TSLNode;
-  depthOnly: boolean;
+  depthOnly: TSLNode;
   premultipliedAlpha: TSLNode;
 }) {
   const vRgba = N.varyingProperty("vec4", "gslRgba");
@@ -181,7 +181,7 @@ function createSplatFragment({
     });
     rgba.a.mulAssign(kernelAlpha);
     rgba.a.lessThan(minAlpha).discard();
-    N.If(depthOnly ? N.bool(true) : stochastic, () => {
+    N.If(stochastic.or(depthOnly), () => {
       const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
       const quad = pixel.shiftRight(N.uvec2(1));
       const hash = stochasticHash(
@@ -200,14 +200,15 @@ function createSplatFragment({
         .mul(0.25);
       randomValue.greaterThanEqual(rgba.a).discard();
     });
-    if (depthOnly) return N.vec4(0);
-    N.If(stochastic, () => {
-      // NodeMaterial premultiplies its output when requested. Cancel the
-      // alpha-2 marker here so the stored stochastic RGB remains straight.
-      N.If(premultipliedAlpha.and(stochasticResolve), () => {
-        rgba.rgb.mulAssign(0.5);
+    N.If(depthOnly.not(), () => {
+      N.If(stochastic, () => {
+        // NodeMaterial premultiplies its output when requested. Cancel the
+        // alpha-2 marker here so the stored stochastic RGB remains straight.
+        N.If(premultipliedAlpha.and(stochasticResolve), () => {
+          rgba.rgb.mulAssign(0.5);
+        });
+        rgba.a.assign(N.select(stochasticResolve, 2, 1));
       });
-      rgba.a.assign(N.select(stochasticResolve, 2, 1));
     });
     return rgba;
   })();
@@ -230,7 +231,6 @@ export function createWebGPUSplatMaterial({
   transparent,
   depthTest,
   depthWrite,
-  depthOnly = false,
 }: {
   uniforms: Uniforms;
   orderingNode?: TSLNode;
@@ -238,7 +238,6 @@ export function createWebGPUSplatMaterial({
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
-  depthOnly?: boolean;
 }): WebGPUSplatMaterial {
   const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
@@ -263,7 +262,7 @@ export function createWebGPUSplatMaterial({
     "stochasticResolve",
     "bool",
   );
-  const numSplats = uniformBinding(uniforms, "numSplats", "uint");
+  const depthOnly = uniformBinding(uniforms, "depthOnly", "bool");
   const {
     vRgba,
     vSplatUv,
@@ -299,15 +298,9 @@ export function createWebGPUSplatMaterial({
     vKernelPower.assign(0);
 
     const splatIndex = N.uint(N.instanceIndex).toVar();
-    if (depthOnly) {
-      splatIndex.assign(
-        orderingNode.element(numSplats.sub(1).sub(N.uint(N.instanceIndex))),
-      );
-    } else {
-      N.If(stochastic.not(), () => {
-        splatIndex.assign(orderingNode.element(N.uint(N.instanceIndex)));
-      });
-    }
+    N.If(stochastic.or(depthOnly).not(), () => {
+      splatIndex.assign(orderingNode.element(N.uint(N.instanceIndex)));
+    });
 
     N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {
       const texCoord = splatTexCoord(splatIndex);
@@ -458,16 +451,12 @@ export function createWebGPUSplatMaterial({
                       clipCenter.zw,
                     ),
                   );
-                  const rgb = depthOnly
-                    ? N.vec3(0)
-                    : decodeRgba(second, alpha).rgb.max(0).toVar();
+                  const rgb = decodeRgba(second, alpha).rgb.max(0).toVar();
                   // RGB is constant across the quad; decode its color space once
                   // per vertex rather than for every covered fragment.
-                  if (!depthOnly) {
-                    N.If(encodeLinear, () => {
-                      rgb.assign(rgb.pow(2.2));
-                    });
-                  }
+                  N.If(encodeLinear.and(depthOnly.not()), () => {
+                    rgb.assign(rgb.pow(2.2));
+                  });
                   vRgba.assign(N.vec4(rgb, alpha));
                   vSplatUv.assign(N.positionGeometry.xy.mul(supportRadius));
                   vSplatIndex.assign(splatIndex);

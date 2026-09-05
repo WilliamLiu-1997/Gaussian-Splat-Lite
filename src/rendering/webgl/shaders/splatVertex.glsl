@@ -11,7 +11,6 @@ flat out uint vSplatIndex;
 flat out float vSupportRadiusSquared;
 flat out float vKernelPower;
 
-uniform uint numSplats;
 uniform vec2 renderSize;
 uniform vec4 renderToViewQuat;
 uniform vec3 renderToViewPos;
@@ -32,11 +31,7 @@ uniform bool stochastic;
 #ifdef GSL_COLOR_IN_VERTEX
 uniform bool encodeLinear;
 #endif
-#ifdef GSL_DEPTH_ONLY
-const bool depthOnly = true;
-#else
-const bool depthOnly = false;
-#endif
+uniform bool depthOnly;
 
 uniform usampler2D ordering;
 uniform usampler2DArray splats;
@@ -60,15 +55,12 @@ void main() {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 
     uint splatIndex;
-    if (stochastic && !depthOnly) {
-        // Motion rendering does not need sorted indices.
+    if (stochastic || depthOnly) {
+        // Motion and depth-only rendering do not need sorted indices.
         splatIndex = uint(gl_InstanceID);
     } else {
-        // Reuse the color ordering in reverse so near depth samples can reject
-        // covered fragments before the more distant splats are shaded.
-        uint orderIndex = depthOnly ? numSplats - 1u - uint(gl_InstanceID) : uint(gl_InstanceID);
-        ivec2 orderingCoord = ivec2((orderIndex >> 2u) & 4095u, orderIndex >> 14u);
-        splatIndex = texelFetch(ordering, orderingCoord, 0)[orderIndex & 3u];
+        ivec2 orderingCoord = ivec2((gl_InstanceID >> 2) & 4095, gl_InstanceID >> 14);
+        splatIndex = texelFetch(ordering, orderingCoord, 0)[gl_InstanceID & 3];
     }
     if (splatIndex == 0xffffffffu) {
         // Special value reserved for "no splat"

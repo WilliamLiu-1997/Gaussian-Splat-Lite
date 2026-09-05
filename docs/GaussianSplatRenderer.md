@@ -29,7 +29,7 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 
 All three options require built-in shaders. Automatic switching also requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; capture methods stay sorted.
 
-With default depth settings, the draw order is opaque meshes, sorted Splat color, companion depth, then later geometry. Stochastic frames write depth directly. Companion depth samples alpha coverage near to far; transparent edges may show noise.
+With default depth settings, the draw order is opaque meshes, sorted Splat color, companion depth, then later geometry. Stochastic frames write depth directly. Companion depth draws Splats in input order and samples alpha coverage; transparent edges may show noise.
 
 Occlusion depends on draw order and depth testing in later materials. Depth clears or target changes can affect it. `renderDepth` writes scene depth, not a depth image or array.
 

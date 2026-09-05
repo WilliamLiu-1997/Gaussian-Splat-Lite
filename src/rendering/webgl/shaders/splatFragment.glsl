@@ -14,11 +14,7 @@ uniform bool debugFlag;
 uniform float minAlpha;
 uniform bool stochastic;
 uniform bool stochasticResolve;
-#ifdef GSL_DEPTH_ONLY
-const bool depthOnly = true;
-#else
-const bool depthOnly = false;
-#endif
+uniform bool depthOnly;
 uniform vec2 viewportOrigin;
 
 out vec4 fragColor;
@@ -62,7 +58,7 @@ void main() {
     if (stochastic || depthOnly) {
         // One stochastic transparency sample per pixel. The four pixels in
         // each 2x2 quad use a scrambled set of four strata to decorrelate
-        // adjacent coverage decisions. The sorted depth-only pass reuses it
+        // adjacent coverage decisions. The companion depth-only pass reuses it
         // so transparent edges do not become solid.
         uvec2 pixel = uvec2(gl_FragCoord.xy - viewportOrigin);
         uvec2 quad = pixel >> 1u;

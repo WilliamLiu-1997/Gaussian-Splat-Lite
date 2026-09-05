@@ -38,14 +38,9 @@ export function configureWebGLSplatOutput(
   uniforms.encodeLinear.value = blendSpace !== THREE.SRGBColorSpace;
 }
 
-function createMaterial(
-  uniforms: Uniforms,
-  options: SplatMaterialOptions,
-  depthOnly = false,
-) {
+function createMaterial(uniforms: Uniforms, options: SplatMaterialOptions) {
   const shaders = getShaders();
   const defines: Record<string, number> = {};
-  if (depthOnly) defines.GSL_DEPTH_ONLY = 1;
   if (
     options.vertexShader === undefined &&
     options.fragmentShader === undefined
@@ -83,16 +78,12 @@ export class WebGLSplatBackend {
   }
 
   createDepthMaterial(uniforms: Uniforms) {
-    return createMaterial(
-      uniforms,
-      {
-        premultipliedAlpha: false,
-        transparent: false,
-        depthTest: true,
-        depthWrite: true,
-      },
-      true,
-    );
+    return createMaterial(uniforms, {
+      premultipliedAlpha: false,
+      transparent: false,
+      depthTest: true,
+      depthWrite: true,
+    });
   }
 
   getOrderingCapacity(count: number) {

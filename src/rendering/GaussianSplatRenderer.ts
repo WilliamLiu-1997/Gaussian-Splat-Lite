@@ -663,6 +663,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       ...this.uniforms,
       stochastic: { value: false },
       stochasticResolve: { value: false },
+      depthOnly: { value: true },
     };
     const material = this.backend.createDepthMaterial(depthUniforms);
     material.blending = THREE.NoBlending;
@@ -676,10 +677,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     mesh.visible = this.renderDepthEnabled && !this._depthWrite;
     mesh.onBeforeRender = () => {
       const owner = GaussianSplatRenderer.gaussianSplatOverride ?? this;
-      mesh.geometry.instanceCount = owner.stochasticFrame
-        ? 0
-        : owner.activeSplats;
-      owner.backend.bindOrdering(material, depthUniforms);
+      mesh.geometry.instanceCount =
+        owner.stochasticFrame || owner.activeSplats === 0
+          ? 0
+          : owner.display.numSplats;
     };
     this._depthMesh = mesh;
     this.add(mesh);
@@ -824,7 +825,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     geometry.instanceCount = gaussianSplatRenderer.stochasticFrame
       ? display.numSplats
       : gaussianSplatRenderer.activeSplats;
-    this.uniforms.numSplats.value = gaussianSplatRenderer.activeSplats;
 
     // Keep rig scale: Camera.matrixWorldInverse can strip it in Three.js.
     renderToViewMatrixTmp
