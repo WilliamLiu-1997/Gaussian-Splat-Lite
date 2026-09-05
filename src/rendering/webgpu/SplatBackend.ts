@@ -87,6 +87,7 @@ export class WebGPUSplatBackend {
       transparent: false,
       depthTest: true,
       depthWrite: true,
+      depthOnly: true,
     });
   }
 

@@ -305,6 +305,24 @@ button {
   color: #c4c9d2;
 }
 
+.reference-toggle {
+  width: 2.35rem;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.reference-toggle .button-icon {
+  width: 1.4rem;
+  height: 1.4rem;
+  stroke-width: 0.9;
+}
+
+.reference-toggle[aria-pressed="true"] {
+  border-color: rgb(207 255 88 / 42%);
+  background: rgb(207 255 88 / 10%);
+  color: #cfff58;
+}
+
 .button-large {
   min-height: 2.8rem;
   padding-inline: 1.15rem;

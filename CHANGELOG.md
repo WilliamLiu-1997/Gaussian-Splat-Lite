@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added model-scaled grid and X/Z axes with a toolbar visibility toggle and consistent WebGL/WebGPU colors.
 - Added native WebGPU accumulation and Splat rendering through TSL while retaining the existing Worker/WASM CPU sorting pipeline.
 - Added a WebGL/WebGPU backend toggle to the bundled viewer for direct comparison.
 - Added an optional same-frame sorting mode that uses GPU radix sorting on WebGPU and main-thread WASM sorting on WebGL.
@@ -17,6 +18,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Replaced the bundled example with the SH3 Multi Material Splats model in SPZ v4 format.
+- Reuse the existing Splat ordering front-to-back for depth companion draws and specialize depth-only shaders.
 - Run the development viewer directly from source with Vite and use one cross-platform Node script to build WASM.
 - Share PLY batch storage, SH codecs, loading flow, and texture compatibility checks across their callers.
 - Organized source files by responsibility and separated WebGL/WebGPU materials, accumulation, ordering resources and readback from shared renderer orchestration, preserving the package API.

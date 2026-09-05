@@ -1,0 +1,8 @@
+Title: Multi Material Splats
+Author: Felix Herbst / hybridherbst (https://superspl.at/user/hybridherbst)
+Source: https://superspl.at/scene/16e528da
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+Changes: Converted the published SOG v2 model to SPZ v4 with @playcanvas/splat-transform v3.3.3, retaining all 333250 Gaussians and SH degree 3.
+Conversion: npx --yes @playcanvas/splat-transform@3.3.3 --spz-version 4 meta.json multi-material-splats.v4.spz
+Requirements: Author attribution and a link to the license are required. Commercial use and adaptations are allowed.

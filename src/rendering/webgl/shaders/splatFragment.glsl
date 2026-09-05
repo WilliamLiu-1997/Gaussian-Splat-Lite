@@ -12,7 +12,11 @@ uniform bool debugFlag;
 uniform float minAlpha;
 uniform bool stochastic;
 uniform bool stochasticResolve;
-uniform bool depthOnly;
+#ifdef GSL_DEPTH_ONLY
+const bool depthOnly = true;
+#else
+const bool depthOnly = false;
+#endif
 uniform vec2 viewportOrigin;
 
 out vec4 fragColor;

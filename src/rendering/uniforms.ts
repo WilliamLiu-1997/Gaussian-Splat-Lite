@@ -56,6 +56,8 @@ export function makeSplatUniforms() {
     premultipliedAlpha: { value: true },
     // Back-to-front sort ordering of splat indices
     ordering: { type: "t", value: emptyOrdering },
+    // Active sorted entries; the depth companion reads them front-to-back.
+    numSplats: { value: 0 },
     // Gsplat collection to render
     splats: { type: "t", value: emptySplats },
     splats2: { type: "t", value: emptySplats },
@@ -69,8 +71,6 @@ export function makeSplatUniforms() {
     stochastic: { value: false },
     // Tags accepted samples for an attached StochasticResolvePass.
     stochasticResolve: { value: false },
-    // Fast depth-only pass after sorted stochastic-mode frames
-    depthOnly: { value: false },
   };
   return uniforms;
 }

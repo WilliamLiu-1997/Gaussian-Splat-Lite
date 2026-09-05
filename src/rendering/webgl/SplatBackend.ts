@@ -38,10 +38,15 @@ export function configureWebGLSplatOutput(
   uniforms.encodeLinear.value = blendSpace !== THREE.SRGBColorSpace;
 }
 
-function createMaterial(uniforms: Uniforms, options: SplatMaterialOptions) {
+function createMaterial(
+  uniforms: Uniforms,
+  options: SplatMaterialOptions,
+  depthOnly = false,
+) {
   const shaders = getShaders();
   return new THREE.ShaderMaterial({
     ...options,
+    defines: depthOnly ? { GSL_DEPTH_ONLY: 1 } : {},
     glslVersion: THREE.GLSL3,
     vertexShader: options.vertexShader ?? shaders.splatVertex,
     fragmentShader: options.fragmentShader ?? shaders.splatFragment,
@@ -70,12 +75,16 @@ export class WebGLSplatBackend {
   }
 
   createDepthMaterial(uniforms: Uniforms) {
-    return createMaterial(uniforms, {
-      premultipliedAlpha: false,
-      transparent: false,
-      depthTest: true,
-      depthWrite: true,
-    });
+    return createMaterial(
+      uniforms,
+      {
+        premultipliedAlpha: false,
+        transparent: false,
+        depthTest: true,
+        depthWrite: true,
+      },
+      true,
+    );
   }
 
   getOrderingCapacity(count: number) {

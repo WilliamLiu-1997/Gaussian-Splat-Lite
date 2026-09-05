@@ -57,6 +57,7 @@ scene.add(splatRenderer);
 
 - `stochastic: true` forces the stochastic path.
 - `renderDepth: true` forces the companion depth draw; `autoStochastic` enables it automatically.
+- The companion draw reuses the existing sort order from near to far with a dedicated depth shader, preserving full-resolution stochastic coverage at transparent edges.
 - All three options require built-in shaders; `autoStochastic` also requires `autoUpdate` and remains disabled in WebXR. Manual `stochastic` works in WebXR; capture methods stay sorted.
 
 ### Stochastic resolve

@@ -5,7 +5,14 @@ import {
   StochasticResolvePass,
 } from "gaussian-splat-lite";
 import * as THREE from "three";
-import { WebGPURenderer } from "three/webgpu";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { Line2 as WebGPULine2 } from "three/addons/lines/webgpu/Line2.js";
+import { LineSegments2 as WebGPULineSegments2 } from "three/addons/lines/webgpu/LineSegments2.js";
+import { Line2NodeMaterial, WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
 import { createFrameGate } from "./frameGate.js";
 
@@ -20,6 +27,7 @@ const sourcePanelToggle = document.querySelector("#source-panel-toggle");
 const sourcePanelClose = document.querySelector("#source-panel-close");
 const chooseFileButton = document.querySelector("#choose-file");
 const resetViewButton = document.querySelector("#reset-view");
+const referenceToggle = document.querySelector("#reference-toggle");
 const loadExampleButton = document.querySelector("#load-example");
 const urlForm = document.querySelector("#url-form");
 const modelUrlInput = document.querySelector("#model-url");
@@ -51,36 +59,95 @@ const performanceHeap = document.querySelector("#performance-heap");
 const performanceHeapStat = performanceHeap.closest(".performance-stat");
 
 const EXAMPLE_MODEL = {
-  name: "galaxy-explorer.v3.spz",
-  size: 12385826,
-  url: new URL("../galaxy-explorer.v3.spz", import.meta.url),
-  credit: "renderbricks",
-  showExampleCube: true,
+  name: "multi-material-splats.v4.spz",
+  size: 5914266,
+  url: new URL("../multi-material-splats.v4.spz", import.meta.url),
+  credit: "hybridherbst",
 };
 
 const scene = new THREE.Scene();
-const exampleCube = new THREE.Mesh(
-  new THREE.BoxGeometry(2, 1, 0.33),
-  new THREE.MeshBasicMaterial({
-    color: 0xffffff,
+function createReferenceMaterial(webGPU, color, linewidth, opacity) {
+  const Material = webGPU ? Line2NodeMaterial : LineMaterial;
+  const material = new Material({
+    color,
+    linewidth,
+    worldUnits: false,
     transparent: true,
-    opacity: 0.5,
+    opacity,
     depthWrite: false,
-  }),
-);
-exampleCube.position.set(0, 0.25, 0);
-//exampleCube.rotation.x = -THREE.MathUtils.degToRad(30);
-
-function setExampleCubeVisible(visible) {
-  exampleCube.visible = visible;
-  if (visible) {
-    if (exampleCube.parent !== scene) scene.add(exampleCube);
-  } else {
-    exampleCube.removeFromParent();
-  }
+    toneMapped: false,
+    alphaToCoverage: false,
+  });
+  material.userData.referenceColor = color;
+  return material;
 }
 
-setExampleCubeVisible(false);
+// XZ reference at Y = 0; scaled to the loaded model in frameSplat.
+const referenceBaseSize = 10;
+function createGrid(webGPU) {
+  const halfSize = referenceBaseSize / 2;
+  const positions = [];
+  // Ten ticks on each side; leave the center lines to the colored axes.
+  for (let i = -10; i <= 10; i++) {
+    if (i === 0) continue;
+    const offset = (i * referenceBaseSize) / 20;
+    positions.push(-halfSize, 0, offset, halfSize, 0, offset);
+    positions.push(offset, 0, -halfSize, offset, 0, halfSize);
+  }
+  const geometry = new LineSegmentsGeometry().setPositions(positions);
+  const Line = webGPU ? WebGPULineSegments2 : LineSegments2;
+  const line = new Line(
+    geometry,
+    createReferenceMaterial(webGPU, 0x334155, 1.5, 0.5),
+  );
+  line.raycast = () => {};
+  return line;
+}
+
+function createAxes(webGPU) {
+  const group = new THREE.Group();
+  const halfSize = referenceBaseSize / 2;
+  const Line = webGPU ? WebGPULine2 : Line2;
+  for (const [color, positions] of [
+    [0xff0000, [-halfSize, 0, 0, halfSize, 0, 0]],
+    [0x0000ff, [0, 0, -halfSize, 0, 0, halfSize]],
+  ]) {
+    const geometry = new LineGeometry().setPositions(positions);
+    const material = createReferenceMaterial(webGPU, color, 3, 0.8);
+    const line = new Line(geometry, material);
+    line.raycast = () => {};
+    group.add(line);
+  }
+  return group;
+}
+
+const gridHelper = new THREE.Group();
+const webGLGrid = createGrid(false);
+const webGPUGrid = createGrid(true);
+webGPUGrid.visible = false;
+gridHelper.add(webGLGrid, webGPUGrid);
+const axesHelper = new THREE.Group();
+const webGLAxes = createAxes(false);
+const webGPUAxes = createAxes(true);
+webGPUAxes.visible = false;
+axesHelper.add(webGLAxes, webGPUAxes);
+scene.add(gridHelper, axesHelper);
+
+function syncReferenceColors() {
+  // setHex converts the original sRGB color into the current working space.
+  // Reapply it when switching spaces instead of reinterpreting old RGB values.
+  for (const helper of [gridHelper, axesHelper]) {
+    helper.traverse((object) => {
+      const material = object.material;
+      if (!material) return;
+      material.color.setHex(
+        material.userData.referenceColor,
+        THREE.SRGBColorSpace,
+      );
+      material.needsUpdate = true;
+    });
+  }
+}
 
 const camera = new THREE.PerspectiveCamera(52, 1, 0.001, 10000);
 camera.position.set(0, 0, 3);
@@ -215,6 +282,7 @@ const renderOptionGroups = [
           if (usesWebGPU(renderer)) {
             THREE.ColorManagement.workingColorSpace = outputColorSpace;
           }
+          syncReferenceColors();
         },
       },
       {
@@ -517,10 +585,15 @@ async function switchRendererBackend(webGPU) {
   scene.remove(previousSplatRenderer);
 
   renderer = nextRenderer;
+  webGLGrid.visible = !webGPU;
+  webGPUGrid.visible = webGPU;
+  webGLAxes.visible = !webGPU;
+  webGPUAxes.visible = webGPU;
   frameGate = createFrameGate(renderer);
   THREE.ColorManagement.workingColorSpace = webGPU
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
+  syncReferenceColors();
   configureRenderer(renderer);
   controls = nextControls;
   controls.addEventListener("update", requestRender);
@@ -888,9 +961,14 @@ function cancelLoading() {
 
 function frameSplat(splat) {
   const bounds = splat.getBoundingBox(true);
+  bounds.getSize(frameSize);
+  const referenceSize =
+    Math.max(frameSize.x, frameSize.y, frameSize.z, 0.01) * 1.5;
+  gridHelper.scale.setScalar(referenceSize / referenceBaseSize);
+  axesHelper.scale.setScalar(referenceSize / referenceBaseSize);
   const radius = bounds.isEmpty()
     ? 0.01
-    : Math.max(bounds.getSize(frameSize).length() * 0.5, 0.01);
+    : Math.max(frameSize.length() * 0.5, 0.01);
   const defaultCameraDistance = 10;
   const distance = Math.min(defaultCameraDistance, radius);
 
@@ -906,12 +984,7 @@ function frameSplat(splat) {
 
 async function loadFile(
   file,
-  {
-    credit = "",
-    remoteController = null,
-    loadToken = null,
-    showExampleCube = false,
-  } = {},
+  { credit = "", remoteController = null, loadToken = null } = {},
 ) {
   const fileType = fileTypeFor(file);
   if (!fileType) {
@@ -958,7 +1031,6 @@ async function loadFile(
 
     const previousSplat = activeSplat;
     activeSplat = candidate;
-    setExampleCubeVisible(showExampleCube);
     scene.add(activeSplat);
     if (previousSplat) {
       scene.remove(previousSplat);
@@ -1026,7 +1098,6 @@ async function loadRemoteModel(model, button) {
       credit: model.credit,
       remoteController: controller,
       loadToken: requestId,
-      showExampleCube: model.showExampleCube,
     });
   } catch (error) {
     if (requestId !== activeLoad || controller.signal.aborted) return;
@@ -1118,6 +1189,15 @@ fileInput.addEventListener("change", () => {
 
 resetViewButton.addEventListener("click", () => {
   if (activeSplat) frameSplat(activeSplat);
+});
+
+referenceToggle.addEventListener("click", () => {
+  const visible = !gridHelper.visible;
+  gridHelper.visible = visible;
+  axesHelper.visible = visible;
+  referenceToggle.setAttribute("aria-pressed", String(visible));
+  referenceToggle.title = visible ? "Hide grid and axes" : "Show grid and axes";
+  requestRender();
 });
 
 renderOptionsToggle.addEventListener("click", () => {
