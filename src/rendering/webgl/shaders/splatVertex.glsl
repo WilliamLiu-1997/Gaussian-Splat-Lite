@@ -29,6 +29,9 @@ uniform float preBlurAmount;
 uniform float clipXY;
 uniform float focalAdjustment;
 uniform bool stochastic;
+#ifdef GSL_COLOR_IN_VERTEX
+uniform bool encodeLinear;
+#endif
 #ifdef GSL_DEPTH_ONLY
 const bool depthOnly = true;
 #else
@@ -220,6 +223,13 @@ void main() {
     if (scale1 < minPixelRadius && scale2 < minPixelRadius) {
         return;
     }
+
+    // RGB is constant across the quad, so convert before rasterization.
+    #ifdef GSL_COLOR_IN_VERTEX
+    if (encodeLinear && !depthOnly) {
+        vRgba.rgb = srgbToLinear(vRgba.rgb);
+    }
+    #endif
 
     // Compute the NDC coordinates for the ellipsoid's diagonal axes.
     vec2 pixelOffset = position.x * eigenVec1 * scale1 + position.y * eigenVec2 * scale2;

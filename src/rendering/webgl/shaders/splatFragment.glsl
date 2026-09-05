@@ -6,7 +6,9 @@ precision highp int;
 
 uniform float near;
 uniform float far;
+#ifndef GSL_COLOR_IN_VERTEX
 uniform bool encodeLinear;
+#endif
 uniform float time;
 uniform bool debugFlag;
 uniform float minAlpha;
@@ -83,9 +85,11 @@ void main() {
             return;
         }
     }
+    #ifndef GSL_COLOR_IN_VERTEX
     if (encodeLinear) {
         rgba.rgb = srgbToLinear(rgba.rgb);
     }
+    #endif
 
     if (stochastic) {
         // Alpha 2 marks accepted stochastic samples for the optional resolve

@@ -44,9 +44,17 @@ function createMaterial(
   depthOnly = false,
 ) {
   const shaders = getShaders();
+  const defines: Record<string, number> = {};
+  if (depthOnly) defines.GSL_DEPTH_ONLY = 1;
+  if (
+    options.vertexShader === undefined &&
+    options.fragmentShader === undefined
+  ) {
+    defines.GSL_COLOR_IN_VERTEX = 1;
+  }
   return new THREE.ShaderMaterial({
     ...options,
-    defines: depthOnly ? { GSL_DEPTH_ONLY: 1 } : {},
+    defines,
     glslVersion: THREE.GLSL3,
     vertexShader: options.vertexShader ?? shaders.splatVertex,
     fragmentShader: options.fragmentShader ?? shaders.splatFragment,

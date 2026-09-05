@@ -148,14 +148,12 @@ const stochasticHash = N.Fn(([input]: TSLNode[]) => {
 
 function createSplatFragment({
   minAlpha,
-  encodeLinear,
   stochastic,
   stochasticResolve,
   depthOnly,
   premultipliedAlpha,
 }: {
   minAlpha: TSLNode;
-  encodeLinear: TSLNode;
   stochastic: TSLNode;
   stochasticResolve: TSLNode;
   depthOnly: boolean;
@@ -203,9 +201,6 @@ function createSplatFragment({
       randomValue.greaterThanEqual(rgba.a).discard();
     });
     if (depthOnly) return N.vec4(0);
-    N.If(encodeLinear, () => {
-      rgba.rgb.assign(rgba.rgb.pow(2.2));
-    });
     N.If(stochastic, () => {
       // NodeMaterial premultiplies its output when requested. Cancel the
       // alpha-2 marker here so the stored stochastic RGB remains straight.
@@ -279,7 +274,6 @@ export function createWebGPUSplatMaterial({
     fragmentNode,
   } = createSplatFragment({
     minAlpha,
-    encodeLinear,
     stochastic,
     stochasticResolve,
     depthOnly,
@@ -348,9 +342,6 @@ export function createWebGPUSplatMaterial({
           const lnScales = decodeLnScales(second);
           const scales = lnScales.exp().mul(renderToViewScale).toVar();
           N.If(N.all(scales.equal(N.vec3(0))).not(), () => {
-            const rgb = depthOnly
-              ? N.vec3(0)
-              : decodeRgba(second, alpha).rgb.max(0);
             const kernelShape = alphaShape.y.min(1).mul(4).add(1);
             const kernelPower = N.float(0).toVar();
             N.If(kernelShape.greaterThan(1), () => {
@@ -371,7 +362,7 @@ export function createWebGPUSplatMaterial({
               scales,
               viewQuaternion,
             );
-            const scaledRenderSize = renderSize.mul(focalAdjustment);
+            const scaledRenderSize = renderSize.mul(focalAdjustment).toVar();
             const focal = scaledRenderSize
               .mul(0.5)
               .mul(
@@ -467,6 +458,16 @@ export function createWebGPUSplatMaterial({
                       clipCenter.zw,
                     ),
                   );
+                  const rgb = depthOnly
+                    ? N.vec3(0)
+                    : decodeRgba(second, alpha).rgb.max(0).toVar();
+                  // RGB is constant across the quad; decode its color space once
+                  // per vertex rather than for every covered fragment.
+                  if (!depthOnly) {
+                    N.If(encodeLinear, () => {
+                      rgb.assign(rgb.pow(2.2));
+                    });
+                  }
                   vRgba.assign(N.vec4(rgb, alpha));
                   vSplatUv.assign(N.positionGeometry.xy.mul(supportRadius));
                   vSplatIndex.assign(splatIndex);
