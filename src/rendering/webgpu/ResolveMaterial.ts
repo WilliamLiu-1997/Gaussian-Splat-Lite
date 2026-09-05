@@ -2,7 +2,7 @@ import * as THREE from "three";
 import * as TSL from "three/tsl";
 import { NodeMaterial, type WebGPURenderer } from "three/webgpu";
 import type { ResolveState } from "../StochasticResolvePass";
-import type { TSLNode } from "./shaderUtils";
+import { type TSLNode, load2D } from "./shaderUtils";
 
 const N = TSL as Record<string, TSLNode>;
 
@@ -21,38 +21,16 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
     );
   });
 
-  const linearToPerceptual = (color: TSLNode) => color.max(0).pow(1 / 2.2);
-  const perceptualToLinear = (color: TSLNode) => color.max(0).pow(2.2);
-
   const physicalSource = (texel: TSLNode) =>
     N.vec4(texel.rgb, texel.a.clamp(0, 1));
 
-  const sourceToResolve = (texel: TSLNode) => {
+  const convertPremultiplied = (texel: TSLNode, gamma: number) => {
     const alpha = texel.a.clamp(0, 1);
-    const straight = N.select(
-      alpha.greaterThan(0),
-      texel.rgb.div(alpha),
-      N.vec3(0),
-    );
-    const resolved = straight.toVar();
-    N.If(perceptual, () => {
-      resolved.assign(linearToPerceptual(straight));
+    const color = N.select(alpha.greaterThan(0), texel.rgb, N.vec3(0)).toVar();
+    N.If(perceptual.and(alpha.greaterThan(0)), () => {
+      color.assign(color.div(alpha).max(0).pow(gamma).mul(alpha));
     });
-    return N.vec4(resolved.mul(alpha), alpha);
-  };
-
-  const resolveToWorking = (texel: TSLNode) => {
-    const alpha = texel.a.clamp(0, 1);
-    const resolved = N.select(
-      alpha.greaterThan(0),
-      texel.rgb.div(alpha),
-      N.vec3(0),
-    );
-    const workingColor = resolved.toVar();
-    N.If(perceptual, () => {
-      workingColor.assign(perceptualToLinear(resolved));
-    });
-    return N.vec4(workingColor.mul(alpha), alpha);
+    return N.vec4(color, alpha);
   };
 
   const view = N.Fn(({ camera }: { camera: THREE.Camera }) => {
@@ -69,7 +47,8 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
   const sourceCoord = N.ivec2(N.screenCoordinate.xy.sub(origin));
   const sourceRect = N.ivec4(view);
   const load = (coord: TSLNode) =>
-    source.load(
+    load2D(
+      source,
       sourceRect.xy.add(coord.clamp(N.ivec2(0), sourceRect.zw.sub(1))),
     );
   const fragmentNode = N.Fn(() => {
@@ -96,14 +75,14 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
           const sourceTexel = load(base.add(N.ivec2(x, y)));
           const splatSample = sourceTexel.a.greaterThan(1);
           const isSplat = N.select(splatSample, 1, 0);
-          const texel = sourceToResolve(sourceTexel);
+          const texel = convertPremultiplied(sourceTexel, 1 / 2.2);
           coverage.addAssign(weight.mul(isSplat));
           accumulated.addAssign(texel.mul(weight));
         }
       }
 
       N.If(coverage.greaterThan(0), () => {
-        result.assign(resolveToWorking(accumulated));
+        result.assign(convertPremultiplied(accumulated, 2.2));
       }).Else(copySource);
     }).Else(copySource);
 
@@ -128,7 +107,7 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
     () => state.sourceDepth.value,
   );
   // NodeMaterial includes this node only when depthTest/depthWrite are enabled.
-  material.depthNode = depth.load(sourceRect.xy.add(sourceCoord)).r;
+  material.depthNode = load2D(depth, sourceRect.xy.add(sourceCoord)).r;
   material.blending = THREE.NoBlending;
   material.depthTest = false;
   material.depthWrite = false;

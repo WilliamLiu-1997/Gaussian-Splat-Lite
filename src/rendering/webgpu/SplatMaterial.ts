@@ -398,7 +398,7 @@ export function createWebGPUSplatMaterial({
             const a = p0.dot(p0).add(preBlurAmount).toVar();
             const b = p0.dot(p1);
             const d = p1.dot(p1).add(preBlurAmount).toVar();
-            const detOrig = a.mul(d).sub(b.mul(b));
+            const detOrig = a.mul(d).sub(b.mul(b)).toVar();
             a.addAssign(blurAmount);
             d.addAssign(blurAmount);
             const det = a.mul(d).sub(b.mul(b));
