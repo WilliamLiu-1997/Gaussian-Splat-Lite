@@ -1,11 +1,46 @@
 # SplatMesh
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-`SplatMesh` extends `THREE.Object3D`, so it supports the standard `position`, `quaternion`, `scale`, `visible`, `layers`, and parent/child hierarchy APIs.
+`SplatMesh` is a `THREE.Object3D` with standard transforms, visibility, layers, and children.
 
 ```ts
 new SplatMesh(options?: SplatMeshOptions)
+```
+
+## Loading
+
+Use `url` for remote files. For a local PLY/SPZ file:
+
+```js
+const file = fileInput.files[0];
+const splat = new SplatMesh({
+  fileName: file.name,
+  stream: file.stream(),
+  streamLength: file.size,
+});
+scene.add(splat);
+await splat.initialized;
+```
+
+Files are decoded locally. For bytes, use `fileBytes: bytes` with `fileName` or `fileType`. A URL without a recognized extension also needs one of these format hints.
+
+To create Splats in code:
+
+```js
+const splat = new SplatMesh({
+  constructSplats: (data) => {
+    data.pushSplats([{
+      center: new THREE.Vector3(0, 0, 0),
+      scales: new THREE.Vector3(0.2, 0.1, 0.1),
+      quaternion: new THREE.Quaternion(),
+      opacity: 1,
+      color: new THREE.Color(0x4f8cff),
+    }]);
+  },
+});
+scene.add(splat);
+await splat.initialized;
 ```
 
 ## Options
@@ -29,7 +64,7 @@ new SplatMesh(options?: SplatMeshOptions)
 | `minRaycastOpacity` | `number` | `0.1` | Per-Splat kernel-alpha threshold; clips the raycast hit area at this opacity, including special-shape Splats |
 | `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before Splat generation for a frame |
 
-Choose at most one initialization input from `url`, `fileBytes`, `stream`, `splats`, and `constructSplats`; mixing them throws an error.
+Choose at most one of `url`, `fileBytes`, `stream`, `splats`, or `constructSplats`; mixing inputs throws.
 
 ## Common properties
 
@@ -64,11 +99,11 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-Each batch input contains `center`, `scales`, `quaternion`, `opacity`, and `color`, plus optional `sh` with 0, 3, 8, or 15 coefficients for SH0/1/2/3. `getBoundingBox()` can only be called after initialization. Batch mutation methods throw after the mesh has been disposed.
+Batch inputs contain `center`, `scales`, `quaternion`, `opacity`, `color`, and optional `sh` (0, 3, 8, or 15 coefficients for SH0/1/2/3). Bounds require initialization; mutation throws after disposal.
 
 ## Raycasting
 
-`SplatMesh` implements the Three.js `raycast()` protocol:
+Use the standard Three.js raycaster:
 
 ```js
 const raycaster = new THREE.Raycaster();
@@ -80,4 +115,20 @@ if (intersections.length > 0) {
 }
 ```
 
-Raycasting currently requires the built-in `Splats` source and `raycastable: true`. During the earliest stage of module startup, raycasting temporarily returns no intersections until the main-thread WebAssembly instance is ready.
+Requires the built-in `Splats` source and `raycastable: true`. Returns no hits until main-thread WebAssembly is ready.
+
+## Scene integration
+
+Use `onFrame` for animation:
+
+```js
+const splat = new SplatMesh({
+  url: "/assets/model.spz",
+  onFrame: ({ mesh, time }) => { mesh.rotation.y = time * 0.2; },
+});
+scene.add(splat);
+```
+
+For GIS/ECEF scenes, keep Splat centers local and put large offsets in the mesh transform. Rendering and sorting handle offsets in double precision; precision already lost in float32 source data cannot be recovered.
+
+For models using `+Y` down and `+Z` forward, use `splat.quaternion.set(1, 0, 0, 0)` to rotate 180° around X.

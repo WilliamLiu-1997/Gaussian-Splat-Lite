@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added native WebGPU rendering with TSL shaders and compute-based Splat accumulation into compact GPU storage. WebGL2 remains supported.
+- Added WebGPU rendering with TSL shaders and compute-based Splat accumulation into compact GPU storage. WebGL2 remains supported.
 - Added `synchronousSort` for same-frame GPU radix sorting on WebGPU or main-thread WASM sorting on WebGL. Asynchronous Worker/WASM sorting remains the default.
 - Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Depth draws reuse the existing sort order from near to far.
 - Added `StochasticResolvePass` for spatial noise reduction through EffectComposer, direct scene composition, or a custom render graph. Manual stochastic rendering and per-eye resolve are supported in WebGL/WebGPU XR; automatic stochastic switching remains disabled in XR.
@@ -18,6 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Simplified documentation into a README quick start and focused API references, consolidating duplicate guides and examples.
 - Changed the required Three.js dependency from the npm version range to the tested development snapshot `d2fc542d58f5c91fa7b585e6a3efb7ba67b295ca`, which the WebGPU compatibility code depends on.
 - Replaced the bundled Lion example with Multi Material Splats by hybridherbst, distributed as SPZ v4 with SH3 data and CC BY 4.0 attribution.
 - Limited the viewer to one GPU frame in flight, retaining pending redraws and processing camera input while the GPU is busy.

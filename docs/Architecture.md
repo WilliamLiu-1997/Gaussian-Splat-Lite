@@ -1,10 +1,8 @@
 # Source architecture
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-`src/index.ts` is the public package entry. Implementations are grouped by
-responsibility, with backend-specific rendering code under `webgl/` and
-`webgpu/`. The package exports and application imports remain the same.
+`src/index.ts` defines the public exports. Shared code is grouped by responsibility; graphics backends live under `rendering/`.
 
 | Directory | Responsibility |
 | --- | --- |
@@ -19,54 +17,30 @@ responsibility, with backend-specific rendering code under `webgl/` and
 
 ## Rendering boundaries
 
-`GaussianSplatRenderer` coordinates update requests, display/current accumulators,
-sorting transitions and stochastic state. It delegates material creation,
-ordering storage, pixel readback and PMREM creation to a backend selected once
-at construction. Backend-specific blend-space and XR output rules are also kept
-with those backends.
+| Owner | Responsibility |
+| --- | --- |
+| `GaussianSplatRenderer` | Updates, accumulator handoff, sorting, stochastic state, and companion depth |
+| `SplatAccumulator` | Scene mappings, versions, camera-relative data, and generation |
+| `StochasticResolvePass` | Scene composition, XR eye atlas, and renderer-state restoration |
+| WebGL backend | GLSL materials, ordering textures, array-target generation, readback, and PMREM |
+| WebGPU backend | TSL materials, compute generation, ordering buffers, GPU sorting, readback, and PMREM |
 
-The WebGL backend owns its ordering texture and partial row uploads. The WebGPU
-backend owns its storage-buffer binding, sorter and precompilation lifetime.
-The worker/WASM sorting path stays shared: WebGPU can use it too. GPU ordering
-buffers remain owned by the sorter during a handoff to worker results, and sorter
-disposal still waits for outstanding compilation.
+The backend is selected at construction. Worker/WASM sorting is shared and remains the default on both backends.
 
-`SplatAccumulator` owns scene mappings, version checks and camera-relative data.
-WebGL generation draws into array render targets; WebGPU generation dispatches a
-fixed compute graph into storage textures. GPU buffer/texture resizing preserves
-the existing compute nodes.
+Resource rules:
 
-`StochasticResolvePass` owns the scene-to-resolve flow, reusable XR eye atlas and
-renderer-state restoration. Its GLSL and TSL materials live in their respective
-backend directories. XR auto stochastic stays disabled; manual stochastic and
-per-eye resolve use the existing behavior.
+- Keep ordering buffers owned by the GPU sorter during handoff to worker results.
+- Wait for outstanding GPU compilation before disposing the sorter.
+- Preserve WebGPU compute nodes when resizing buffers and textures.
+- Keep backend-specific color and XR output handling with each backend.
 
-Shared render modules sit together in `rendering/`; only concrete backend code
-goes into `webgl/` or `webgpu/`. Common uniform defaults do not import backend
-implementations, and the GPU sorter reads texture defaults directly from the
-data module. Renderer options and resolve-state types live beside their owners;
-TSL-specific types stay inside `webgpu/`.
-
-WebGPU shader code is split into Splat drawing (`SplatMaterial.ts`), accumulator
-generation (`GenerateProgram.ts`), resolve (`ResolveMaterial.ts`) and shared TSL
-helpers (`shaderUtils.ts`). WebGL GLSL sources live under `webgl/shaders/`.
+WebGPU shaders are split into `SplatMaterial.ts` (drawing), `GenerateProgram.ts` (generation), `ResolveMaterial.ts` (resolve), and `shaderUtils.ts` (helpers). WebGL shaders live under `webgl/shaders/`.
 
 ## Imports and extensions
 
-Applications continue importing from `gaussian-splat-lite`. The existing `utils`
-and `defines` namespaces are preserved. Internal modules import helpers directly
-from the directory that owns them; `utils/index.ts` is only the public compatibility
-surface. Source-file paths are internal and are not additional package exports.
-
-Keep backend resource management in the corresponding backend directory and
-cross-backend state transitions in shared orchestration. Scene updates, sorting
-handoffs and stochastic transitions share one implementation.
-
-Keep small helpers with their owning module: worker reuse and idle policy live
-with the worker pool. Numeric packing and matrix transforms each have one utility
-module. Pure numeric Splat codecs stay separate from Three.js object unpacking
-so decode workers do not need scene-object dependencies.
-
-The Rust workspace, example viewer and build scripts retain their existing
-directories. Worker entry points, inline-worker imports and declaration output
-follow the new source paths.
+- Applications import from `gaussian-splat-lite`, including `utils` and `defines`. Source paths are internal.
+- Internal modules import helpers from their owner; `utils/index.ts` is the public entry only.
+- Keep scene updates, sorting handoffs, and stochastic transitions in shared rendering code.
+- Keep options, types, and small helpers beside their owner. TSL types belong in `webgpu/`.
+- Shared uniform defaults must not import backends. The GPU sorter reads texture defaults from `data/`.
+- Separate numeric codecs from Three.js object unpacking so decode workers avoid scene dependencies.

@@ -1,26 +1,82 @@
 # GaussianSplatRenderer
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
+
+Generates, sorts, and renders all visible `SplatMesh` objects in a scene.
 
 ```ts
 new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 ```
 
-Stored Splat colors are decoded from sRGB before blending into linear render
-targets. WebGPU performs this decode into `THREE.ColorManagement.workingColorSpace`
-and lets the renderer apply its normal working-to-output conversion. WebGL keeps
-the established behavior of decoding only for linear and offscreen targets.
-
 ## Basic options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | A WebGL renderer or an initialized renderer from `three/webgpu` using its native WebGPU backend |
+| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | WebGL2 renderer or initialized WebGPU renderer; the WebGPU renderer's WebGL fallback is unsupported |
 | `onDirty` | `() => void` | `undefined` | Called when loading, generation, or sorting requires another render |
 | `premultipliedAlpha` | `boolean` | `true` | Uses premultiplied alpha while accumulating Splat RGB |
-| `timer` | `THREE.Timer` | New internal timer | Shares time with another animation system; caller owns and updates a supplied timer |
-| `autoUpdate` | `boolean` | `true` | Automatically checks the Splat collection each frame |
+| `timer` | `THREE.Timer` | New internal timer | Caller owns and updates a supplied timer |
+| `autoUpdate` | `boolean` | `true` | Checks the Splat collection once per render call |
 | `preUpdate` | `boolean` | `true` | Updates before drawing; WebXR automatic updates run after the active render pass |
+
+## Rendering options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `autoStochastic` | `boolean` | `false` | Uses stochastic rendering during motion until a fresh sort is ready; enables companion depth on sorted frames |
+| `stochastic` | `boolean` | `false` | Forces sorting-free stochastic rendering |
+| `renderDepth` | `boolean` | `false` | Adds companion depth on non-stochastic frames when `depthWrite` is false |
+
+All three options require built-in shaders. Automatic switching also requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; capture methods stay sorted.
+
+With default depth settings, the draw order is opaque meshes, sorted Splat color, companion depth, then later geometry. Stochastic frames write depth directly. Companion depth samples alpha coverage near to far; transparent edges may show noise.
+
+Occlusion depends on draw order and depth testing in later materials. Depth clears or target changes can affect it. `renderDepth` writes scene depth, not a depth image or array.
+
+### Stochastic resolve
+
+For WebGL or WebGPU, compose the scene with spatial noise reduction:
+
+```js
+import { StochasticResolvePass } from "gaussian-splat-lite";
+
+splatRenderer.autoStochastic = true;
+const resolvePass = new StochasticResolvePass(splatRenderer);
+renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
+```
+
+With a WebGL `EffectComposer` (non-XR), add the pass after scene rendering:
+
+```js
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(resolvePass);
+composer.addPass(new OutputPass());
+renderer.setAnimationLoop(() => composer.render());
+```
+
+For a custom render graph:
+
+```js
+resolvePass.resolve(renderer, inputTarget, outputTarget);
+```
+
+Use half-float or float input after the complete scene render. The pass is enabled by default; call `dispose()` when finished.
+
+### WebXR
+
+Use the same `compose()` loop with manual stochastic rendering:
+
+```js
+splatRenderer.autoStochastic = false;
+splatRenderer.stochastic = true;
+```
+
+`compose()` handles eye targets, color conversion, and depth copying. Disabling resolve keeps raw stochastic rendering. Disabling manual stochastic waits for a sorted replacement when `autoUpdate` is enabled.
+
+Custom XR graphs must restore the XR output target before calling `resolve(renderer, input, null)`. Pack eyes horizontally without gaps in `renderer.xr.getCamera().cameras` order, all at y = 0. Input width is the sum of eye widths; height is their maximum. Use eye-local viewports and include a `DepthTexture` to copy depth when the XR output has a depth buffer.
 
 ## Quality and appearance options
 
@@ -34,75 +90,6 @@ the established behavior of decoding only for linear and offscreen targets.
 | `blurAmount` | `number` | `0.3` | Anti-aliasing blur amount with opacity correction |
 | `clipXY` | `number` | `1.25` | Center-clipping factor relative to the X/Y frustum boundary; `1` clips immediately outside it |
 | `focalAdjustment` | `number` | `2` | Projected Splat-size adjustment; larger values generally look sharper |
-
-## Rendering options
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `autoStochastic` | `boolean` | `false` | Uses stochastic rendering during camera motion, then returns to sorted rendering |
-| `stochastic` | `boolean` | `false` | Forces sorting-free stochastic rendering |
-| `renderDepth` | `boolean` | `false` | Forces the depth-only companion draw |
-
-Enable `autoStochastic` to use stochastic rendering while the camera moves and
-until a fresh sort is ready:
-
-```js
-const splatRenderer = new GaussianSplatRenderer({
-  renderer,
-  autoStochastic: true,
-  onDirty: requestRender, // Required for on-demand rendering.
-});
-scene.add(splatRenderer);
-```
-
-- `stochastic: true` forces the stochastic path.
-- `renderDepth: true` forces the companion depth draw; `autoStochastic` enables it automatically.
-- The companion draw reuses the existing sort order from near to far with a dedicated depth shader, preserving full-resolution stochastic coverage at transparent edges.
-- All three options require built-in shaders; `autoStochastic` also requires `autoUpdate` and remains disabled in WebXR. Manual `stochastic` works in WebXR; capture methods stay sorted.
-
-### Stochastic resolve
-
-With `EffectComposer`:
-
-```js
-const resolvePass = new StochasticResolvePass(splatRenderer);
-
-composer.addPass(new RenderPass(scene, camera));
-composer.addPass(resolvePass);
-composer.addPass(new OutputPass());
-```
-
-Other integrations:
-
-```js
-resolvePass.compose(renderer, scene, camera); // No composer.
-resolvePass.resolve(renderer, inputTarget, outputTarget); // Custom render graph.
-```
-
-Place the pass after the complete scene render and use a half-float or float
-input. The pass is enabled by default; call `dispose()` when finished.
-
-For WebGL or native WebGPU XR, use `compose()` in the XR animation loop:
-
-```js
-splatRenderer.stochastic = true; // Manual mode; autoStochastic stays off in XR.
-const resolvePass = new StochasticResolvePass(splatRenderer);
-renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
-```
-
-The pass reuses a half-float target containing the eyes side by side, resolves
-each eye independently into its XR viewport or texture layer, and copies sample
-depth when the XR output has a depth buffer. Color and alpha are converted before
-submission. Switching the pass off retains raw stochastic rendering; switching
-manual stochastic off waits for a sorted replacement when `autoUpdate` is enabled.
-
-For an explicit XR render graph, restore the XR output target before calling
-`resolve(renderer, input, null)`. It accepts the same layout: eye order from
-`renderer.xr.getCamera().cameras`, packed horizontally
-without gaps, with each eye at y = 0. Input width is the sum of eye viewport widths;
-height is their maximum height. Render with eye-local viewport coordinates and
-include a `DepthTexture` to copy depth. `compose()` handles this setup automatically.
-The EffectComposer example above is for non-XR rendering.
 
 ## Sorting, material, and offscreen options
 
@@ -119,15 +106,7 @@ The EffectComposer example above is for non-XR rendering.
 | `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGL; custom GLSL is rejected by WebGPU |
 | `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
 
-Switching `synchronousSort` off keeps the current GPU ordering visible until the
-worker supplies its replacement. The sorter retains ownership of its GPU buffers
-so switching back does not require rebuilding its compute nodes.
-
-Automatic updates run once per renderer render call, including multiple calls
-within the same animation frame. Disposing a renderer during GPU precompilation
-releases the sorter after compilation finishes.
-
-The `target` structure is:
+Worker/WASM sorting is the default on both backends. Switching `synchronousSort` off keeps the current order visible until the worker result is ready.
 
 ```ts
 type TargetOptions = {
@@ -138,16 +117,33 @@ type TargetOptions = {
 } & THREE.RenderTargetOptions;
 ```
 
-`superXY` renders at a higher resolution and performs simple CPU averaging when `readTarget()` is called. Both `width * superXY` and `height * superXY` must be no greater than 8192.
+`superXY` renders at higher resolution; `readTarget()` averages pixels on the CPU. Each target dimension multiplied by `superXY` must be at most 8192.
+
+```js
+const captureRenderer = new GaussianSplatRenderer({
+  renderer,
+  target: { width: 1920, height: 1080, superXY: 2 },
+});
+scene.add(captureRenderer);
+await captureRenderer.update({ scene, camera });
+const rgba = await captureRenderer.renderReadTarget({ scene, camera });
+// RGBA Uint8Array: 1920 * 1080 * 4 bytes.
+```
+
+If a display renderer shares the scene, use `layers` or `visible` to keep both Splat renderers from drawing in the same pass.
+
+### Color management
+
+WebGPU decodes stored sRGB colors into `THREE.ColorManagement.workingColorSpace`, then uses the renderer's output conversion. WebGL decodes sRGB only for linear and offscreen targets.
 
 ## Common properties and methods
 
 | API | Description |
 | --- | --- |
 | `update({ scene, camera })` | Manually generates and sorts Splats; returns `Promise<void>` |
-| `shrinkResources({ scene, camera })` | Synchronizes the scene like an explicit update, releases cached readback buffers, and shrinks renderer-owned accumulator, ordering, and sort-worker resources to their current allocation tiers; the previous display remains active until its replacement is ready |
+| `shrinkResources({ scene, camera })` | Updates the scene, clears cached readbacks, and shrinks renderer GPU/worker allocations; the current display stays active until its replacement is ready |
 | `clearSplats()` | Clears the current display buffer without removing scene objects |
-| `render(scene, camera)` | Performs one Three.js render using this instance as the active Splat renderer; ordinary applications can call the underlying renderer directly |
+| `render(scene, camera)` | Renders with this instance active; normally use the Three.js renderer directly |
 | `renderTarget({ scene, camera })` | Renders to the target configured in the constructor |
 | `readTarget()` | Reads the latest offscreen result as an RGBA `Uint8Array` |
 | `renderReadTarget({ scene, camera })` | Renders and reads an offscreen result |
@@ -156,18 +152,22 @@ type TargetOptions = {
 | `renderEnvMap(...)` | Renders and PMREM-prefilters an environment map |
 | `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
 | `dispose()` | Releases materials, geometry, textures, targets, and the sorting worker |
-| `premultipliedAlpha` | A read/write property that controls premultiplied Splat RGB output |
-| `transparent` | Controls sorted Splat blending; stochastic-enabled Splats stay at the end of the opaque list so per-frame state changes are deterministic |
-| `depthTest` | A read/write property that controls whether Splats are tested against the depth buffer |
-| `depthWrite` | A read/write property that controls whether Splats write to the depth buffer |
-| `synchronousSort` | Switches between the default double-accumulator Worker pipeline and same-frame sorting with one accumulator; WebGPU sorts on the GPU |
-| `autoStochastic` | Enables stochastic rendering during camera movement; defaults to `false` |
-| `stochastic` | Forces sorting-free stochastic rendering; defaults to `false` |
 | `stochasticActive` | Read-only flag indicating that the current frame is using the stochastic path |
-| `renderDepth` | Forces the depth-only companion draw; defaults to `false` |
 | `depthMesh` | Lazily created depth-only companion mesh |
 
-For an on-demand render loop, connect `onDirty` to the application's render scheduler:
+`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `synchronousSort`, `autoStochastic`, `stochastic`, and `renderDepth` are also writable properties with the behavior listed above.
+
+For manual updates after scene or camera changes:
+
+```js
+splatRenderer.autoUpdate = false;
+await splatRenderer.update({ scene, camera });
+renderer.render(scene, camera);
+```
+
+## On-demand rendering
+
+Connect `onDirty` and camera controls to the same render scheduler:
 
 ```js
 let needsRender = true;

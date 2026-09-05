@@ -1,6 +1,6 @@
 # SplatLoader
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
 `SplatLoader` follows the Three.js `Loader` API style. It first returns decoded `Splats`; `parse()` then wraps that source in a `SplatMesh`.
 

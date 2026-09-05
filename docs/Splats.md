@@ -1,32 +1,25 @@
 # Splats
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-`Splats` is the built-in mutable source. In addition to file input, it provides decoded reads and aligned batch mutation:
+`Splats` stores mutable Splat data. Wait for initialization before reading or editing:
 
 ```js
+await splat.initialized;
 const data = splat.splats;
 const item = data.getSplat(0);
-const itemWithoutSh = data.getSplat(0, false);
 
 data.setSplats([0], [{
   ...item,
   scales: item.scales.multiplyScalar(1.1),
 }]);
-
-data.pushSplats([{
-  center,
-  scales,
-  quaternion,
-  opacity,
-  color,
-  sh, // Optional: 0, 3, 8, or 15 THREE.Color coefficients for SH0/1/2/3.
-}]);
+data.pushSplats([item]);
 data.removeSplats([0, 2]);
-data.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 ```
 
-The constructor and `initialize()` accept the same `SplatsOptions`:
+## Options
+
+The constructor and `initialize()` accept `SplatsOptions`:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -41,11 +34,11 @@ The constructor and `initialize()` accept the same `SplatsOptions`:
 | `construct` | `(splats) => void \| Promise<void>` | `undefined` | Populates the source during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |
 
-Choose at most one initialization input from `url`, `fileBytes`, `stream`, and `construct`; mixing them throws an error. Code-generated data should be added through `setSplats()` or `pushSplats()` so encoded records, spherical harmonics, and sort centers remain synchronized.
+Choose at most one of `url`, `fileBytes`, `stream`, or `construct`; mixing inputs throws.
 
-`initialize()` returns the same promise exposed as `initialized`. File loading and `construct` callbacks run against staged data; if another `initialize()` call supersedes them, their completed state is discarded instead of replacing the newer data.
+`initialize()` returns `initialized`. A newer initialization supersedes earlier loading or construction results.
 
-The main methods are:
+## Methods
 
 | API | Description |
 | --- | --- |
@@ -61,4 +54,9 @@ The main methods are:
 | `initialize(options)` | Initializes or replaces data from a file, stream, or construction callback |
 | `dispose()` | Releases textures and data references |
 
-Decoded files provide sort centers directly, avoiding a main-thread center-extraction pass before their first sort. The encoded, sort-center, and SH array properties are private; use `getSplat()`, `forEachCenter()`, and `forEachSplat()` for application reads, and `setSplats()`, `pushSplats()`, and `removeSplats()` for mutation. `copySplatRecords()`, `copySortCenters()`, and `setTextureUniforms()` are low-level renderer integration methods; texture data assigned by `setTextureUniforms()` aliases source storage and must be treated as read-only. `setSplats()` requires equally sized index and Splat arrays. Removal indices may be unordered; duplicates are removed once. Every input Splat may omit `sh` for SH0 or provide exactly 3, 8, or 15 RGB coefficients for SH1, SH2, or SH3. Overwriting with a lower degree clears stale higher-degree coefficients for those records.
+## Data rules
+
+- Use the read and batch-mutation methods above; encoded arrays are private. Mutation keeps data, SH, and sort centers synchronized.
+- Each input has `center`, `scales`, `quaternion`, `opacity`, and `color`. Optional `sh` holds 0, 3, 8, or 15 RGB coefficients for SH0/1/2/3. Lower-degree overwrites clear stale coefficients.
+- `setSplats()` requires equally sized index and Splat arrays. Removal indices may be unordered; duplicates are removed once.
+- `copySplatRecords()`, `copySortCenters()`, and `setTextureUniforms()` are low-level renderer methods. Texture data from `setTextureUniforms()` aliases source storage and is read-only.

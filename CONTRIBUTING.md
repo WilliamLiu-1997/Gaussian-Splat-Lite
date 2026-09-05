@@ -1,65 +1,52 @@
 # Contributing
 
-Thanks for contributing to `gaussian-splat-lite`.
-
 ## Development setup
 
-Building the WebAssembly module requires Node.js 20.9 or newer, a Rust
-toolchain installed through `rustup`, and the `wasm32-unknown-unknown` target.
+Requires Node.js 20.9+, Rust via `rustup`, and the `wasm32-unknown-unknown` target.
 
 ```bash
 npm ci
 npm run build:wasm
+npm run dev
 ```
 
-Start the local viewer with `npm run dev`.
+Check both WebGL and WebGPU in the viewer. For depth changes, compare mesh occlusion and transparent edges; disable **Automatic stochastic** to expose **Force Splat depth**.
 
-See [Source architecture](docs/Architecture.md) for directory responsibilities
-and the boundary between shared rendering flow and WebGL/WebGPU implementations.
+See [Source architecture](docs/Architecture.md) for module responsibilities and backend boundaries.
 
 ## Validation
 
-Run the complete release check before opening a pull request:
+Before opening a pull request:
 
 ```bash
 npm run release:check
 ```
 
-This builds the WebAssembly module and example site, type-checks and lints the
-source, runs the tests, builds the package, and verifies the npm tarball.
+Builds WASM, the viewer, and the package; runs type checks, lint, tests, and npm package validation.
 
-When dependency updates introduce or change install scripts, review them and
-update the pinned `allowScripts` entries with `npm approve-scripts`.
+Review new or changed dependency install scripts and update `allowScripts` with `npm approve-scripts`.
 
 ## Pull requests
 
 - Keep changes focused on one problem.
-- Update the README and API docs when public behavior changes.
+- Update the relevant API docs when behavior changes; keep the README focused on setup and capabilities.
 - Add or update tests for behavior that can be exercised without WebGL.
-- Include a minimal reproduction and captures for rendering changes when
-  possible.
+- Include a minimal reproduction and captures for rendering changes where possible.
 - Add user-visible changes to the `Unreleased` section of `CHANGELOG.md`.
-- Do not commit generated `dist/`, `site-dist/`, Rust `target/`, or wasm-pack
-  `pkg/` directories.
+- Do not commit generated `dist/`, `site-dist/`, Rust `target/`, or wasm-pack `pkg/` directories.
 
 ## Maintainer releases
 
-The npm package is published by `.github/workflows/publish.yml` when a matching
-`v*` tag is pushed. The workflow rejects tags that do not match the version in
-`package.json`, skips versions already present on npm, and creates the GitHub
-release from `CHANGELOG.md`.
+Pushing a `v*` tag runs `.github/workflows/publish.yml`. It requires a matching `package.json` version, skips existing npm versions, and creates the GitHub release from `CHANGELOG.md`.
 
-Before the first automated release, make the GitHub repository public, then
-publish the package once from a maintainer account so that its npm settings
-exist:
+Before the first automated release, make the repository public and publish once from a maintainer account:
 
 ```bash
 npm run release:check
 npm publish --access public
 ```
 
-Then, using a current npm CLI, configure GitHub Actions as the trusted publisher
-for future releases:
+Configure GitHub Actions as the trusted publisher with a current npm CLI:
 
 ```bash
 npm trust github gaussian-splat-lite \
@@ -68,15 +55,10 @@ npm trust github gaussian-splat-lite \
   --allow-publish
 ```
 
-The same setting is available under the package's npm **Settings → Trusted
-Publisher** page. The workflow uses short-lived OIDC credentials, so no
-`NPM_TOKEN` repository secret is required after this setup.
+Alternatively, use npm **Settings → Trusted Publisher**. The workflow uses OIDC; no `NPM_TOKEN` secret is needed.
 
 For each release:
 
-1. Move the relevant changelog entries from `Unreleased` into a dated version
-   section.
-2. Update `package.json` and `package-lock.json` with
-   `npm version <version> --no-git-tag-version`.
-3. Run `npm run release:check`, commit the release changes, then create and push
-   `v<version>`.
+1. Move `Unreleased` entries into a dated version section.
+2. Run `npm version <version> --no-git-tag-version` to update both package files.
+3. Run `npm run release:check`, commit, then create and push `v<version>`.

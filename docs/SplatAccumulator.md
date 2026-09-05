@@ -1,8 +1,8 @@
 # SplatAccumulator
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-`SplatAccumulator` is the low-level GPU generation buffer used by `GaussianSplatRenderer` to combine visible `SplatMesh` objects into renderable texture arrays. Applications normally should not construct or update it directly.
+Low-level GPU storage for combining visible Splat meshes. Applications normally use `GaussianSplatRenderer.update()` instead.
 
 ## Constructor
 
@@ -33,5 +33,3 @@ new SplatAccumulator()
 | `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collects visible meshes, runs frame updates, compares versions, and returns a deferred generation plan |
 | `checkVersions(mapping)` | Reports generated-data, mapping, and sorting changes relative to another mapping |
 | `dispose()` | Releases accumulator GPU storage and drops retained mesh mappings |
-
-`prepareGenerate()`, `generate()`, and version management are renderer plumbing. Use `GaussianSplatRenderer.update()` for normal manual updates.
