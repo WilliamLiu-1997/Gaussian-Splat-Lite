@@ -23,6 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Use per-eye camera-relative transforms for WebGPU XR and per-eye viewport sizes for WebGL/WebGPU XR.
 - Preserve the displayed GPU ordering until the first asynchronous worker result is ready, without transferring or overwriting the sorter's allocation buffers.
 - Update WebGPU Splats for each render call, including multiple renders within one animation frame.
 - Defer sorter disposal until outstanding GPU precompilation finishes and cancel pending deferred renderer updates on disposal.

@@ -31,6 +31,71 @@ function uniformBinding(uniforms: Uniforms, name: string, type?: string) {
   );
 }
 
+function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
+  const arrayCamera = camera as THREE.ArrayCamera;
+  if (!arrayCamera.isArrayCamera || arrayCamera.cameras.length === 0) {
+    return {
+      renderSize: uniformBinding(uniforms, "renderSize", "vec2"),
+      renderToViewQuat: uniformBinding(uniforms, "renderToViewQuat", "vec4"),
+      renderToViewPos: uniformBinding(uniforms, "renderToViewPos", "vec3"),
+      renderToViewScale: uniformBinding(uniforms, "renderToViewScale", "float"),
+      near: uniformBinding(uniforms, "near", "float"),
+      far: uniformBinding(uniforms, "far", "float"),
+    };
+  }
+
+  // ArrayCamera draws do not call onBeforeRender separately for each eye.
+  // Pack rotation, position/scale and viewport/clipping into three vec4s per eye.
+  const views = arrayCamera.cameras.flatMap(() => [
+    new THREE.Vector4(),
+    new THREE.Vector4(),
+    new THREE.Vector4(),
+  ]);
+  const matrix = new THREE.Matrix4();
+  const position = new THREE.Vector3();
+  const rotation = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  const viewData = N.uniformArray(views, "vec4").onObjectUpdate(
+    ({ camera }: { camera: THREE.ArrayCamera }) => {
+      camera.cameras.forEach((eye, i) => {
+        // Subtract the world origin in CPU double precision before GPU upload.
+        matrix.makeTranslation(uniforms.renderOrigin.value);
+        matrix.premultiply(eye.matrixWorldInverse);
+        matrix.decompose(position, rotation, scale);
+        views[i * 3].set(rotation.x, rotation.y, rotation.z, rotation.w);
+        views[i * 3 + 1].set(
+          position.x,
+          position.y,
+          position.z,
+          (scale.x + scale.y + scale.z) / 3,
+        );
+        const size = uniforms.renderSize.value;
+        views[i * 3 + 2].set(
+          eye.viewport?.z ?? size.x,
+          eye.viewport?.w ?? size.y,
+          eye.near,
+          eye.far,
+        );
+      });
+    },
+  );
+  const index = (camera as THREE.ArrayCamera & { isMultiViewCamera?: boolean })
+    .isMultiViewCamera
+    ? N.builtin("gl_ViewID_OVR")
+    : N.cameraIndex;
+  const offset = index.mul(3);
+  const positionScale = viewData.element(offset.add(1));
+  const viewportClip = viewData.element(offset.add(2));
+  return {
+    renderSize: viewportClip.xy,
+    renderToViewQuat: viewData.element(offset),
+    renderToViewPos: positionScale.xyz,
+    renderToViewScale: positionScale.w,
+    near: viewportClip.z,
+    far: viewportClip.w,
+  };
+}
+
 function textureBinding(uniforms: Uniforms, name: string, array = false) {
   const data = new Uint32Array(4);
   const placeholder = array
@@ -375,16 +440,6 @@ export function createWebGPUSplatMaterial({
   const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
   const splats2 = textureBinding(uniforms, "splats2", true);
-  const renderSize = uniformBinding(uniforms, "renderSize", "vec2");
-  const renderToViewQuat = uniformBinding(uniforms, "renderToViewQuat", "vec4");
-  const renderToViewPos = uniformBinding(uniforms, "renderToViewPos", "vec3");
-  const renderToViewScale = uniformBinding(
-    uniforms,
-    "renderToViewScale",
-    "float",
-  );
-  const near = uniformBinding(uniforms, "near", "float");
-  const far = uniformBinding(uniforms, "far", "float");
   const maxStdDev = uniformBinding(uniforms, "maxStdDev", "float");
   const minPixelRadius = uniformBinding(uniforms, "minPixelRadius", "float");
   const maxPixelRadius = uniformBinding(uniforms, "maxPixelRadius", "float");
@@ -422,7 +477,15 @@ export function createWebGPUSplatMaterial({
     premultipliedAlpha: premultipliedAlphaNode,
   });
 
-  const vertexNode = N.Fn(() => {
+  const vertexNode = N.Fn(({ camera }: { camera: THREE.Camera }) => {
+    const {
+      renderSize,
+      renderToViewQuat,
+      renderToViewPos,
+      renderToViewScale,
+      near,
+      far,
+    } = splatViewUniforms(uniforms, camera);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
     vSplatUv.assign(N.vec2(0));

@@ -556,6 +556,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // numSplats: { value: 0 },
       // Size of render viewport in pixels
       renderSize: { value: new THREE.Vector2() },
+      renderOrigin: { value: new THREE.Vector3() },
       // Near and far plane distances
       near: { value: 0.1 },
       far: { value: 1000.0 },
@@ -958,24 +959,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         currentRenderTarget.width,
         currentRenderTarget.height,
       );
-
-      // WebXR mode on Apple Vision Pro returns 1x1 when presenting.
-      // Use a different means to figure out the render size.
-      if (
-        xrRenderTarget &&
-        gaussianSplatRenderer.renderSize.x === 1 &&
-        gaussianSplatRenderer.renderSize.y === 1
-      ) {
-        const baseLayer = renderer.xr.getSession()?.renderState.baseLayer;
-        if (baseLayer) {
-          gaussianSplatRenderer.renderSize.x = baseLayer.framebufferWidth;
-          gaussianSplatRenderer.renderSize.y = baseLayer.framebufferHeight;
-        }
-      }
     } else {
       renderer.getDrawingBufferSize(gaussianSplatRenderer.renderSize);
     }
-    this.uniforms.renderSize.value.copy(gaussianSplatRenderer.renderSize);
 
     let useCamera = camera;
     if (renderer.xr.isPresenting) {
@@ -983,7 +969,15 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // Keep the per-eye camera parented to the XR rig so its world transform
       // includes any scale applied to that rig.
       useCamera = xrCamera.cameras[0] ?? xrCamera;
+      const viewport =
+        (camera as THREE.PerspectiveCamera).viewport ??
+        (useCamera as THREE.PerspectiveCamera).viewport;
+      if (viewport) {
+        // WebGPU selects each eye's size in the shader; updates use the first.
+        gaussianSplatRenderer.renderSize.set(viewport.z, viewport.w);
+      }
     }
+    this.uniforms.renderSize.value.copy(gaussianSplatRenderer.renderSize);
 
     if (isNewFrame) {
       gaussianSplatRenderer.prepareStochasticFrame(useCamera, renderer);
@@ -1021,6 +1015,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.far.value = typedCamera.far;
 
     const display = gaussianSplatRenderer.display;
+    this.uniforms.renderOrigin.value.copy(display.viewOrigin);
     const geometry = this.geometry as SplatGeometry;
     geometry.instanceCount = gaussianSplatRenderer.stochasticFrame
       ? display.numSplats
