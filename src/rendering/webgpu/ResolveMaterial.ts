@@ -6,6 +6,25 @@ import { type TSLNode, load2D } from "./shaderUtils";
 
 const N = TSL as Record<string, TSLNode>;
 
+// A layout emits one reusable shader function for all 16 taps and the final
+// conversion. Keep its inputs explicit instead of capturing material uniforms.
+const convertPremultiplied = N.Fn(([texel, gamma, perceptual]: TSLNode[]) => {
+  const alpha = texel.a.clamp(0, 1);
+  const color = N.select(alpha.greaterThan(0), texel.rgb, N.vec3(0)).toVar();
+  N.If(perceptual.and(alpha.greaterThan(0)), () => {
+    color.assign(color.div(alpha).max(0).pow(gamma).mul(alpha));
+  });
+  return N.vec4(color, alpha);
+}).setLayout({
+  name: "gslConvertPremultiplied",
+  type: "vec4",
+  inputs: [
+    { name: "texel", type: "vec4" },
+    { name: "gamma", type: "float" },
+    { name: "perceptual", type: "bool" },
+  ],
+});
+
 export function createWebGPUResolveMaterial(state: ResolveState) {
   const source = N.textureLoad(state.sourceTexture.value).onObjectUpdate(
     () => state.sourceTexture.value,
@@ -23,15 +42,6 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
 
   const physicalSource = (texel: TSLNode) =>
     N.vec4(texel.rgb, texel.a.clamp(0, 1));
-
-  const convertPremultiplied = (texel: TSLNode, gamma: number) => {
-    const alpha = texel.a.clamp(0, 1);
-    const color = N.select(alpha.greaterThan(0), texel.rgb, N.vec3(0)).toVar();
-    N.If(perceptual.and(alpha.greaterThan(0)), () => {
-      color.assign(color.div(alpha).max(0).pow(gamma).mul(alpha));
-    });
-    return N.vec4(color, alpha);
-  };
 
   const view = N.Fn(({ camera }: { camera: THREE.Camera }) => {
     if ((camera as THREE.ArrayCamera).isArrayCamera) {
@@ -64,7 +74,7 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
       const base = N.ivec2(quad).mul(2);
       const nearWeights = N.vec2(1).sub(fraction).mul(0.5);
       const farWeights = fraction.mul(0.5);
-      const coverage = N.float(0).toVar();
+      const hasSplat = N.bool(false).toVar();
       const accumulated = N.vec4(0).toVar();
 
       for (let y = 0; y < 4; y += 1) {
@@ -73,23 +83,23 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
           const weightX = x < 2 ? nearWeights.x : farWeights.x;
           const weight = weightX.mul(weightY);
           const sourceTexel = load(base.add(N.ivec2(x, y)));
-          const splatSample = sourceTexel.a.greaterThan(1);
-          const isSplat = N.select(splatSample, 1, 0);
-          const texel = convertPremultiplied(sourceTexel, 1 / 2.2);
-          coverage.addAssign(weight.mul(isSplat));
+          const texel = convertPremultiplied(sourceTexel, 1 / 2.2, perceptual);
+          // Integer pixel coordinates give fractions of 1/4 or 3/4, so
+          // every tap has positive weight; only marker presence matters.
+          hasSplat.assign(hasSplat.or(sourceTexel.a.greaterThan(1)));
           accumulated.addAssign(texel.mul(weight));
         }
       }
 
-      N.If(coverage.greaterThan(0), () => {
-        result.assign(convertPremultiplied(accumulated, 2.2));
+      N.If(hasSplat, () => {
+        result.assign(convertPremultiplied(accumulated, 2.2, perceptual));
       }).Else(copySource);
     }).Else(copySource);
 
     const alpha = result.a.clamp(0, 1);
     const straight = N.select(
       alpha.greaterThan(0),
-      result.rgb.div(alpha),
+      result.rgb.div(N.select(alpha.greaterThan(0), alpha, 1)),
       N.vec3(0),
     );
     return N.vec4(straight, alpha);

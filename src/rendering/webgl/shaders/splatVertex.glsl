@@ -179,16 +179,17 @@ void main() {
     a += preBlurAmount;
     d += preBlurAmount;
 
-    // Do convolution with a 0.5-pixel Gaussian for anti-aliasing: sqrt(0.3) ~= 0.5
     float detOrig = a * d - b * b;
+    // Do convolution with a 0.5-pixel Gaussian for anti-aliasing: sqrt(0.3) ~= 0.5
     a += blurAmount;
     d += blurAmount;
     float det = a * d - b * b;
+    if (det <= 0.0) return;
 
     // Compute anti-aliasing intensity scaling factor
     float blurAdjust = sqrt(max(0.0, detOrig / det));
     alpha *= blurAdjust;
-    if (alpha < minAlpha) {
+    if (!(alpha > 0.0) || alpha < minAlpha) {
         return;
     }
     vRgba.a = alpha;
@@ -204,11 +205,13 @@ void main() {
 
     // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
     float eigenAvg = 0.5 * (a + d);
-    float eigenDelta = sqrt(max(0.0, eigenAvg * eigenAvg - det));
+    float eigenDelta = length(vec2(0.5 * (a - d), b));
     float eigen1 = eigenAvg + eigenDelta;
-    float eigen2 = eigenAvg - eigenDelta;
+    // Keep a small positive minor axis when subtraction rounds to zero.
+    float eigen2 = max(eigenAvg - eigenDelta, 1e-4);
 
-    vec2 eigenVec1 = (abs(b) > 0.001) ? normalize(vec2(b, eigen1 - a))
+    vec2 eigenVec1 = (abs(b) > 0.001)
+        ? normalize(vec2(b, eigen1 - a))
         : ((a >= d) ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
     vec2 eigenVec2 = vec2(eigenVec1.y, -eigenVec1.x);
 

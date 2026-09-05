@@ -21,9 +21,9 @@ const N = TSL as Record<string, TSLNode>;
 
 const MAX_SEMANTIC_OPACITY = 1000;
 
-// WGSL rejects non-finite constant expressions, so keep infinity in a runtime
-// uniform for SDF reductions and deleted-splat handling.
-const FLOAT_INFINITY = N.uniform(Number.POSITIVE_INFINITY, "float");
+// Finite sentinel for empty/unbounded SDFs. Runtime infinity arithmetic is not
+// portable in WGSL, and smooth ALL shapes otherwise evaluate exp(inf - inf).
+const SDF_DISTANCE_LIMIT = 1e20;
 
 const encodeQuaternion = N.Fn(([input]: TSLNode[]) => {
   const quaternion = N.select(input.w.lessThan(0), input.negate(), input);
@@ -35,7 +35,7 @@ const encodeQuaternion = N.Fn(([input]: TSLNode[]) => {
   const projected = N.select(
     sum.lessThan(1e-6),
     N.vec2(1, 0),
-    quaternion.xy.div(sum),
+    quaternion.xy.div(sum.max(1e-6)),
   ).toVar();
   N.If(quaternion.z.lessThan(0), () => {
     const oldX = projected.x.toVar();
@@ -90,6 +90,10 @@ const decodeShRgb = N.Fn(([encoded]: TSLNode[]) => {
       rgb.z,
     ),
   );
+}).setLayout({
+  name: "gslDecodeShRgb",
+  type: "vec3",
+  inputs: [{ name: "encoded", type: "uint" }],
 });
 
 const decodeSemanticOpacity = N.Fn(([alpha, shapeAmount]: TSLNode[]) => {
@@ -251,16 +255,17 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       const coord = splatTexCoord(index);
       const sourceA = loadArray(sourceSplats, coord);
       const sourceB = loadArray(sourceSplats2, coord);
-      const sourceLnScales = decodeLnScales(sourceB);
-
-      const isDeleted = N.all(
-        sourceLnScales.equal(N.vec3(FLOAT_INFINITY.negate())),
-      );
+      // Deleted scales are three packed -infinity half floats. Inspect their
+      // bits before unpacking so the shader never has to compare infinities.
+      const isDeleted = sourceB.y
+        .shiftRight(16)
+        .equal(N.uint(0xfc00))
+        .and(sourceB.z.equal(N.uint(0xfc00fc00)));
       N.If(isDeleted.not(), () => {
         const alphaShape = decodeAlphaShape(sourceA);
         valid.assign(true);
         center.assign(objectBasis.mul(decodeCenter(sourceA)));
-        lnScales.assign(sourceLnScales.add(objectLnScale));
+        lnScales.assign(decodeLnScales(sourceB).add(objectLnScale));
         quaternion.assign(
           quatQuat(objectQuaternion, decodeQuaternion(sourceB.w)),
         );
@@ -295,10 +300,10 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
             const smoothAmount = N.uintBitsToFloat(edit.w);
             const distanceAccum = N.select(
               smoothAmount.equal(0),
-              FLOAT_INFINITY,
+              SDF_DISTANCE_LIMIT,
               0,
             ).toVar();
-            const maxExponent = FLOAT_INFINITY.negate().toVar();
+            const maxExponent = N.float(0).toVar();
             const sdfRgba = N.vec4(0).toVar();
             const sdfRgbaMask = N.vec4(0).toVar();
             const sdfLast = sdfFirst.add(sdfCount).min(numSdfs);
@@ -336,14 +341,17 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                 const sdfCenter = N.uintBitsToFloat(data0.xyz);
                 const sdfQuaternion = N.uintBitsToFloat(data1);
                 const sdfScale = N.uintBitsToFloat(data2.xyz);
-                const sizes = N.uintBitsToFloat(data3);
-                const value = N.uintBitsToFloat(data4);
+                // These expressions are shared by mutually exclusive branches.
+                // Materialize them here so TSL cannot first cache them in just
+                // one shape/blend branch and leave the others uninitialized.
+                const sizes = N.uintBitsToFloat(data3).toVar();
+                const value = N.uintBitsToFloat(data4).toVar();
                 const valueMask = N.vec4(
                   N.select(flags.bitAnd(0x10000).notEqual(N.uint(0)), 1, 0),
                   N.select(flags.bitAnd(0x20000).notEqual(N.uint(0)), 1, 0),
                   N.select(flags.bitAnd(0x40000).notEqual(N.uint(0)), 1, 0),
                   N.select(flags.bitAnd(0x80000).notEqual(N.uint(0)), 1, 0),
-                );
+                ).toVar();
                 const sdfPosition = quatVec(
                   sdfQuaternion,
                   editPosition.mul(sdfScale),
@@ -351,10 +359,10 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                   .add(sdfCenter)
                   .toVar();
                 const sdfType = flags.bitAnd(0xff);
-                const distance = FLOAT_INFINITY.toVar();
+                const distance = N.float(SDF_DISTANCE_LIMIT).toVar();
 
                 N.If(sdfType.equal(N.uint(0)), () => {
-                  distance.assign(FLOAT_INFINITY.negate());
+                  distance.assign(-SDF_DISTANCE_LIMIT);
                 })
                   .ElseIf(sdfType.equal(N.uint(1)), () => {
                     distance.assign(sdfPosition.z);
@@ -373,11 +381,20 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                     );
                   })
                   .ElseIf(sdfType.equal(N.uint(4)), () => {
-                    const k0 = sdfPosition.div(sizes.xyz).length();
-                    const k1 = sdfPosition
-                      .div(sizes.xyz.dot(sizes.xyz))
-                      .length();
-                    distance.assign(k0.mul(k0.sub(1)).div(k1));
+                    const radii = sizes.xyz.abs();
+                    N.If(N.all(radii.greaterThan(N.vec3(0))), () => {
+                      const scaledPosition = sdfPosition.div(radii);
+                      const k0 = scaledPosition.length();
+                      const k1 = scaledPosition.div(radii).length();
+                      // The approximation divides by zero at the center;
+                      // its exact signed distance there is the shortest radius.
+                      distance.assign(
+                        radii.x.min(radii.y).min(radii.z).negate(),
+                      );
+                      N.If(k1.greaterThan(0), () => {
+                        distance.assign(k0.mul(k0.sub(1)).div(k1));
+                      });
+                    });
                   })
                   .ElseIf(sdfType.equal(N.uint(5)), () => {
                     const d = N.vec2(sdfPosition.xz.length(), sdfPosition.y)
@@ -422,8 +439,10 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                     sdfRgbaMask.assign(valueMask);
                   });
                 }).Else(() => {
-                  const exponent = distance.negate().div(smoothAmount);
-                  N.If(exponent.greaterThan(maxExponent), () => {
+                  const exponent = distance.negate().div(smoothAmount).toVar();
+                  N.If(distanceAccum.equal(0), () => {
+                    maxExponent.assign(exponent);
+                  }).ElseIf(exponent.greaterThan(maxExponent), () => {
                     const rescale = maxExponent.sub(exponent).exp();
                     distanceAccum.mulAssign(rescale);
                     sdfRgba.mulAssign(rescale);
@@ -441,7 +460,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
             const distance = distanceAccum.toVar();
             N.If(smoothAmount.notEqual(0), () => {
               N.If(distanceAccum.equal(0), () => {
-                distance.assign(FLOAT_INFINITY);
+                distance.assign(SDF_DISTANCE_LIMIT);
               }).Else(() => {
                 sdfRgba.divAssign(distanceAccum);
                 sdfRgbaMask.divAssign(distanceAccum);

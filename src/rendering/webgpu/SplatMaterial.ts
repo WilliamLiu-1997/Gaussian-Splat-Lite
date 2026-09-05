@@ -408,10 +408,17 @@ export function createWebGPUSplatMaterial({
             const detOrig = a.mul(d).sub(b.mul(b)).toVar();
             a.addAssign(blurAmount);
             d.addAssign(blurAmount);
-            const det = a.mul(d).sub(b.mul(b));
-            alpha.mulAssign(detOrig.div(det).max(0).sqrt());
+            const det = a.mul(d).sub(b.mul(b)).toVar();
+            N.If(det.greaterThan(0), () => {
+              alpha.mulAssign(detOrig.div(det).max(0).sqrt());
+            }).Else(() => {
+              alpha.assign(0);
+            });
 
-            N.If(alpha.greaterThanEqual(minAlpha), () => {
+            const alphaVisible = alpha
+              .greaterThanEqual(minAlpha)
+              .and(alpha.greaterThan(0));
+            N.If(alphaVisible, () => {
               N.If(kernelPower.equal(0), () => {
                 supportRadius.assign(
                   gaussianSupportRadius(alpha, supportRadius, minAlpha),
@@ -426,14 +433,11 @@ export function createWebGPUSplatMaterial({
                   ),
                 );
               });
-              const eigenAverage = a.add(d).mul(0.5);
-              const eigenDelta = eigenAverage
-                .mul(eigenAverage)
-                .sub(det)
-                .max(0)
-                .sqrt();
-              const eigen1 = eigenAverage.add(eigenDelta);
-              const eigen2 = eigenAverage.sub(eigenDelta);
+              const eigenAverage = a.add(d).mul(0.5).toVar();
+              const eigenDelta = N.vec2(a.sub(d).mul(0.5), b).length().toVar();
+              const eigen1 = eigenAverage.add(eigenDelta).toVar();
+              // Keep a small positive minor axis when subtraction rounds to zero.
+              const eigen2 = eigenAverage.sub(eigenDelta).max(1e-4).toVar();
               const eigenVector1 = N.vec2(0).toVar();
               N.If(b.abs().greaterThan(0.001), () => {
                 eigenVector1.assign(N.vec2(b, eigen1.sub(a)).normalize());

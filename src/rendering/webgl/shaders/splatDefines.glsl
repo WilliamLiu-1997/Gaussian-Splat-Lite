@@ -10,8 +10,6 @@ const uint SPLAT_TEX_HEIGHT_MASK = SPLAT_TEX_HEIGHT - 1u;
 
 const float PI = 3.1415926535897932384626433832795;
 
-const float INFINITY = 1.0 / 0.0;
-
 vec3 srgbToLinear(vec3 rgb) {
     return pow(rgb, vec3(2.2));
 }

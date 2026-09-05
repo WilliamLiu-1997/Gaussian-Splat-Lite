@@ -51,7 +51,7 @@ vec4 resolveStochasticFrame(ivec2 source) {
     vec2 nearWeights = (vec2(1.0) - fraction) * 0.5;
     vec2 farWeights = fraction * 0.5;
 
-    float coverage = 0.0;
+    bool hasSplat = false;
     vec4 accumulated = vec4(0.0);
 
     for (int y = 0; y < 4; ++y) {
@@ -60,16 +60,17 @@ vec4 resolveStochasticFrame(ivec2 source) {
             float weightX = x < 2 ? nearWeights.x : farWeights.x;
             vec4 sourceTexel = loadSource(base + ivec2(x, y));
             float weight = weightX * weightY;
-            float isSplat = float(sourceTexel.a > 1.0);
             // Filter in the source's blend space. Alpha-2 marks an opaque sample.
             float alpha = clamp(sourceTexel.a, 0.0, 1.0);
             vec4 texel = vec4(alpha > 0.0 ? sourceTexel.rgb : vec3(0.0), alpha);
-            coverage += weight * isSplat;
+            // Integer pixel coordinates give fractions of 1/4 or 3/4, so all
+            // tap weights are positive; only marker presence matters.
+            hasSplat = hasSplat || sourceTexel.a > 1.0;
             accumulated += weight * texel;
         }
     }
 
-    return physicalSource(coverage > 0.0 ? accumulated : loadSource(source));
+    return physicalSource(hasSplat ? accumulated : loadSource(source));
 }
 
 vec4 workingToOutput(vec4 texel) {

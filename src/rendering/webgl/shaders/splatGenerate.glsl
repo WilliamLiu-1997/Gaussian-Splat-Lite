@@ -33,6 +33,9 @@ layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
 
 const float MAX_SEMANTIC_OPACITY = 1000.0;
+// Match WebGPU's finite sentinel for empty/unbounded SDFs. Smooth ALL shapes
+// must not evaluate exp(inf - inf).
+const float SDF_DISTANCE_LIMIT = 1e20;
 
 float decodeSemanticOpacity(float alpha, float shapeAmount) {
     if (shapeAmount <= 0.0) return alpha;
@@ -124,7 +127,7 @@ void unpackSdf(
 
 float sdfDistance(uint type, vec3 position, vec4 sizes) {
     switch (type) {
-        case 0u: return -INFINITY;
+        case 0u: return -SDF_DISTANCE_LIMIT;
         case 1u: return position.z;
         case 2u: return length(position) - sizes.w;
         case 3u: {
@@ -132,8 +135,13 @@ float sdfDistance(uint type, vec3 position, vec4 sizes) {
             return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sizes.w;
         }
         case 4u: {
-            float k0 = length(position / sizes.xyz);
-            float k1 = length(position / dot(sizes.xyz, sizes.xyz));
+            vec3 radii = abs(sizes.xyz);
+            if (any(lessThanEqual(radii, vec3(0.0)))) return SDF_DISTANCE_LIMIT;
+            vec3 scaledPosition = position / radii;
+            float k0 = length(scaledPosition);
+            float k1 = length(scaledPosition / radii);
+            // At the center, the exact signed distance is the shortest radius.
+            if (k1 <= 0.0) return -min(radii.x, min(radii.y, radii.z));
             return k0 * (k0 - 1.0) / k1;
         }
         case 5u: {
@@ -152,7 +160,7 @@ float sdfDistance(uint type, vec3 position, vec4 sizes) {
             return distance * (((q.x * c.y - q.y * c.x) < 0.0) ? -1.0 : 1.0);
         }
     }
-    return INFINITY;
+    return SDF_DISTANCE_LIMIT;
 }
 
 float evaluateSdfs(
@@ -163,8 +171,8 @@ float evaluateSdfs(
     out vec4 resultRgba,
     out vec4 resultRgbaMask
 ) {
-    float distanceAccum = smoothAmount == 0.0 ? INFINITY : 0.0;
-    float maxExponent = -INFINITY;
+    float distanceAccum = smoothAmount == 0.0 ? SDF_DISTANCE_LIMIT : 0.0;
+    float maxExponent = 0.0;
     resultRgba = vec4(0.0);
     resultRgbaMask = vec4(0.0);
     int sdfLast = min(sdfFirst + sdfCount, numSdfs);
@@ -195,7 +203,9 @@ float evaluateSdfs(
             }
         } else {
             float exponent = -distance / smoothAmount;
-            if (exponent > maxExponent) {
+            if (distanceAccum == 0.0) {
+                maxExponent = exponent;
+            } else if (exponent > maxExponent) {
                 float rescale = exp(maxExponent - exponent);
                 distanceAccum *= rescale;
                 resultRgba *= rescale;
@@ -209,9 +219,9 @@ float evaluateSdfs(
         }
     }
 
-    if (smoothAmount == 0.0 || distanceAccum == 0.0) {
-        return distanceAccum == 0.0 ? INFINITY : distanceAccum;
-    }
+    // A hard union can have distance zero on the surface; it is not empty.
+    if (smoothAmount == 0.0) return distanceAccum;
+    if (distanceAccum == 0.0) return SDF_DISTANCE_LIMIT;
     resultRgba /= distanceAccum;
     resultRgbaMask /= distanceAccum;
     return (-log(distanceAccum) - maxExponent) * smoothAmount;
@@ -275,6 +285,9 @@ bool applySdfEdits(
 
 void produceSplat(int index) {
     ivec3 coord = splatTexCoord(index);
+    uvec4 sourceSplat2 = texelFetch(sourceSplats2, coord, 0);
+    // Detect the three packed -infinity scales before unpacking any floats.
+    if ((sourceSplat2.y >> 16u) == 0xfc00u && sourceSplat2.z == 0xfc00fc00u) return;
     uvec4 sourceSplat = texelFetch(sourceSplats, coord, 0);
     vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(sourceSplat);
     vec3 center = decodeSplatCenter(sourceSplat);
@@ -282,13 +295,12 @@ void produceSplat(int index) {
     vec4 quaternion;
     vec4 rgba;
     decodeSplatAttributesLnScale(
-        texelFetch(sourceSplats2, coord, 0),
+        sourceSplat2,
         alphaShapeAmount.x,
         lnScales,
         quaternion,
         rgba
     );
-    if (all(equal(lnScales, vec3(-INFINITY)))) return;
     float shapeAmount = alphaShapeAmount.y;
 
     // Match PlayCanvas' work-buffer transform. Centers retain the complete
