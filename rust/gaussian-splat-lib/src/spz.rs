@@ -5,7 +5,7 @@ use miniz_oxide::inflate::core::{decompress, DecompressorOxide};
 use miniz_oxide::inflate::TINFLStatus;
 use std::io::Read;
 
-use crate::decoder::{ChunkReceiver, SplatInit, SplatReceiver};
+use crate::decoder::{parse_gzip_header, ChunkReceiver, SplatInit, SplatReceiver};
 use crate::splat_encode::get_splat_tex_size_u64;
 
 pub const SPZ_MAGIC: u32 = 0x5053474e; // "NGSP"
@@ -92,6 +92,9 @@ pub struct SpzDecoder<T: SplatReceiver> {
     compressed: Vec<u8>,
     decompressed: Vec<u8>,
     gzip_header_done: bool,
+    gzip_deflate_done: bool,
+    gzip_crc: crc32fast::Hasher,
+    gzip_size: u32,
     out_pos: usize,
     raw: Vec<u8>,
     v4_stage: V4Stage,
@@ -111,10 +114,13 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             format: SpzFormat::Unknown,
             decompressor: DecompressorOxide::new(),
             compressed: Vec::new(),
-            decompressed: vec![0u8; 128 * 1024],
+            decompressed: Vec::new(),
             buffer: Vec::new(),
             state: None,
             gzip_header_done: false,
+            gzip_deflate_done: false,
+            gzip_crc: crc32fast::Hasher::new(),
+            gzip_size: 0,
             out_pos: 0,
             done: false,
             raw: Vec::new(),
@@ -279,10 +285,14 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         self.v4_stage = V4Stage::Done;
                         self.done = true;
                     } else {
+                        // init() resets ruzstd while retaining its working buffers.
+                        decoder.compressed_received = 0;
+                        decoder.decoded_size = 0;
+                        decoder.header_validated = false;
                         self.v4_stage = V4Stage::NeedStream {
                             streams,
                             next_stream,
-                            decoder: Box::default(),
+                            decoder,
                         };
                     }
                 }
@@ -359,7 +369,8 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             if self.raw.len() < MAX_ZSTD_FRAME_HEADER_SIZE && !input_complete {
                 return Ok(false);
             }
-            let (has_checksum, header_size) = validate_zstd_frame(&self.raw)?;
+            let (has_checksum, header_size) =
+                validate_zstd_frame(&self.raw, stream.uncompressed_size)?;
             stream_decoder.has_checksum = has_checksum;
             let mut header = &self.raw[..header_size];
             stream_decoder
@@ -433,6 +444,12 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                             stream_decoder.decoded_size
                         ));
                     }
+                    if stream_decoder.has_checksum
+                        && stream_decoder.decoder.get_checksum_from_data()
+                            != stream_decoder.decoder.get_calculated_checksum()
+                    {
+                        return Err(anyhow::anyhow!("v4 ZSTD checksum mismatch"));
+                    }
                     if !self.buffer.is_empty() {
                         self.consume_v4_output_chunk();
                     }
@@ -497,286 +514,155 @@ impl<T: SplatReceiver> SpzDecoder<T> {
     fn poll_sections(&mut self) {
         let state = self.state.as_mut().unwrap();
         loop {
-            match state.stage {
-                SpzDecoderStage::Centers => {
-                    let bytes_per_item = if state.version == 1 { 6 } else { 9 };
-                    let input = &self.buffer[self.buffer_offset..];
-                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
-                        return;
-                    };
+            use SpzDecoderStage::*;
+            let sh_components = 3 * state.sh_degree * (state.sh_degree + 2);
+            let (bytes_per_item, components, next_stage) = match state.stage {
+                Centers => (if state.version == 1 { 6 } else { 9 }, 3, Alphas),
+                Alphas => (1, 1, Rgb),
+                Rgb => (3, 3, Scales),
+                Scales => (3, 3, Quats),
+                Quats => (if state.version >= 3 { 4 } else { 3 }, 4, Sh),
+                Sh if state.sh_degree > 0 => (sh_components, sh_components, Done),
+                Sh | Done => {
+                    state.stage = Done;
+                    return;
+                }
+            };
+            let input = &self.buffer[self.buffer_offset..];
+            let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
+                return;
+            };
+            let input = &input[..chunk * bytes_per_item];
+            state.output.resize(chunk * components, 0.0);
+            let output = &mut state.output;
+            let base = state.next_splat;
 
-                    if state.output.len() < chunk * 3 {
-                        state.output.resize(chunk * 3, 0.0);
-                    }
+            match state.stage {
+                Centers => {
                     if state.version == 1 {
-                        for i in 0..chunk {
-                            let base = i * 6;
-                            state.output[i * 3] = read_f16_le(&input[base..base + 2]);
-                            state.output[i * 3 + 1] = read_f16_le(&input[base + 2..base + 4]);
-                            state.output[i * 3 + 2] = read_f16_le(&input[base + 4..base + 6]);
+                        for (out, bytes) in output.iter_mut().zip(input.chunks_exact(2)) {
+                            *out = read_f16_le(bytes);
                         }
                     } else {
                         let frac = (1_u32 << state.fractional_bits) as f32;
-                        for i in 0..chunk {
-                            let base = i * 9;
-                            state.output[i * 3] = read_i24_le(&input[base..base + 3]) as f32 / frac;
-                            state.output[i * 3 + 1] =
-                                read_i24_le(&input[base + 3..base + 6]) as f32 / frac;
-                            state.output[i * 3 + 2] =
-                                read_i24_le(&input[base + 6..base + 9]) as f32 / frac;
+                        for (out, bytes) in output.iter_mut().zip(input.chunks_exact(3)) {
+                            *out = read_i24_le(bytes) as f32 / frac;
                         }
                     }
-
-                    self.splats
-                        .set_center(state.next_splat, chunk, &state.output);
-
-                    self.buffer_offset += chunk * bytes_per_item;
-                    state.next_splat += chunk;
-                    if state.next_splat == state.num_splats {
-                        state.next_splat = 0;
-                        state.stage = SpzDecoderStage::Alphas;
+                    self.splats.set_center(base, chunk, output);
+                }
+                Alphas | Rgb | Scales => {
+                    for (out, byte) in output.iter_mut().zip(input) {
+                        *out = match state.stage {
+                            Alphas => *byte as f32 / 255.0,
+                            Rgb => (*byte as f32 / 255.0 - 0.5) * (SH_C0 / 0.15) + 0.5,
+                            Scales => *byte as f32 / 16.0 - 10.0,
+                            _ => unreachable!(),
+                        };
+                    }
+                    match state.stage {
+                        Alphas => self.splats.set_opacity(base, chunk, output),
+                        Rgb => self.splats.set_rgb(base, chunk, output),
+                        Scales => self.splats.set_ln_scale(base, chunk, output),
+                        _ => unreachable!(),
                     }
                 }
-                SpzDecoderStage::Alphas => {
-                    let bytes_per_item = 1;
-                    let input = &self.buffer[self.buffer_offset..];
-                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
-                        return;
-                    };
-
-                    if state.output.len() < chunk {
-                        state.output.resize(chunk, 0.0);
-                    }
-                    for (output, input) in state.output.iter_mut().zip(input).take(chunk) {
-                        *output = *input as f32 / 255.0;
-                    }
-
-                    self.splats
-                        .set_opacity(state.next_splat, chunk, &state.output);
-
-                    self.buffer_offset += chunk * bytes_per_item;
-                    state.next_splat += chunk;
-                    if state.next_splat == state.num_splats {
-                        state.next_splat = 0;
-                        state.stage = SpzDecoderStage::Rgb;
-                    }
-                }
-                SpzDecoderStage::Rgb => {
-                    let bytes_per_item = 3;
-                    let input = &self.buffer[self.buffer_offset..];
-                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
-                        return;
-                    };
-
-                    let scale = SH_C0 / 0.15;
-                    if state.output.len() < chunk * 3 {
-                        state.output.resize(chunk * 3, 0.0);
-                    }
-                    for i in 0..chunk {
-                        let b = i * 3;
-                        state.output[b] = (input[b] as f32 / 255.0 - 0.5) * scale + 0.5;
-                        state.output[b + 1] = (input[b + 1] as f32 / 255.0 - 0.5) * scale + 0.5;
-                        state.output[b + 2] = (input[b + 2] as f32 / 255.0 - 0.5) * scale + 0.5;
-                    }
-
-                    self.splats.set_rgb(state.next_splat, chunk, &state.output);
-
-                    self.buffer_offset += chunk * bytes_per_item;
-                    state.next_splat += chunk;
-                    if state.next_splat == state.num_splats {
-                        state.next_splat = 0;
-                        state.stage = SpzDecoderStage::Scales;
-                    }
-                }
-                SpzDecoderStage::Scales => {
-                    let bytes_per_item = 3;
-                    let input = &self.buffer[self.buffer_offset..];
-                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
-                        return;
-                    };
-
-                    if state.output.len() < chunk * 3 {
-                        state.output.resize(chunk * 3, 0.0);
-                    }
-                    for i in 0..chunk {
-                        let b = i * 3;
-                        state.output[b] = (input[b] as f32) / 16.0 - 10.0;
-                        state.output[b + 1] = (input[b + 1] as f32) / 16.0 - 10.0;
-                        state.output[b + 2] = (input[b + 2] as f32) / 16.0 - 10.0;
-                    }
-
-                    self.splats
-                        .set_ln_scale(state.next_splat, chunk, &state.output);
-
-                    self.buffer_offset += chunk * bytes_per_item;
-                    state.next_splat += chunk;
-                    if state.next_splat == state.num_splats {
-                        state.next_splat = 0;
-                        state.stage = SpzDecoderStage::Quats;
-                    }
-                }
-                SpzDecoderStage::Quats => {
-                    let bytes_per_item = if state.version >= 3 { 4 } else { 3 };
-                    let input = &self.buffer[self.buffer_offset..];
-                    let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
-                        return;
-                    };
-
-                    if state.output.len() < chunk * 4 {
-                        state.output.resize(chunk * 4, 0.0);
-                    }
-                    if state.version >= 3 {
-                        // Versions 3 and 4 use "smallest three" quaternion compression.
-                        for i in 0..chunk {
-                            let base = i * 4;
-                            let comp = (input[base] as u32)
-                                | ((input[base + 1] as u32) << 8)
-                                | ((input[base + 2] as u32) << 16)
-                                | ((input[base + 3] as u32) << 24);
-                            let largest_index = (comp >> 30) as usize;
-                            let mut remaining_values = comp;
-                            let value_mask: u32 = (1u32 << 9) - 1; // 9 bits for magnitude
-                            let max_value: f32 = std::f32::consts::FRAC_1_SQRT_2; // 1/sqrt(2)
-                            let mut q = [0.0f32; 4];
-                            let mut sum_squares = 0.0f32;
-
+                Quats => {
+                    for (out, bytes) in output
+                        .chunks_exact_mut(4)
+                        .zip(input.chunks_exact(bytes_per_item))
+                    {
+                        if state.version >= 3 {
+                            let mut packed = read_u32_le(bytes);
+                            let largest = (packed >> 30) as usize;
+                            let mut sum_squares = 0.0;
                             for j in (0..4).rev() {
-                                if j != largest_index {
-                                    let value = (remaining_values & value_mask) as f32;
-                                    let sign = ((remaining_values >> 9) & 0x1) != 0;
-                                    remaining_values >>= 10;
-                                    let mut v = max_value * (value / value_mask as f32);
-                                    if sign {
-                                        v = -v;
-                                    }
-                                    q[j] = v;
-                                    sum_squares += v * v;
+                                if j == largest {
+                                    continue;
                                 }
+                                let magnitude = std::f32::consts::FRAC_1_SQRT_2
+                                    * ((packed & 511) as f32 / 511.0);
+                                out[j] = if packed & 512 != 0 {
+                                    -magnitude
+                                } else {
+                                    magnitude
+                                };
+                                sum_squares += out[j] * out[j];
+                                packed >>= 10;
                             }
-
-                            let sq = 1.0 - sum_squares;
-                            q[largest_index] = if sq > 0.0 { sq.sqrt() } else { 0.0 };
-
-                            let o = i * 4;
-                            state.output[o] = q[0];
-                            state.output[o + 1] = q[1];
-                            state.output[o + 2] = q[2];
-                            state.output[o + 3] = q[3];
-                        }
-                    } else {
-                        // Versions < 3 use 3 bytes (qx, qy, qz), reconstruct qw
-                        for i in 0..chunk {
-                            let base = i * 3;
-                            let qx = input[base] as f32 / 127.5 - 1.0;
-                            let qy = input[base + 1] as f32 / 127.5 - 1.0;
-                            let qz = input[base + 2] as f32 / 127.5 - 1.0;
-                            let qw = (1.0 - (qx * qx + qy * qy + qz * qz)).max(0.0).sqrt();
-                            let o = i * 4;
-                            state.output[o] = qx;
-                            state.output[o + 1] = qy;
-                            state.output[o + 2] = qz;
-                            state.output[o + 3] = qw;
+                            out[largest] = (1.0 - sum_squares).max(0.0).sqrt();
+                        } else {
+                            for j in 0..3 {
+                                out[j] = bytes[j] as f32 / 127.5 - 1.0;
+                            }
+                            out[3] = (1.0 - (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]))
+                                .max(0.0)
+                                .sqrt();
                         }
                     }
-
-                    self.splats.set_quat(state.next_splat, chunk, &state.output);
-
-                    self.buffer_offset += chunk * bytes_per_item;
-                    state.next_splat += chunk;
-                    if state.next_splat == state.num_splats {
-                        state.next_splat = 0;
-                        state.stage = SpzDecoderStage::Sh;
-                    }
+                    self.splats.set_quat(base, chunk, output);
                 }
-                SpzDecoderStage::Sh => {
-                    if state.sh_degree == 0 {
-                        state.stage = SpzDecoderStage::Done;
-                    } else {
-                        let sh_components = 3 * match state.sh_degree {
-                            1 => 3,
-                            2 => 8,
-                            3 => 15,
-                            _ => 0,
-                        };
-                        let bytes_per_item = sh_components;
-                        let input = &self.buffer[self.buffer_offset..];
-                        let Some(chunk) = state.chunk_size(input.len(), bytes_per_item) else {
-                            return;
-                        };
-
-                        let total_floats = chunk * sh_components;
-                        if state.output.len() < total_floats {
-                            state.output.resize(total_floats, 0.0);
-                        }
-
-                        for i in 0..chunk {
-                            let base = i * sh_components;
-                            for d in 0..3 {
-                                for k in 0..3 {
-                                    state.output[9 * i + k * 3 + d] =
-                                        (input[base + k * 3 + d] as f32 - 128.0) / 128.0;
-                                }
-                            }
-                            if state.sh_degree >= 2 {
-                                for d in 0..3 {
-                                    for k in 0..5 {
-                                        state.output[9 * chunk + 15 * i + k * 3 + d] =
-                                            (input[base + 9 + k * 3 + d] as f32 - 128.0) / 128.0;
-                                    }
-                                }
-                            }
-                            if state.sh_degree >= 3 {
-                                for d in 0..3 {
-                                    for k in 0..7 {
-                                        state.output[24 * chunk + 21 * i + k * 3 + d] =
-                                            (input[base + 24 + k * 3 + d] as f32 - 128.0) / 128.0;
-                                    }
-                                }
+                Sh => {
+                    // Input is point-major; receivers take a separate slice per SH band.
+                    let mut band_offset = 0;
+                    for width in [9, 15, 21].into_iter().take(state.sh_degree) {
+                        for (i, point) in input.chunks_exact(sh_components).enumerate() {
+                            let start = band_offset * chunk + i * width;
+                            for (out, byte) in output[start..start + width]
+                                .iter_mut()
+                                .zip(&point[band_offset..band_offset + width])
+                            {
+                                *out = (*byte as f32 - 128.0) / 128.0;
                             }
                         }
-
-                        self.splats.set_sh(
-                            state.next_splat,
-                            chunk,
-                            &state.output[0..chunk * 9],
-                            if state.sh_degree >= 2 {
-                                &state.output[9 * chunk..24 * chunk]
-                            } else {
-                                &[][..]
-                            },
-                            if state.sh_degree >= 3 {
-                                &state.output[24 * chunk..total_floats]
-                            } else {
-                                &[][..]
-                            },
-                        );
-
-                        self.buffer_offset += chunk * bytes_per_item;
-                        state.next_splat += chunk;
-                        if state.next_splat == state.num_splats {
-                            state.next_splat = 0;
-                            state.stage = SpzDecoderStage::Done;
-                        }
+                        band_offset += width;
                     }
+                    self.splats.set_sh(
+                        base,
+                        chunk,
+                        &output[..9 * chunk],
+                        if state.sh_degree >= 2 {
+                            &output[9 * chunk..24 * chunk]
+                        } else {
+                            &[]
+                        },
+                        if state.sh_degree >= 3 {
+                            &output[24 * chunk..]
+                        } else {
+                            &[]
+                        },
+                    );
                 }
-                SpzDecoderStage::Done => return,
+                Done => unreachable!(),
+            }
+
+            self.buffer_offset += chunk * bytes_per_item;
+            state.next_splat += chunk;
+            if state.next_splat == state.num_splats {
+                state.next_splat = 0;
+                state.stage = next_stage;
             }
         }
     }
 
     fn poll_decompress(&mut self) -> anyhow::Result<()> {
+        if self.done {
+            return if self.compressed.is_empty() {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Trailing data after gzip stream"))
+            };
+        }
         if !self.gzip_header_done {
-            if !parse_gzip_header(&mut self.compressed)? {
+            let Some(header_size) = parse_gzip_header(&self.compressed)? else {
                 return Ok(());
-            }
+            };
+            self.compressed.drain(..header_size);
             self.gzip_header_done = true;
         }
         let mut in_offset = 0;
         let flags: u32 = TINFL_FLAG_HAS_MORE_INPUT | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-        loop {
-            if in_offset >= self.compressed.len() {
-                break;
-            }
+        while !self.gzip_deflate_done && in_offset < self.compressed.len() {
             // Ensure at least 64 KiB free space; keep last 32 KiB history at buffer start
             const WINDOW: usize = 32 * 1024;
             let free = self.decompressed.len().saturating_sub(self.out_pos);
@@ -800,6 +686,9 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             );
 
             if out_written > 0 {
+                self.gzip_crc
+                    .update(&self.decompressed[self.out_pos..self.out_pos + out_written]);
+                self.gzip_size = self.gzip_size.wrapping_add(out_written as u32);
                 self.compact_buffer();
                 self.buffer.extend_from_slice(
                     &self.decompressed[self.out_pos..self.out_pos + out_written],
@@ -811,11 +700,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             in_offset += in_consumed;
             match status {
                 TINFLStatus::Done => {
-                    self.done = true;
-                    let remaining = self.compressed.len().saturating_sub(in_offset);
-                    if remaining >= 8 {
-                        in_offset += 8;
-                    }
+                    self.gzip_deflate_done = true;
                     break;
                 }
                 TINFLStatus::NeedsMoreInput => {
@@ -832,6 +717,18 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         }
         if in_offset > 0 {
             self.compressed.drain(..in_offset);
+        }
+        if self.gzip_deflate_done && self.compressed.len() >= 8 {
+            if self.compressed.len() != 8 {
+                return Err(anyhow::anyhow!("Trailing data after gzip stream"));
+            }
+            if read_u32_le(&self.compressed[..4]) != self.gzip_crc.clone().finalize()
+                || read_u32_le(&self.compressed[4..8]) != self.gzip_size
+            {
+                return Err(anyhow::anyhow!("Gzip checksum or size mismatch"));
+            }
+            self.compressed.clear();
+            self.done = true;
         }
         Ok(())
     }
@@ -997,9 +894,15 @@ fn validate_packed_model_size(num_splats: usize, sh_degree: usize) -> anyhow::Re
     Ok(())
 }
 
-fn validate_zstd_frame(compressed: &[u8]) -> anyhow::Result<(bool, usize)> {
+fn validate_zstd_frame(compressed: &[u8], expected_size: usize) -> anyhow::Result<(bool, usize)> {
     let (frame, header_size) = ruzstd::frame::read_frame_header(compressed)
         .map_err(|error| anyhow::anyhow!("v4 ZSTD header failed: {}", error))?;
+    let content_size = frame.header.frame_content_size();
+    if content_size != 0 && content_size != expected_size as u64 {
+        return Err(anyhow::anyhow!(
+            "v4 ZSTD frame content size differs from TOC"
+        ));
+    }
     let window_size = frame
         .header
         .window_size()
@@ -1061,49 +964,6 @@ fn validate_splat_parameters(sh_degree: usize, fractional_bits: u8) -> anyhow::R
     Ok(())
 }
 
-fn parse_gzip_header(buffer: &mut Vec<u8>) -> anyhow::Result<bool> {
-    if buffer.len() < 10 {
-        return Ok(false);
-    }
-    if buffer[0] != 0x1f || buffer[1] != 0x8b || buffer[2] != 8 {
-        return Err(anyhow::anyhow!("Invalid gzip header"));
-    }
-
-    let flags = buffer[3];
-    let mut end = 10;
-
-    if (flags & 0x04) != 0 {
-        if buffer.len() < end + 2 {
-            return Ok(false);
-        }
-        let extra_len = (buffer[end] as usize) | ((buffer[end + 1] as usize) << 8);
-        end += 2;
-        if buffer.len() < end + extra_len {
-            return Ok(false);
-        }
-        end += extra_len;
-    }
-
-    for flag in [0x08, 0x10] {
-        if flags & flag != 0 {
-            let Some(null) = buffer[end..].iter().position(|byte| *byte == 0) else {
-                return Ok(false);
-            };
-            end += null + 1;
-        }
-    }
-
-    if (flags & 0x02) != 0 {
-        if buffer.len() < end + 2 {
-            return Ok(false);
-        }
-        end += 2;
-    }
-
-    buffer.drain(..end);
-    Ok(true)
-}
-
 impl<T: SplatReceiver> ChunkReceiver for SpzDecoder<T> {
     fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
         self
@@ -1130,6 +990,7 @@ impl<T: SplatReceiver> ChunkReceiver for SpzDecoder<T> {
             } else if (magic & 0x00ffffff) == 0x00088b1f {
                 self.format = SpzFormat::Gzip;
                 self.compressed = std::mem::take(&mut self.raw);
+                self.decompressed.resize(128 * 1024, 0);
             } else {
                 return Err(anyhow::anyhow!(
                     "Unrecognized SPZ format: leading bytes 0x{:08x}",
@@ -1394,7 +1255,8 @@ mod tests {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn zstd_raw_zero_frame(uncompressed_size: usize) -> Vec<u8> {
+    fn zstd_raw_frame(data: &[u8]) -> Vec<u8> {
+        let uncompressed_size = data.len();
         assert!(uncompressed_size > 0);
         assert!(u32::try_from(uncompressed_size).is_ok());
 
@@ -1423,7 +1285,8 @@ mod tests {
             let block_header = ((block_size as u32) << 3) | last_block as u32;
             let block_header = block_header.to_le_bytes();
             frame.extend_from_slice(&block_header[..ZSTD_BLOCK_HEADER_SIZE]);
-            frame.resize(frame.len() + block_size, 0);
+            let start = uncompressed_size - remaining - block_size;
+            frame.extend_from_slice(&data[start..start + block_size]);
         }
         frame
     }
@@ -1460,7 +1323,10 @@ mod tests {
             .iter()
             .map(|width| {
                 let uncompressed_size = num_splats * width;
-                (zstd_raw_zero_frame(uncompressed_size), uncompressed_size)
+                (
+                    zstd_raw_frame(&vec![0; uncompressed_size]),
+                    uncompressed_size,
+                )
             })
             .collect();
         assemble_v4_file(num_splats, 0, &streams)
@@ -1531,10 +1397,15 @@ mod tests {
             0x00, 0x00, 0x00, 0xc0, // identity quaternion
         ]);
 
-        let compressed = compress_to_vec(&raw, 6);
+        gzip_file(&raw)
+    }
+
+    fn gzip_file(raw: &[u8]) -> Vec<u8> {
+        let compressed = compress_to_vec(raw, 6);
         let mut gzip = vec![0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0];
         gzip.extend_from_slice(&compressed);
-        gzip.extend_from_slice(&[0; 8]);
+        gzip.extend_from_slice(&crc32fast::hash(raw).to_le_bytes());
+        gzip.extend_from_slice(&(raw.len() as u32).to_le_bytes());
         gzip
     }
 
@@ -1621,6 +1492,171 @@ mod tests {
     fn keeps_legacy_gzip_v3_decoding() {
         let splats = decode_in_chunks(&legacy_v3_file(), 3).unwrap();
         assert_test_splat(&splats);
+    }
+
+    #[test]
+    fn decodes_gzip_across_output_windows_and_splat_chunks() {
+        let count = MAX_SPLAT_CHUNK + 1;
+        let mut raw = vec![0; 16 + count * 20];
+        write_u32_at(&mut raw, 0, SPZ_MAGIC);
+        write_u32_at(&mut raw, 4, 3);
+        write_u32_at(&mut raw, 8, count as u32);
+        raw[13] = 12;
+        let file = gzip_file(&raw);
+        for chunk_size in [1, 4093, file.len()] {
+            let mut decoder = SpzDecoder::new(CountingSplats::default());
+            for chunk in file.chunks(chunk_size) {
+                decoder.push(chunk).unwrap();
+            }
+            decoder.finish().unwrap();
+            assert!(decoder.into_splats().finished);
+        }
+    }
+
+    #[test]
+    fn rejects_missing_gzip_trailer() {
+        let file = legacy_v3_file();
+        for missing in 1..=8 {
+            assert!(decode_in_chunks(&file[..file.len() - missing], 3).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_corrupt_v4_checksum() {
+        let mut file = v4_file();
+        *file.last_mut().unwrap() ^= 1;
+        assert!(decode_in_chunks(&file, 3).is_err());
+    }
+
+    #[test]
+    fn rejects_corrupt_gzip_trailer_and_trailing_data() {
+        for offset in [8, 4] {
+            let mut file = legacy_v3_file();
+            let index = file.len() - offset;
+            file[index] ^= 1;
+            assert!(decode_in_chunks(&file, 1).is_err());
+        }
+        let mut file = legacy_v3_file();
+        file.push(0);
+        assert!(decode_in_chunks(&file, 1).is_err());
+        assert!(decode_in_chunks(&file, file.len()).is_err());
+    }
+
+    #[test]
+    fn decodes_optional_gzip_headers_across_chunk_boundaries() {
+        let original = legacy_v3_file();
+        let mut file = original[..10].to_vec();
+        file[3] = 0x1e; // Extra data, filename, comment, header CRC.
+        file.extend_from_slice(&[3, 0, 10, 20, 30]);
+        file.extend_from_slice(b"model.spz\0comment\0");
+        let header_crc = crc32fast::hash(&file) as u16;
+        file.extend_from_slice(&header_crc.to_le_bytes());
+        let header_size = file.len();
+        file.extend_from_slice(&original[10..]);
+        for chunk_size in [1, 7, file.len()] {
+            assert_test_splat(&decode_in_chunks(&file, chunk_size).unwrap());
+        }
+        file[header_size - 1] ^= 1;
+        assert!(decode_in_chunks(&file, 1).is_err());
+    }
+
+    #[test]
+    fn rejects_v4_frame_content_size_mismatch() {
+        let mut file = v4_raw_file(1);
+        let first_frame = NGSP_HEADER_SIZE + 5 * TOC_ENTRY_SIZE;
+        file[first_frame + 5] = 10; // Frame claims 10 bytes, TOC and payload contain 9.
+        assert!(decode_error(&file).contains("frame content size"));
+    }
+
+    #[test]
+    fn v3_and_v4_decode_multiple_points_and_all_supported_sh_degrees() {
+        for degree in 0..=3 {
+            let count = 4;
+            let widths = [9, 1, 3, 3, 4, 3 * degree * (degree + 2)];
+            let mut attributes: Vec<Vec<u8>> = widths.iter().map(|w| vec![0; count * w]).collect();
+            let mut expected_quats = Vec::new();
+            for point in 0..count {
+                for axis in 0..3 {
+                    let fixed = ((point * 3 + axis) as i32 - 6) * 4096;
+                    let start = point * 9 + axis * 3;
+                    attributes[0][start..start + 3].copy_from_slice(&fixed.to_le_bytes()[..3]);
+                }
+                attributes[1][point] = (point * 85) as u8;
+                attributes[2][point * 3..point * 3 + 3].fill((point * 85) as u8);
+                attributes[3][point * 3..point * 3 + 3].fill(160);
+                // Exercise each omitted quaternion component and both stored signs.
+                let mut packed = point as u32;
+                let mut quat = [0.0_f32; 4];
+                let mut sum = 0.0;
+                for (axis, value) in quat.iter_mut().enumerate() {
+                    if axis == point {
+                        continue;
+                    }
+                    let magnitude = 64 * (axis + 1) as u32;
+                    let negative = axis % 2 == 1;
+                    packed = (packed << 10) | (u32::from(negative) << 9) | magnitude;
+                    *value = std::f32::consts::FRAC_1_SQRT_2 * (magnitude as f32 / 511.0);
+                    if negative {
+                        *value = -*value;
+                    }
+                    sum += *value * *value;
+                }
+                quat[point] = (1.0 - sum).sqrt();
+                expected_quats.extend_from_slice(&quat);
+                attributes[4][point * 4..point * 4 + 4].copy_from_slice(&packed.to_le_bytes());
+            }
+            for (i, value) in attributes[5].iter_mut().enumerate() {
+                *value = i as u8;
+            }
+            let streams: Vec<_> = attributes
+                .iter()
+                .filter(|a| !a.is_empty())
+                .map(|a| (zstd_raw_frame(a), a.len()))
+                .collect();
+            let v4 = assemble_v4_file(count, degree as u8, &streams);
+            let mut raw = v4[..16].to_vec();
+            write_u32_at(&mut raw, 4, 3);
+            raw[15] = 0;
+            for attribute in &attributes {
+                raw.extend_from_slice(attribute);
+            }
+            let v3 = gzip_file(&raw);
+            for file in [&v3, &v4] {
+                for chunk_size in [1, 7, file.len()] {
+                    let splats = decode_in_chunks(file, chunk_size).unwrap();
+                    assert_eq!(
+                        splats.centers,
+                        (-6..6).map(|v| v as f32).collect::<Vec<_>>()
+                    );
+                    assert_eq!(splats.scales, vec![1.0; 12]);
+                    for (actual, expected) in splats.quats.iter().zip(&expected_quats) {
+                        assert!((actual - expected).abs() < 1e-6);
+                    }
+                    for point in 0..count {
+                        assert_eq!(splats.opacity[point], (point * 85) as f32 / 255.0);
+                        let color = ((point * 85) as f32 / 255.0 - 0.5) * (SH_C0 / 0.15) + 0.5;
+                        assert_eq!(&splats.rgb[point * 3..point * 3 + 3], &[color; 3]);
+                    }
+                    let mut offset = 0;
+                    for (band, width) in [&splats.sh1, &splats.sh2, &splats.sh3]
+                        .into_iter()
+                        .zip([9, 15, 21])
+                        .take(degree)
+                    {
+                        for point in 0..count {
+                            for component in 0..width {
+                                let byte = attributes[5][point * widths[5] + offset + component];
+                                assert_eq!(
+                                    band[point * width + component],
+                                    (byte as f32 - 128.0) / 128.0
+                                );
+                            }
+                        }
+                        offset += width;
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+crc32fast.workspace = true
 half.workspace = true
 miniz_oxide.workspace = true
 ruzstd.workspace = true

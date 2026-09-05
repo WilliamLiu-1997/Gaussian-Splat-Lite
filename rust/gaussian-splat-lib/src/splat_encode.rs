@@ -213,10 +213,11 @@ pub fn decode_quat_oct101012(encoded: u32) -> [f32; 4] {
 pub fn encode_splat_sh_rgb(rgb: [f32; 3]) -> u32 {
     let abs_rgb = rgb.map(|x| x.abs());
     let max_abs = abs_rgb[0].max(abs_rgb[1].max(abs_rgb[2]));
-    let base = (max_abs.log2().floor() + 15.0).clamp(0.0, 31.0).round() as i32;
-    let divisor = ((base - 15) as f32).exp2() / 255.0;
+    let base = (max_abs.log2().floor() + 15.0).clamp(0.0, 31.0) as u32;
+    // base is in 0..=31, so 2^(base - 15) is an exact normal f32.
+    let divisor = f32::from_bits((base + 112) << 23) / 255.0;
     let u_rgb = abs_rgb.map(|x| (x / divisor).clamp(0.0, 255.0).round() as u32);
-    let exp_signs = ((base as u32) << 3)
+    let exp_signs = (base << 3)
         | if rgb[0] < 0.0 { 0x1 } else { 0 }
         | if rgb[1] < 0.0 { 0x2 } else { 0 }
         | if rgb[2] < 0.0 { 0x4 } else { 0 };
