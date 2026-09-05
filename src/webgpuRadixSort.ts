@@ -412,6 +412,7 @@ function makeReorderTask({
 /** Portable stable 4-bit GPU radix sort specialized for positive depth keys. */
 export class WebGPURadixSort {
   capacity: number;
+  readonly nodes: TSLNode[];
 
   private readonly elementCount = mutableUniform(0, "uint");
   private readonly keys: [BufferRef, BufferRef];
@@ -419,6 +420,8 @@ export class WebGPURadixSort {
   private readonly blockSums: BufferRef;
   private readonly prefixLevels: PrefixLevel[] = [];
   private readonly passes: RadixPass[] = [];
+  private dispatchWorkgroups = 0;
+  private dispatchNodes: TSLNode[] = [];
 
   constructor(capacity: number, keyGenerator: KeyGenerator) {
     const safeCapacity = Math.max(1, capacity);
@@ -459,23 +462,19 @@ export class WebGPURadixSort {
         }),
       });
     }
+    this.nodes = this.passes.flatMap(({ histogram, reorder }) => [
+      histogram,
+      reorder,
+    ]);
+    for (const { scan, add } of this.prefixLevels) {
+      this.nodes.push(scan.compute);
+      if (add) this.nodes.push(add.compute);
+    }
   }
 
   get ordering() {
     // An even pass count leaves the final values in the first ping-pong buffer.
     return this.values[RADIX_PASSES & 1].value;
-  }
-
-  get nodes() {
-    const nodes = this.passes.flatMap(({ histogram, reorder }) => [
-      histogram,
-      reorder,
-    ]);
-    for (const { scan, add } of this.prefixLevels) {
-      nodes.push(scan.compute);
-      if (add) nodes.push(add.compute);
-    }
-    return nodes;
   }
 
   private replaceBuffer(buffer: BufferRef, count: number) {
@@ -563,36 +562,43 @@ export class WebGPURadixSort {
   }
 
   prepare(elementCount: number): TSLNode[] {
-    if (elementCount <= 0) return [];
+    if (
+      !Number.isSafeInteger(elementCount) ||
+      elementCount < 0 ||
+      elementCount > this.capacity
+    ) {
+      throw new RangeError(
+        "Sort count must be an integer within buffer capacity",
+      );
+    }
+    if (elementCount === 0) return [];
 
-    const workgroupCount = Math.max(
-      1,
-      Math.ceil(elementCount / ELEMENTS_PER_WORKGROUP),
-    );
+    this.elementCount.holder.value = elementCount;
+    const workgroupCount = Math.ceil(elementCount / ELEMENTS_PER_WORKGROUP);
+    if (workgroupCount === this.dispatchWorkgroups) return this.dispatchNodes;
+
     const prefixCount = RADIX_BUCKETS * workgroupCount;
     const dispatchSize = [workgroupCount, 1, 1];
     const nodes: TSLNode[] = [];
+    const prefixNodes: TSLNode[] = [];
+    // Every radix pass scans the same number of buckets. Configure the shared
+    // prefix graph once, and reuse the complete dispatch list until it changes.
+    this.appendPrefixNodes(prefixCount, prefixNodes);
 
-    this.elementCount.holder.value = elementCount;
     for (const pass of this.passes) {
       pass.histogram.dispatchSize = dispatchSize;
-      nodes.push(pass.histogram);
-      this.appendPrefixNodes(prefixCount, nodes);
       pass.reorder.dispatchSize = dispatchSize;
-      nodes.push(pass.reorder);
+      nodes.push(pass.histogram, ...prefixNodes, pass.reorder);
     }
 
+    this.dispatchWorkgroups = workgroupCount;
+    this.dispatchNodes = nodes;
     return nodes;
   }
 
   dispose() {
-    for (const pass of this.passes) {
-      pass.histogram.dispose();
-      pass.reorder.dispose();
-    }
+    for (const node of this.nodes) node.dispose();
     for (const level of this.prefixLevels) {
-      level.scan.compute.dispose();
-      level.add?.compute.dispose();
       level.blockSums.value.dispose();
     }
     this.blockSums.value.dispose();

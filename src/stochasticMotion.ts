@@ -56,6 +56,7 @@ export class StochasticMotionState {
   reset() {
     this.initialized = false;
     this.pendingSettle = false;
-    this.revision = 0;
+    // A sort started before reset() must never match a later settle request.
+    this.revision += 1;
   }
 }

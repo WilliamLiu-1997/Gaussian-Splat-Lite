@@ -472,14 +472,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this._synchronousSort = options.synchronousSort ?? false;
 
     if (isWebGPURenderer(options.renderer)) {
-      this.webGPUSort = new WebGPUAccumulatorSort(1);
-      this.webGPUSortPrecompile = this.webGPUSort
+      const sorter = new WebGPUAccumulatorSort(1);
+      this.webGPUSort = sorter;
+      this.webGPUSortPrecompile = sorter
         .precompile(options.renderer)
         .catch((error: unknown) => {
           this.webGPUSortError = error;
         })
         .finally(() => {
           this.webGPUSortPrecompile = null;
+          // Three's asynchronous compiler may create resources after dispose().
+          // Release the sorter only after its last compilation has finished.
+          if (this.disposed) sorter.dispose();
         });
     }
 
@@ -606,6 +610,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (this.disposed) return;
     this.disposed = true;
     this.queuedUpdate = null;
+    clearTimeout(this.updateTimeoutId);
+    this.updateTimeoutId = -1;
 
     // @ts-ignore Object base class has a dispose method in Three.js >= r186
     super.dispose?.();
@@ -627,7 +633,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.orderingAttribute.dispose();
     }
     this.orderingAttribute = null;
-    this.webGPUSort?.dispose();
+    if (!this.webGPUSortPrecompile) this.webGPUSort?.dispose();
     this.webGPUSort = null;
     this._depthMesh?.removeFromParent();
     this._depthMesh?.material.dispose();
@@ -676,17 +682,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uploadedSortStateRevision = -1;
     if (GaussianSplatRenderer.synchronousSortOwner === this) {
       GaussianSplatRenderer.synchronousSortOwner = null;
-    }
-
-    if (!nextValue && this.webGPUSort) {
-      if (isWebGPURenderer(this.renderer)) {
-        const ordering = new StorageBufferAttribute(
-          new Uint32Array([0xffffffff]),
-          1,
-        );
-        ordering.name = "GaussianSplatOrdering";
-        this.setWebGPUOrdering(ordering, this.webGPUSort.ordering);
-      }
     }
 
     if (nextValue) {
@@ -951,7 +946,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       GaussianSplatRenderer.gaussianSplatOverride ?? this;
 
     const frame = isWebGPURenderer(renderer)
-      ? renderer.info.frame
+      ? renderer.info.render.calls
       : renderer.info.render.frame;
     const isNewFrame = frame !== gaussianSplatRenderer.lastFrame;
     gaussianSplatRenderer.lastFrame = frame;
@@ -1554,24 +1549,28 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         result.activeSplats / SPLATS_PER_ORDERING_ROW,
       );
       const webGPU = isWebGPURenderer(this.renderer);
+      const cpuOrderingAttribute =
+        this.orderingAttribute === this.webGPUSort?.ordering
+          ? null
+          : this.orderingAttribute;
       const previousOrdering = synchronousSort
         ? null
         : webGPU
-          ? this.orderingAttribute?.array
+          ? cpuOrderingAttribute?.array
           : this.orderingTexture?.image.data;
 
       if (webGPU) {
-        let orderingAttribute = this.orderingAttribute;
+        let orderingAttribute = cpuOrderingAttribute;
         if (
           !orderingAttribute ||
           orderingAttribute.array.length !== this.maxSplats
         ) {
-          orderingAttribute?.dispose();
+          // Keep the GPU ordering visible until the first worker result arrives.
+          // Its CPU array is only allocation storage, not the computed indices,
+          // and must never be transferred to the worker or overwritten here.
           orderingAttribute = new StorageBufferAttribute(result.ordering, 1);
           orderingAttribute.name = "GaussianSplatOrdering";
-          this.orderingAttribute = orderingAttribute;
-          (this.material as WebGPUSplatMaterial).orderingNode.value =
-            orderingAttribute;
+          this.setWebGPUOrdering(orderingAttribute, this.webGPUSort?.ordering);
         } else {
           orderingAttribute.array = result.ordering;
           orderingAttribute.clearUpdateRanges();

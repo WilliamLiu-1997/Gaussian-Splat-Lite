@@ -59,7 +59,7 @@ const EXAMPLE_MODEL = {
 
 const scene = new THREE.Scene();
 const exampleCube = new THREE.Mesh(
-  new THREE.BoxGeometry(2,1,0.33),
+  new THREE.BoxGeometry(2, 1, 0.33),
   new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,

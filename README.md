@@ -34,13 +34,13 @@ It works alongside standard Three.js scenes, cameras, meshes, and render loops, 
 ## Requirements
 
 - A modern browser with WebGL2 or WebGPU, WebAssembly, Web Workers, and ES modules
-- The current Three.js `dev` branch (the lockfile pins the tested commit)
+- The pinned Three.js development snapshot `d2fc542d` shown below; the WebGPU compatibility patches depend on its built modules
 - Correct CORS headers when loading Splat files from another origin
 
 ## Installation
 
 ```sh
-npm install gaussian-splat-lite github:mrdoob/three.js#dev
+npm install gaussian-splat-lite github:mrdoob/three.js#d2fc542d58f5c91fa7b585e6a3efb7ba67b295ca
 ```
 
 ## Quick start

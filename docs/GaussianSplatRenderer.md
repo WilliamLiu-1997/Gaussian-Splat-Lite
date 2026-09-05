@@ -96,6 +96,14 @@ input. The pass is enabled by default; call `dispose()` when finished.
 | `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGL; custom GLSL is rejected by WebGPU |
 | `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
 
+Switching `synchronousSort` off keeps the current GPU ordering visible until the
+worker supplies its replacement. The sorter retains ownership of its GPU buffers
+so switching back does not require rebuilding its compute nodes.
+
+Automatic updates run once per renderer render call, including multiple calls
+within the same animation frame. Disposing a renderer during GPU precompilation
+releases the sorter after compilation finishes.
+
 The `target` structure is:
 
 ```ts

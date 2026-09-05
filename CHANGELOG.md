@@ -16,9 +16,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Switched the Three.js development and peer dependency to the latest GitHub `dev` branch required by the WebGPU path.
+- Pinned the Three.js development and peer dependency to the tested GitHub development snapshot `d2fc542d`, keeping the built WebGPU/TSL code and its compatibility patches reproducible.
 - Replaced WebGPU accumulator render passes with fixed compute kernels writing GPU-only storage array textures, and packed per-mesh ranges without row padding.
 - Restored target-aware sRGB decoding for WebGL and added equivalent working-space decoding for WebGPU before transparent compositing.
+- Reuse radix dispatch lists while the workgroup count is unchanged and configure the shared prefix scan once per list, retaining fixed compute nodes through resize.
+
+### Fixed
+
+- Preserve the displayed GPU ordering until the first asynchronous worker result is ready, without transferring or overwriting the sorter's allocation buffers.
+- Update WebGPU Splats for each render call, including multiple renders within one animation frame.
+- Defer sorter disposal until outstanding GPU precompilation finishes and cancel pending deferred renderer updates on disposal.
+- Keep stochastic motion revisions monotonic across resets so an old sort cannot complete a newer settle request.
+- Reject radix sort counts outside allocated buffer capacity.
 
 ## [0.1.16] - 2026-09-03
 
