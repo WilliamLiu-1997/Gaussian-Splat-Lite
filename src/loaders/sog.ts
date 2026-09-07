@@ -1,4 +1,5 @@
 import { SogDecodeSession, decode_sog_meta } from "gaussian-splat-rs";
+import { getAssetBaseUrl } from "./assetUrl";
 import type { PostDecodeSplatData } from "./postDecodeRuntime";
 
 type LoadArgs = {
@@ -11,13 +12,14 @@ type LoadArgs = {
   baseUrl?: string;
   sendStatus: (status: { loaded: number; total: number }) => void;
   resolveAsset?: (url: string) => Promise<string>;
+  expectedSogCount?: number;
+  signal?: AbortSignal;
 };
 
 type Segment = { offset: number; bytes: Uint8Array };
 type Source = {
   size: number;
   url?: string;
-  buffered: boolean;
   read(offset: number, length: number, retain?: boolean): Promise<Uint8Array>;
 };
 type Entry = {
@@ -32,9 +34,6 @@ type Entry = {
 };
 
 const MiB = 1024 * 1024;
-const META_LIMIT = 4 * MiB;
-// Match the decoder's existing per-image limit before buffering prefetched data.
-const IMAGE_LIMIT = 512 * MiB;
 const DIRECTORY_LIMIT = 16 * MiB;
 const READ_CHUNK = 16 * MiB;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -92,7 +91,6 @@ function rangeSource(
   return {
     size,
     url,
-    buffered: !readRange,
     async read(offset, length, retain = false) {
       checkRange(offset, length, size);
       if (!length) return new Uint8Array();
@@ -467,9 +465,7 @@ async function readZip(source: Source) {
   const meta = entries.get(metaName);
   if (!meta) fail("ZIP metadata is missing");
   const prefix = metaName.slice(0, metaName.length - "meta.json".length);
-  const read = async (entry: Entry, limit: number) => {
-    if (entry.size > limit || entry.compressedSize > limit)
-      fail(`${entry.name} exceeds ${limit / MiB} MiB`);
+  const read = async (entry: Entry) => {
     if (entry.offset + 30 + entry.nameLength > offset)
       fail(`invalid local header for ${entry.name}`);
     // Fetch the local header and the first payload chunk together.
@@ -557,6 +553,19 @@ export function isSogPrefix(bytes: Uint8Array) {
 
 /** @internal Loads SOG with range reads and grouped property decoding. */
 export async function loadSog(args: LoadArgs): Promise<PostDecodeSplatData> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(args.signal?.reason);
+  args.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    args.signal?.throwIfAborted();
+    return await decodeSog(args, controller);
+  } finally {
+    args.signal?.removeEventListener("abort", abort);
+    controller.abort();
+  }
+}
+
+async function decodeSog(args: LoadArgs, controller: AbortController) {
   let loaded = 0;
   let total = 0;
   let lastProgress = 0;
@@ -571,21 +580,28 @@ export async function loadSog(args: LoadArgs): Promise<PostDecodeSplatData> {
       lastProgress = now;
     }
   };
-  const controller = new AbortController();
   const source = await openSource(args, progress, controller.signal);
   const prefix = await source.read(0, Math.min(source.size, 4096), true);
   if (!isSogPrefix(prefix))
     fail("input is neither a ZIP archive nor SOG metadata");
   const zip = isJson(prefix) ? undefined : await readZip(source);
-  if (!zip && source.size > META_LIMIT) fail("metadata exceeds 4 MiB");
   const metadata = decode_sog_meta(
     zip
-      ? join(await zip.read(zip.meta, META_LIMIT), zip.meta.compressedSize)
+      ? join(await zip.read(zip.meta), zip.meta.compressedSize)
       : await source.read(0, source.size),
     zip?.meta.method ?? 0,
     zip?.meta.size ?? source.size,
     zip?.meta.crc ?? -1,
   );
+  if (args.expectedSogCount !== undefined) {
+    const meta = JSON.parse(metadata.replace(/^\uFEFF+/, ""));
+    const count = meta.version === 2 ? meta.count : meta.means?.shape?.[0];
+    if (count !== args.expectedSogCount)
+      fail(
+        `chunk count mismatch: expected ${args.expectedSogCount}, received ${count}`,
+      );
+  }
+  controller.signal.throwIfAborted();
   const session = new SogDecodeSession(metadata);
   let consumed = false;
   try {
@@ -593,43 +609,47 @@ export async function loadSog(args: LoadArgs): Promise<PostDecodeSplatData> {
     // Metadata and bundles with external assets do not describe the total input size.
     if (!zip || groups.some((group) => group.some((name) => !zip.entry(name))))
       progress(0, 0);
-    const directoryBase = source.url ?? args.baseUrl;
+    const directoryBase = getAssetBaseUrl(source.url) ?? args.baseUrl;
+    const requestBase = getAssetBaseUrl(args.url) ?? directoryBase;
     const downloadAsset = async (name: string) => {
+      controller.signal.throwIfAborted();
       const entry = zip?.entry(name);
       let chunks: Uint8Array[];
       if (zip && entry) {
-        chunks = await zip.read(entry, IMAGE_LIMIT);
+        chunks = await zip.read(entry);
       } else {
         const initialUrl = new URL(name, directoryBase).href;
         const url = (await args.resolveAsset?.(initialUrl)) ?? initialUrl;
         const response = await fetch(url, {
-          ...requestOptions(args, url, args.url ?? directoryBase),
+          ...requestOptions(args, url, requestBase),
           signal: controller.signal,
         });
-        chunks = (await readResponse(response, IMAGE_LIMIT, progress)).chunks;
+        chunks = (
+          await readResponse(response, Number.POSITIVE_INFINITY, progress)
+        ).chunks;
       }
       return { entry, chunks };
     };
-    const downloadGroup = (group: string[]) => {
-      const pending = Promise.all(group.map(downloadAsset));
-      // Observe failures during decoding; awaiting this group still reports them.
-      void pending.catch(() => {});
-      return pending;
-    };
-    let pending: ReturnType<typeof downloadGroup> | undefined;
+    // Start all property downloads: five images, plus two with higher-order SH.
+    const downloads = groups.map((names) =>
+      names.map((name) => {
+        const task = downloadAsset(name);
+        // Observe background errors immediately and cancel their sibling requests.
+        void task.catch((error) => controller.abort(error));
+        return task;
+      }),
+    );
     for (let index = 0; index < groups.length; index++) {
       const group = groups[index];
       try {
-        const assets = await (pending ?? downloadGroup(group));
-        // Only the next group's compressed data is fetched ahead of decoding.
-        pending =
-          index + 1 < groups.length && (!zip || !source.buffered)
-            ? downloadGroup(groups[index + 1])
-            : undefined;
+        const assets = await Promise.all(downloads[index]);
+        downloads[index] = []; // Do not retain decoded groups through settled promises.
+        const hasNextGroup = index + 1 < groups.length;
         for (const { entry, chunks } of assets) {
-          // Let pending network work advance before synchronous image decoding.
-          if (pending)
+          // Let other downloads advance before synchronous image decoding.
+          if (hasNextGroup)
             await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          controller.signal.throwIfAborted();
           session.decode_asset(
             chunks,
             entry?.method ?? 0,
@@ -639,17 +659,23 @@ export async function loadSog(args: LoadArgs): Promise<PostDecodeSplatData> {
         }
         let lastYield = performance.now();
         while (!session.decode_batch()) {
-          if (pending && performance.now() - lastYield >= 16) {
+          if (
+            (hasNextGroup || args.signal) &&
+            performance.now() - lastYield >= 16
+          ) {
             await new Promise<void>((resolve) => setTimeout(resolve, 0));
             lastYield = performance.now();
           }
+          controller.signal.throwIfAborted();
         }
       } catch (error) {
+        controller.signal.throwIfAborted();
         fail(
           `${group.join(", ")}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
+    controller.signal.throwIfAborted();
     consumed = true;
     const result = session.finish() as PostDecodeSplatData;
     progress(0, loaded);

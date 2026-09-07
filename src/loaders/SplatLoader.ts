@@ -1,8 +1,9 @@
 import { Loader } from "three";
 import { Splats, type SplatsOptions } from "../data/Splats";
 import { workerPool } from "../runtime/SplatWorker";
-import type { SplatLoadStatus } from "../runtime/worker";
 import { SplatMesh } from "../scene/SplatMesh";
+import { getAssetBaseUrl } from "./assetUrl";
+import type { SplatLoadStatus } from "./loadTypes";
 import { serializeSplatPostDecode } from "./postDecode";
 
 type SplatLoadOptions = Pick<
@@ -15,6 +16,7 @@ type SplatLoadOptions = Pick<
   | "postDecode"
   | "onProgress"
 > & {
+  signal?: AbortSignal;
   splats?: Splats;
   onLoad?: (decoded: Splats) => void;
   onError?: (error: unknown) => void;
@@ -34,8 +36,9 @@ export class SplatLoader extends Loader {
   loadAsync(
     url: string,
     onProgress?: (event: ProgressEvent) => void,
+    signal?: AbortSignal,
   ): Promise<Splats> {
-    return this.loadInternalAsync({ url, onProgress });
+    return this.loadInternalAsync({ url, onProgress, signal });
   }
 
   parse(splats: Splats): SplatMesh {
@@ -54,6 +57,7 @@ export class SplatLoader extends Loader {
     fileType,
     fileName,
     postDecode,
+    signal,
     onLoad,
     onProgress,
     onError,
@@ -61,6 +65,7 @@ export class SplatLoader extends Loader {
     let resolvedURL: string | undefined;
     let started = false;
     try {
+      signal?.throwIfAborted();
       if (
         [url, file, fileBytes].filter((input) => input !== undefined).length !==
         1
@@ -72,15 +77,21 @@ export class SplatLoader extends Loader {
         fileBytes instanceof ArrayBuffer
           ? new Uint8Array(fileBytes)
           : fileBytes;
+      const resourcePath =
+        url === undefined ? undefined : (this.path ?? "") + url;
       resolvedURL =
-        url === undefined
+        resourcePath === undefined
           ? undefined
-          : this.manager.resolveURL((this.path ?? "") + url);
+          : this.manager.resolveURL(resourcePath);
       started = true;
       this.manager.itemStart(resolvedURL ?? "");
 
       const pathName = resolvedURL || fileName;
-      const baseUrl = new URL(pathName || "", window.location.href).href;
+      const requestUrl = new URL(pathName || "", window.location.href).href;
+      const resourceUrl = new URL(
+        resourcePath || fileName || "",
+        window.location.href,
+      ).href;
       const memoryHeavy =
         fileType === "sog" ||
         (!fileType && !/\.(ply|spz)(?:[?#]|$)/i.test(pathName ?? ""));
@@ -89,19 +100,20 @@ export class SplatLoader extends Loader {
           worker.call(
             "loadSplats",
             {
-              url: resolvedURL ? baseUrl : undefined,
+              url: resolvedURL ? requestUrl : undefined,
               requestHeader: this.requestHeader,
               withCredentials: this.withCredentials,
               file,
               fileBytes: byteArray?.slice(),
               fileType,
               pathName,
-              baseUrl,
+              baseUrl: getAssetBaseUrl(requestUrl) ?? resourceUrl,
               postDecode: postDecode
                 ? serializeSplatPostDecode(postDecode)
                 : undefined,
             },
             {
+              signal,
               onStatus: (data) => {
                 const status = data as SplatLoadStatus;
                 if ("assetRequest" in status) {
@@ -129,7 +141,9 @@ export class SplatLoader extends Loader {
             },
           ),
         memoryHeavy,
+        signal,
       );
+      signal?.throwIfAborted();
       const result = splats ?? new Splats();
       result.initialize(decoded as SplatsOptions);
       onLoad?.(result);

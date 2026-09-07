@@ -9,7 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added ordinary SOG V1/V2 loading from ZIP bundles or directory metadata, with automatic HTTP Range access and grouped decoding that prefetches the next group's compressed images through the existing PLY/SPZ loading API.
+- Added `SogStreamScheduler` for Streamed SOG indexes, with camera-driven LOD selection, refinement loads that halve the remaining LOD gap, worker-side chunk caching and region extraction, one shared Mesh per chunk with fixed region slots, adaptive source texture layers, partial uploads and independent region fades, LOD crossfades, reference-based cooldown retirement and cancellation. Chunk capacity follows its data without a configured per-Mesh Splat limit. The viewer accepts `lod-meta.json` URLs and displays the source Mesh count.
+- Added `Splats.extractRange()` for independent packed range copies and an optional `AbortSignal` to `SplatLoader.loadAsync()`.
+- Added ordinary SOG V1/V2 loading from ZIP bundles or directory metadata, with automatic HTTP Range access, concurrent property-image downloads and grouped decoding through the existing PLY/SPZ loading API. Indexed streaming chunks use independent workers for concurrent loading and caching.
 - Added `.sog` support to the viewer's file picker, drag-and-drop, and URL loading.
 - Added WebGPU rendering with TSL shaders and compute-based Splat accumulation into compact GPU storage. WebGL2 remains supported.
 - Added `synchronousSort` for same-frame GPU radix sorting on WebGPU or main-thread WASM sorting on WebGL. Asynchronous Worker/WASM sorting remains the default.

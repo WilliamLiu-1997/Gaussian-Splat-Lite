@@ -1,5 +1,6 @@
 import {
   GaussianSplatRenderer,
+  SogStreamScheduler,
   SplatFileType,
   SplatMesh,
   StochasticResolvePass,
@@ -16,6 +17,7 @@ import { Fn, materialColor, materialOpacity, uv, vec2, vec4 } from "three/tsl";
 import { Line2NodeMaterial, WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
 import { createFrameGate } from "./frameGate.js";
+import { getModelRotationX } from "./modelOrientation.js";
 
 const viewport = document.querySelector("#viewport");
 const interfaceRoot = document.querySelector(".interface");
@@ -227,6 +229,10 @@ function updateStats(time, rendered) {
   const fps = (statsRenderedFrames * 1000) / elapsed;
   performanceFps.value = fps >= 10 ? Math.round(fps) : fps.toFixed(1);
   updateHeapStat();
+  if (activeStream) {
+    const stats = activeStream.stats;
+    fileStats.textContent = `${formatNumber.format(stats.visibleSplats)} visible splats · ${formatNumber.format(stats.visibleMeshes)} meshes · ${formatBytes(stats.residentBytes)} cached · ${stats.loadingChunks} loading`;
+  }
   statsSampleStart = time;
   statsRenderedFrames = 0;
 }
@@ -239,9 +245,13 @@ function requestRender() {
 
 function renderFrame(time) {
   controls.update(time);
-  const shouldRender = !renderOnDemand || needsRender;
   // Keep input current while the GPU is busy, retaining any redraw request.
-  if (!shouldRender || !frameGate.isReady()) {
+  if (!frameGate.isReady()) {
+    updateStats(time, false);
+    return;
+  }
+  activeStream?.update(camera);
+  if (renderOnDemand && !needsRender) {
     updateStats(time, false);
     return;
   }
@@ -278,6 +288,31 @@ const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
 stochasticResolvePass.enabled = true;
 
 const renderOptionGroups = [
+  {
+    title: "Model orientation",
+    description: "Align the model's vertical axis with the viewer.",
+    options: [
+      {
+        property: "modelUpAxis",
+        label: "Source up axis",
+        description:
+          "Default assumes Z up for streams and Y down for ordinary files. Choose the source axis if the model appears sideways or upside down.",
+        defaultValue: "auto",
+        choices: [
+          ["auto", "Default"],
+          ["y-up", "Y up"],
+          ["y-down", "Y down"],
+          ["z-up", "Z up"],
+          ["z-down", "Z down"],
+        ],
+        apply: () => {
+          if (!activeSplat) return;
+          applyModelOrientation(activeSplat, Boolean(activeStream));
+          frameSplat(activeSplat);
+        },
+      },
+    ],
+  },
   {
     title: "Performance & diagnostics",
     description: "Frame scheduling and live metrics.",
@@ -715,6 +750,25 @@ function createRenderOptionRow(option) {
   copy.append(label, description);
 
   const control = createElement("div", "option-control");
+  if (option.choices) {
+    const input = createElement("select", "select-input");
+    input.id = label.htmlFor;
+    input.dataset.renderOption = option.property;
+    for (const [value, text] of option.choices) {
+      const choice = document.createElement("option");
+      choice.value = value;
+      choice.textContent = text;
+      input.append(choice);
+    }
+    input.value = option.defaultValue;
+    input.updateOption = () => applyRenderOption(option, input.value);
+    input.addEventListener("change", input.updateOption);
+    control.append(input);
+    row.append(copy, control);
+    renderOptionInputs.set(option.property, { input, option, row });
+    input.updateOption();
+    return row;
+  }
   const input = createElement(
     "input",
     isToggle ? "toggle-input" : "range-input",
@@ -852,16 +906,18 @@ function resetRenderOptions() {
   renderOptionInputs.get("rendererBackend")?.input.updateOption();
 }
 
-createRenderOptions();
-
 const frameSize = new THREE.Vector3();
 let activeSplat = null;
+let activeStream = null;
+let cancelActiveLoad = null;
 let activeLoad = 0;
 let dragDepth = 0;
 let toastTimer;
 const remoteRequestByButton = new WeakMap();
 
 const formatNumber = new Intl.NumberFormat();
+
+createRenderOptions();
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -904,7 +960,11 @@ function modelFromUrl(value) {
     // Keep the encoded path segment when it contains malformed escape sequences.
   }
 
-  if (!fileTypeFor({ name })) return undefined;
+  if (
+    !fileTypeFor({ name }) &&
+    !["meta.json", "lod-meta.json"].includes(name.toLowerCase())
+  )
+    return undefined;
   return { name, size: 0, url };
 }
 
@@ -1003,6 +1063,8 @@ function cancelLoading() {
 
   const sourcePanelOpen = !emptyState.hidden;
   activeLoad += 1;
+  cancelActiveLoad?.();
+  cancelActiveLoad = null;
   clearLoading();
   setStatus("Loading canceled");
 
@@ -1013,8 +1075,19 @@ function cancelLoading() {
   }
 }
 
+function applyModelOrientation(splat, streamed) {
+  const orientation = renderOptionInputs.get("modelUpAxis").input.value;
+  // Transform the stream group so rendering and LOD culling share the same
+  // rotation; the decoded splats and index bounds remain in source space.
+  splat.rotation.set(getModelRotationX(orientation, streamed), 0, 0);
+  splat.updateMatrixWorld(true);
+}
+
 function frameSplat(splat) {
-  const bounds = splat.getBoundingBox(true);
+  const bounds =
+    activeStream?.group === splat
+      ? activeStream.getBoundingBox()
+      : splat.getBoundingBox(true);
   bounds.getSize(frameSize);
   const referenceSize =
     Math.max(frameSize.x, frameSize.y, frameSize.z, 0.01) * 1.5;
@@ -1037,14 +1110,20 @@ function frameSplat(splat) {
 }
 
 async function loadFile(file, { credit = "", url, button } = {}) {
-  const fileType = fileTypeFor(file);
-  if (!fileType) {
+  const streamed = url && file.name.toLowerCase() === "lod-meta.json";
+  const fileType =
+    fileTypeFor(file) ??
+    (url && file.name.toLowerCase() === "meta.json"
+      ? SplatFileType.SOG
+      : undefined);
+  if (!fileType && !streamed) {
     showToast("Unsupported file. Choose a .ply, .spz, or .sog file.");
     setStatus("Only PLY, SPZ, and SOG files are supported", "error");
     return;
   }
 
   const loadId = ++activeLoad;
+  cancelActiveLoad?.();
   if (button) {
     remoteRequestByButton.set(button, loadId);
     button.disabled = true;
@@ -1053,35 +1132,50 @@ async function loadFile(file, { credit = "", url, button } = {}) {
   setStatus(`Loading ${file.name}`, "loading");
 
   let candidate;
+  let candidateStream;
+  const disposeCandidate = () => {
+    if (candidateStream) candidateStream.dispose();
+    else candidate?.dispose();
+  };
+  cancelActiveLoad = disposeCandidate;
   try {
-    candidate = new SplatMesh({
-      url,
-      file: url === undefined ? file : undefined,
-      fileName: file.name,
-      fileType,
-      onProgress: (event) => {
-        if (loadId !== activeLoad) return;
-        setLoading(file, event.loaded, event.total || file.size);
-      },
-    });
+    if (streamed) {
+      candidateStream = new SogStreamScheduler({
+        url,
+        onChange: requestRender,
+        onError: (error, chunkUrl) =>
+          console.error("Streaming chunk failed", chunkUrl, error),
+      });
+      candidate = candidateStream.group;
+    } else
+      candidate = new SplatMesh({
+        url,
+        file: url === undefined ? file : undefined,
+        fileName: file.name,
+        fileType,
+        onProgress: (event) => {
+          if (loadId !== activeLoad) return;
+          setLoading(file, event.loaded, event.total || file.size);
+        },
+      });
 
-    // Match the viewer convention: file-space +Y down / +Z forward
-    // becomes Three.js +Y up / -Z forward without changing decoded splat data.
-    candidate.quaternion.set(1, 0, 0, 0);
-
-    await candidate.initialized;
+    await (candidateStream ?? candidate).initialized;
 
     if (loadId !== activeLoad) {
-      candidate.dispose();
+      disposeCandidate();
       return;
     }
 
+    applyModelOrientation(candidate, Boolean(candidateStream));
     const previousSplat = activeSplat;
+    const previousStream = activeStream;
     activeSplat = candidate;
+    activeStream = candidateStream ?? null;
     scene.add(activeSplat);
     if (previousSplat) {
       scene.remove(previousSplat);
-      previousSplat.dispose();
+      if (previousStream) previousStream.dispose();
+      else previousSplat.dispose();
     }
     frameSplat(activeSplat);
 
@@ -1090,15 +1184,21 @@ async function loadFile(file, { credit = "", url, button } = {}) {
     fileMeta.hidden = false;
     fileName.textContent = file.name;
     const sizeLabel = file.size > 0 ? ` · ${formatBytes(file.size)}` : "";
-    fileStats.textContent = `${formatNumber.format(activeSplat.numSplats)} splats${sizeLabel}`;
+    fileStats.textContent = streamed
+      ? "Loading visible regions…"
+      : `${formatNumber.format(activeSplat.numSplats)} splats${sizeLabel}`;
     modelCredit.textContent = credit;
     modelCreditPrefix.hidden = !credit;
     modelCredit.hidden = !credit;
     modelCreditSeparator.hidden = !credit;
-    setStatus("Loaded and ready", "success");
+    setStatus(
+      streamed ? "Streaming visible regions" : "Loaded and ready",
+      "success",
+    );
     clearLoading();
+    requestRender();
   } catch (error) {
-    candidate?.dispose();
+    disposeCandidate();
     if (loadId !== activeLoad) return;
 
     clearLoading();
@@ -1107,6 +1207,7 @@ async function loadFile(file, { credit = "", url, button } = {}) {
     console.error(`Failed to load ${file.name}`, error);
     showToast(`Could not load ${file.name}: ${detail}`);
   } finally {
+    if (cancelActiveLoad === disposeCandidate) cancelActiveLoad = null;
     if (button && remoteRequestByButton.get(button) === loadId) {
       remoteRequestByButton.delete(button);
       button.disabled = false;
@@ -1166,8 +1267,10 @@ urlForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const model = modelFromUrl(modelUrlInput.value.trim());
   if (!model) {
-    showToast("Enter a valid HTTP(S) URL ending in .ply, .spz, or .sog.");
-    setStatus("Enter a valid PLY, SPZ, or SOG URL", "error");
+    showToast(
+      "Enter an HTTP(S) URL for .ply, .spz, .sog, meta.json, or lod-meta.json.",
+    );
+    setStatus("Enter a valid model URL", "error");
     modelUrlInput.focus();
     return;
   }
@@ -1259,7 +1362,9 @@ window.addEventListener("beforeunload", () => {
   frameGate.dispose();
   controls.removeEventListener("update", requestRender);
   controls.dispose();
-  activeSplat?.dispose();
+  cancelActiveLoad?.();
+  if (activeStream) activeStream.dispose();
+  else activeSplat?.dispose();
   stochasticResolvePass.dispose();
   splatRenderer.dispose();
   renderer.dispose();

@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { emptySplatTexture } from "../data/textureLayout";
+import { SPLAT_TEX_HEIGHT_BITS, SPLAT_TEX_WIDTH_BITS } from "../data/defines";
+import { emptySplatTexture, emptyUintTexture } from "../data/textureLayout";
 import { SplatEdits } from "../scene/SplatEdit";
 
 export type Uniforms = Record<string, THREE.IUniform>;
@@ -82,6 +83,9 @@ export function makeGenerateUniforms(): Uniforms {
     targetCount: { value: 0 },
     sourceSplats: { value: emptySplatTexture },
     sourceSplats2: { value: emptySplatTexture },
+    sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },
+    sourceBlockBits: { value: 0 },
+    sourceBlocks: { value: emptyUintTexture },
     numSh: { value: 0 },
     sh1Texture: { value: emptySplatTexture },
     sh2Texture: { value: emptySplatTexture },

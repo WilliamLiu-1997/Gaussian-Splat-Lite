@@ -11,6 +11,9 @@ uniform int targetCount;
 
 uniform usampler2DArray sourceSplats;
 uniform usampler2DArray sourceSplats2;
+uniform uint sourceLayerBits;
+uniform uint sourceBlockBits;
+uniform usampler2D sourceBlocks;
 
 uniform int numSh;
 uniform usampler2DArray sh1Texture;
@@ -284,7 +287,22 @@ bool applySdfEdits(
 }
 
 void produceSplat(int index) {
-    ivec3 coord = splatTexCoord(index);
+    uint sourceIndex = uint(index);
+    vec4 blockRecolor = vec4(1.0);
+    if (sourceBlockBits > 0u) {
+        uint block = sourceIndex >> sourceBlockBits;
+        blockRecolor = uintBitsToFloat(texelFetch(sourceBlocks, ivec2(
+            block & SPLAT_TEX_WIDTH_MASK,
+            block >> SPLAT_TEX_WIDTH_BITS
+        ), 0));
+        if (blockRecolor.a <= 0.0) return;
+    }
+    uint layerMask = (1u << sourceLayerBits) - 1u;
+    ivec3 coord = ivec3(
+        sourceIndex & SPLAT_TEX_WIDTH_MASK,
+        (sourceIndex & layerMask) >> SPLAT_TEX_WIDTH_BITS,
+        sourceIndex >> sourceLayerBits
+    );
     uvec4 sourceSplat2 = texelFetch(sourceSplats2, coord, 0);
     // Detect the three packed -infinity scales before unpacking any floats.
     if ((sourceSplat2.y >> 16u) == 0xfc00u && sourceSplat2.z == 0xfc00fc00u) return;
@@ -321,13 +339,13 @@ void produceSplat(int index) {
 // The center is camera-relative while editPosition is mesh-origin-relative,
 // matching the rebased SDF transforms without reconstructing world position.
     // Opacity is clamped once on the CPU when preparing this mesh.
-    float opacityScale = recolor.a;
+    float opacityScale = recolor.a * blockRecolor.a;
     bool semanticOpacityDecoded = applySdfEdits(
         editPosition,
         rgba,
         shapeAmount
     );
-    rgba.rgb *= recolor.rgb;
+    rgba.rgb *= recolor.rgb * blockRecolor.rgb;
     if (!semanticOpacityDecoded && opacityScale >= 1.0) {
         // Neither SDFs nor the mesh opacity changed opacity, so preserve the
         // source alpha/shape encoding without any transcendental operations.

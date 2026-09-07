@@ -458,6 +458,7 @@ button {
 
 .icon-button:focus-visible,
 .text-button:focus-visible,
+.select-input:focus-visible,
 .range-input:focus-visible {
   outline: 2px solid #b9d9ff;
   outline-offset: 2px;
@@ -530,6 +531,20 @@ button {
   min-width: 0;
   align-items: center;
   justify-items: stretch;
+}
+
+.select-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 0.35rem;
+  background: #171b21;
+  color: #d4d8df;
+  font: inherit;
+  font-size: 0.65rem;
+  cursor: pointer;
+  color-scheme: dark;
 }
 
 .range-value {

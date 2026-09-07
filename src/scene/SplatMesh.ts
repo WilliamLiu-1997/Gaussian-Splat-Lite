@@ -138,6 +138,7 @@ export class SplatMesh extends THREE.Object3D {
           ? maybePromise.then(() => this)
           : Promise.resolve(this);
     }
+    void this.initialized.catch(() => {});
   }
 
   pushSplats(splats: readonly SplatInput[]) {

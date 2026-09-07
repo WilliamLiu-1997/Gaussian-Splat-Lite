@@ -1,107 +1,11 @@
-import { WASM_MODULE } from "./wasm";
-
-import { getTransferable } from "./transferable";
+import { WorkerRpc } from "./WorkerRpc";
+import { abortable } from "./abort";
 import type { RpcHandlers } from "./worker";
 import BundledWorker from "./worker?worker&inline";
 
-type PromiseRecord = {
-  resolve: (value: unknown) => void;
-  reject: (reason?: unknown) => void;
-  onStatus?: (data: unknown) => void | Promise<void>;
-  statusQueue: Promise<void>;
-};
-
-export class SplatWorker {
-  worker: Worker;
-  messages: Record<number, PromiseRecord> = {};
-  peakWasmMemoryBytes = 0;
-  disposed = false;
-  static currentId = 0;
-
-  constructor() {
-    this.worker = new BundledWorker();
-    this.worker.onmessage = (event) => this.onMessage(event);
-    this.worker.onerror = (event) => this.dispose(new Error(event.message));
-    this.worker.onmessageerror = () =>
-      this.dispose(new Error("Invalid worker message"));
-    void WASM_MODULE.then((module) => {
-      if (!this.disposed)
-        this.worker.postMessage({ name: "init-wasm", module });
-    }).catch((error) => this.dispose(error));
-  }
-
-  onMessage(event: MessageEvent) {
-    const { id, result, error, status, wasmMemoryBytes } = event.data;
-    if (Number.isSafeInteger(wasmMemoryBytes) && wasmMemoryBytes >= 0) {
-      this.peakWasmMemoryBytes = Math.max(
-        this.peakWasmMemoryBytes,
-        wasmMemoryBytes,
-      );
-    }
-    const promise = this.messages[id];
-    if (!promise) return;
-
-    if (status !== undefined) {
-      promise.statusQueue = promise.statusQueue.then(() => {
-        if (this.messages[id] === promise) {
-          return promise.onStatus?.(status);
-        }
-      });
-      void promise.statusQueue.catch((error) => this.dispose(error));
-      return;
-    }
-
-    void promise.statusQueue
-      .then(() => {
-        if (error !== undefined) throw error;
-        return result;
-      })
-      .finally(() => {
-        delete this.messages[id];
-      })
-      .then(promise.resolve, promise.reject);
-  }
-
-  async call<Name extends keyof RpcHandlers>(
-    name: Name,
-    args: Parameters<RpcHandlers[Name]>[0],
-    options: {
-      onStatus?: (data: unknown) => void | Promise<void>;
-    } = {},
-  ): Promise<Awaited<ReturnType<RpcHandlers[Name]>>> {
-    type Result = Awaited<ReturnType<RpcHandlers[Name]>>;
-    if (this.disposed) throw new Error("Worker terminated");
-    const id = ++SplatWorker.currentId;
-    const promise = new Promise<Result>((resolve, reject) => {
-      this.messages[id] = {
-        resolve: (value) => resolve(value as Result),
-        reject,
-        onStatus: options.onStatus,
-        statusQueue: Promise.resolve(),
-      };
-    });
-    try {
-      this.worker.postMessage(
-        { id, name, args },
-        { transfer: getTransferable(args) },
-      );
-    } catch (error) {
-      this.messages[id].reject(error);
-      delete this.messages[id];
-    }
-    return promise;
-  }
-
-  dispose(reason: unknown = new Error("Worker terminated")) {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.worker.terminate();
-
-    const messages = Object.values(this.messages);
-    this.messages = {};
-    for (const message of messages) {
-      message.reject(reason);
-    }
+export class SplatWorker extends WorkerRpc<RpcHandlers> {
+  constructor(onDispose?: () => void) {
+    super(new BundledWorker(), onDispose);
   }
 }
 
@@ -168,22 +72,31 @@ class SplatWorkerPool {
   async withWorker<T>(
     callback: (worker: SplatWorker) => Promise<T>,
     memoryHeavy = false,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     if (memoryHeavy) {
-      const next = this.heavyJobs.then(() => this.withWorker(callback));
+      const next = this.heavyJobs.then(() =>
+        this.withWorker(callback, false, signal),
+      );
       this.heavyJobs = next.then(
         () => {},
         () => {},
       );
-      return next;
+      return abortable(next, signal);
     }
 
-    const worker = await this.allocWorker();
-    try {
-      return await callback(worker);
-    } finally {
-      this.freeWorker(worker);
-    }
+    return abortable(
+      this.allocWorker().then(async (worker) => {
+        try {
+          signal?.throwIfAborted();
+          return await callback(worker);
+        } finally {
+          this.freeWorker(worker);
+        }
+      }),
+      signal,
+    );
   }
 
   async allocWorker(): Promise<SplatWorker> {

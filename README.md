@@ -109,6 +109,7 @@ With default depth settings, the companion draw runs on non-stochastic frames in
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering, sorting, depth, resolve, and XR.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
+- [SogStreamScheduler](docs/SogStreamScheduler.md) — Streamed SOG, camera-driven LOD and caching.
 - [Splats](docs/Splats.md) — Data access and updates.
 - [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG formats.
 - [SplatEdit / SplatEditSdf](docs/SplatEdit.md) — Color and opacity editing.

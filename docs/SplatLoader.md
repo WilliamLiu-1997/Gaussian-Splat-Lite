@@ -26,3 +26,16 @@ loader.load(
   (error) => console.error(error),
 );
 ```
+
+`loadAsync(url, onProgress?, signal?)` accepts an optional `AbortSignal`. Cancellation also interrupts worker decoding:
+
+```js
+const controller = new AbortController();
+const loading = loader.loadAsync("/assets/model.sog", undefined, controller.signal);
+controller.abort(); // `loading` rejects with the signal's reason.
+```
+
+For loads started through `Splats` or `SplatMesh`, `dispose()` also cancels pending downloading and decoding.
+
+For `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).
+
