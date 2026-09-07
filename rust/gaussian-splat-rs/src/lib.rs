@@ -7,6 +7,7 @@ use wasm_bindgen::prelude::*;
 use crate::{decoder::ChunkDecoder, splats::SplatsData};
 
 mod decoder;
+mod rad;
 mod raycast;
 mod sog;
 mod sort;
@@ -190,6 +191,7 @@ struct RaycastBuffers {
     splats: Vec<u32>,
     splats2: Vec<u32>,
     distances: Vec<f32>,
+    indices: Vec<u32>,
     tables: RaycastTables,
 }
 
@@ -199,6 +201,7 @@ impl Default for RaycastBuffers {
             splats: vec![0; RAYCAST_BUFFER_COUNT * 4],
             splats2: vec![0; RAYCAST_BUFFER_COUNT * 4],
             distances: vec![0.0; RAYCAST_BUFFER_COUNT],
+            indices: Vec::with_capacity(RAYCAST_BUFFER_COUNT),
             tables: RaycastTables::default(),
         }
     }
@@ -218,6 +221,13 @@ pub fn get_raycast_buffer2() -> Uint32Array {
     RAYCAST_BUFFERS.with_borrow_mut(|buffers| unsafe { Uint32Array::view(&buffers.splats2) })
 }
 
+/// Record indices corresponding one-for-one to the last raycast distances.
+/// This view is valid until the next call to `raycast_splat_buffers`.
+#[wasm_bindgen]
+pub fn get_raycast_indices() -> Uint32Array {
+    RAYCAST_BUFFERS.with_borrow(|buffers| unsafe { Uint32Array::view(&buffers.indices) })
+}
+
 #[wasm_bindgen]
 pub fn raycast_splat_buffers(
     origin_x: f32,
@@ -231,20 +241,26 @@ pub fn raycast_splat_buffers(
     far: f32,
     count: u32,
 ) -> Float32Array {
+    if count as usize > RAYCAST_BUFFER_COUNT {
+        wasm_bindgen::throw_str("Raycast count exceeds the input buffer capacity");
+    }
     RAYCAST_BUFFERS.with_borrow_mut(|buffers| {
         let RaycastBuffers {
             splats,
             splats2,
             distances,
+            indices,
             tables,
         } = &mut *buffers;
         distances.clear();
+        indices.clear();
         let subbuffer = &splats[0..(4 * count as usize)];
         let subbuffer2 = &splats2[0..(4 * count as usize)];
         raycast_splat_ellipsoids(
             subbuffer,
             subbuffer2,
             distances,
+            indices,
             [origin_x, origin_y, origin_z],
             [dir_x, dir_y, dir_z],
             min_opacity,

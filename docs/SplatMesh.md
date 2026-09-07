@@ -10,7 +10,7 @@ new SplatMesh(options?: SplatMeshOptions)
 
 ## Loading
 
-Use `url` for remote files. For a local PLY/SPZ/SOG file:
+Use `url` for remote files. For a local PLY/SPZ/SOG/RAD file:
 
 ```js
 const file = fileInput.files[0];
@@ -43,11 +43,12 @@ await splat.initialized;
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `url` | `string` | `undefined` | PLY/SPZ/SOG file or SOG metadata URL |
+| `url` | `string` | `undefined` | PLY/SPZ/SOG/RAD file or SOG metadata URL |
 | `file` | `Blob` (including `File`) | `undefined` | Local file |
 | `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | Complete file data in memory |
-| `fileType` | `SplatFileType` | Inferred from name | Explicitly selects `PLY`, `SPZ`, or `SOG` |
+| `fileType` | `SplatFileType` | Inferred from name | Explicitly selects `PLY`, `SPZ`, `SOG`, or `RAD` |
 | `fileName` | `string` | `File.name` when available | Supplies a name for inferring the input format |
+| `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | **`Experimental`** Serializable per-Splat transform executed in the decode worker |
 | `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
 | `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |
@@ -121,7 +122,7 @@ if (intersections.length > 0) {
 }
 ```
 
-Requires the built-in `Splats` source and `raycastable: true`. Returns no hits until main-thread WebAssembly is ready.
+Requires a built-in `Splats` source and `raycastable: true`. Returns no hits until main-thread WebAssembly is ready. Streaming raycasts use selected records at their original opacity.
 
 ## Scene integration
 

@@ -68,6 +68,7 @@ pub fn raycast_splat_ellipsoids(
     buffer: &[u32],
     buffer2: &[u32],
     distances: &mut Vec<f32>,
+    indices: &mut Vec<u32>,
     origin: [f32; 3],
     dir: [f32; 3],
     min_opacity: f32,
@@ -86,7 +87,11 @@ pub fn raycast_splat_ellipsoids(
     let inv_dir_length_squared = 1.0 / dir_length_squared;
     let (alpha_radius_scales, shape_amount_radius_scales, scale_table) = tables.get(min_opacity);
 
-    for (splat_a, splat_b) in buffer.chunks(4).zip(buffer2.chunks(4)) {
+    for (index, (splat_a, splat_b)) in buffer
+        .chunks_exact(4)
+        .zip(buffer2.chunks_exact(4))
+        .enumerate()
+    {
         let alpha_code = splat_a[3] as u16 as usize;
         let shape_amount_code = (splat_a[3] >> 16) as u16 as usize;
         let radius_scale = if shape_amount_code == 0 && alpha_code <= F16_ONE_CODE {
@@ -128,6 +133,7 @@ pub fn raycast_splat_ellipsoids(
         let quat = decode_splat_quat(splat_b);
         if let Some(t) = raycast_ellipsoid(origin, dir, center, scale, quat, near, far) {
             distances.push(t);
+            indices.push(index as u32);
         }
     }
 }
@@ -392,6 +398,7 @@ mod tests {
                 &splat_a,
                 &splat_b,
                 &mut distances,
+                &mut Vec::new(),
                 [x, 0.0, -5.0],
                 [0.0, 0.0, 1.0],
                 threshold,
@@ -427,6 +434,7 @@ mod tests {
             &splat_a,
             &splat_b,
             &mut distances,
+            &mut Vec::new(),
             [-10.0, 0.0, 1.5 * radius],
             [1.0, 0.0, 0.0],
             threshold,
@@ -489,6 +497,7 @@ mod tests {
             &splat_a,
             &splat_b,
             &mut distances,
+            &mut Vec::new(),
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 1.0],
             threshold,
@@ -511,6 +520,7 @@ mod tests {
             &splat_a,
             &splat_b,
             &mut distances,
+            &mut Vec::new(),
             [0.0, 0.0, -5.0],
             [0.0, 0.0, 1.0],
             threshold,

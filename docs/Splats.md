@@ -23,11 +23,12 @@ The constructor and `initialize()` accept `SplatsOptions`:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `url` | `string` | `undefined` | PLY/SPZ/SOG file or SOG metadata URL |
-| `file` | `Blob` (including `File`) | `undefined` | Local file; PLY/SPZ stream internally, SOG uses random reads |
+| `url` | `string` | `undefined` | PLY/SPZ/SOG/RAD file or SOG metadata URL |
+| `file` | `Blob` (including `File`) | `undefined` | Local file; PLY/SPZ stream internally, SOG/RAD use random reads |
 | `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | In-memory file data |
 | `fileType` | `SplatFileType` | Inferred from name | Explicit file format |
 | `fileName` | `string` | `File.name` when available | Name used to infer the input format |
+| `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | **`Experimental`** Serializable per-Splat transform executed in the decode worker |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `construct` | `(splats) => void \| Promise<void>` | `undefined` | Populates the source during initialization |
@@ -60,3 +61,4 @@ Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs 
 - Each input has `center`, `scales`, `quaternion`, `opacity`, and `color`. Optional `sh` holds 0, 3, 8, or 15 RGB coefficients for SH0/1/2/3. Lower-degree overwrites clear stale coefficients.
 - `setSplats()` requires equally sized index and Splat arrays. Removal indices may be unordered; duplicates are removed once.
 - `copySplatRecords()`, `copySortCenters()`, and `setTextureUniforms()` are low-level renderer methods. Texture data from `setTextureUniforms()` aliases source storage and is read-only.
+- RAD/SOG streaming reads and iteration use selected indices; display fades preserve source and picking opacity. These sources reject mutation and reinitialization; `extractRange()` returns a mutable copy.

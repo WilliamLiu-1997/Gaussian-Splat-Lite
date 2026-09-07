@@ -20,8 +20,6 @@ import {
 
 const N = TSL as Record<string, TSLNode>;
 
-const MAX_SEMANTIC_OPACITY = 1000;
-
 // Finite sentinel for empty/unbounded SDFs. Runtime infinity arithmetic is not
 // portable in WGSL, and smooth ALL shapes otherwise evaluate exp(inf - inf).
 const SDF_DISTANCE_LIMIT = 1e20;
@@ -100,22 +98,15 @@ const decodeShRgb = N.Fn(([encoded]: TSLNode[]) => {
 const decodeSemanticOpacity = N.Fn(([alpha, shapeAmount]: TSLNode[]) => {
   const result = alpha.toVar();
   N.If(shapeAmount.greaterThan(0), () => {
-    const kernelShape = shapeAmount.mul(4).add(1);
+    const kernelShape = shapeAmount.min(1).mul(4).add(1);
     const kernelOpacity = kernelShape.mul(kernelShape).sub(1).div(E).exp();
-    result.assign(alpha.mul(kernelOpacity).min(MAX_SEMANTIC_OPACITY));
+    result.assign(alpha.mul(kernelOpacity));
   });
   return result;
 });
 
 const encodeWideSemanticOpacity = N.Fn(([opacity]: TSLNode[]) => {
-  return opacity
-    .min(MAX_SEMANTIC_OPACITY)
-    .log()
-    .mul(E)
-    .add(1)
-    .sqrt()
-    .sub(1)
-    .mul(0.25);
+  return opacity.log().mul(E).add(1).sqrt().sub(1).mul(0.25).min(1);
 });
 
 export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
@@ -129,7 +120,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const sourceSplats2 = bindTexture("sourceSplats2", true);
   const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
   const sourceBlockBits = bindUniform("sourceBlockBits", "uint");
-  const sourceBlocks = bindTexture("sourceBlocks");
+  const sourceBlocks = bindTexture("sourceBlocks", true);
   const sourceIndexed = bindUniform("sourceIndexed", "bool");
   const sourceIndices = bindTexture("sourceIndices", true);
   const numSh = bindUniform("numSh", "int");
@@ -266,18 +257,22 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
         );
         sourceIndex.assign(indices.element(index.bitAnd(3)));
       });
-      const blockRecolor = N.vec4(1).toVar();
-      N.If(sourceBlockBits.greaterThan(N.uint(0)), () => {
+      const blockOpacity = N.float(1).toVar();
+      N.If(sourceBlockBits.lessThan(N.uint(32)), () => {
+        const blockMask = N.uint(1)
+          .shiftLeft(sourceLayerBits.sub(sourceBlockBits))
+          .sub(N.uint(1));
         const block = sourceIndex.shiftRight(sourceBlockBits);
-        blockRecolor.assign(
+        blockOpacity.assign(
           N.uintBitsToFloat(
-            load2D(
+            loadArray(
               sourceBlocks,
-              N.ivec2(
-                N.int(block.bitAnd(SPLAT_TEX_WIDTH - 1)),
-                N.int(block.shiftRight(SPLAT_TEX_WIDTH_BITS)),
+              N.ivec3(
+                N.int(block.bitAnd(blockMask.min(N.uint(SPLAT_TEX_WIDTH - 1)))),
+                N.int(block.bitAnd(blockMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
+                N.int(sourceIndex.shiftRight(sourceLayerBits)),
               ),
-            ),
+            ).r,
           ),
         );
       });
@@ -295,7 +290,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
         .shiftRight(16)
         .equal(N.uint(0xfc00))
         .and(sourceB.z.equal(N.uint(0xfc00fc00)));
-      N.If(isDeleted.not().and(blockRecolor.a.greaterThan(0)), () => {
+      N.If(isDeleted.not().and(blockOpacity.greaterThan(0)), () => {
         const alphaShape = decodeAlphaShape(sourceA);
         valid.assign(true);
         center.assign(objectBasis.mul(decodeCenter(sourceA)));
@@ -541,8 +536,8 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
           },
         );
 
-        rgba.rgb.mulAssign(recolor.rgb.mul(blockRecolor.rgb));
-        const opacityScale = recolor.a.mul(blockRecolor.a);
+        rgba.rgb.mulAssign(recolor.rgb);
+        const opacityScale = recolor.a.mul(blockOpacity);
         N.If(
           semanticOpacityDecoded.not().and(opacityScale.greaterThanEqual(1)),
           () => {

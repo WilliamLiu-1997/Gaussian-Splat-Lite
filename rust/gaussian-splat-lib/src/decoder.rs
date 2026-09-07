@@ -11,6 +11,7 @@ use miniz_oxide::inflate::{
 
 use crate::{
     ply::{PlyDecoder, PLY_MAGIC},
+    splat_encode::decode_splat_sh_rgb,
     spz::{SpzDecoder, SPZ_MAGIC},
 };
 
@@ -88,6 +89,37 @@ pub trait SplatReceiver: 'static {
     fn set_sh1(&mut self, base: usize, count: usize, sh1: &[f32]) {}
     fn set_sh2(&mut self, base: usize, count: usize, sh2: &[f32]) {}
     fn set_sh3(&mut self, base: usize, count: usize, sh3: &[f32]) {}
+
+    /// Expands a packed shared SH palette through the normal band setters.
+    /// Encoded receivers can override this to copy palette words directly.
+    fn set_sh_palette(
+        &mut self,
+        base: usize,
+        count: usize,
+        degree: usize,
+        palette: &[u32],
+        labels: &[u16],
+    ) {
+        let stride = [0, 4, 8, 16][degree];
+        let mut values = Vec::new();
+        let mut offset = 0;
+        for (band, coefficients) in [3, 5, 7].into_iter().enumerate().take(degree) {
+            values.resize(count * coefficients * 3, 0.0);
+            for (i, &label) in labels.iter().take(count).enumerate() {
+                for coefficient in 0..coefficients {
+                    let word = palette[label as usize * stride + offset + coefficient];
+                    let start = (i * coefficients + coefficient) * 3;
+                    values[start..start + 3].copy_from_slice(&decode_splat_sh_rgb(word));
+                }
+            }
+            match band {
+                0 => self.set_sh1(base, count, &values),
+                1 => self.set_sh2(base, count, &values),
+                _ => self.set_sh3(base, count, &values),
+            }
+            offset += coefficients;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

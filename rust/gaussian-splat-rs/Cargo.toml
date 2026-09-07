@@ -21,8 +21,4 @@ wasm-bindgen.workspace = true
 gaussian-splat-lib = { path = "../gaussian-splat-lib" }
 console_error_panic_hook = "0.1"
 half.workspace = true
-crc32fast.workspace = true
-miniz_oxide.workspace = true
 serde_json = "1.0"
-image-webp = "=0.2.4"
-png = "=0.17.16"

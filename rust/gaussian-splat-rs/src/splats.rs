@@ -244,6 +244,10 @@ impl SplatsData {
 impl SplatReceiver for SplatsData {
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
         let (_, _, _, max_splats) = get_splat_tex_size(init.num_splats);
+        anyhow::ensure!(
+            max_splats as u64 * 4 <= u32::MAX as u64,
+            "packed output exceeds the typed-array length range"
+        );
         self.max_splats = max_splats;
         self.num_splats = init.num_splats;
         self.max_sh_degree = init.max_sh_degree;
@@ -364,6 +368,33 @@ impl SplatReceiver for SplatsData {
                 &mut self.buffer_b[i4..i4 + 4],
                 array::from_fn(|d| quat[i4 + d]),
             );
+        }
+    }
+
+    fn set_sh_palette(
+        &mut self,
+        base: usize,
+        count: usize,
+        degree: usize,
+        palette: &[u32],
+        labels: &[u16],
+    ) {
+        self.invalidate_buffers();
+        self.ensure_buffer_a(count);
+        let stride = [0, 4, 8, 16][degree];
+        for (block, output) in [&self.sh1, &self.sh2, &self.sh3a, &self.sh3b]
+            .into_iter()
+            .enumerate()
+            .take(stride / 4)
+        {
+            let Some(output) = output else { continue };
+            for (i, &label) in labels.iter().take(count).enumerate() {
+                let offset = label as usize * stride + block * 4;
+                self.buffer_a[i * 4..i * 4 + 4].copy_from_slice(&palette[offset..offset + 4]);
+            }
+            output
+                .subarray((base * 4) as u32, ((base + count) * 4) as u32)
+                .copy_from(&self.buffer_a);
         }
     }
 

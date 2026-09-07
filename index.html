@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="A PLY and SPZ Gaussian Splatting viewer powered by Gaussian Splat Lite."
+      content="A PLY, SPZ, SOG and RAD Gaussian Splatting viewer powered by Gaussian Splat Lite."
     />
     <title>Gaussian Splat Lite · Gaussian Splatting Viewer</title>
     <link
@@ -127,8 +127,10 @@
           <p class="eyebrow">Gaussian Splatting Viewer</p>
           <h1 id="viewer-title">Drop a splat file here</h1>
           <p class="empty-description">
-            Choose a <strong>.ply</strong>, <strong>.spz</strong>, or
-            <strong>.sog</strong> file from your device, or load one from a URL.
+            Choose a <strong>.ply</strong>, <strong>.spz</strong>,
+            <strong>.sog</strong>, or <strong>.rad</strong> file from your device,
+            or load one from a URL. For split scenes, include SOG meta.json and its
+            .webp images, or the RAD header and its .radc files.
             The model is decoded in this browser.
           </p>
           <div class="source-actions">
@@ -138,7 +140,7 @@
               type="button"
               data-file-picker
             >
-              Choose PLY, SPZ, or SOG
+              Choose PLY, SPZ, SOG, or RAD
             </button>
             <button
               id="load-example"
@@ -153,7 +155,7 @@
           </div>
           <form id="url-form" class="url-form">
             <label class="visually-hidden" for="model-url">
-              PLY, SPZ, SOG, or Streamed SOG model URL
+              PLY, SPZ, SOG, RAD, or Streamed SOG model URL
             </label>
             <input
               id="model-url"
@@ -168,7 +170,7 @@
               Load
             </button>
           </form>
-          <p class="url-hint">Streamed SOG: use a lod-meta.json URL. Remote host must allow CORS.</p>
+          <p class="url-hint">Stream RAD or a SOG lod-meta.json scene. Remote hosts must allow CORS; single-file RAD streaming requires byte-range requests.</p>
         </section>
       </main>
 
@@ -256,12 +258,12 @@
       <div class="drop-overlay-card">
         <span class="drop-plus" aria-hidden="true">+</span>
         <strong>Drop to open</strong>
-        <span>PLY, SPZ, and SOG files only</span>
+        <span>PLY, SPZ, SOG, or RAD; include companion RADC files</span>
       </div>
     </div>
 
     <div id="toast" class="toast" role="alert" hidden></div>
-    <input id="file-input" type="file" accept=".ply,.spz,.sog" hidden />
+    <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp" multiple hidden />
 
     <script type="module" src="/examples/viewer/viewer.js"></script>
   </body>

@@ -1,14 +1,31 @@
 import * as THREE from "three";
-import type { Splats } from "../../data/Splats";
-import { getSplatTextureBytes } from "../../data/splatData";
-import { getTextureSize } from "../../data/textureLayout";
-import { getAssetBaseUrl } from "../assetUrl";
 import {
-  SogStreamBatch,
   sogBatchAllocationSize,
   sogBatchTextureLayout,
-} from "./SogStreamBatch";
-import { type SogChunkSource, SogStreamLoader } from "./SogStreamLoader";
+} from "../../../data/SogRegionSplats";
+import type { SplatResult } from "../../../data/defines";
+import {
+  getSplatByteLength,
+  getSplatShDegree,
+  getSplatTextureBytes,
+} from "../../../data/splatData";
+import { getTextureSize } from "../../../data/textureLayout";
+import { StreamByteBudget } from "../StreamByteBudget";
+import {
+  type StreamSchedulerOptions,
+  type StreamStats,
+  notifyStreamChange,
+  notifyStreamError,
+  retryDelay,
+  streamPendingLimit,
+  streamSettings,
+} from "../streamOptions";
+import { SogStreamBatch } from "./SogStreamBatch";
+import {
+  type SogChunkSource,
+  SogStreamLoader,
+  type SogStreamLoaderOptions,
+} from "./SogStreamLoader";
 import {
   type SogLodFile,
   type SogLodIndex,
@@ -19,35 +36,9 @@ import {
 } from "./sogLod";
 import { SogVisibility } from "./sogVisibility";
 
-export type SogStreamSchedulerOptions = {
-  url: string;
-  group?: THREE.Group;
-  splatBudget?: number;
-  /** Updates to retain unused chunks and regions after fade-out. */
-  cooldownTicks?: number;
-  /** Region opacity transition duration in milliseconds; zero switches immediately. */
-  fadeDurationMs?: number;
-  maxConcurrentLoads?: number;
-  /** Source texture bytes attached per update; one oversized region may progress. */
-  maxUploadBytesPerUpdate?: number;
-  manager?: THREE.LoadingManager;
-  requestHeader?: Record<string, string>;
-  withCredentials?: boolean;
-  onChange?: () => void;
-  onError?: (error: unknown, url: string) => void;
-  /** Optional transport override; returns owned data in the original storage order. */
-  loadChunk?: (url: string, signal: AbortSignal) => Promise<Splats>;
-};
-
-export type SogStreamStats = {
-  visibleSplats: number;
-  visibleRegions: number;
-  visibleMeshes: number;
-  residentMeshes: number;
-  residentChunks: number;
-  residentBytes: number;
-  loadingChunks: number;
-};
+export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
+  StreamSchedulerOptions;
+export type SogStreamStats = StreamStats & { visibleRegions: number };
 
 type Chunk = {
   file: SogLodFile;
@@ -67,11 +58,6 @@ type Region = {
   start: number;
   range: SogLodRange;
   opacity: number;
-  fade?: {
-    from: number;
-    to: number;
-    startedAt: number;
-  };
   expiresAt?: number;
 };
 
@@ -79,7 +65,7 @@ type PendingRegion = {
   range: SogLodRange;
   chunk: Chunk;
   bytes: number;
-  data?: Splats;
+  data?: SplatResult;
 };
 
 type LeafState = {
@@ -89,22 +75,6 @@ type LeafState = {
   outgoing?: Region;
   pending?: PendingRegion;
 };
-
-type RegionPlan = {
-  chunk: Chunk;
-  start: number;
-  bytes: number;
-};
-
-function isRegionActive(region: Region) {
-  return region.opacity > 0 || !!region.fade;
-}
-
-function positive(value: number, name: string) {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new Error(`${name} must be a positive safe integer`);
-  return value;
-}
 
 /** Camera-driven Streamed SOG loading with per-chunk sources and region fades. */
 export class SogStreamScheduler {
@@ -126,33 +96,29 @@ export class SogStreamScheduler {
   private environment?: Chunk;
   private leaves = new Map<number, LeafState>();
   private wanted = new Set<Chunk>();
+  private readonly fades = new Map<
+    Region,
+    { from: number; to: number; startedAt: number }
+  >();
   private tick = 0;
+  private shown = true;
   private disposed = false;
   private resolveFirst!: (value: this) => void;
   private rejectFirst!: (error: unknown) => void;
-  private baseUrl = "";
 
   constructor(options: SogStreamSchedulerOptions) {
     this.options = { ...options };
-    this.loader = new SogStreamLoader(this.options, () => this.changed());
     this.group = options.group ?? new THREE.Group();
-    this.splatBudget = positive(
-      options.splatBudget ?? 3_000_000,
-      "splatBudget",
-    );
-    this.cooldownTicks = options.cooldownTicks ?? 100;
-    if (!Number.isSafeInteger(this.cooldownTicks) || this.cooldownTicks < 0)
-      throw new Error("cooldownTicks must be a nonnegative safe integer");
-    this.fadeDurationMs = options.fadeDurationMs ?? 200;
-    if (!Number.isFinite(this.fadeDurationMs) || this.fadeDurationMs < 0)
-      throw new Error("fadeDurationMs must be finite and nonnegative");
-    this.maxConcurrentLoads = positive(
-      options.maxConcurrentLoads ?? 2,
-      "maxConcurrentLoads",
-    );
-    this.maxUploadBytesPerUpdate = positive(
-      options.maxUploadBytesPerUpdate ?? 8 * 1024 * 1024,
-      "maxUploadBytesPerUpdate",
+    const settings = streamSettings(options);
+    this.splatBudget = settings.splatBudget;
+    this.cooldownTicks = settings.cooldownTicks;
+    this.fadeDurationMs = settings.fadeDurationMs;
+    this.maxConcurrentLoads = settings.maxConcurrentLoads;
+    this.maxUploadBytesPerUpdate = settings.maxUploadBytesPerUpdate;
+    this.loader = new SogStreamLoader(
+      this.options,
+      this.maxConcurrentLoads,
+      () => this.changed(),
     );
     this.firstRenderable = new Promise((resolve, reject) => {
       this.resolveFirst = resolve;
@@ -160,6 +126,7 @@ export class SogStreamScheduler {
     });
     this.initialized = this.initialize().catch((error) => {
       this.rejectFirst(error);
+      this.loader.dispose();
       throw error;
     });
     // Both readiness promises are optional to observe; errors remain available
@@ -169,40 +136,44 @@ export class SogStreamScheduler {
   }
 
   get stats(): SogStreamStats {
-    const leaves = [...this.leaves.values()];
-    const active = leaves
-      .flatMap(({ current, outgoing }) => [current, outgoing])
-      .filter((region): region is Region => !!region && isRegionActive(region));
-    return {
-      visibleSplats: active.reduce(
-        (count, region) => count + region.range.count,
-        0,
-      ),
-      visibleRegions: active.length,
-      visibleMeshes: new Set(active.map(({ batch }) => batch)).size,
-      residentMeshes: this.chunks.filter((chunk) => chunk.batch).length,
-      residentChunks: this.chunks.filter((chunk) => chunk.data?.alive).length,
-      residentBytes:
-        this.chunks.reduce(
-          (bytes, chunk) =>
-            bytes + (chunk.data?.alive ? chunk.data.info.byteLength : 0),
-          0,
-        ) +
-        this.chunks.reduce(
-          (bytes, chunk) => bytes + (chunk.batch?.residentBytes ?? 0),
-          0,
-        ) +
-        leaves.reduce(
-          (bytes, leaf) => bytes + (leaf.pending?.data?.getByteLength() ?? 0),
-          0,
-        ),
-      loadingChunks: this.chunks.filter(
-        (chunk) => chunk.controller !== undefined,
-      ).length,
+    const stats: SogStreamStats = {
+      visibleSplats: 0,
+      visibleRegions: 0,
+      visibleMeshes: 0,
+      residentMeshes: 0,
+      residentChunks: 0,
+      residentBytes: 0,
+      pendingBytes: 0,
+      loadingChunks: 0,
+      ...this.loader.stats,
     };
+    for (const { batch, data, controller } of this.chunks) {
+      if (batch) {
+        stats.residentMeshes++;
+        stats.residentBytes += batch.residentBytes;
+        if (this.shown && batch.numSplats > 0) {
+          stats.visibleMeshes++;
+          stats.visibleSplats += batch.numSplats;
+        }
+      }
+      if (data?.alive) {
+        stats.residentChunks++;
+        stats.residentBytes += data.info.byteLength;
+      }
+      if (controller) stats.loadingChunks++;
+    }
+    for (const { current, outgoing, pending } of this.leaves.values()) {
+      stats.pendingBytes += pending?.bytes ?? 0;
+      if (this.shown) {
+        if (current && Math.fround(current.opacity) > 0) stats.visibleRegions++;
+        if (outgoing && Math.fround(outgoing.opacity) > 0)
+          stats.visibleRegions++;
+      }
+    }
+    return stats;
   }
 
-  /** Scene-local bounds from the index; available after initialized resolves. */
+  /** Group-local bounds from the index; available after initialized resolves. */
   getBoundingBox(): THREE.Box3 {
     const box = new THREE.Box3();
     if (this.manifest) {
@@ -213,63 +184,37 @@ export class SogStreamScheduler {
   }
 
   private async initialize(): Promise<this> {
-    const manager = this.options.manager ?? THREE.DefaultLoadingManager;
-    const resolveBase =
-      typeof document === "undefined" ? undefined : document.baseURI;
-    const url = new URL(manager.resolveURL(this.options.url), resolveBase).href;
-    const resourceUrl = new URL(this.options.url, resolveBase ?? url).href;
-    this.baseUrl = getAssetBaseUrl(url) ?? resourceUrl;
-    manager.itemStart(url);
-    try {
-      const response = await fetch(url, {
-        headers: this.options.requestHeader,
-        credentials: this.options.withCredentials ? "include" : "same-origin",
-        signal: this.abort.signal,
-      });
-      if (!response.ok)
-        throw new Error(`HTTP ${response.status} loading ${url}`);
-      const bytes = await response.arrayBuffer();
-      const manifest = await this.loader.parseIndex(
-        bytes,
-        getAssetBaseUrl(response.url || url) ?? resourceUrl,
-        this.abort.signal,
+    const manifest = await this.loader.initialize(this.abort.signal);
+    this.abort.signal.throwIfAborted();
+    this.manifest = manifest;
+    this.visibility = new SogVisibility(manifest);
+    const files: SogLodFile[] = manifest.urls.map((url, index) => ({
+      url,
+      count: manifest.counts[index],
+      ranges: [],
+    }));
+    if (this.manifest.environment)
+      files.push({ url: this.manifest.environment, count: -1, ranges: [] });
+    this.chunks = files.map((file) => ({
+      file,
+      batchSlots: new Map(),
+      batchCapacity: 0,
+      failures: 0,
+      retryAt: 0,
+    }));
+    for (let offset = 0; offset < manifest.lods.length; offset += 6) {
+      this.addBatchRange(
+        this.chunks[manifest.lods[offset + 1]],
+        manifest.lods[offset + 2],
+        manifest.lods[offset + 3],
       );
-      this.abort.signal.throwIfAborted();
-      this.manifest = manifest;
-      this.visibility = new SogVisibility(manifest);
-      const files: SogLodFile[] = manifest.urls.map((url, index) => ({
-        url,
-        count: manifest.counts[index],
-        ranges: [],
-      }));
-      if (this.manifest.environment)
-        files.push({ url: this.manifest.environment, count: -1, ranges: [] });
-      this.chunks = files.map((file) => ({
-        file,
-        batchSlots: new Map(),
-        batchCapacity: 0,
-        failures: 0,
-        retryAt: 0,
-      }));
-      for (let offset = 0; offset < manifest.lods.length; offset += 6) {
-        this.addBatchRange(
-          this.chunks[manifest.lods[offset + 1]],
-          manifest.lods[offset + 2],
-          manifest.lods[offset + 3],
-        );
-      }
-      if (this.manifest.environment)
-        this.environment = this.chunks[this.chunks.length - 1];
-      if (!this.environment && !this.manifest.lods.length)
-        this.resolveFirst(this);
-      this.changed();
-      return this;
-    } catch (error) {
-      manager.itemError(url);
-      throw error;
-    } finally {
-      manager.itemEnd(url);
     }
+    if (this.manifest.environment)
+      this.environment = this.chunks[this.chunks.length - 1];
+    if (!this.environment && !this.manifest.lods.length)
+      this.resolveFirst(this);
+    this.changed();
+    return this;
   }
 
   /** Call before rendering. Returns whether the displayed data changed. */
@@ -281,6 +226,7 @@ export class SogStreamScheduler {
       chunk.batch?.beginUpdate();
     }
     const { shown, visible } = this.visibility.collect(camera, this.group);
+    this.shown = shown;
     const now = performance.now();
     const { selected, refinements } = this.selectRegions(shown, visible);
     const changed = this.applySelection(selected, now);
@@ -382,7 +328,6 @@ export class SogStreamScheduler {
     for (const leaf of this.leaves.values()) {
       const { current, outgoing, pending, target } = leaf;
       if (pending?.data && target !== pending.range) {
-        pending.data.dispose();
         leaf.pending = undefined;
       }
       if (current) changed = this.fadeRegion(current, !!target, now) || changed;
@@ -393,7 +338,7 @@ export class SogStreamScheduler {
 
   private attachPendingRegions(selected: LeafState[], now: number) {
     let changed = false;
-    let attachedBytes = 0;
+    const uploads = new StreamByteBudget(this.maxUploadBytesPerUpdate);
     for (const leaf of selected) {
       const { current, pending, target: range } = leaf;
       // Finish a crossfade before admitting another LOD for this region.
@@ -406,22 +351,40 @@ export class SogStreamScheduler {
       )
         continue;
 
-      const data = pending.data;
-      const plan = this.planRegion(range, data);
-      if (
-        attachedBytes &&
-        attachedBytes + plan.bytes > this.maxUploadBytesPerUpdate
-      )
-        continue;
-      const replacement = this.createRegion(range, data, plan);
+      const { data, chunk } = pending;
+      const start = chunk.batchSlots.get(range.offset);
+      if (start === undefined) throw new Error("Missing chunk region slot");
+      const count = data.numSplats;
+      const numSh = getSplatShDegree(data.extra);
+      let batch = chunk.batch;
+      let bytes: number;
+      if (batch) bytes = batch.uploadBytes(start, count);
+      else {
+        const { capacity } = sogBatchTextureLayout(chunk.batchCapacity);
+        bytes = getSplatTextureBytes(capacity, numSh) + (capacity / 64) * 4;
+      }
+      if (!uploads.reserve(bytes)) continue;
+      if (!batch) {
+        batch = new SogStreamBatch(
+          chunk.batchCapacity,
+          numSh,
+          this.group,
+          () => {
+            chunk.batch = undefined;
+          },
+        );
+        batch.name =
+          range.file < 0 ? "sog-environment" : `sog-chunk-${range.file}`;
+        chunk.batch = batch;
+      }
+      batch.writeRegion(start, data);
       leaf.pending = undefined;
-      attachedBytes += plan.bytes;
       if (current) {
         leaf.outgoing = current;
         this.fadeRegion(current, false, now);
       }
-      leaf.current = replacement;
-      this.fadeRegion(replacement, true, now);
+      leaf.current = { batch, start, range, opacity: 0 };
+      this.fadeRegion(leaf.current, true, now);
       changed = true;
     }
     return changed;
@@ -433,21 +396,25 @@ export class SogStreamScheduler {
     let pendingBytes = 0;
     for (const leaf of this.leaves.values())
       pendingBytes += leaf.pending?.bytes ?? 0;
+    const budget = new StreamByteBudget(
+      streamPendingLimit(this.maxConcurrentLoads, this.maxUploadBytesPerUpdate),
+      pendingBytes,
+    );
     const batches = new Map<Chunk, PendingRegion[]>();
     for (const leaf of selected) {
       const range = leaf.target;
       if (!range || leaf.current?.range === range || leaf.pending) continue;
       const chunk = this.chunkFor(range);
       if (!chunk.data?.alive || now < chunk.retryAt) continue;
-      const bytes = getSplatTextureBytes(
-        getTextureSize(range.count).maxSplats,
-        chunk.data.info.numSh,
-      );
-      if (pendingBytes && pendingBytes + bytes > this.maxUploadBytesPerUpdate)
-        continue;
+      const bytes =
+        getSplatTextureBytes(
+          getTextureSize(range.count).maxSplats,
+          chunk.data.info.numSh,
+        ) +
+        range.count * 12;
+      if (!budget.reserve(bytes)) continue;
       const pending = { range, chunk, bytes };
       leaf.pending = pending;
-      pendingBytes += bytes;
       const batch = batches.get(chunk) ?? [];
       batch.push(pending);
       batches.set(chunk, batch);
@@ -461,80 +428,35 @@ export class SogStreamScheduler {
     chunk.batchCapacity += sogBatchAllocationSize(count);
   }
 
-  private planRegion(range: SogLodRange, data: Splats): RegionPlan {
-    const count = data.getNumSplats();
-    const numSh = data.getNumSh();
-    const chunk = this.chunkFor(range);
-    const start = chunk.batchSlots.get(range.offset);
-    const batch = chunk.batch;
-    if (start === undefined) throw new Error("Missing chunk region slot");
-    const { layerSize } = sogBatchTextureLayout(chunk.batchCapacity);
-    return {
-      chunk,
-      start,
-      bytes: batch
-        ? batch.uploadBytes(start, count)
-        : (Math.ceil((start + count) / layerSize) -
-            Math.floor(start / layerSize)) *
-          getSplatTextureBytes(layerSize, numSh),
-    };
-  }
-
-  private createRegion(
-    range: SogLodRange,
-    data: Splats,
-    plan: RegionPlan,
-  ): Region {
-    let batch = plan.chunk.batch;
-    if (!batch) {
-      batch = new SogStreamBatch(
-        plan.chunk.batchCapacity,
-        data.getNumSh(),
-        this.group,
-        () => {
-          plan.chunk.batch = undefined;
-        },
-      );
-      batch.name =
-        range.file < 0 ? "sog-environment" : `sog-chunk-${range.file}`;
-      plan.chunk.batch = batch;
-    }
-    batch.writeRegion(plan.start, data);
-    return { batch, start: plan.start, range, opacity: 0 };
-  }
-
   private fadeRegion(region: Region, visible: boolean, now: number) {
     const to = visible ? 1 : 0;
-    if ((region.fade?.to ?? region.opacity) === to) return false;
-    region.fade = { from: region.opacity, to, startedAt: now };
+    if ((this.fades.get(region)?.to ?? region.opacity) === to) return false;
+    this.fades.set(region, { from: region.opacity, to, startedAt: now });
     return true;
   }
 
   private updateFades(now: number) {
     let changed = false;
-    for (const leaf of this.leaves.values()) {
-      for (const region of [leaf.current, leaf.outgoing]) {
-        if (!region?.fade) continue;
-        const fade = region.fade;
-        const progress =
-          this.fadeDurationMs === 0 || fade.from === fade.to
-            ? 1
-            : THREE.MathUtils.clamp(
-                (now - fade.startedAt) / this.fadeDurationMs,
-                0,
-                1,
-              );
-        const opacity = THREE.MathUtils.lerp(fade.from, fade.to, progress);
-        if (region.opacity !== opacity) {
-          region.opacity = opacity;
-          region.batch.setRegionOpacity(region.start, opacity);
-          changed = true;
-        }
-        if (progress === 1) {
-          region.fade = undefined;
-          if (leaf.outgoing === region) this.releaseRegion(region);
-          changed = true;
-        }
+    for (const [region, fade] of this.fades) {
+      const progress =
+        this.fadeDurationMs === 0 || fade.from === fade.to
+          ? 1
+          : THREE.MathUtils.clamp(
+              (now - fade.startedAt) / this.fadeDurationMs,
+              0,
+              1,
+            );
+      const opacity = THREE.MathUtils.lerp(fade.from, fade.to, progress);
+      if (region.opacity !== opacity) {
+        region.opacity = opacity;
+        region.batch.setRegionOpacity(region.start, opacity);
+        changed = true;
+      }
+      if (progress === 1) {
+        this.fades.delete(region);
+        if (this.leaves.get(region.range.leaf)?.outgoing === region)
+          this.releaseRegion(region);
+        changed = true;
       }
     }
     return changed;
@@ -562,10 +484,8 @@ export class SogStreamScheduler {
           leaf.target === range
         ) {
           pending.data = data;
-        } else {
-          data.dispose();
-          if (leaf?.pending === pending) leaf.pending = undefined;
-        }
+          pending.bytes = getSplatByteLength(data);
+        } else if (leaf?.pending === pending) leaf.pending = undefined;
       }
     } catch (error) {
       for (const pending of batch) {
@@ -591,7 +511,7 @@ export class SogStreamScheduler {
       if (pending) referenced.add(pending.chunk);
       if (outgoing) referenced.add(this.chunkFor(outgoing.range));
       if (current) {
-        if (isRegionActive(current) || outgoing) {
+        if (current.opacity > 0 || this.fades.has(current) || outgoing) {
           current.expiresAt = undefined;
           referenced.add(this.chunkFor(current.range));
         } else {
@@ -638,7 +558,6 @@ export class SogStreamScheduler {
       decoded = await this.loader.load(
         chunk.file.url,
         chunk.file.count,
-        this.baseUrl,
         controller.signal,
       );
       controller.signal.throwIfAborted();
@@ -679,9 +598,7 @@ export class SogStreamScheduler {
         this.resolveFirst(this);
     } catch (error) {
       if (!controller.signal.aborted && !this.disposed) {
-        chunk.retryAt =
-          performance.now() +
-          Math.min(30_000, 1000 * 2 ** Math.min(chunk.failures++, 5));
+        chunk.retryAt = performance.now() + retryDelay(chunk.failures++);
         this.failed(error, chunk.file.url);
       }
     } finally {
@@ -698,6 +615,7 @@ export class SogStreamScheduler {
   }
 
   private releaseRegion(region: Region) {
+    this.fades.delete(region);
     region.batch.releaseRegion(region.start);
     const leaf = this.leaves.get(region.range.leaf);
     if (leaf?.current === region) leaf.current = undefined;
@@ -705,21 +623,11 @@ export class SogStreamScheduler {
   }
 
   private changed() {
-    if (this.disposed) return;
-    try {
-      this.options.onChange?.();
-    } catch (error) {
-      console.error("Streamed SOG onChange failed", error);
-    }
+    if (!this.disposed) notifyStreamChange(this.options);
   }
 
   private failed(error: unknown, url: string) {
-    try {
-      if (this.options.onError) this.options.onError(error, url);
-      else console.error("Streamed SOG chunk failed", url, error);
-    } catch (error) {
-      console.error("Streamed SOG onError failed", error);
-    }
+    notifyStreamError(this.options, error, url);
   }
 
   dispose() {
@@ -736,9 +644,9 @@ export class SogStreamScheduler {
     for (const leaf of this.leaves.values()) {
       if (leaf.current) this.releaseRegion(leaf.current);
       if (leaf.outgoing) this.releaseRegion(leaf.outgoing);
-      leaf.pending?.data?.dispose();
     }
     this.leaves.clear();
+    this.fades.clear();
     this.wanted.clear();
     this.chunks = [];
     this.environment = undefined;
