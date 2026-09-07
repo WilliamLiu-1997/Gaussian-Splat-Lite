@@ -1,10 +1,11 @@
 // Keep at most one viewer frame in flight; animation ticks never queue draws.
-export function createFrameGate(renderer) {
+export function createFrameGate(renderer, onFirstFrameComplete) {
   const gl = renderer.isWebGPURenderer
     ? (renderer.backend.gl ?? null)
     : renderer.getContext();
   let fence = null;
   let pending = false;
+  let notifyFirstFrameComplete = onFirstFrameComplete;
 
   return {
     isReady() {
@@ -26,6 +27,13 @@ export function createFrameGate(renderer) {
         pending = true;
         renderer.backend.device.queue
           .onSubmittedWorkDone()
+          .then(() => {
+            // Give a newly attached WebGPU canvas another draw after its first
+            // submission completes, before the viewer settles into idle mode.
+            const notify = notifyFirstFrameComplete;
+            notifyFirstFrameComplete = undefined;
+            notify?.();
+          })
           .catch((error) => console.error("GPU frame completion failed", error))
           .finally(() => {
             pending = false;
@@ -34,6 +42,7 @@ export function createFrameGate(renderer) {
     },
 
     dispose() {
+      notifyFirstFrameComplete = undefined;
       if (fence !== null) gl.deleteSync(fence);
       fence = null;
     },
