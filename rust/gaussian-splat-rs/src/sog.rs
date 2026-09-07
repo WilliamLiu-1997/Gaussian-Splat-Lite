@@ -14,9 +14,6 @@ use wasm_bindgen::prelude::*;
 use crate::splats::SplatsData;
 
 const BATCH: usize = 65536;
-const META_LIMIT: usize = 4 * 1024 * 1024;
-const IMAGE_LIMIT: usize = 512 * 1024 * 1024;
-const OUTPUT_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 const SH_COEFFS: [usize; 4] = [0, 3, 8, 15];
 const SH_WORDS: [usize; 4] = [0, 4, 8, 16];
 const SH_C0: f32 = 0.282_094_8;
@@ -98,7 +95,6 @@ struct Metadata {
 
 impl Metadata {
     fn parse(text: &str) -> Result<Self> {
-        ensure!(text.len() <= META_LIMIT, "metadata exceeds 4 MiB");
         let root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .context("invalid meta.json")?;
         let version = match root.get("version") {
@@ -233,10 +229,12 @@ impl Image {
         }
     }
 
-    fn decode(bytes: &[u8], limit: usize) -> Result<Self> {
+    fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            let mut decoder =
-                png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: limit });
+            let mut decoder = png::Decoder::new_with_limits(
+                Cursor::new(bytes),
+                png::Limits { bytes: usize::MAX },
+            );
             decoder.set_transformations(png::Transformations::EXPAND);
             let mut reader = decoder.read_info().context("invalid PNG")?;
             ensure!(
@@ -248,7 +246,6 @@ impl Image {
                 "animated PNG is unsupported"
             );
             let size = reader.output_buffer_size();
-            ensure!(size <= limit, "PNG exceeds decoded image budget");
             let mut bytes = vec![0; size];
             let frame = reader.next_frame(&mut bytes).context("PNG decode failed")?;
             ensure!(
@@ -274,12 +271,10 @@ impl Image {
             !decoder.is_animated() && !decoder.is_lossy(),
             "animated or lossy WebP is unsupported"
         );
-        decoder.set_memory_limit(limit);
         let (width, height) = decoder.dimensions();
         let size = decoder
             .output_buffer_size()
             .context("WebP dimensions overflow")?;
-        ensure!(size <= limit, "WebP exceeds decoded image budget");
         let channels = if decoder.has_alpha() { 4 } else { 3 };
         let mut bytes = vec![0; size];
         decoder
@@ -294,8 +289,7 @@ impl Image {
     }
 }
 
-fn unpack(bytes: Vec<u8>, method: u32, size: usize, crc: f64, limit: usize) -> Result<Vec<u8>> {
-    ensure!(size <= limit, "entry exceeds byte budget");
+fn unpack(bytes: Vec<u8>, method: u32, size: usize, crc: f64) -> Result<Vec<u8>> {
     ensure!(
         crc == -1.0
             || (crc.is_finite() && crc >= 0.0 && crc.fract() == 0.0 && crc <= u32::MAX as f64),
@@ -306,13 +300,13 @@ fn unpack(bytes: Vec<u8>, method: u32, size: usize, crc: f64, limit: usize) -> R
         0 => bytes,
         8 => miniz_oxide::inflate::decompress_to_vec_with_limit(
             &bytes,
-            if known_size { size } else { limit },
+            if known_size { size } else { usize::MAX },
         )
         .map_err(|error| anyhow!("invalid ZIP deflate stream: {error:?}"))?,
         _ => bail!("unsupported ZIP method {method}"),
     };
     ensure!(
-        bytes.len() <= limit && (!known_size || bytes.len() == size),
+        !known_size || bytes.len() == size,
         "ZIP entry size mismatch"
     );
     if crc >= 0.0 {
@@ -331,10 +325,7 @@ pub fn decode_sog_meta(
     size: usize,
     crc: f64,
 ) -> Result<String, JsValue> {
-    if bytes.length() as usize > META_LIMIT {
-        return Err(js_error("compressed metadata exceeds 4 MiB"));
-    }
-    let bytes = unpack(bytes.to_vec(), method, size, crc, META_LIMIT).map_err(js_error)?;
+    let bytes = unpack(bytes.to_vec(), method, size, crc).map_err(js_error)?;
     String::from_utf8(bytes).map_err(js_error)
 }
 
@@ -425,15 +416,11 @@ impl SogDecodeSession {
                 && self.images.len() < self.meta.groups[self.group].1.len(),
             "invalid asset sequence"
         );
-        ensure!(
-            size <= IMAGE_LIMIT && matches!(method, 0 | 8),
-            "invalid entry method or size"
-        );
+        ensure!(matches!(method, 0 | 8), "invalid entry method");
         let length = chunks.iter().try_fold(0usize, |length, chunk| {
             length
                 .checked_add(chunk.length() as usize)
-                .filter(|&length| length <= IMAGE_LIMIT)
-                .context("asset input exceeds byte budget")
+                .context("asset input length overflow")
         })?;
         let mut bytes = vec![0; length];
         let mut offset = 0;
@@ -444,8 +431,8 @@ impl SogDecodeSession {
         }
         // Release compressed JS chunks before decoding their WASM copy.
         chunks.set_length(0);
-        let bytes = unpack(bytes, method, size, crc, IMAGE_LIMIT)?;
-        let image = Image::decode(&bytes, IMAGE_LIMIT)?;
+        let bytes = unpack(bytes, method, size, crc)?;
+        let image = Image::decode(&bytes)?;
         if self.meta.groups[self.group].0 != "centroids" {
             ensure!(
                 image.width.saturating_mul(image.height) >= self.meta.count,
@@ -468,11 +455,10 @@ impl SogDecodeSession {
             return Ok(());
         }
         let capacity = get_splat_tex_size(self.meta.count).3 as u64;
-        // Match SPZ's packed-model budget: base and SH arrays, excluding sort centers.
-        let bytes = capacity * (32 + SH_WORDS[self.meta.degree] as u64 * 4);
+        // JS typed-array lengths are passed through u32 in SplatsData.
         ensure!(
-            capacity * 4 <= u32::MAX as u64 && bytes <= OUTPUT_LIMIT,
-            "packed output ({bytes} bytes) exceeds the 2 GiB packed-model limit"
+            capacity * 4 <= u32::MAX as u64,
+            "packed output exceeds the typed-array length range"
         );
         let mut splats = SplatsData::new();
         splats.init_splats(&SplatInit {

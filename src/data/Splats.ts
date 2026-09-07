@@ -2,14 +2,26 @@ import * as THREE from "three";
 
 import type { SplatPostDecodeProgram } from "../loaders/postDecode";
 import { toHalf } from "../utils/numeric";
-import type { SplatFileType } from "./defines";
+import {
+  SPLAT_TEX_HEIGHT_BITS,
+  SPLAT_TEX_WIDTH_BITS,
+  type SplatFileType,
+  type SplatResult,
+} from "./defines";
 import {
   decodeShRgbToArray,
   encodeQuatOctXy1010R12,
   encodeShRgb,
   encodeSplatOpacity,
 } from "./splatCodec";
-import { getTextureSize } from "./textureLayout";
+import {
+  SH_ARRAY_COUNTS,
+  SH_KEYS,
+  getSplatByteLength,
+  getSplatShDegree,
+} from "./splatData";
+import { extractSplatRange } from "./splatRange";
+import { emptyUintTexture, getTextureSize } from "./textureLayout";
 import { decodeSplat } from "./unpack";
 
 type SplatShTextures = {
@@ -22,8 +34,6 @@ type SplatShTextures = {
 type SplatShArrays = (Uint32Array | undefined)[];
 
 const SH_COUNTS = [0, 3, 8, 15] as const;
-const SH_KEYS = ["sh1", "sh2", "sh3a", "sh3b"] as const;
-const SH_ARRAY_COUNTS = [0, 1, 2, 4] as const;
 
 type DecodedSplat = ReturnType<typeof decodeSplat>;
 export type SplatInput = {
@@ -165,6 +175,7 @@ export class Splats {
   private updateNeeded = true;
   private sortCentersDirty = false;
   private initializationVersion = 0;
+  private loadController?: AbortController;
 
   constructor(options: SplatsOptions = {}) {
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];
@@ -180,6 +191,11 @@ export class Splats {
       isAsync ? { maxSplats: options.maxSplats } : initializationOptions,
     );
     const version = ++this.initializationVersion;
+    this.loadController?.abort();
+    const controller = hasFileInput(options)
+      ? new AbortController()
+      : undefined;
+    this.loadController = controller;
 
     this.isInitialized = false;
     this.commitState(state);
@@ -188,11 +204,12 @@ export class Splats {
       // Defer construction so initialize() can publish the new promise before a
       // user callback has an opportunity to re-enter initialize().
       this.initialized = Promise.resolve()
-        .then(() =>
-          version === this.initializationVersion
-            ? this.asyncInitialize(options)
-            : undefined,
-        )
+        .then(() => {
+          controller?.signal.throwIfAborted();
+          return version === this.initializationVersion
+            ? this.asyncInitialize(options, controller?.signal)
+            : undefined;
+        })
         .then((initialized) => {
           if (!initialized) return this;
           try {
@@ -204,7 +221,13 @@ export class Splats {
             initialized.dispose();
           }
           return this;
+        })
+        .finally(() => {
+          if (this.loadController === controller)
+            this.loadController = undefined;
         });
+      // Disposing may cancel a load whose readiness promise was not observed.
+      void this.initialized.catch(() => {});
     } else {
       this.isInitialized = true;
       this.initialized = Promise.resolve(this);
@@ -235,7 +258,10 @@ export class Splats {
     };
   }
 
-  private async asyncInitialize(options: SplatsOptions): Promise<Splats> {
+  private async asyncInitialize(
+    options: SplatsOptions,
+    signal?: AbortSignal,
+  ): Promise<Splats> {
     if (hasFileInput(options)) {
       const { SplatLoader } = await import("../loaders/SplatLoader");
       return new SplatLoader().loadInternalAsync({
@@ -246,6 +272,7 @@ export class Splats {
         fileName: options.fileName,
         postDecode: options.postDecode,
         onProgress: options.onProgress,
+        signal,
       });
     }
 
@@ -261,6 +288,8 @@ export class Splats {
 
   dispose() {
     this.initializationVersion += 1;
+    this.loadController?.abort();
+    this.loadController = undefined;
     this.isInitialized = false;
     this.commitState(createSplatsState({}));
   }
@@ -283,29 +312,42 @@ export class Splats {
   }
 
   getNumSh() {
-    return !this.extra.sh1
-      ? 0
-      : !this.extra.sh2
-        ? 1
-        : !this.extra.sh3a || !this.extra.sh3b
-          ? 2
-          : 3;
+    return getSplatShDegree(this.extra);
   }
 
   /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
   getByteLength() {
-    let byteLength =
-      this.splatArrays[0].byteLength +
-      this.splatArrays[1].byteLength +
-      this.sortCenters.byteLength;
+    return getSplatByteLength(this.captureState());
+  }
 
-    for (const value of Object.values(this.extra)) {
-      if (ArrayBuffer.isView(value)) {
-        byteLength += value.byteLength;
-      }
-    }
+  /** Copies a contiguous range, preserving packed records, SH and sort centers. */
+  extractRange(start: number, count: number): Splats {
+    if (!this.isInitialized) throw new Error("Invalid Splat extraction range");
+    return new Splats(
+      extractSplatRange(this.packedData(), start, count) as SplatsOptions,
+    );
+  }
 
-    return byteLength;
+  private packedData(): SplatResult {
+    return {
+      numSplats: this.numSplats,
+      splatArrays: this.splatArrays,
+      sortCenters: this.sortCentersDirty ? undefined : this.sortCenters,
+      extra: Object.fromEntries(
+        SH_KEYS.flatMap((key) => {
+          const array = this.extra[key];
+          return array instanceof Uint32Array ? [[key, array]] : [];
+        }),
+      ),
+    };
+  }
+
+  /** @internal Consume owned arrays for transfer to a streaming worker. */
+  takeData(): SplatResult {
+    if (!this.isInitialized) throw new Error("Splats is not initialized");
+    const data = this.packedData();
+    this.dispose();
+    return data;
   }
 
   get needsUpdate() {
@@ -602,6 +644,12 @@ export class Splats {
   setTextureUniforms(uniforms: Record<string, THREE.IUniform>) {
     const [splats, splats2] = this.getSplatTextures();
     const sh = this.getShTextures();
+    uniforms.sourceLayerBits.value =
+      SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
+    uniforms.sourceBlockBits.value = 0;
+    uniforms.sourceBlocks.value = emptyUintTexture;
+    uniforms.sourceIndexed.value = false;
+    uniforms.sourceIndices.value = Splats.emptyTexture;
     uniforms.sourceSplats.value = splats;
     uniforms.sourceSplats2.value = splats2;
     uniforms.sh1Texture.value = sh.sh1 ?? Splats.emptyTexture;

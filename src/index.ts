@@ -9,6 +9,11 @@ export {
 export { StochasticResolvePass } from "./rendering/StochasticResolvePass";
 
 export { SplatLoader } from "./loaders/SplatLoader";
+export {
+  SogStreamScheduler,
+  type SogStreamSchedulerOptions,
+  type SogStreamStats,
+} from "./loaders/sog-stream/SogStreamScheduler";
 export type { SplatWorker } from "./runtime/SplatWorker";
 
 export { Splats, type SplatInput, type SplatsOptions } from "./data/Splats";

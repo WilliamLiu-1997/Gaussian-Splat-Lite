@@ -33,7 +33,19 @@ export function getTextureSize(numSplats: number): {
   return { width, height, depth, maxSplats };
 }
 
-export const emptySplatTexture = (() => {
+export const emptyUintTexture = /* @__PURE__ */ (() => {
+  const texture = new THREE.DataTexture(
+    new Uint32Array(4),
+    1,
+    1,
+    THREE.RGBAIntegerFormat,
+    THREE.UnsignedIntType,
+  );
+  texture.needsUpdate = true;
+  return texture;
+})();
+
+export const emptySplatTexture = /* @__PURE__ */ (() => {
   const { width, height, depth, maxSplats } = getTextureSize(1);
   const texture = new THREE.DataArrayTexture(
     new Uint32Array(maxSplats * 4),

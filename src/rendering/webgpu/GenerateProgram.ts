@@ -1,4 +1,5 @@
 import * as TSL from "three/tsl";
+import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines";
 import type { Uniforms } from "../uniforms";
 import type { TSLNode } from "./shaderUtils";
 import {
@@ -126,6 +127,11 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const targetCount = bindUniform("targetCount", "uint");
   const sourceSplats = bindTexture("sourceSplats", true);
   const sourceSplats2 = bindTexture("sourceSplats2", true);
+  const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
+  const sourceBlockBits = bindUniform("sourceBlockBits", "uint");
+  const sourceBlocks = bindTexture("sourceBlocks");
+  const sourceIndexed = bindUniform("sourceIndexed", "bool");
+  const sourceIndices = bindTexture("sourceIndices", true);
   const numSh = bindUniform("numSh", "int");
   const sh1Texture = bindTexture("sh1Texture", true);
   const sh2Texture = bindTexture("sh2Texture", true);
@@ -252,7 +258,35 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     const shapeAmount = N.float(0).toVar();
 
     N.If(index.lessThan(targetCount), () => {
-      const coord = splatTexCoord(index);
+      const sourceIndex = N.uint(index).toVar();
+      N.If(sourceIndexed, () => {
+        const indices = loadArray(
+          sourceIndices,
+          splatTexCoord(index.shiftRight(2)),
+        );
+        sourceIndex.assign(indices.element(index.bitAnd(3)));
+      });
+      const blockRecolor = N.vec4(1).toVar();
+      N.If(sourceBlockBits.greaterThan(N.uint(0)), () => {
+        const block = sourceIndex.shiftRight(sourceBlockBits);
+        blockRecolor.assign(
+          N.uintBitsToFloat(
+            load2D(
+              sourceBlocks,
+              N.ivec2(
+                N.int(block.bitAnd(SPLAT_TEX_WIDTH - 1)),
+                N.int(block.shiftRight(SPLAT_TEX_WIDTH_BITS)),
+              ),
+            ),
+          ),
+        );
+      });
+      const layerMask = N.uint(1).shiftLeft(sourceLayerBits).sub(N.uint(1));
+      const coord = N.ivec3(
+        N.int(sourceIndex.bitAnd(SPLAT_TEX_WIDTH - 1)),
+        N.int(sourceIndex.bitAnd(layerMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
+        N.int(sourceIndex.shiftRight(sourceLayerBits)),
+      );
       const sourceA = loadArray(sourceSplats, coord);
       const sourceB = loadArray(sourceSplats2, coord);
       // Deleted scales are three packed -infinity half floats. Inspect their
@@ -261,7 +295,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
         .shiftRight(16)
         .equal(N.uint(0xfc00))
         .and(sourceB.z.equal(N.uint(0xfc00fc00)));
-      N.If(isDeleted.not(), () => {
+      N.If(isDeleted.not().and(blockRecolor.a.greaterThan(0)), () => {
         const alphaShape = decodeAlphaShape(sourceA);
         valid.assign(true);
         center.assign(objectBasis.mul(decodeCenter(sourceA)));
@@ -507,8 +541,8 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
           },
         );
 
-        rgba.rgb.mulAssign(recolor.rgb);
-        const opacityScale = recolor.a;
+        rgba.rgb.mulAssign(recolor.rgb.mul(blockRecolor.rgb));
+        const opacityScale = recolor.a.mul(blockRecolor.a);
         N.If(
           semanticOpacityDecoded.not().and(opacityScale.greaterThanEqual(1)),
           () => {

@@ -9,6 +9,7 @@
 | `src/data/` | Packed Splat data, codecs, texture layout and CPU unpacking |
 | `src/scene/` | Scene objects, mesh transforms, raycasting and SDF edits |
 | `src/loaders/` | File loading, decode requests and post-decode expression programs |
+| `src/loaders/sog-stream/` | Streamed SOG scheduling, visibility, worker chunk caches, batch regions and LOD indexes |
 | `src/runtime/` | Worker RPC, pooling, transferable discovery and WebAssembly initialization |
 | `src/utils/` | Numeric conversion, spatial transforms, Three.js helpers and the public utility namespace |
 | `src/rendering/` | Shared renderer, accumulator, sort cache, stochastic resolve and backend selection |
@@ -35,6 +36,16 @@ Resource rules:
 - Keep backend-specific color and XR output handling with each backend.
 
 WebGPU shaders are split into `SplatMaterial.ts` (drawing), `GenerateProgram.ts` (generation), `ResolveMaterial.ts` (resolve), and `shaderUtils.ts` (helpers). WebGL shaders live under `webgl/shaders/`.
+
+## Streamed SOG boundaries
+
+`SogStreamScheduler.update()` coordinates selection, region transitions, cache release, and loading. Region transitions run in order: advance fades, update visibility, attach ready regions, queue extractions, and finish immediate fades.
+
+- `sogLod.ts` owns manifest parsing, budget selection, and progressive LOD resolution. LOD decisions do not depend on workers or GPU resources.
+- `SogVisibility` collects visible leaves and their coverage weights.
+- `SogStreamLoader` owns decoding workers and cached chunk sources.
+- `SogStreamBatch` owns GPU storage, occupied slots and mesh attachment based on region opacity. Its compact source index gives generation, sorting and raycasting the same visible-record order while retaining fixed source slots.
+- `SogStreamScheduler` keeps each leaf's target, current region, outgoing region and pending extraction together. It owns region fades, retirement, upload limits and retries.
 
 ## Imports and extensions
 

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 
+import { emptyUintTexture } from "../data/textureLayout";
 import { rebaseAffineTransform } from "../utils/transforms";
 
 export enum SplatEditSdfType {
@@ -315,7 +316,7 @@ export class SplatEdits {
     return this.setEditUint(offset, scratchUint[0]);
   }
 
-  static emptyTexture = makeUintTexture(new Uint32Array(4), 1, 1);
+  static emptyTexture = emptyUintTexture;
 }
 
 function rgbaBlendModeToNumber(mode: SplatEditRgbaBlendMode) {

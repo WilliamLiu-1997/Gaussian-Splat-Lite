@@ -35,7 +35,7 @@ The constructor and `initialize()` accept `SplatsOptions`:
 
 Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs throws.
 
-`initialize()` returns `initialized`. A newer initialization supersedes earlier loading or construction results.
+`initialize()` returns `initialized`. A newer initialization supersedes earlier loading or construction results. Reinitializing or disposing a source also cancels its pending file load and decode worker; the cancelled load's `initialized` promise rejects with `AbortError`. Construction callbacks are not interrupted, and their superseded results are discarded.
 
 ## Methods
 
@@ -44,6 +44,7 @@ Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs 
 | `initialized` / `isInitialized` | Asynchronous initialization state |
 | `getNumSplats()` / `getNumSh()` | Returns Splat count and available SH degree |
 | `getByteLength()` | Returns current retained bytes for encoded Splat, sort-center, and SH arrays |
+| `extractRange(start, count)` | Copies a contiguous range into independent initialized `Splats`, preserving packed records, SH and sort centers |
 | `getSplat(index, includeSh?)` | Decodes one Splat with SH coefficients by default; pass `false` to skip SH decoding |
 | `setSplats(indices, splats)` | Adds or overwrites Splats at the paired indices, including optional SH0/1/2/3 data |
 | `pushSplats(splats)` | Appends a batch of Splats, including optional SH0/1/2/3 data |
@@ -51,7 +52,7 @@ Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs 
 | `forEachCenter(callback)` | Iterates centers only, suitable for spatial-index construction |
 | `forEachSplat(callback)` | Iterates and fully decodes every Splat |
 | `initialize(options)` | Initializes or replaces data from a URL, file, bytes, or construction callback |
-| `dispose()` | Releases textures and data references |
+| `dispose()` | Cancels pending file loading and releases textures and data references |
 
 ## Data rules
 
