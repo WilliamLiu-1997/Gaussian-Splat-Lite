@@ -13,6 +13,7 @@ import {
   loadArray,
   quatQuat,
   quatVec,
+  splatTexCoord,
   textureBinding,
   uniformBinding,
 } from "./shaderUtils";
@@ -129,6 +130,8 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
   const sourceBlockBits = bindUniform("sourceBlockBits", "uint");
   const sourceBlocks = bindTexture("sourceBlocks");
+  const sourceIndexed = bindUniform("sourceIndexed", "bool");
+  const sourceIndices = bindTexture("sourceIndices", true);
   const numSh = bindUniform("numSh", "int");
   const sh1Texture = bindTexture("sh1Texture", true);
   const sh2Texture = bindTexture("sh2Texture", true);
@@ -255,9 +258,17 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     const shapeAmount = N.float(0).toVar();
 
     N.If(index.lessThan(targetCount), () => {
+      const sourceIndex = N.uint(index).toVar();
+      N.If(sourceIndexed, () => {
+        const indices = loadArray(
+          sourceIndices,
+          splatTexCoord(index.shiftRight(2)),
+        );
+        sourceIndex.assign(indices.element(index.bitAnd(3)));
+      });
       const blockRecolor = N.vec4(1).toVar();
       N.If(sourceBlockBits.greaterThan(N.uint(0)), () => {
-        const block = index.shiftRight(sourceBlockBits);
+        const block = sourceIndex.shiftRight(sourceBlockBits);
         blockRecolor.assign(
           N.uintBitsToFloat(
             load2D(
@@ -272,9 +283,9 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       });
       const layerMask = N.uint(1).shiftLeft(sourceLayerBits).sub(N.uint(1));
       const coord = N.ivec3(
-        N.int(index.bitAnd(SPLAT_TEX_WIDTH - 1)),
-        N.int(index.bitAnd(layerMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
-        N.int(index.shiftRight(sourceLayerBits)),
+        N.int(sourceIndex.bitAnd(SPLAT_TEX_WIDTH - 1)),
+        N.int(sourceIndex.bitAnd(layerMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
+        N.int(sourceIndex.shiftRight(sourceLayerBits)),
       );
       const sourceA = loadArray(sourceSplats, coord);
       const sourceB = loadArray(sourceSplats2, coord);

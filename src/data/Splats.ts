@@ -648,6 +648,8 @@ export class Splats {
       SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
     uniforms.sourceBlockBits.value = 0;
     uniforms.sourceBlocks.value = emptyUintTexture;
+    uniforms.sourceIndexed.value = false;
+    uniforms.sourceIndices.value = Splats.emptyTexture;
     uniforms.sourceSplats.value = splats;
     uniforms.sourceSplats2.value = splats2;
     uniforms.sh1Texture.value = sh.sh1 ?? Splats.emptyTexture;

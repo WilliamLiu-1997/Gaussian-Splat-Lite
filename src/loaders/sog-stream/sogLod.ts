@@ -217,8 +217,8 @@ export function parseSogLodManifest(
       };
       integer(range.offset + range.count, "range end");
       counts[level] += range.count;
-      files[range.file].ranges.push(range);
       if (range.count > 0) {
+        files[range.file].ranges.push(range);
         const error = Array.isArray(errors) ? errors[level] : undefined;
         if (typeof error !== "number" || !Number.isFinite(error) || error < 0)
           fileErrors = false;

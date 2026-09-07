@@ -58,6 +58,11 @@ class BatchSplats extends Splats {
   private batchTextures: THREE.DataArrayTexture[];
   private blockValues: Float32Array;
   private blockTexture: THREE.DataTexture;
+  private readonly activeRanges = new Map<number, number>();
+  private activeCount = 0;
+  private indicesDirty = false;
+  private indices = new Uint32Array(0);
+  private indexTexture = Splats.emptyTexture;
 
   constructor(count: number, numSh: number) {
     const { capacity, layerSize } = sogBatchTextureLayout(count);
@@ -68,7 +73,6 @@ class BatchSplats extends Splats {
     const packed: SplatResult = {
       numSplats: 0,
       splatArrays: [arrays[0], arrays[1]],
-      sortCenters: new Float32Array(capacity * 3),
       extra: Object.fromEntries(
         arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
       ),
@@ -142,7 +146,52 @@ class BatchSplats extends Splats {
       this.blockValues[offset + 3] = opacity;
     }
     this.blockTexture.needsUpdate = true;
-    return { visibilityChanged: (previous === 0) !== (opacity === 0) };
+    const visibilityChanged = (previous === 0) !== (opacity === 0);
+    if (visibilityChanged) {
+      if (opacity > 0) this.activeRanges.set(start, count);
+      else this.activeRanges.delete(start);
+      this.activeCount += opacity > 0 ? count : -count;
+      this.indicesDirty = true;
+    }
+    return { visibilityChanged };
+  }
+
+  // Renderer-facing methods share compact indices; packed storage keeps its
+  // fixed source slots and high-water mark in numSplats.
+  override getNumSplats() {
+    return this.activeCount;
+  }
+
+  private updateIndices() {
+    if (!this.indicesDirty) return;
+    // Four source indices per texel. Capacity follows visible records rather
+    // than the highest occupied source slot; fade-only updates reuse the map.
+    if (
+      this.activeCount > this.indices.length ||
+      this.activeCount < this.indices.length / 4
+    ) {
+      const { width, height, maxSplats } = getTextureSize(
+        Math.max(1, Math.ceil(this.activeCount / 4)),
+      );
+      const length = maxSplats * 4;
+      if (length !== this.indices.length) {
+        if (this.indexTexture !== Splats.emptyTexture)
+          this.indexTexture.dispose();
+        this.indices = new Uint32Array(length);
+        this.indexTexture = makeTexture(
+          this.indices,
+          maxSplats,
+          width * height,
+        );
+      }
+    }
+    let target = 0;
+    for (const [start, count] of this.activeRanges) {
+      for (let index = start; index < start + count; index++)
+        this.indices[target++] = index;
+    }
+    this.indexTexture.needsUpdate = true;
+    this.indicesDirty = false;
   }
 
   override copySortCenters(
@@ -150,15 +199,24 @@ class BatchSplats extends Splats {
     targetStart: number,
     count: number,
   ) {
-    super.copySortCenters(target, targetStart, count);
-    // Invisible cached slots stay allocated but do not enter CPU/worker sorting.
-    for (let start = 0; start < count; start += BLOCK_SIZE) {
-      if (this.blockValues[(start / BLOCK_SIZE) * 4 + 3] !== 0) continue;
-      target.fill(
-        Number.NaN,
-        targetStart + start * 3,
-        targetStart + Math.min(count, start + BLOCK_SIZE) * 3,
-      );
+    if (count > this.activeCount || targetStart + count * 3 > target.length)
+      throw new Error("Invalid sort center copy range");
+    this.updateIndices();
+    const [first, second] = this.packed.splatArrays;
+    const centers = new Float32Array(
+      first.buffer,
+      first.byteOffset,
+      first.length,
+    );
+    for (let index = 0; index < count; index++) {
+      const source = this.indices[index] * 4;
+      const disabled =
+        second[source + 1] >>> 16 === 0xfc00 &&
+        second[source + 2] === 0xfc00fc00;
+      for (let axis = 0; axis < 3; axis++)
+        target[targetStart + index * 3 + axis] = disabled
+          ? Number.NaN
+          : centers[source + axis];
     }
   }
 
@@ -168,15 +226,21 @@ class BatchSplats extends Splats {
     sourceStart: number,
     count: number,
   ) {
-    super.copySplatRecords(firstTarget, secondTarget, sourceStart, count);
-    // Raycasting uses packed source records rather than the generated fade table.
+    if (sourceStart + count > this.activeCount)
+      throw new Error("Invalid rendered Splat copy range");
+    this.updateIndices();
+    const [first, second] = this.packed.splatArrays;
     for (let index = 0; index < count; index++) {
-      const block = Math.floor((sourceStart + index) / BLOCK_SIZE);
-      if (this.blockValues[block * 4 + 3] === 0) firstTarget[index * 4 + 3] = 0;
+      const source = this.indices[sourceStart + index] * 4;
+      for (let word = 0; word < 4; word++) {
+        firstTarget[index * 4 + word] = first[source + word];
+        secondTarget[index * 4 + word] = second[source + word];
+      }
     }
   }
 
   override setTextureUniforms(uniforms: Record<string, THREE.IUniform>) {
+    this.updateIndices();
     uniforms.sourceSplats.value = this.batchTextures[0];
     uniforms.sourceSplats2.value = this.batchTextures[1];
     uniforms.sh1Texture.value = this.batchTextures[2] ?? Splats.emptyTexture;
@@ -186,6 +250,8 @@ class BatchSplats extends Splats {
     uniforms.sourceLayerBits.value = Math.log2(this.layerSize);
     uniforms.sourceBlockBits.value = BLOCK_BITS;
     uniforms.sourceBlocks.value = this.blockTexture;
+    uniforms.sourceIndexed.value = true;
+    uniforms.sourceIndices.value = this.indexTexture;
     this.needsUpdate = false;
   }
 
@@ -195,7 +261,9 @@ class BatchSplats extends Splats {
       0,
     );
     return (
-      this.getByteLength() + textureBytes + this.blockValues.byteLength * 2
+      this.getByteLength() +
+      textureBytes +
+      (this.blockValues.byteLength + this.indices.byteLength) * 2
     );
   }
 
@@ -205,6 +273,12 @@ class BatchSplats extends Splats {
     this.batchTextures = [];
     this.blockTexture.dispose();
     this.blockValues = new Float32Array(0);
+    if (this.indexTexture !== Splats.emptyTexture) this.indexTexture.dispose();
+    this.indexTexture = Splats.emptyTexture;
+    this.indices = new Uint32Array(0);
+    this.activeRanges.clear();
+    this.activeCount = 0;
+    this.indicesDirty = false;
     this.packed = {
       numSplats: 0,
       splatArrays: [new Uint32Array(0), new Uint32Array(0)],
@@ -218,7 +292,6 @@ export class SogStreamBatch extends SplatMesh {
   private readonly source: BatchSplats;
   private readonly slots = new Map<number, number>();
   private readonly dirtyLayers = new Set<number>();
-  private visibleRegions = 0;
 
   constructor(
     capacity: number,
@@ -265,7 +338,6 @@ export class SogStreamBatch extends SplatMesh {
       layer++
     )
       this.dirtyLayers.add(layer);
-    this.numSplats = this.source.numSplats;
     this.slots.set(start, count);
   }
 
@@ -274,14 +346,14 @@ export class SogStreamBatch extends SplatMesh {
     if (count === undefined) return;
     const changed = this.source.setOpacity(start, count, opacity);
     if (!changed) return;
-    this.updateVersion({ sort: changed.visibilityChanged });
     if (changed.visibilityChanged) {
-      this.visibleRegions += opacity > 0 ? 1 : -1;
-      if (opacity > 0 && this.visibleRegions === 1) {
+      this.numSplats = this.source.getNumSplats();
+      this.updateMappingVersion();
+      if (this.numSplats > 0 && this.parent !== this.group) {
         this.layers.mask = this.group.layers.mask;
         this.group.add(this);
-      } else if (this.visibleRegions === 0) this.removeFromParent();
-    }
+      } else if (this.numSplats === 0) this.removeFromParent();
+    } else this.updateVersion({ sort: false });
   }
 
   releaseRegion(start: number) {
@@ -296,6 +368,5 @@ export class SogStreamBatch extends SplatMesh {
     this.source.numSplats = 0;
     for (const [offset, count] of this.slots)
       this.source.numSplats = Math.max(this.source.numSplats, offset + count);
-    this.numSplats = this.source.numSplats;
   }
 }

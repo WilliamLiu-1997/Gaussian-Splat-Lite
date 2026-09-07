@@ -14,6 +14,8 @@ uniform usampler2DArray sourceSplats2;
 uniform uint sourceLayerBits;
 uniform uint sourceBlockBits;
 uniform usampler2D sourceBlocks;
+uniform bool sourceIndexed;
+uniform usampler2DArray sourceIndices;
 
 uniform int numSh;
 uniform usampler2DArray sh1Texture;
@@ -288,6 +290,10 @@ bool applySdfEdits(
 
 void produceSplat(int index) {
     uint sourceIndex = uint(index);
+    if (sourceIndexed) {
+        uvec4 indices = texelFetch(sourceIndices, splatTexCoord(index >> 2), 0);
+        sourceIndex = indices[index & 3];
+    }
     vec4 blockRecolor = vec4(1.0);
     if (sourceBlockBits > 0u) {
         uint block = sourceIndex >> sourceBlockBits;

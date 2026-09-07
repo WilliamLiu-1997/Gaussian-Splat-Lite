@@ -86,6 +86,8 @@ export function makeGenerateUniforms(): Uniforms {
     sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },
     sourceBlockBits: { value: 0 },
     sourceBlocks: { value: emptyUintTexture },
+    sourceIndexed: { value: false },
+    sourceIndices: { value: emptySplatTexture },
     numSh: { value: 0 },
     sh1Texture: { value: emptySplatTexture },
     sh2Texture: { value: emptySplatTexture },

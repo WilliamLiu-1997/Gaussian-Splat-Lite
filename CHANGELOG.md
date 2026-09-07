@@ -22,6 +22,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Streamed SOG rendering, sorting and raycasting now use compact visible indices instead of scanning through hidden source slots. Index maps are reused during opacity fades, and batch rendering no longer allocates sort centers for the entire chunk.
 - Replaced `stream`/`streamLength` loading inputs with `file: Blob` (including `File`). PLY/SPZ stream directly in the worker; local SOG files use random reads without buffering the whole archive. Viewer URL loads now use the URL loader for all formats.
 - Read and flush packed Splat buffers independently, skipping old-data reads for complete decode batches.
 - Moved built-in Splat color conversion to the vertex shader in WebGPU and WebGL.
@@ -36,6 +37,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Ignore empty LOD placeholders when validating Streamed SOG chunk coverage and LOD consistency.
 - Corrected the viewer's WebGPU Inspector FPS to count rendered frames instead of animation ticks, including GPU waits and idle on-demand rendering.
 - Routed remote SOG files in the viewer directly through the URL loader so HTTP Range reads and grouped download/decode overlap remain available.
 - Reported known SOG download sizes through progress callbacks so URL loading displays a percentage, with indeterminate progress when the total is unknown.

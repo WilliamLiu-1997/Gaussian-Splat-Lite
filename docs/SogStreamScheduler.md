@@ -44,6 +44,8 @@ Transform `streaming.group` to position, rotate or scale the scene. Streamed mes
 
 The Splat budget is a target: fallback LODs, fades and the environment can exceed it. The upload allowance is not a total memory limit.
 
+Chunks retain fixed source slots, while a compact index maps only regions with nonzero opacity into rendering, sorting and raycasting. Hidden slots and region padding do not contribute to the rendered count. The index is reused during fades and rebuilt when region visibility changes; chunk source storage remains cached independently.
+
 A custom `loadChunk` must return initialized, independently owned data in its original count and order, and should honor the abort signal. Its arrays are consumed and transferred; do not reuse the returned `Splats`.
 
 ## Common properties and methods

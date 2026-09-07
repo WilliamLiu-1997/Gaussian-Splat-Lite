@@ -44,7 +44,7 @@ WebGPU shaders are split into `SplatMaterial.ts` (drawing), `GenerateProgram.ts`
 - `sogLod.ts` owns manifest parsing, budget selection, and progressive LOD resolution. LOD decisions do not depend on workers or GPU resources.
 - `SogVisibility` collects visible leaves and their coverage weights.
 - `SogStreamLoader` owns decoding workers and cached chunk sources.
-- `SogStreamBatch` owns GPU storage, occupied slots and mesh attachment based on region opacity.
+- `SogStreamBatch` owns GPU storage, occupied slots and mesh attachment based on region opacity. Its compact source index gives generation, sorting and raycasting the same visible-record order while retaining fixed source slots.
 - `SogStreamScheduler` keeps each leaf's target, current region, outgoing region and pending extraction together. It owns region fades, retirement, upload limits and retries.
 
 ## Imports and extensions
