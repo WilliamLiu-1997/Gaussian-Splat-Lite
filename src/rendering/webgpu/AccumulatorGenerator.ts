@@ -11,7 +11,7 @@ type TSLNode = any;
 const N = TSL as Record<string, TSLNode>;
 
 const WORKGROUP_SIZE = 256;
-const BATCH_SIZE = 32;
+const BATCH_SIZE = 8;
 
 type GenerateUniforms = Record<string, THREE.IUniform>;
 type ComputeSlot = { uniforms: GenerateUniforms; node: TSLNode };
