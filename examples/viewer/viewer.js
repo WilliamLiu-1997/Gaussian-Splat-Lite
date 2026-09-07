@@ -174,7 +174,6 @@ camera.position.set(0, 0, 3);
 const rendererParameters = {
   alpha: true,
   powerPreference: "high-performance",
-  reversedDepthBuffer: true,
 };
 let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
@@ -594,6 +593,7 @@ async function switchRendererBackend(backend) {
   let nextControls;
   let nextSplatRenderer;
   let nextInspector;
+  let webGPUFailureMessage;
   try {
     if (webGPU) {
       const { ViewerInspector } = await import("./viewerInspector.js");
@@ -601,9 +601,27 @@ async function switchRendererBackend(backend) {
         ...rendererParameters,
         forceWebGL: backend === "webgl-fallback",
       });
+      if (backend === "webgpu") {
+        const getFallback = nextRenderer._getFallback;
+        nextRenderer._getFallback = (error) => {
+          // Three's fallback otherwise discards the native initialization error.
+          webGPUFailureMessage = `Native WebGPU initialization failed: ${String(error)}`;
+          console.error("Native WebGPU initialization failed", error);
+          if (switchToken === rendererSwitchToken) {
+            showToast(webGPUFailureMessage);
+          }
+          return getFallback.call(nextRenderer, error);
+        };
+      }
       await nextRenderer.init();
       configureRenderer(nextRenderer);
       nextInspector = new ViewerInspector();
+      if (backend === "webgpu" && !nextRenderer.backend.isWebGPUBackend) {
+        // Inspector's saved Force WebGL setting can bypass native init entirely.
+        webGPUFailureMessage ??=
+          "Native WebGPU was not initialized. Disable Force WebGL in Inspector Settings to use WebGPU.";
+        nextInspector.console.addMessage("error", webGPUFailureMessage);
+      }
       // Leave the built-in Parameters tab hidden: only FPS and Inspector.
       nextInspector.parameters.hide();
       nextInspector.domElement.classList.add("viewer-inspector");
@@ -653,7 +671,10 @@ async function switchRendererBackend(backend) {
     syncRendererOption(getRendererBackend());
     const detail = error instanceof Error ? error.message : String(error);
     console.error("Could not switch renderer", error);
-    showToast(`Could not switch renderer: ${detail}`);
+    const message = `Could not switch renderer: ${detail}`;
+    showToast(
+      webGPUFailureMessage ? `${webGPUFailureMessage}\n${message}` : message,
+    );
     return;
   }
 
@@ -705,6 +726,9 @@ async function switchRendererBackend(backend) {
     renderer.inspector = nextInspector;
   }
   syncRendererOption(getRendererBackend());
+  if (webGPUFailureMessage) {
+    showToast(`${webGPUFailureMessage} Using WebGL2.`);
+  }
   renderer.setAnimationLoop(renderFrame);
   requestRender();
 }
@@ -1148,7 +1172,7 @@ function frameSplat(splat) {
     : Math.min(defaultCameraDistance, radius);
 
   camera.near = radius * 0.001;
-  camera.far = radius * 100;
+  camera.far = radius * 10;
   camera.updateProjectionMatrix();
   camera.position
     .set(0, 5, 5 * Math.sqrt(3))
