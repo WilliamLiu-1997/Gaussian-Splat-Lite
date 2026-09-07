@@ -9,10 +9,11 @@ enum SplatFileType {
   PLY = "ply",
   SPZ = "spz",
   SOG = "sog",
+  RAD = "rad",
 }
 ```
 
-Usually inferred from a `.ply`, `.spz`, `.sog`, or SOG `meta.json` URL or `fileName`. Otherwise, set it explicitly:
+Usually inferred from a `.ply`, `.spz`, `.sog`, `.rad`, or SOG `meta.json` URL or `fileName`. Otherwise, set it explicitly:
 
 ```js
 import { SplatFileType, SplatMesh } from "gaussian-splat-lite";

@@ -90,8 +90,12 @@ dependencies = [
  "anyhow",
  "crc32fast",
  "half",
+ "image-webp",
  "miniz_oxide 0.8.9",
+ "png",
  "ruzstd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -100,13 +104,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
- "crc32fast",
  "gaussian-splat-lib",
  "half",
- "image-webp",
  "js-sys",
- "miniz_oxide 0.8.9",
- "png",
  "serde_json",
  "wasm-bindgen",
 ]
@@ -238,6 +238,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]

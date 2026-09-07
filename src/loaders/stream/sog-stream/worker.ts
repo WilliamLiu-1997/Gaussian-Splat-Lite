@@ -1,5 +1,5 @@
-import { startWorker } from "../../runtime/workerServer";
-import { loadSplats, resolveAsset } from "../workerDecode";
+import { startWorker } from "../../../runtime/workerServer";
+import { loadSplats, resolveAsset } from "../../workerDecode";
 import { createSogStreamHandlers } from "./workerHandlers";
 
 const rpcHandlers = {

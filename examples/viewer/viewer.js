@@ -1,5 +1,6 @@
 import {
   GaussianSplatRenderer,
+  RadStreamScheduler,
   SogStreamScheduler,
   SplatFileType,
   SplatMesh,
@@ -250,7 +251,10 @@ function renderFrame(time) {
     updateStats(time, false);
     return;
   }
-  activeStream?.update(camera);
+  activeStream?.update(camera, {
+    width: renderer.domElement.width,
+    height: renderer.domElement.height,
+  });
   if (renderOnDemand && !needsRender) {
     updateStats(time, false);
     return;
@@ -307,7 +311,10 @@ const renderOptionGroups = [
         ],
         apply: () => {
           if (!activeSplat) return;
-          applyModelOrientation(activeSplat, Boolean(activeStream));
+          applyModelOrientation(
+            activeSplat,
+            activeStream instanceof SogStreamScheduler,
+          );
           frameSplat(activeSplat);
         },
       },
@@ -907,6 +914,7 @@ function resetRenderOptions() {
 }
 
 const frameSize = new THREE.Vector3();
+const frameCenter = new THREE.Vector3();
 let activeSplat = null;
 let activeStream = null;
 let cancelActiveLoad = null;
@@ -938,8 +946,18 @@ function fileTypeFor(file) {
   const name = file.name.toLowerCase();
   if (name.endsWith(".ply")) return SplatFileType.PLY;
   if (name.endsWith(".spz")) return SplatFileType.SPZ;
-  if (name.endsWith(".sog")) return SplatFileType.SOG;
+  if (name.endsWith(".sog") || name === "meta.json") return SplatFileType.SOG;
+  if (name.endsWith(".rad")) return SplatFileType.RAD;
   return undefined;
+}
+
+async function detectFileType(file, url) {
+  const fileType = fileTypeFor(file);
+  if (fileType || url || !(file instanceof Blob)) return fileType;
+  const prefix = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return String.fromCharCode(...prefix) === "RAD0"
+    ? SplatFileType.RAD
+    : undefined;
 }
 
 function modelFromUrl(value) {
@@ -960,12 +978,7 @@ function modelFromUrl(value) {
     // Keep the encoded path segment when it contains malformed escape sequences.
   }
 
-  if (
-    !fileTypeFor({ name }) &&
-    !["meta.json", "lod-meta.json"].includes(name.toLowerCase())
-  )
-    return undefined;
-  return { name, size: 0, url };
+  return { name: name || "model", size: 0, url };
 }
 
 function isFileDrag(event) {
@@ -1058,6 +1071,18 @@ function clearLoading() {
   syncBackgroundInteractivity();
 }
 
+function clearActiveModel() {
+  if (activeSplat) scene.remove(activeSplat);
+  if (activeStream) activeStream.dispose();
+  else activeSplat?.dispose();
+  activeSplat = null;
+  activeStream = null;
+  resetViewButton.hidden = true;
+  fileMeta.hidden = true;
+  setSourcePanelOpen(true);
+  requestRender();
+}
+
 function cancelLoading() {
   if (loadingPanel.hidden) return;
 
@@ -1084,46 +1109,137 @@ function applyModelOrientation(splat, streamed) {
 }
 
 function frameSplat(splat) {
-  const bounds =
-    activeStream?.group === splat
-      ? activeStream.getBoundingBox()
-      : splat.getBoundingBox(true);
+  const streamed = activeStream?.group === splat;
+  const bounds = streamed
+    ? activeStream.getBoundingBox()
+    : splat.getBoundingBox(true);
+  splat.updateWorldMatrix(true, false);
+  bounds.applyMatrix4(splat.matrixWorld);
   bounds.getSize(frameSize);
+  if (streamed && !bounds.isEmpty()) bounds.getCenter(frameCenter);
+  else frameCenter.set(0, 0, 0);
   const referenceSize =
     Math.max(frameSize.x, frameSize.y, frameSize.z, 0.01) * 1.5;
   gridHelper.scale.setScalar(referenceSize / referenceBaseSize);
   axesHelper.scale.setScalar(referenceSize / referenceBaseSize);
+  gridHelper.position.copy(frameCenter);
+  axesHelper.position.copy(frameCenter);
   const radius = bounds.isEmpty()
     ? 0.01
     : Math.max(frameSize.length() * 0.5, 0.01);
   const defaultCameraDistance = 10;
-  const distance = Math.min(defaultCameraDistance, radius);
+  const verticalHalfFov =
+    THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2;
+  const horizontalHalfFov = Math.atan(
+    Math.tan(verticalHalfFov) * camera.aspect,
+  );
+  const distance = streamed
+    ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
+    : Math.min(defaultCameraDistance, radius);
 
   camera.near = Math.max(radius / 1000, 0.0001);
   camera.far = Math.max(distance + radius * 20, 100);
   camera.updateProjectionMatrix();
-  camera.position.set(0, 5, 5 * Math.sqrt(3)).setLength(distance);
-  camera.lookAt(0, 0, 0);
+  camera.position
+    .set(0, 5, 5 * Math.sqrt(3))
+    .setLength(distance)
+    .add(frameCenter);
+  camera.lookAt(frameCenter);
   camera.updateMatrixWorld(true);
   controls.minDistance = 0;
   controls.setCamera(camera);
 }
 
-async function loadFile(file, { credit = "", url, button } = {}) {
-  const streamed = url && file.name.toLowerCase() === "lod-meta.json";
-  const fileType =
-    fileTypeFor(file) ??
-    (url && file.name.toLowerCase() === "meta.json"
-      ? SplatFileType.SOG
-      : undefined);
-  if (!fileType && !streamed) {
-    showToast("Unsupported file. Choose a .ply, .spz, or .sog file.");
-    setStatus("Only PLY, SPZ, and SOG files are supported", "error");
-    return;
+async function initializeModel(model, file, { url, resolveFile }, loadId) {
+  const fileType = await detectFileType(file, url);
+  if (loadId !== activeLoad) return;
+  const sogStream = url && file.name.toLowerCase() === "lod-meta.json";
+  if (!fileType && !sogStream && !url)
+    throw new Error("Choose a .ply, .spz, .sog, .rad, or SOG meta.json file.");
+
+  const source = {
+    url,
+    file: url === undefined ? file : undefined,
+    resolveFile,
+  };
+  if (fileType === SplatFileType.RAD) {
+    model.stream = new RadStreamScheduler({
+      ...source,
+      onChange: requestRender,
+      onError: (error, chunkUrl) => {
+        console.error("RAD chunk failed", chunkUrl, error);
+        if (loadId !== activeLoad || loadingPanel.hidden) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        loadingDetail.textContent = `${chunkUrl}: ${detail}`;
+        setStatus("Waiting for a RAD page · retry pending", "error");
+      },
+    });
+    try {
+      await model.stream.initialized;
+      model.splat = model.stream.group;
+      return;
+    } catch (error) {
+      model.stream.dispose();
+      model.stream = null;
+      if (loadId !== activeLoad) return;
+      if (error.name !== "RadLodRequiredError") throw error;
+    }
   }
 
+  if (sogStream) {
+    model.stream = new SogStreamScheduler({
+      url,
+      onChange: requestRender,
+      onError: (error, chunkUrl) =>
+        console.error("Streaming chunk failed", chunkUrl, error),
+    });
+    model.splat = model.stream.group;
+  } else {
+    model.splat = new SplatMesh({
+      ...source,
+      fileName: file.name,
+      fileType,
+      onProgress: (event) => {
+        if (loadId !== activeLoad) return;
+        setLoading(file, event.loaded, event.total || file.size);
+      },
+    });
+  }
+  await (model.stream ?? model.splat).initialized;
+}
+
+function showLoadedModel(file, credit) {
+  setSourcePanelOpen(false);
+  resetViewButton.hidden = false;
+  fileMeta.hidden = false;
+  fileName.textContent = file.name;
+  const sizeLabel = file.size > 0 ? ` · ${formatBytes(file.size)}` : "";
+  fileStats.textContent = activeStream
+    ? "Loading visible regions…"
+    : `${formatNumber.format(activeSplat.numSplats)} splats${sizeLabel}`;
+  modelCredit.textContent = credit;
+  modelCreditPrefix.hidden = !credit;
+  modelCredit.hidden = !credit;
+  modelCreditSeparator.hidden = !credit;
+  setStatus(
+    activeStream ? "Streaming visible regions" : "Loaded and ready",
+    "success",
+  );
+}
+
+async function loadFile(file, { credit = "", url, button, resolveFile } = {}) {
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
+  clearActiveModel();
+
+  // Keep ownership available to cancellation while initialization is pending.
+  const model = { splat: null, stream: null };
+  const disposeModel = () => {
+    if (model.splat && activeSplat === model.splat) clearActiveModel();
+    else if (model.stream) model.stream.dispose();
+    else model.splat?.dispose();
+  };
+  cancelActiveLoad = disposeModel;
   if (button) {
     remoteRequestByButton.set(button, loadId);
     button.disabled = true;
@@ -1131,74 +1247,36 @@ async function loadFile(file, { credit = "", url, button } = {}) {
   setLoading(file);
   setStatus(`Loading ${file.name}`, "loading");
 
-  let candidate;
-  let candidateStream;
-  const disposeCandidate = () => {
-    if (candidateStream) candidateStream.dispose();
-    else candidate?.dispose();
-  };
-  cancelActiveLoad = disposeCandidate;
   try {
-    if (streamed) {
-      candidateStream = new SogStreamScheduler({
-        url,
-        onChange: requestRender,
-        onError: (error, chunkUrl) =>
-          console.error("Streaming chunk failed", chunkUrl, error),
-      });
-      candidate = candidateStream.group;
-    } else
-      candidate = new SplatMesh({
-        url,
-        file: url === undefined ? file : undefined,
-        fileName: file.name,
-        fileType,
-        onProgress: (event) => {
-          if (loadId !== activeLoad) return;
-          setLoading(file, event.loaded, event.total || file.size);
-        },
-      });
-
-    await (candidateStream ?? candidate).initialized;
+    await initializeModel(model, file, { url, resolveFile }, loadId);
 
     if (loadId !== activeLoad) {
-      disposeCandidate();
+      disposeModel();
       return;
     }
 
-    applyModelOrientation(candidate, Boolean(candidateStream));
-    const previousSplat = activeSplat;
-    const previousStream = activeStream;
-    activeSplat = candidate;
-    activeStream = candidateStream ?? null;
+    applyModelOrientation(
+      model.splat,
+      model.stream instanceof SogStreamScheduler,
+    );
+    activeSplat = model.splat;
+    activeStream = model.stream;
     scene.add(activeSplat);
-    if (previousSplat) {
-      scene.remove(previousSplat);
-      if (previousStream) previousStream.dispose();
-      else previousSplat.dispose();
+    requestRender();
+    if (model.stream instanceof RadStreamScheduler) {
+      // The active stream advances loading until RAD bounds can frame the view.
+      await model.stream.firstRenderable;
+      if (loadId !== activeLoad) {
+        disposeModel();
+        return;
+      }
     }
     frameSplat(activeSplat);
-
-    setSourcePanelOpen(false);
-    resetViewButton.hidden = false;
-    fileMeta.hidden = false;
-    fileName.textContent = file.name;
-    const sizeLabel = file.size > 0 ? ` · ${formatBytes(file.size)}` : "";
-    fileStats.textContent = streamed
-      ? "Loading visible regions…"
-      : `${formatNumber.format(activeSplat.numSplats)} splats${sizeLabel}`;
-    modelCredit.textContent = credit;
-    modelCreditPrefix.hidden = !credit;
-    modelCredit.hidden = !credit;
-    modelCreditSeparator.hidden = !credit;
-    setStatus(
-      streamed ? "Streaming visible regions" : "Loaded and ready",
-      "success",
-    );
+    showLoadedModel(file, credit);
     clearLoading();
     requestRender();
   } catch (error) {
-    disposeCandidate();
+    disposeModel();
     if (loadId !== activeLoad) return;
 
     clearLoading();
@@ -1207,7 +1285,7 @@ async function loadFile(file, { credit = "", url, button } = {}) {
     console.error(`Failed to load ${file.name}`, error);
     showToast(`Could not load ${file.name}: ${detail}`);
   } finally {
-    if (cancelActiveLoad === disposeCandidate) cancelActiveLoad = null;
+    if (cancelActiveLoad === disposeModel) cancelActiveLoad = null;
     if (button && remoteRequestByButton.get(button) === loadId) {
       remoteRequestByButton.delete(button);
       button.disabled = false;
@@ -1268,7 +1346,7 @@ urlForm.addEventListener("submit", (event) => {
   const model = modelFromUrl(modelUrlInput.value.trim());
   if (!model) {
     showToast(
-      "Enter an HTTP(S) URL for .ply, .spz, .sog, meta.json, or lod-meta.json.",
+      "Enter an HTTP(S) model URL (.ply, .spz, .sog, .rad, or a scene index).",
     );
     setStatus("Enter a valid model URL", "error");
     modelUrlInput.focus();
@@ -1279,9 +1357,60 @@ urlForm.addEventListener("submit", (event) => {
   loadRemoteModel(model, loadUrlButton);
 });
 
+function loadLocalFiles(files) {
+  const models = files.filter((entry) => fileTypeFor(entry));
+  if (models.length > 1) {
+    showToast(
+      "Choose one model or metadata file together with its companion files.",
+    );
+    return;
+  }
+  const file =
+    models[0] ?? files.find((entry) => !/\.(radc|webp)$/i.test(entry.name));
+  if (!file) {
+    showToast(
+      "Include meta.json with SOG images, or the .rad header with RAD chunks.",
+    );
+    return;
+  }
+  const normalize = (path) => {
+    const parts = [];
+    for (const part of path.replaceAll("\\", "/").split("/")) {
+      if (part === "..") parts.pop();
+      else if (part && part !== ".") parts.push(part);
+    }
+    return parts.join("/");
+  };
+  const paths = new Map();
+  const names = new Map();
+  for (const entry of files) {
+    for (const [map, key] of [
+      [paths, normalize(entry.webkitRelativePath || entry.name)],
+      [names, entry.name],
+    ]) {
+      const matches = map.get(key) ?? [];
+      matches.push(entry);
+      map.set(key, matches);
+    }
+  }
+  const rootPath = normalize(file.webkitRelativePath || file.name);
+  const directory = rootPath.slice(0, rootPath.lastIndexOf("/") + 1);
+  const resolveFile = (filename, signal) => {
+    signal.throwIfAborted();
+    const relative = normalize(directory + filename);
+    const exact = paths.get(relative) ?? paths.get(normalize(filename));
+    const matches = exact ?? names.get(normalize(filename).split("/").at(-1));
+    if (matches?.length === 1) return matches[0];
+    if (matches?.length > 1)
+      throw new Error(`Ambiguous companion filename: ${filename}`);
+    throw new Error(`Select the companion file: ${filename}`);
+  };
+  void loadFile(file, { resolveFile });
+}
+
 fileInput.addEventListener("change", () => {
-  const file = fileInput.files?.[0];
-  if (file) loadFile(file);
+  const files = Array.from(fileInput.files ?? []);
+  if (files.length) loadLocalFiles(files);
 });
 
 resetViewButton.addEventListener("click", () => {
@@ -1345,12 +1474,11 @@ window.addEventListener("drop", (event) => {
   clearDragState();
 
   const files = Array.from(event.dataTransfer?.files ?? []);
-  const file = files.find((entry) => fileTypeFor(entry));
-  if (file) {
-    loadFile(file);
+  if (files.length) {
+    loadLocalFiles(files);
   } else {
-    showToast("No supported file found. Drop a .ply, .spz, or .sog file.");
-    setStatus("Only PLY, SPZ, and SOG files are supported", "error");
+    showToast("Drop a model, or SOG meta.json together with its images.");
+    setStatus("PLY, SPZ, SOG, and RAD files are supported", "error");
   }
 });
 

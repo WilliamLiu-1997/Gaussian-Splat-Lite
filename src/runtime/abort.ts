@@ -13,3 +13,23 @@ export function abortable<T>(
     });
   });
 }
+
+/** Link lifetime and per-request cancellation without retaining completed listeners. */
+export function linkedAbortController(...signals: (AbortSignal | undefined)[]) {
+  const controller = new AbortController();
+  const listeners = signals.flatMap((signal) => {
+    if (!signal) return [];
+    const abort = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    return [{ signal, abort }];
+  });
+  return {
+    controller,
+    signal: controller.signal,
+    cleanup() {
+      for (const { signal, abort } of listeners)
+        signal.removeEventListener("abort", abort);
+    },
+  };
+}

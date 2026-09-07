@@ -6,7 +6,7 @@
 [![CI](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Three.js Gaussian Splatting · WebGPU · Depth Rendering**
+**Three.js Gaussian Splatting · WebGPU · Depth Rendering · Streaming**
 
 <p align="center">
   <img src="./Gaussian-Splat-Lite.svg" alt="Gaussian Splat Lite" width="1000">
@@ -14,7 +14,7 @@
 
 </div>
 
-A lightweight 3D Gaussian Splatting renderer for Three.js, with **WebGPU**, **depth rendering for scene occlusion**, and WebGL2 support. Load PLY/SPZ/SOG files into standard Three.js scenes and render multiple Splat objects together. Based on a simplified [SparkJS](https://github.com/sparkjsdev/spark) architecture.
+A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering for scene occlusion**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD files into standard Three.js scenes, stream RAD and SOG scenes with camera-driven LOD, and render multiple Splat objects together.
 
 ## Features
 
@@ -22,9 +22,10 @@ A lightweight 3D Gaussian Splatting renderer for Three.js, with **WebGPU**, **de
 | --- | --- |
 | **WebGPU / WebGL2** | Shared scene API and Worker/WASM sorting; WebGPU adds TSL shaders, compute-based generation, and optional GPU radix sorting |
 | **Depth Rendering** | Separate depth draw in input order with stochastic coverage at transparent edges |
+| **Large-scene streaming** | RAD tree LOD and SOG `lod-meta.json` scenes with camera-driven selection, on-demand loading, worker decoding, caching, and opacity crossfades for smooth LOD changes on both backends |
 | **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
 | **Three.js integration** | Standard scenes, cameras, transforms, raycasting, and global sorting across multiple `SplatMesh` objects |
-| **Data and precision** | PLY/SPZ/SOG from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
+| **Data and precision** | PLY/SPZ/SOG/RAD from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
 
 Also includes spherical harmonics, SDF edits, offscreen capture, and TypeScript declarations.
 
@@ -36,7 +37,7 @@ npm install gaussian-splat-lite github:mrdoob/three.js#d2fc542d58f5c91fa7b585e6a
 
 Use the pinned Three.js snapshot above: the WebGPU compatibility patches depend on its built modules. The browser must support the selected graphics backend, WebAssembly, Web Workers, and ES modules. Cross-origin Splat URLs need CORS headers.
 
-The [changelog](CHANGELOG.md#unreleased) currently lists WebGPU and the new depth options under **Unreleased**. To try the implementation in this checkout, follow [Development](#development).
+The [changelog](CHANGELOG.md#unreleased) currently lists WebGPU, the new depth options, and RAD/SOG streaming under **Unreleased**. To try the implementation in this checkout, follow [Development](#development).
 
 ## Quick start
 
@@ -92,6 +93,50 @@ const renderer = new THREE.WebGLRenderer({ antialias: false });
 
 Keep the rest of the example, including `renderDepth`.
 
+## Streaming large scenes
+
+Use `RadStreamScheduler` for RAD files with a LOD tree, or `SogStreamScheduler` for SOG scenes indexed by `lod-meta.json`. Both work with the same `GaussianSplatRenderer` on WebGPU and WebGL2, loading and retaining data as the camera moves.
+
+For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
+
+```js
+import { RadStreamScheduler } from "gaussian-splat-lite";
+
+const streaming = new RadStreamScheduler({
+  url: "/assets/scene.rad",
+  splatBudget: 3_000_000,
+  fadeDurationMs: 200, // Smooth LOD transitions (default).
+});
+scene.add(streaming.group);
+await streaming.initialized;
+
+const size = new THREE.Vector2();
+renderer.setAnimationLoop(() => {
+  renderer.getDrawingBufferSize(size);
+  streaming.update(camera, { width: size.x, height: size.y });
+  renderer.render(scene, camera);
+});
+
+// The update loop must be running before awaiting the first visible data.
+await streaming.firstRenderable;
+
+// When removing the model:
+// streaming.dispose();
+// streaming.group.removeFromParent();
+```
+
+For streamed SOG, use this constructor and call `streaming.update(camera)` before rendering each frame; the group and readiness lifecycle are the same:
+
+```js
+import { SogStreamScheduler } from "gaussian-splat-lite";
+
+const streaming = new SogStreamScheduler({
+  url: "/assets/scene/lod-meta.json",
+  splatBudget: 3_000_000,
+  fadeDurationMs: 200, // Smooth LOD transitions (default).
+});
+```
+
 ## Depth Rendering
 
 **`renderDepth` adds a dedicated depth draw while keeping sorted color blending.** Both WebGPU and WebGL2 support it.
@@ -109,9 +154,10 @@ With default depth settings, the companion draw runs on non-stochastic frames in
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering, sorting, depth, resolve, and XR.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
+- [RadStreamScheduler](docs/RadStreamScheduler.md) — Spark RAD decoding, tree LOD and on-demand paging.
 - [SogStreamScheduler](docs/SogStreamScheduler.md) — Streamed SOG, camera-driven LOD and caching.
 - [Splats](docs/Splats.md) — Data access and updates.
-- [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG formats.
+- [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG/RAD formats.
 - [SplatEdit / SplatEditSdf](docs/SplatEdit.md) — Color and opacity editing.
 - [postDecode](docs/PostDecode.md) — Experimental decode transformations.
 - [SplatAccumulator](docs/SplatAccumulator.md) — Low-level GPU buffers.
@@ -126,7 +172,9 @@ npm run build:wasm
 npm run dev
 ```
 
-Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, or `.sog` file into the viewer, choose a local file, or load one from an HTTP(S) URL. Files are decoded locally. Switch **WebGL / WebGPU** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
+Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Switch **WebGL / WebGPU** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
+
+To try streaming, load a RAD file or enter a SOG `lod-meta.json` URL. The viewer streams RAD files with a LOD tree automatically and falls back to ordinary loading when no tree is present. Move the camera to see LOD selection and on-demand loading.
 
 See [Contributing](CONTRIBUTING.md#validation) for validation and release commands. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
 

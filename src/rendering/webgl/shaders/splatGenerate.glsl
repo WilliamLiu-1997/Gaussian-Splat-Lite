@@ -13,7 +13,7 @@ uniform usampler2DArray sourceSplats;
 uniform usampler2DArray sourceSplats2;
 uniform uint sourceLayerBits;
 uniform uint sourceBlockBits;
-uniform usampler2D sourceBlocks;
+uniform usampler2DArray sourceBlocks;
 uniform bool sourceIndexed;
 uniform usampler2DArray sourceIndices;
 
@@ -37,7 +37,6 @@ uniform usampler2D editTexture;
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
 
-const float MAX_SEMANTIC_OPACITY = 1000.0;
 // Match WebGPU's finite sentinel for empty/unbounded SDFs. Smooth ALL shapes
 // must not evaluate exp(inf - inf).
 const float SDF_DISTANCE_LIMIT = 1e20;
@@ -45,17 +44,16 @@ const float SDF_DISTANCE_LIMIT = 1e20;
 float decodeSemanticOpacity(float alpha, float shapeAmount) {
     if (shapeAmount <= 0.0) return alpha;
 
-    float kernelShape = 1.0 + 4.0 * shapeAmount;
+    float kernelShape = 1.0 + 4.0 * min(shapeAmount, 1.0);
     float kernelOpacity = exp(
         (kernelShape * kernelShape - 1.0) / 2.718281828459045
     );
-    return min(MAX_SEMANTIC_OPACITY, alpha * kernelOpacity);
+    return alpha * kernelOpacity;
 }
 
 float encodeWideSemanticOpacity(float opacity) {
-    opacity = min(opacity, MAX_SEMANTIC_OPACITY);
     float kernelShape = sqrt(log(opacity) * 2.718281828459045 + 1.0);
-    return 0.25 * (kernelShape - 1.0);
+    return min(1.0, 0.25 * (kernelShape - 1.0));
 }
 
 vec3 evaluateSH1(uvec4 data, vec3 direction) {
@@ -294,15 +292,18 @@ void produceSplat(int index) {
         uvec4 indices = texelFetch(sourceIndices, splatTexCoord(index >> 2), 0);
         sourceIndex = indices[index & 3];
     }
-    vec4 blockRecolor = vec4(1.0);
-    if (sourceBlockBits > 0u) {
+    float blockOpacity = 1.0;
+    if (sourceBlockBits < 32u) {
+        // Opacity layers follow the source layers, at one texel per block.
+        uint blockMask = (1u << (sourceLayerBits - sourceBlockBits)) - 1u;
         uint block = sourceIndex >> sourceBlockBits;
-        blockRecolor = uintBitsToFloat(texelFetch(sourceBlocks, ivec2(
-            block & SPLAT_TEX_WIDTH_MASK,
-            block >> SPLAT_TEX_WIDTH_BITS
-        ), 0));
-        if (blockRecolor.a <= 0.0) return;
+        blockOpacity = uintBitsToFloat(texelFetch(sourceBlocks, ivec3(
+            block & min(blockMask, SPLAT_TEX_WIDTH_MASK),
+            (block & blockMask) >> SPLAT_TEX_WIDTH_BITS,
+            sourceIndex >> sourceLayerBits
+        ), 0).r);
     }
+    if (blockOpacity <= 0.0) return;
     uint layerMask = (1u << sourceLayerBits) - 1u;
     ivec3 coord = ivec3(
         sourceIndex & SPLAT_TEX_WIDTH_MASK,
@@ -345,13 +346,13 @@ void produceSplat(int index) {
 // The center is camera-relative while editPosition is mesh-origin-relative,
 // matching the rebased SDF transforms without reconstructing world position.
     // Opacity is clamped once on the CPU when preparing this mesh.
-    float opacityScale = recolor.a * blockRecolor.a;
+    float opacityScale = recolor.a * blockOpacity;
     bool semanticOpacityDecoded = applySdfEdits(
         editPosition,
         rgba,
         shapeAmount
     );
-    rgba.rgb *= recolor.rgb * blockRecolor.rgb;
+    rgba.rgb *= recolor.rgb;
     if (!semanticOpacityDecoded && opacityScale >= 1.0) {
         // Neither SDFs nor the mesh opacity changed opacity, so preserve the
         // source alpha/shape encoding without any transcendental operations.

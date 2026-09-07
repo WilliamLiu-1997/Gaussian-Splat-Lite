@@ -269,7 +269,7 @@ type SplatPostDecodeInput = {
   readonly position: Vec3Value;
   readonly scale: Vec3Value;
   readonly quaternion: QuaternionValue;
-  /** Semantic opacity in the [0, 1000] range. */
+  /** Semantic opacity in [0, exp(24/e)] (approximately 6830.182). */
   readonly opacity: FloatValue;
   /** Standard alpha in the [0, 1] range. */
   readonly alpha: FloatValue;
@@ -282,7 +282,7 @@ type SplatPostDecodePatch = {
   position?: Vec3Like;
   scale?: Vec3Like;
   quaternion?: QuaternionLike;
-  /** Semantic opacity, clamped to [0, 1000] and encoded by the library. */
+  /** Semantic opacity, encoded within the renderer's shape range [0, 1]. */
   opacity?: FloatLike;
   /**
    * Standard alpha, clamped to [0, 1] and independent from semantic opacity.

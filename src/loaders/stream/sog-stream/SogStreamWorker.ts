@@ -1,4 +1,4 @@
-import { WorkerRpc } from "../../runtime/WorkerRpc";
+import { WorkerRpc } from "../../../runtime/WorkerRpc";
 import type { SogStreamRpcHandlers } from "./worker";
 import BundledWorker from "./worker?worker&inline";
 

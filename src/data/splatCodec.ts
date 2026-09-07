@@ -1,6 +1,5 @@
 import { fromHalf, toHalf } from "../utils/numeric";
 
-const MAX_SPLAT_OPACITY = 1000;
 const F32_EPSILON = 1.192_092_895_507_812_5e-7;
 const ENCODED_IDENTITY_QUATERNION = (512 << 10) | 1023;
 
@@ -11,21 +10,19 @@ function clamp(value: number, min: number, max: number) {
 export function decodeSplatOpacity(word: number) {
   const shapeAmount = fromHalf(word >>> 16);
   if (shapeAmount > 0) {
-    const kernelShape = shapeAmount * 4 + 1;
-    return Math.min(
-      MAX_SPLAT_OPACITY,
-      Math.exp((kernelShape * kernelShape - 1) / Math.E),
-    );
+    const kernelShape = Math.min(shapeAmount, 1) * 4 + 1;
+    return Math.exp((kernelShape * kernelShape - 1) / Math.E);
   }
   return fromHalf(word & 0xffff);
 }
 
 export function encodeSplatOpacity(opacity: number) {
   if (opacity > 0 && opacity <= 1) return toHalf(opacity);
-  const value = clamp(opacity, 0, MAX_SPLAT_OPACITY);
+  const value = Math.max(opacity, 0);
   if (value > 1) {
     const shapeAmount = 0.25 * (Math.sqrt(Math.log(value) * Math.E + 1) - 1);
-    return (toHalf(1) | (toHalf(shapeAmount) << 16)) >>> 0;
+    // Match the renderer's shape range [0, 1].
+    return (toHalf(1) | (toHalf(Math.min(shapeAmount, 1)) << 16)) >>> 0;
   }
   return toHalf(value);
 }
@@ -41,7 +38,8 @@ export function encodeShRgb(red: number, green: number, blue: number) {
     Math.abs(green) || 0,
     Math.abs(blue) || 0,
   );
-  const exponent = clamp(Math.floor(Math.log2(maxAbsolute)) + 15, 0, 31);
+  // The shared exponent must cover the largest channel before quantization.
+  const exponent = clamp(Math.ceil(Math.log2(maxAbsolute)) + 15, 0, 31);
   const divisor = 2 ** (exponent - 15) / 255;
   const encodedRed = Math.round(clamp(Math.abs(red) / divisor, 0, 255));
   const encodedGreen = Math.round(clamp(Math.abs(green) / divisor, 0, 255));

@@ -1,7 +1,7 @@
-import type { SplatResult } from "../../data/defines";
-import { getSplatByteLength, getSplatShDegree } from "../../data/splatData";
-import { extractSplatRange } from "../../data/splatRange";
-import type { SplatLoadArgs, SplatLoadStatus } from "../loadTypes";
+import type { SplatResult } from "../../../data/defines";
+import { getSplatByteLength, getSplatShDegree } from "../../../data/splatData";
+import { extractSplatRange } from "../../../data/splatRange";
+import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes";
 import { packSogLodIndex, parseSogLodManifest } from "./sogLod";
 
 export type SogChunkInfo = {

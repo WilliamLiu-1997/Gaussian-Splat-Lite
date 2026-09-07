@@ -2,16 +2,23 @@ import { type ChunkDecoder, decode_to_splats } from "gaussian-splat-rs";
 import type { SplatResult } from "../data/defines";
 import { abortable } from "../runtime/abort";
 import { getAssetBaseUrl } from "./assetUrl";
-import type { SplatLoadArgs, SplatLoadStatus } from "./loadTypes";
+import type {
+  SplatFileInput,
+  SplatFileResolver,
+  SplatLoadArgs,
+  SplatLoadStatus,
+} from "./loadTypes";
 import {
   type PostDecodeSplatData,
   applySplatPostDecode,
 } from "./postDecodeRuntime";
+import { isRadPrefix, loadRad } from "./rad";
 import { isSogPrefix, loadSog } from "./sog";
 
 type DecodeArgs = SplatLoadArgs & {
   sendStatus: (data: SplatLoadStatus) => void;
   resolveAsset: (url: string) => Promise<string>;
+  resolveFile?: SplatFileResolver;
 };
 
 async function decodeInput(args: DecodeArgs) {
@@ -27,6 +34,16 @@ async function decodeInput(args: DecodeArgs) {
     resolveAsset,
   } = args;
   let { fileBytes } = args;
+  if (
+    fileType === "rad" ||
+    (!fileType &&
+      (/\.rad(?:[?#]|$)/i.test(pathName ?? url ?? "") ||
+        (fileBytes && isRadPrefix(fileBytes)) ||
+        (file &&
+          isRadPrefix(new Uint8Array(await file.slice(0, 4).arrayBuffer())))))
+  ) {
+    return loadRad(args);
+  }
   if (
     fileType === "sog" ||
     (!fileType &&
@@ -49,6 +66,7 @@ async function decodeInput(args: DecodeArgs) {
     const request = new Request(url, {
       headers: requestHeader ? new Headers(requestHeader) : undefined,
       credentials: withCredentials ? "include" : "same-origin",
+      signal: args.signal,
     });
 
     const response = await fetch(request);
@@ -115,12 +133,13 @@ async function decodeInput(args: DecodeArgs) {
         )
           break;
       }
-      if (isSogPrefix(prefix.subarray(0, prefixSize))) {
+      const sniffed = prefix.subarray(0, prefixSize);
+      if (isSogPrefix(sniffed) || isRadPrefix(sniffed)) {
         const crossOrigin =
           url &&
           responseUrl &&
           new URL(url).origin !== new URL(responseUrl).origin;
-        return await loadSog({
+        const streamingArgs = {
           expectedSogCount: args.expectedSogCount,
           readChunk: async () => pending.shift() ?? readInputChunk(),
           baseUrl: getAssetBaseUrl(responseUrl) ?? baseUrl,
@@ -128,7 +147,12 @@ async function decodeInput(args: DecodeArgs) {
           withCredentials: !crossOrigin && withCredentials,
           sendStatus,
           resolveAsset,
-        });
+          resolveFile: args.resolveFile,
+          signal: args.signal,
+        };
+        return isRadPrefix(sniffed)
+          ? await loadRad(streamingArgs)
+          : await loadSog(streamingArgs);
       }
     }
     decoder = decode_to_splats(fileType, pathName ?? url);
@@ -193,6 +217,18 @@ export async function loadSplats(
         args.signal,
       ).finally(() => assetRequests.delete(requestId));
     },
+    resolveFile: args.hasFileResolver
+      ? (filename, signal) => {
+          const requestId = ++assetRequestId;
+          return abortable(
+            new Promise<SplatFileInput>((resolve) => {
+              fileRequests.set(requestId, resolve);
+              sendStatus({ fileRequest: requestId, filename });
+            }),
+            signal,
+          ).finally(() => fileRequests.delete(requestId));
+        }
+      : undefined,
   })) as PostDecodeSplatData;
   if (args.postDecode) applySplatPostDecode(decoded, args.postDecode);
   return {
@@ -210,6 +246,15 @@ export async function loadSplats(
 
 let assetRequestId = 0;
 const assetRequests = new Map<number, (url: string) => void>();
+const fileRequests = new Map<number, (input: SplatFileInput) => void>();
+
+export function resolveFile({
+  requestId,
+  input,
+}: { requestId: number; input: SplatFileInput }) {
+  fileRequests.get(requestId)?.(input);
+  fileRequests.delete(requestId);
+}
 
 export function resolveAsset({
   requestId,

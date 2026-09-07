@@ -9,6 +9,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added RAD visibility fades and LOD crossfades on WebGL/WebGPU, matching SOG's `fadeDurationMs` option and 200 ms default. Shared nodes stay opaque, RAD and SOG share an opacity table, and fade ticks reuse source/index textures and sort data. Outgoing pages remain pinned through fade-out.
+
+- Added local split SOG loading from `meta.json` and companion images, including Viewer multi-file selection and drop. SOG and RAD share `resolveFile` for external files, with async resolution, cancellation and caller-owned byte inputs.
+
+- Added native Spark RAD version 1 decoding for monolithic and split files, all property codecs and SH0–SH3/codebooks. Ordinary loaders detect RAD0 and extract leaves before post-decode transforms.
+- Added Splat record indices to raycast hits, with a stable file-index lookup for paged RAD scenes.
+- Added `RadStreamScheduler` with worker tree LOD, fixed page slots, selected-index rendering on WebGL/WebGPU, Splat and upload budgets, cooldown retirement/reloading, cancellation and retries. Added RAD Viewer loading and local companion-page selection.
+
 - Added `SogStreamScheduler` for Streamed SOG indexes, with camera-driven LOD selection, refinement loads that halve the remaining LOD gap, worker-side chunk caching and region extraction, one shared Mesh per chunk with fixed region slots, adaptive source texture layers, partial uploads and independent region fades, LOD crossfades, reference-based cooldown retirement and cancellation. Chunk capacity follows its data without a configured per-Mesh Splat limit. The viewer accepts `lod-meta.json` URLs and displays the source Mesh count.
 - Added `Splats.extractRange()` for independent packed range copies and an optional `AbortSignal` to `SplatLoader.loadAsync()`.
 - Added ordinary SOG V1/V2 loading from ZIP bundles or directory metadata, with automatic HTTP Range access, concurrent property-image downloads and grouped decoding through the existing PLY/SPZ loading API. Indexed streaming chunks use independent workers for concurrent loading and caching.
@@ -22,6 +30,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Consolidated RAD/SOG streaming under `loaders/stream/`, sharing indexed data, workers, configuration and byte accounting. Separated format sources, ZIP access and index loading.
+- Added random reads and bounded page prefetch to ordinary RAD URL loading.
+
+- Increased SOG streaming's default `maxConcurrentLoads` from two to four, matching RAD streaming.
+- Increased RAD streaming's default `maxConcurrentLoads` from two to four, allowing up to four concurrent page downloads and decoding workers while retaining upload backpressure.
+
+- Unified RAD and SOG with the PLY/SPZ decoder architecture: platform-independent decoding in `gaussian-splat-lib`, shared `SplatReceiver` output, and thin WASM bridges in `gaussian-splat-rs`. Preserved grouped SOG decoding and direct packed SH palette writes.
+
+- Aligned common RAD streaming settings with SOG: a 3,000,000 visible Splat budget, `cooldownTicks` and upload allowance. Removed separate memory and LOD tuning options; SH degree is read automatically from the file. Unused page pools release their storage after cooldown.
 - Streamed SOG rendering, sorting and raycasting now use compact visible indices instead of scanning through hidden source slots. Index maps are reused during opacity fades, and batch rendering no longer allocates sort centers for the entire chunk.
 - Replaced `stream`/`streamLength` loading inputs with `file: Blob` (including `File`). PLY/SPZ stream directly in the worker; local SOG files use random reads without buffering the whole archive. Viewer URL loads now use the URL loader for all formats.
 - Read and flush packed Splat buffers independently, skipping old-data reads for complete decode batches.
@@ -37,6 +54,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Corrected streaming reads and iteration to follow selected indices, preserving original opacity for picking during fades.
+- Preserved caller-owned RAD buffers during worker transfers, including Node.js Buffer inputs.
+
+- Accept exact-length RAD HTTP 206 responses when CORS hides `Content-Range`, retaining strict validation when that header is exposed. Compare resource validators without automatically adding `If-Range`, so public storage hosts can load without a preflight.
+- Corrected the shared SH exponent choice in Rust and TypeScript so coefficients between powers of two retain their magnitude instead of saturating at the lower power. Packed layout and shader decoding are unchanged.
 - Ignore empty LOD placeholders when validating Streamed SOG chunk coverage and LOD consistency.
 - Corrected the viewer's WebGPU Inspector FPS to count rendered frames instead of animation ticks, including GPU waits and idle on-demand rendering.
 - Routed remote SOG files in the viewer directly through the URL loader so HTTP Range reads and grouped download/decode overlap remain available.

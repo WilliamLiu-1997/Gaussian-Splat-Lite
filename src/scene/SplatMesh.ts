@@ -3,10 +3,12 @@ import * as THREE from "three";
 import {
   get_raycast_buffer,
   get_raycast_buffer2,
+  get_raycast_indices,
   raycast_splat_buffers,
 } from "gaussian-splat-rs";
 import { type SplatInput, Splats } from "../data/Splats";
 import type { SplatFileType } from "../data/defines";
+import type { SplatFileResolver } from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode";
 import * as wasm from "../runtime/wasm";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
@@ -22,6 +24,7 @@ export type SplatMeshOptions = {
   fileBytes?: Uint8Array | ArrayBuffer;
   fileType?: SplatFileType;
   fileName?: string;
+  resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
   splats?: Splats;
@@ -110,6 +113,7 @@ export class SplatMesh extends THREE.Object3D {
         fileBytes: options.fileBytes,
         fileType: options.fileType,
         fileName: options.fileName,
+        resolveFile: options.resolveFile,
         postDecode: options.postDecode,
         maxSplats: options.maxSplats,
         construct: options.constructSplats,
@@ -390,6 +394,7 @@ export class SplatMesh extends THREE.Object3D {
         far,
         count,
       );
+      const hitIndices = get_raycast_indices();
 
       for (let index = 0; index < distances.length; index += 1) {
         const distance = distances[index];
@@ -397,6 +402,7 @@ export class SplatMesh extends THREE.Object3D {
           distance,
           point: ray.at(distance, new THREE.Vector3()),
           object: this,
+          index: base + hitIndices[index],
         });
       }
     }

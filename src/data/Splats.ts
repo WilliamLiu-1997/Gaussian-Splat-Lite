@@ -1,8 +1,10 @@
 import * as THREE from "three";
 
+import type { SplatFileResolver } from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode";
 import { toHalf } from "../utils/numeric";
 import {
+  SPLAT_BLOCKS_DISABLED,
   SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
   type SplatFileType,
@@ -21,7 +23,7 @@ import {
   getSplatShDegree,
 } from "./splatData";
 import { extractSplatRange } from "./splatRange";
-import { emptyUintTexture, getTextureSize } from "./textureLayout";
+import { getTextureSize } from "./textureLayout";
 import { decodeSplat } from "./unpack";
 
 type SplatShTextures = {
@@ -54,6 +56,8 @@ export type SplatsOptions = {
   fileBytes?: Uint8Array | ArrayBuffer;
   fileType?: SplatFileType;
   fileName?: string;
+  /** Resolve external SOG images or RAD chunks by metadata filename. */
+  resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
   maxSplats?: number;
@@ -270,6 +274,7 @@ export class Splats {
         fileBytes: options.fileBytes,
         fileType: options.fileType,
         fileName: options.fileName,
+        resolveFile: options.resolveFile,
         postDecode: options.postDecode,
         onProgress: options.onProgress,
         signal,
@@ -646,8 +651,8 @@ export class Splats {
     const sh = this.getShTextures();
     uniforms.sourceLayerBits.value =
       SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
-    uniforms.sourceBlockBits.value = 0;
-    uniforms.sourceBlocks.value = emptyUintTexture;
+    uniforms.sourceBlockBits.value = SPLAT_BLOCKS_DISABLED;
+    uniforms.sourceBlocks.value = Splats.emptyTexture;
     uniforms.sourceIndexed.value = false;
     uniforms.sourceIndices.value = Splats.emptyTexture;
     uniforms.sourceSplats.value = splats;

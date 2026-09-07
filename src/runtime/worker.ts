@@ -1,5 +1,5 @@
 import { set_sort_center_state, sort32_centers } from "gaussian-splat-rs";
-import { loadSplats, resolveAsset } from "../loaders/workerDecode";
+import { loadSplats, resolveAsset, resolveFile } from "../loaders/workerDecode";
 import { startWorker } from "./workerServer";
 
 const rpcHandlers = {
@@ -7,6 +7,7 @@ const rpcHandlers = {
   sortCenters32,
   loadSplats,
   resolveAsset,
+  resolveFile,
 };
 export type RpcHandlers = typeof rpcHandlers;
 

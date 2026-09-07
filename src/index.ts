@@ -10,10 +10,21 @@ export { StochasticResolvePass } from "./rendering/StochasticResolvePass";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {
+  RadStreamScheduler,
+  type RadStreamSchedulerOptions,
+  type RadStreamStats,
+} from "./loaders/stream/rad-stream/RadStreamScheduler";
+export type { SplatFileInput, SplatFileResolver } from "./loaders/loadTypes";
+export type { RadMeta } from "./loaders/rad/radFormat";
+export type {
+  StreamSchedulerOptions,
+  StreamStats,
+} from "./loaders/stream/streamOptions";
+export {
   SogStreamScheduler,
   type SogStreamSchedulerOptions,
   type SogStreamStats,
-} from "./loaders/sog-stream/SogStreamScheduler";
+} from "./loaders/stream/sog-stream/SogStreamScheduler";
 export type { SplatWorker } from "./runtime/SplatWorker";
 
 export { Splats, type SplatInput, type SplatsOptions } from "./data/Splats";

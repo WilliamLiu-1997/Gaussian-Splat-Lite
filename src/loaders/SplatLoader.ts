@@ -1,6 +1,7 @@
 import { Loader } from "three";
 import { Splats, type SplatsOptions } from "../data/Splats";
 import { workerPool } from "../runtime/SplatWorker";
+import { abortable } from "../runtime/abort";
 import { SplatMesh } from "../scene/SplatMesh";
 import { getAssetBaseUrl } from "./assetUrl";
 import type { SplatLoadStatus } from "./loadTypes";
@@ -13,6 +14,7 @@ type SplatLoadOptions = Pick<
   | "fileBytes"
   | "fileType"
   | "fileName"
+  | "resolveFile"
   | "postDecode"
   | "onProgress"
 > & {
@@ -22,7 +24,7 @@ type SplatLoadOptions = Pick<
   onError?: (error: unknown) => void;
 };
 
-// SplatLoader implements the THREE.Loader interface for PLY, SPZ and SOG.
+// SplatLoader implements the THREE.Loader interface for PLY, SPZ, SOG and RAD.
 export class SplatLoader extends Loader {
   load(
     url: string,
@@ -56,6 +58,7 @@ export class SplatLoader extends Loader {
     fileBytes,
     fileType,
     fileName,
+    resolveFile,
     postDecode,
     signal,
     onLoad,
@@ -64,6 +67,9 @@ export class SplatLoader extends Loader {
   }: SplatLoadOptions): Promise<Splats> {
     let resolvedURL: string | undefined;
     let started = false;
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
     try {
       signal?.throwIfAborted();
       if (
@@ -107,14 +113,15 @@ export class SplatLoader extends Loader {
               fileBytes: byteArray?.slice(),
               fileType,
               pathName,
+              hasFileResolver: resolveFile !== undefined,
               baseUrl: getAssetBaseUrl(requestUrl) ?? resourceUrl,
               postDecode: postDecode
                 ? serializeSplatPostDecode(postDecode)
                 : undefined,
             },
             {
-              signal,
-              onStatus: (data) => {
+              signal: controller.signal,
+              onStatus: async (data) => {
                 const status = data as SplatLoadStatus;
                 if ("assetRequest" in status) {
                   return worker.call("resolveAsset", {
@@ -123,6 +130,26 @@ export class SplatLoader extends Loader {
                       this.manager.resolveURL(status.url),
                       window.location.href,
                     ).href,
+                  });
+                }
+                if ("fileRequest" in status) {
+                  if (!resolveFile)
+                    throw new Error("No external file resolver");
+                  const input = await abortable(
+                    Promise.resolve(
+                      resolveFile(status.filename, controller.signal),
+                    ),
+                    controller.signal,
+                  );
+                  controller.signal.throwIfAborted();
+                  return worker.call("resolveFile", {
+                    requestId: status.fileRequest,
+                    input:
+                      input instanceof Uint8Array
+                        ? input.slice()
+                        : input instanceof ArrayBuffer
+                          ? input.slice(0)
+                          : input,
                   });
                 }
                 if (onProgress) {
@@ -141,7 +168,7 @@ export class SplatLoader extends Loader {
             },
           ),
         memoryHeavy,
-        signal,
+        controller.signal,
       );
       signal?.throwIfAborted();
       const result = splats ?? new Splats();
@@ -153,6 +180,8 @@ export class SplatLoader extends Loader {
       onError?.(error);
       throw error;
     } finally {
+      signal?.removeEventListener("abort", abort);
+      controller.abort();
       if (started) this.manager.itemEnd(resolvedURL ?? "");
     }
   }
