@@ -34,6 +34,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Corrected the viewer's WebGPU Inspector FPS to count rendered frames instead of animation ticks, including GPU waits and idle on-demand rendering.
 - Routed remote SOG files in the viewer directly through the URL loader so HTTP Range reads and grouped download/decode overlap remain available.
 - Reported known SOG download sizes through progress callbacks so URL loading displays a percentage, with indeterminate progress when the total is unknown.
 - Preserved the SH2 coefficient sharing the SH1 texture when updating SH1, and cleared unused SH padding.

@@ -544,14 +544,14 @@ async function switchRendererBackend(webGPU) {
   let nextInspector;
   try {
     if (webGPU) {
-      const { Inspector } = await import("three/addons/inspector/Inspector.js");
+      const { ViewerInspector } = await import("./viewerInspector.js");
       nextRenderer = new WebGPURenderer(rendererParameters);
       await nextRenderer.init();
       if (nextRenderer.backend?.isWebGPUBackend !== true) {
         throw new Error("WebGPU is not available in this browser");
       }
       configureRenderer(nextRenderer);
-      nextInspector = new Inspector();
+      nextInspector = new ViewerInspector();
       // Leave the built-in Parameters tab hidden: only FPS and Inspector.
       nextInspector.parameters.hide();
       nextInspector.domElement.classList.add("viewer-inspector");

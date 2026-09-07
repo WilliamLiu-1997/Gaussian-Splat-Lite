@@ -124,17 +124,13 @@ export class WebGLSplatBackend {
       this.orderingTexture.needsUpdate = true;
     } else {
       this.orderingTexture.image.data = ordering;
-      if (!this.renderer.properties.has(this.orderingTexture)) {
-        this.orderingTexture.needsUpdate = true;
-      } else if (activeRows > 0) {
-        uploadU32DataTextureRows(
-          this.renderer,
-          this.orderingTexture,
-          ORDERING_TEXTURE_WIDTH,
-          activeRows,
-          ordering,
-        );
-      }
+      uploadU32DataTextureRows(
+        this.renderer,
+        this.orderingTexture,
+        ORDERING_TEXTURE_WIDTH,
+        activeRows,
+        ordering,
+      );
     }
   }
 

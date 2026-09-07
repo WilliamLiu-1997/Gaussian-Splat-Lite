@@ -10,7 +10,6 @@ import {
   type GaussianSplatCompatibleRenderer,
   isWebGPURenderer,
 } from "./rendererUtils";
-import { makeGenerateUniforms } from "./uniforms";
 import {
   createWebGLAccumulatorTarget,
   generateWebGLAccumulator,
@@ -75,6 +74,20 @@ export class SplatAccumulator {
       SplatAccumulator.emptyTextures) as SplatDataTextures;
   }
 
+  precompileGenerate(renderer: GaussianSplatCompatibleRenderer) {
+    if (!isWebGPURenderer(renderer)) return;
+    this.ensureGenerate({ maxSplats: 1, renderer });
+    this.webGPUGenerator?.precompile(renderer);
+  }
+
+  get generateReady() {
+    return this.webGPUGenerator?.ready ?? null;
+  }
+
+  get generateError() {
+    return this.webGPUGenerator?.compileError ?? null;
+  }
+
   generateMapping(splatCounts: number[], compact = false) {
     let maxSplats = 0;
     const mapping = splatCounts.map((count) => {
@@ -114,7 +127,6 @@ export class SplatAccumulator {
       } else {
         this.disposeStorage();
         this.webGPUGenerator = new WebGPUAccumulatorGenerator({
-          uniforms: makeGenerateUniforms(),
           width,
           height,
           depth,
@@ -311,8 +323,15 @@ export class SplatAccumulator {
       requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
       generate: (shrinkResources = false) => {
         this.ensureGenerate({ maxSplats, renderer, shrinkResources });
-        for (const { node, base, count } of this.mapping) {
-          this.generate({ mesh: node, base, count, renderer });
+        const generate = () => {
+          for (const { node, base, count } of this.mapping) {
+            this.generate({ mesh: node, base, count, renderer });
+          }
+        };
+        if (isWebGPURenderer(renderer)) {
+          this.webGPUGenerator?.batch(renderer, generate);
+        } else {
+          generate();
         }
       },
     };

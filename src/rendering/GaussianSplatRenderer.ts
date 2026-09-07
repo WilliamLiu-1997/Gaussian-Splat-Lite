@@ -564,11 +564,15 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   private createAccumulator() {
-    return new SplatAccumulator();
+    const accumulator = new SplatAccumulator();
+    accumulator.precompileGenerate(this.renderer);
+    return accumulator;
   }
 
   private takeAccumulator() {
-    return this.accumulators.pop() ?? this.createAccumulator();
+    const accumulator = this.accumulators.pop() ?? this.createAccumulator();
+    accumulator.precompileGenerate(this.renderer);
+    return accumulator;
   }
 
   private releaseAccumulator(accumulator: SplatAccumulator) {
@@ -986,6 +990,26 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         throw this.backend.sortError;
     }
 
+    const inPlace = this._synchronousSort;
+    const next = inPlace ? this.current : this.takeAccumulator();
+    try {
+      if (next.generateReady) {
+        const sortModeRevision = this.sortModeRevision;
+        await next.generateReady;
+        if (this.disposed || sortModeRevision !== this.sortModeRevision) {
+          if (!inPlace) {
+            if (this.disposed) next.dispose();
+            else this.releaseAccumulator(next);
+          }
+          return;
+        }
+      }
+      if (next.generateError !== null) throw next.generateError;
+    } catch (error) {
+      if (!inPlace) this.releaseAccumulator(next);
+      throw error;
+    }
+
     const renderer = this.renderer;
     if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
     if (shrinkResources) {
@@ -1004,9 +1028,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       dir.dot(this.sortedDir) < 0.999 ||
       this.sortRadial !== this.sortedRadial;
 
-    const inPlace = this._synchronousSort;
     const previousVersion = this.current.version;
-    const next = inPlace ? this.current : this.takeAccumulator();
     // prepareGenerate() temporarily replaces the origin even if generation is
     // later skipped. Preserve the origin paired with the in-place GPU data.
     const previousViewOrigin = inPlace ? next.viewOrigin.clone() : null;
