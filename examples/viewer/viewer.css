@@ -391,7 +391,7 @@ button {
 
 .options-panel {
   position: fixed;
-  top: clamp(4.2rem, 8vw, 5.2rem);
+  top: clamp(6.8rem, 10vw, 7.8rem);
   right: clamp(0.75rem, 2vw, 1.5rem);
   bottom: clamp(4.2rem, 8vw, 5rem);
   z-index: 5;
@@ -950,27 +950,21 @@ button {
   transform-origin: left;
 }
 
-.progress-track::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 42%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #7896ff, #cfff58);
-  content: "";
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-120%);
+.progress-track.is-indeterminate {
+  background: linear-gradient(
+    90deg,
+    rgb(255 255 255 / 7%) 0%,
+    rgb(120 150 255 / 18%) 35%,
+    rgb(207 255 88 / 24%) 50%,
+    rgb(120 150 255 / 18%) 65%,
+    rgb(255 255 255 / 7%) 100%
+  );
+  background-size: 220% 100%;
+  animation: progress-scan 1.2s ease-in-out infinite;
 }
 
 .progress-track.is-indeterminate span {
   opacity: 0;
-}
-
-.progress-track.is-indeterminate::after {
-  animation: progress-scan 1s ease-in-out infinite;
-  opacity: 1;
 }
 
 .loading-detail {
@@ -978,6 +972,79 @@ button {
   margin-top: 0.65rem;
   color: #777f8c;
   font-size: 0.68rem;
+}
+
+.source-up-axis {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  max-width: 100%;
+  padding: 0.35rem 0.65rem;
+  pointer-events: auto;
+}
+
+.source-up-axis::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.65rem;
+  background: linear-gradient(rgb(30 34 42 / 30%), rgb(13 16 22 / 25%));
+  backdrop-filter: blur(14px) saturate(115%);
+  -webkit-backdrop-filter: blur(14px) saturate(115%);
+  pointer-events: none;
+  content: "";
+}
+
+#source-up-axis-label {
+  color: #c4c9d2;
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.source-up-axis-choices {
+  display: flex;
+  gap: 0.7rem;
+}
+
+.source-up-axis-choices label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 1.5rem;
+  color: #c4c9d2;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.source-up-axis-choices input {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 2px;
+  appearance: none;
+  border: 1px solid #747d89;
+  border-radius: 50%;
+  background-clip: content-box;
+  cursor: pointer;
+}
+
+.source-up-axis-choices input:checked {
+  border-color: #b7d777;
+  background-color: #b7d777;
+}
+
+.source-up-axis-choices input:focus-visible {
+  outline: 2px solid #b9d9ff;
+  outline-offset: 3px;
 }
 
 .statusbar {
@@ -1138,11 +1205,11 @@ button {
 
 @keyframes progress-scan {
   0% {
-    transform: translateX(-120%);
+    background-position: 120% 0;
   }
 
   100% {
-    transform: translateX(340%);
+    background-position: -120% 0;
   }
 }
 
@@ -1174,7 +1241,7 @@ button {
   }
 
   .options-panel {
-    top: 4rem;
+    top: 7rem;
     right: 0.75rem;
     bottom: 5.3rem;
   }
@@ -1206,6 +1273,20 @@ button {
     gap: 0.45rem;
   }
 
+  .source-up-axis {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+  }
+
+  .source-up-axis-choices {
+    gap: 0.4rem;
+  }
+
+  .source-up-axis-choices label {
+    font-size: 0.7rem;
+  }
+
   .file-meta {
     width: 100%;
     justify-content: flex-start;
@@ -1231,8 +1312,8 @@ button {
     animation-iteration-count: 1 !important;
   }
 
-  .progress-track.is-indeterminate::after {
+  .progress-track.is-indeterminate {
     animation: none !important;
-    transform: translateX(70%);
+    background-position: center;
   }
 }
