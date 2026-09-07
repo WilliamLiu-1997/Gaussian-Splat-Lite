@@ -20,14 +20,13 @@ A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/Web
 
 | Focus | What you get |
 | --- | --- |
-| **WebGPU / WebGL2** | Shared scene API and Worker/WASM sorting; WebGPU adds TSL shaders, compute-based generation, and optional GPU radix sorting |
+| **WebGPU / WebGL2** | Shared scene API and Worker/WASM sorting; TSL supports native WebGPU and its WebGL2 fallback, with compute generation and optional GPU radix sorting on native WebGPU |
 | **Depth Rendering** | Separate depth draw in input order with stochastic coverage at transparent edges |
 | **Large-scene streaming** | RAD tree LOD and SOG `lod-meta.json` scenes with camera-driven selection, on-demand loading, worker decoding, caching, and opacity crossfades for smooth LOD changes on both backends |
 | **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
+| **SDF edits** | Region-based color and opacity editing, preserving Splat centers and sort order |
 | **Three.js integration** | Standard scenes, cameras, transforms, raycasting, and global sorting across multiple `SplatMesh` objects |
 | **Data and precision** | PLY/SPZ/SOG/RAD from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
-
-Also includes spherical harmonics, SDF edits, offscreen capture, and TypeScript declarations.
 
 ## Installation
 
@@ -52,9 +51,6 @@ import { GaussianSplatRenderer, SplatMesh } from "gaussian-splat-lite";
 
 const renderer = new WebGPURenderer({ antialias: false });
 await renderer.init(); // Initialize before constructing GaussianSplatRenderer.
-if (renderer.backend.isWebGPUBackend !== true) {
-  throw new Error("WebGPU is required for this example");
-}
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
@@ -85,7 +81,14 @@ window.addEventListener("resize", () => {
 
 ### WebGL2
 
-Replace the WebGPU renderer creation, initialization, and backend check with:
+`WebGPURenderer` automatically falls back to its WebGL2 backend when WebGPU is unavailable. To force this backend while keeping TSL materials:
+
+```js
+const renderer = new WebGPURenderer({ antialias: false, forceWebGL: true });
+await renderer.init();
+```
+
+For the classic WebGL renderer, replace the WebGPU renderer creation and initialization with:
 
 ```js
 const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -172,7 +175,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Switch **WebGL / WebGPU** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
+Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGL2 / WebGPU / WebGPU · WebGL2** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
 
 To try streaming, load a RAD file or enter a SOG `lod-meta.json` URL. The viewer streams RAD files with a LOD tree automatically and falls back to ordinary loading when no tree is present. Move the camera to see LOD selection and on-demand loading.
 

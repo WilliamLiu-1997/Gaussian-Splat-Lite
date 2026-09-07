@@ -23,7 +23,12 @@ export default defineConfig({
   },
 
   server: {
-    watch: { usePolling: true },
+    watch: {
+      // Keep polling for external drives without scanning Rust build artifacts.
+      usePolling: true,
+      interval: 1000,
+      ignored: ["**/rust/target/**", "**/dist/**", "**/._*"],
+    },
     port: 8080,
   },
 

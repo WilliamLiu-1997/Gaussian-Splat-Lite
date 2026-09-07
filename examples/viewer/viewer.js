@@ -168,12 +168,13 @@ function syncReferenceColors() {
   }
 }
 
-const camera = new THREE.PerspectiveCamera(52, 1, 0.001, 10000);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.001, 10000);
 camera.position.set(0, 0, 3);
 
 const rendererParameters = {
   alpha: true,
   powerPreference: "high-performance",
+  reversedDepthBuffer: true,
 };
 let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
@@ -326,12 +327,16 @@ const renderOptionGroups = [
     options: [
       {
         property: "rendererBackend",
-        description: "Switches the scene between WebGL and native WebGPU.",
-        defaultValue: false,
-        falseLabel: "WebGL",
-        trueLabel: "WebGPU",
-        apply: (enabled) => {
-          void switchRendererBackend(enabled);
+        description:
+          "Chooses the renderer; WebGPU falls back to WebGL2 when unavailable.",
+        defaultValue: "webgpu",
+        choices: [
+          ["webgpu", "WebGPU"],
+          ["webgl-fallback", "WebGPU · WebGL2"],
+          ["webgl", "WebGL2"],
+        ],
+        apply: (backend) => {
+          void switchRendererBackend(backend);
         },
       },
       {
@@ -347,7 +352,7 @@ const renderOptionGroups = [
             ? THREE.SRGBColorSpace
             : THREE.LinearSRGBColorSpace;
           renderer.outputColorSpace = outputColorSpace;
-          if (usesWebGPU(renderer)) {
+          if (usesNodeRenderer(renderer)) {
             THREE.ColorManagement.workingColorSpace = outputColorSpace;
           }
           syncReferenceColors();
@@ -559,27 +564,32 @@ const renderOptionGroups = [
 const renderOptionInputs = new Map();
 let rendererSwitchToken = 0;
 
-function usesWebGPU(value) {
+function usesNodeRenderer(value) {
   return value.isWebGPURenderer === true;
 }
 
-function syncRendererOption(enabled, disabled = false) {
+function getRendererBackend() {
+  if (!usesNodeRenderer(renderer)) return "webgl";
+  return renderer.backend.isWebGPUBackend ? "webgpu" : "webgl-fallback";
+}
+
+function syncRendererOption(backend, disabled = false) {
   const entry = renderOptionInputs.get("rendererBackend");
   if (!entry) return;
   const { input } = entry;
-  input.checked = enabled;
+  input.value = backend;
   input.disabled = disabled;
-  input.syncOption();
 }
 
-async function switchRendererBackend(webGPU) {
+async function switchRendererBackend(backend) {
+  const webGPU = backend !== "webgl";
   const switchToken = ++rendererSwitchToken;
-  if (webGPU === usesWebGPU(renderer)) {
-    syncRendererOption(webGPU);
+  if (backend === getRendererBackend()) {
+    syncRendererOption(backend);
     return;
   }
 
-  syncRendererOption(webGPU, true);
+  syncRendererOption(backend, true);
   let nextRenderer;
   let nextControls;
   let nextSplatRenderer;
@@ -587,11 +597,11 @@ async function switchRendererBackend(webGPU) {
   try {
     if (webGPU) {
       const { ViewerInspector } = await import("./viewerInspector.js");
-      nextRenderer = new WebGPURenderer(rendererParameters);
+      nextRenderer = new WebGPURenderer({
+        ...rendererParameters,
+        forceWebGL: backend === "webgl-fallback",
+      });
       await nextRenderer.init();
-      if (nextRenderer.backend?.isWebGPUBackend !== true) {
-        throw new Error("WebGPU is not available in this browser");
-      }
       configureRenderer(nextRenderer);
       nextInspector = new ViewerInspector();
       // Leave the built-in Parameters tab hidden: only FPS and Inspector.
@@ -640,7 +650,7 @@ async function switchRendererBackend(webGPU) {
     nextSplatRenderer?.dispose();
     nextRenderer?.dispose();
     if (switchToken !== rendererSwitchToken) return;
-    syncRendererOption(usesWebGPU(renderer));
+    syncRendererOption(getRendererBackend());
     const detail = error instanceof Error ? error.message : String(error);
     console.error("Could not switch renderer", error);
     showToast(`Could not switch renderer: ${detail}`);
@@ -694,7 +704,7 @@ async function switchRendererBackend(webGPU) {
     performanceStats.before(nextInspector.domElement);
     renderer.inspector = nextInspector;
   }
-  syncRendererOption(webGPU);
+  syncRendererOption(getRendererBackend());
   renderer.setAnimationLoop(renderFrame);
   requestRender();
 }
@@ -1137,8 +1147,8 @@ function frameSplat(splat) {
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
 
-  camera.near = Math.max(radius / 1000, 0.0001);
-  camera.far = Math.max(distance + radius * 20, 100);
+  camera.near = radius * 0.001;
+  camera.far = radius * 100;
   camera.updateProjectionMatrix();
   camera.position
     .set(0, 5, 5 * Math.sqrt(3))

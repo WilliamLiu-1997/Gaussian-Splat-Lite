@@ -1,51 +1,19 @@
-import * as THREE from "three";
-import {
-  PMREMGenerator,
-  StorageBufferAttribute,
-  type WebGPURenderer,
-} from "three/webgpu";
+import { StorageBufferAttribute, type WebGPURenderer } from "three/webgpu";
 import type { SplatAccumulator } from "../SplatAccumulator";
 import type {
   CPUOrderingUpdate,
   SplatMaterial,
   SplatMaterialOptions,
 } from "../backend";
+import { NodeSplatBackend } from "../tsl/SplatBackend";
+import type { SplatNodeMaterial } from "../tsl/SplatMaterial";
 import type { Uniforms } from "../uniforms";
 import { WebGPUAccumulatorSort } from "./AccumulatorSort";
-import {
-  type WebGPUSplatMaterial,
-  createWebGPUSplatMaterial,
-} from "./SplatMaterial";
 import { installWebGPUCompatibilityPatches } from "./compatibility";
 
-export function configureWebGPUSplatOutput(
-  renderer: WebGPURenderer,
-  target: THREE.RenderTarget | null,
-  uniforms: Uniforms,
-  markerUsers: number,
-) {
-  const xrOutput =
-    target === renderer.getOutputRenderTarget() ||
-    (
-      target as
-        | (THREE.RenderTarget & { isPostProcessingRenderTarget?: boolean })
-        | null
-    )?.isPostProcessingRenderTarget;
-  // Alpha-2 markers must not escape through Three's XR output intermediate.
-  uniforms.stochasticResolve.value =
-    markerUsers > 0 &&
-    (!renderer.xr.isPresenting ||
-      (!xrOutput &&
-        (target?.texture.type === THREE.HalfFloatType ||
-          target?.texture.type === THREE.FloatType)));
-  uniforms.encodeLinear.value =
-    THREE.ColorManagement.workingColorSpace !== THREE.SRGBColorSpace;
-}
-
 /** WebGPU materials and ordering resources, including sorter ownership. */
-export class WebGPUSplatBackend {
+export class WebGPUSplatBackend extends NodeSplatBackend {
   readonly kind = "webgpu";
-  readonly material: WebGPUSplatMaterial;
   private readonly sorter: WebGPUAccumulatorSort;
   private ordering: StorageBufferAttribute | null;
   private disposed = false;
@@ -53,17 +21,12 @@ export class WebGPUSplatBackend {
   sortError: unknown = null;
 
   constructor(
-    readonly renderer: WebGPURenderer,
+    renderer: WebGPURenderer,
     uniforms: Uniforms,
     options: SplatMaterialOptions,
   ) {
-    if (options.vertexShader || options.fragmentShader) {
-      throw new Error(
-        "Custom GLSL shaders are only supported by WebGLRenderer",
-      );
-    }
+    super(renderer, uniforms, options);
     installWebGPUCompatibilityPatches(renderer);
-    this.material = createWebGPUSplatMaterial({ uniforms, ...options });
     this.ordering = this.material.orderingNode.value;
     const sorter = new WebGPUAccumulatorSort(1);
     this.sorter = sorter;
@@ -77,17 +40,6 @@ export class WebGPUSplatBackend {
         // The compiler can create resources after dispose(); release them last.
         if (this.disposed) sorter.dispose();
       });
-  }
-
-  createDepthMaterial(uniforms: Uniforms) {
-    return createWebGPUSplatMaterial({
-      uniforms,
-      orderingNode: this.material.orderingNode,
-      premultipliedAlpha: false,
-      transparent: false,
-      depthTest: true,
-      depthWrite: true,
-    });
   }
 
   getOrderingCapacity(count: number) {
@@ -161,28 +113,7 @@ export class WebGPUSplatBackend {
 
   bindOrdering(material: SplatMaterial, _uniforms: Uniforms) {
     if (this.ordering)
-      (material as WebGPUSplatMaterial).orderingNode.value = this.ordering;
-  }
-
-  async readPixels(
-    target: THREE.WebGLRenderTarget,
-    pixels: Uint8Array,
-    face = 0,
-  ) {
-    const readback = await this.renderer.readRenderTargetPixelsAsync(
-      target,
-      0,
-      0,
-      target.width,
-      target.height,
-      0,
-      face,
-    );
-    copyReadbackRGBA(pixels, readback, target.width, target.height);
-  }
-
-  createPMREMGenerator() {
-    return new PMREMGenerator(this.renderer);
+      (material as SplatNodeMaterial).orderingNode.value = this.ordering;
   }
 
   dispose() {
@@ -192,28 +123,5 @@ export class WebGPUSplatBackend {
       this.ordering.dispose();
     this.ordering = null;
     if (!this.precompile) this.sorter.dispose();
-  }
-}
-
-function copyReadbackRGBA(
-  target: Uint8Array,
-  readback: ArrayBufferView,
-  width: number,
-  height: number,
-) {
-  const source = new Uint8Array(
-    readback.buffer,
-    readback.byteOffset,
-    readback.byteLength,
-  );
-  const rowBytes = width * 4;
-  const rowStride =
-    height > 1 ? (source.byteLength - rowBytes) / (height - 1) : rowBytes;
-  for (let y = 0; y < height; y++) {
-    const sourceRow = height - y - 1;
-    target.set(
-      source.subarray(sourceRow * rowStride, sourceRow * rowStride + rowBytes),
-      y * rowBytes,
-    );
   }
 }

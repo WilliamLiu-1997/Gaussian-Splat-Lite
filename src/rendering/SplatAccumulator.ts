@@ -9,7 +9,12 @@ import { decomposeSplatTransform } from "../utils/transforms";
 import {
   type GaussianSplatCompatibleRenderer,
   isWebGPURenderer,
+  usesNativeWebGPU,
 } from "./rendererUtils";
+import {
+  WebGLFallbackAccumulatorGenerator,
+  createWebGLFallbackAccumulatorTarget,
+} from "./webgl-fallback/AccumulatorGenerator";
 import {
   createWebGLAccumulatorTarget,
   generateWebGLAccumulator,
@@ -45,6 +50,7 @@ export class SplatAccumulator {
   private transformScale = new THREE.Vector3();
   private transformQuaternion = new THREE.Quaternion();
   private webGPUGenerator: WebGPUAccumulatorGenerator | null = null;
+  private fallbackGenerator: WebGLFallbackAccumulatorGenerator | null = null;
 
   constructor() {
     if (!threeMrtArray) {
@@ -65,6 +71,8 @@ export class SplatAccumulator {
     this.target = null;
     this.webGPUGenerator?.dispose();
     this.webGPUGenerator = null;
+    this.fallbackGenerator?.dispose();
+    this.fallbackGenerator = null;
     this.maxSplats = 0;
   }
 
@@ -75,7 +83,7 @@ export class SplatAccumulator {
   }
 
   precompileGenerate(renderer: GaussianSplatCompatibleRenderer) {
-    if (!isWebGPURenderer(renderer)) return;
+    if (!usesNativeWebGPU(renderer)) return;
     this.ensureGenerate({ maxSplats: 1, renderer });
     this.webGPUGenerator?.precompile(renderer);
   }
@@ -119,7 +127,7 @@ export class SplatAccumulator {
       ? capacity === this.maxSplats
       : capacity <= this.maxSplats;
 
-    if (renderer && isWebGPURenderer(renderer)) {
+    if (renderer && usesNativeWebGPU(renderer)) {
       if (this.webGPUGenerator && reusable) return false;
 
       if (this.webGPUGenerator) {
@@ -136,7 +144,12 @@ export class SplatAccumulator {
       return true;
     }
 
-    if (this.target && reusable) {
+    const fallback = renderer !== undefined && isWebGPURenderer(renderer);
+    if (
+      this.target &&
+      reusable &&
+      fallback === (this.fallbackGenerator !== null)
+    ) {
       return false;
     }
     // Keep the prepared mapping and versions while replacing only its GPU
@@ -144,7 +157,11 @@ export class SplatAccumulator {
     this.disposeStorage();
 
     this.maxSplats = capacity;
-    this.target = createWebGLAccumulatorTarget(width, height, depth);
+    this.target = fallback
+      ? createWebGLFallbackAccumulatorTarget(width, height, depth)
+      : createWebGLAccumulatorTarget(width, height, depth);
+    if (fallback)
+      this.fallbackGenerator = new WebGLFallbackAccumulatorGenerator();
     return true;
   }
 
@@ -206,7 +223,7 @@ export class SplatAccumulator {
       throw new Error("Splat generation range exceeds accumulator capacity");
     }
 
-    if (isWebGPURenderer(renderer)) {
+    if (usesNativeWebGPU(renderer)) {
       if (!this.webGPUGenerator) {
         throw new Error("WebGPU accumulator is not initialized");
       }
@@ -216,6 +233,18 @@ export class SplatAccumulator {
     }
 
     if (!this.target) throw new Error("Accumulator target is not initialized");
+    if (isWebGPURenderer(renderer)) {
+      if (!this.fallbackGenerator)
+        throw new Error("WebGL fallback accumulator is not initialized");
+      this.prepareUniforms(mesh, this.fallbackGenerator.uniforms);
+      this.fallbackGenerator.generate({
+        renderer,
+        target: this.target,
+        base,
+        count,
+      });
+      return;
+    }
     this.prepareUniforms(mesh, getWebGLGenerateUniforms());
     generateWebGLAccumulator({ renderer, target: this.target, base, count });
   }
@@ -290,7 +319,7 @@ export class SplatAccumulator {
     });
     const { maxSplats, mapping: ranges } = this.generateMapping(
       visibleMeshes.map((mesh) => mesh.numSplats),
-      isWebGPURenderer(renderer),
+      usesNativeWebGPU(renderer),
     );
 
     this.mapping = [];
@@ -328,7 +357,7 @@ export class SplatAccumulator {
             this.generate({ mesh: node, base, count, renderer });
           }
         };
-        if (isWebGPURenderer(renderer)) {
+        if (usesNativeWebGPU(renderer)) {
           this.webGPUGenerator?.batch(renderer, generate);
         } else {
           generate();

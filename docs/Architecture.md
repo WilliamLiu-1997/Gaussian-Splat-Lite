@@ -20,7 +20,9 @@
 | `src/utils/` | Numeric conversion, spatial transforms, Three.js helpers and the public utility namespace |
 | `src/rendering/` | Shared renderer, accumulator, sort cache, stochastic resolve and backend selection |
 | `src/rendering/webgl/` | GLSL materials, array-target generation, ordering textures, uploads and readback |
-| `src/rendering/webgpu/` | TSL materials, compute generation, radix sorting, storage buffers, readback and compatibility patches |
+| `src/rendering/tsl/` | Shared TSL draw, generation and resolve programs, node materials and renderer readback |
+| `src/rendering/webgpu/` | Native compute generation, radix sorting, storage buffers and WGSL compatibility patches |
+| `src/rendering/webgl-fallback/` | WebGPURenderer WebGL2 raster generation and integer ordering textures |
 
 ## Rendering boundaries
 
@@ -30,9 +32,11 @@
 | `SplatAccumulator` | Scene mappings, versions, camera-relative data, and generation |
 | `StochasticResolvePass` | Scene composition, XR eye atlas, and renderer-state restoration |
 | WebGL backend | GLSL materials, ordering textures, array-target generation, readback, and PMREM |
-| WebGPU backend | TSL materials, compute generation, ordering buffers, GPU sorting, readback, and PMREM |
+| WebGPU backend | Compute generation, ordering buffers and GPU sorting |
+| WebGL fallback backend | Raster generation and CPU-sorted ordering textures |
+| Shared TSL code | Splat/resolve materials, generation math, output handling, readback and PMREM |
 
-The backend is selected at construction. Worker/WASM sorting is shared and remains the default on both backends.
+The backend is selected at construction after `WebGPURenderer.init()`. Renderer identity selects the material API; the actual backend selects compute/storage or raster/textures. Worker/WASM sorting is shared and remains the default on all three backends.
 
 Resource rules:
 
@@ -41,7 +45,7 @@ Resource rules:
 - Preserve WebGPU compute nodes when resizing buffers and textures.
 - Keep backend-specific color and XR output handling with each backend.
 
-WebGPU shaders are split into `SplatMaterial.ts` (drawing), `GenerateProgram.ts` (generation), `ResolveMaterial.ts` (resolve), and `shaderUtils.ts` (helpers). WebGL shaders live under `webgl/shaders/`.
+Shared TSL shaders live in `tsl/`, split into `SplatMaterial.ts` (drawing), `GenerateProgram.ts` (generation), `ResolveMaterial.ts` (resolve), and `shaderUtils.ts` (helpers). WebGL shaders live under `webgl/shaders/`.
 
 ## Decoder boundaries
 
@@ -96,6 +100,6 @@ See [RAD loading and streaming](RadStreamScheduler.md) for options and public li
 - Applications import from `gaussian-splat-lite`, including `utils` and `defines`. Source paths are internal.
 - Internal modules import helpers from their owner; `utils/index.ts` is the public entry only.
 - Keep scene updates, sorting handoffs, and stochastic transitions in shared rendering code.
-- Keep options, types, and small helpers beside their owner. TSL types belong in `webgpu/`.
+- Keep options, types, and small helpers beside their owner. TSL types belong in `tsl/`.
 - Shared uniform defaults must not import backends. The GPU sorter reads texture defaults from `data/`.
 - Separate numeric codecs from Three.js object unpacking so decode workers avoid scene dependencies.

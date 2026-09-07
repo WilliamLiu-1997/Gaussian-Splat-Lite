@@ -9,6 +9,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added WebGPURenderer WebGL2 backend support, including `forceWebGL` and automatic fallback, shared TSL shaders, raster accumulation, CPU sorting, depth/resolve and viewer backend selection.
+
 - Added RAD visibility fades and LOD crossfades on WebGL/WebGPU, matching SOG's `fadeDurationMs` option and 200 ms default. Shared nodes stay opaque, RAD and SOG share an opacity table, and fade ticks reuse source/index textures and sort data. Outgoing pages remain pinned through fade-out.
 
 - Added local split SOG loading from `meta.json` and companion images, including Viewer multi-file selection and drop. SOG and RAD share `resolveFile` for external files, with async resolution, cancellation and caller-owned byte inputs.

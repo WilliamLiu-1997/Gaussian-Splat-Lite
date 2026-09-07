@@ -10,7 +10,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Check both WebGL and WebGPU in the viewer. For depth changes, compare mesh occlusion and transparent edges; disable **Automatic stochastic** to expose **Force Splat depth**.
+Check WebGL2, WebGPU, and WebGPU · WebGL2 in the viewer. For depth changes, compare mesh occlusion and transparent edges; disable **Automatic stochastic** to expose **Force Splat depth**.
 
 See [Source architecture](docs/Architecture.md) for module responsibilities and backend boundaries.
 

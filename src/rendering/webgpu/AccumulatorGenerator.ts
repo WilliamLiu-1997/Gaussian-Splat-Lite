@@ -2,9 +2,9 @@ import * as THREE from "three";
 import * as TSL from "three/tsl";
 import { StorageArrayTexture, type WebGPURenderer } from "three/webgpu";
 
+import { createGenerateProgram } from "../tsl/GenerateProgram";
+import { splatTexCoord } from "../tsl/shaderUtils";
 import { makeGenerateUniforms } from "../uniforms";
-import { createGenerateProgram } from "./GenerateProgram";
-import { splatTexCoord } from "./shaderUtils";
 
 // biome-ignore lint/suspicious/noExplicitAny: Three does not expose one public compute-node type.
 type TSLNode = any;

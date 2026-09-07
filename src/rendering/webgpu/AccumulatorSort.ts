@@ -3,8 +3,8 @@ import * as TSL from "three/tsl";
 import type { WebGPURenderer } from "three/webgpu";
 
 import { emptySplatTexture } from "../../data/textureLayout";
+import { splatTexCoord } from "../tsl/shaderUtils";
 import { WebGPURadixSort } from "./RadixSort";
-import { splatTexCoord } from "./shaderUtils";
 
 // biome-ignore lint/suspicious/noExplicitAny: Three does not expose one public compute-node type.
 type TSLNode = any;

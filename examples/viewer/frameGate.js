@@ -1,6 +1,8 @@
 // Keep at most one viewer frame in flight; animation ticks never queue draws.
 export function createFrameGate(renderer) {
-  const gl = renderer.isWebGPURenderer ? null : renderer.getContext();
+  const gl = renderer.isWebGPURenderer
+    ? (renderer.backend.gl ?? null)
+    : renderer.getContext();
   let fence = null;
   let pending = false;
 

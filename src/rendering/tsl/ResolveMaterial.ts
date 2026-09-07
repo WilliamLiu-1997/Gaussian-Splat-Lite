@@ -25,7 +25,7 @@ const convertPremultiplied = N.Fn(([texel, gamma, perceptual]: TSLNode[]) => {
   ],
 });
 
-export function createWebGPUResolveMaterial(state: ResolveState) {
+export function createNodeResolveMaterial(state: ResolveState) {
   const source = N.textureLoad(state.sourceTexture.value).onObjectUpdate(
     () => state.sourceTexture.value,
   );
@@ -128,7 +128,7 @@ export function createWebGPUResolveMaterial(state: ResolveState) {
   return material;
 }
 
-export function configureWebGPUResolveOutput(
+export function configureNodeResolveOutput(
   material: NodeMaterial,
   renderer: WebGPURenderer,
   xrOutput: boolean,
