@@ -48,7 +48,6 @@ export function configureSplatOutput(
 export type CPUOrderingUpdate = {
   ordering: Uint32Array;
   activeSplats: number;
-  capacity: number;
   requiredCapacity: number;
   shrink: boolean;
 };

@@ -17,7 +17,7 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `premultipliedAlpha` | `boolean` | `true` | Uses premultiplied alpha while accumulating Splat RGB |
 | `timer` | `THREE.Timer` | New internal timer | Caller owns and updates a supplied timer |
 | `autoUpdate` | `boolean` | `true` | Checks the Splat collection once per render call |
-| `preUpdate` | `boolean` | `true` | Updates before drawing; WebXR automatic updates run after the active render pass |
+| `preUpdate` | `boolean` | `true` | WebGL update scheduling; WebGL XR updates follow the render pass. Ignored by native WebGPU |
 
 ## Rendering options
 
@@ -29,7 +29,7 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 
 All three options require built-in shaders. Automatic switching also requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; capture methods stay sorted.
 
-With default depth settings, the draw order is opaque meshes, sorted Splat color, companion depth, then later geometry. Stochastic frames write depth directly. Companion depth draws Splats in input order and samples alpha coverage; transparent edges may show noise.
+With default depth settings, the draw order is opaque meshes, sorted Splat color, companion depth, then later geometry. Stochastic frames write depth directly. Companion depth uses unsorted Splat indices and samples alpha coverage; transparent edges may show noise.
 
 Occlusion depends on draw order and depth testing in later materials. Depth clears or target changes can affect it. `renderDepth` writes scene depth, not a depth image or array.
 
@@ -93,13 +93,14 @@ Custom XR graphs must restore the XR output target before calling `resolve(rende
 
 `minPixelRadius=1` means approximately a 1 px screen-radius cutoff. Previously, the effective cutoff was `minPixelRadius / focalAdjustment`; divide an old explicit value by `focalAdjustment` to preserve its previous cutoff. Wide kernels retain the full-support size test before transparent-tail trimming.
 
+Native WebGPU projection quantization can cause slight visual differences.
+
 ## Sorting, material, and offscreen options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `sortRadial` | `boolean` | `false` | Sorts by geometric distance when `true`, or by Z depth when `false` |
-| `minSortIntervalMs` | `number` | `0` | Minimum interval between sort calls, in milliseconds |
-| `synchronousSort` | `boolean` | `false` | Sorts before drawing and ignores `minSortIntervalMs`: GPU radix sort on native WebGPU, main-thread WASM sort on either WebGL backend |
+| `minSortIntervalMs` | `number` | `0` | Minimum interval between asynchronous WebGL worker sort calls; ignored by native WebGPU |
 | `transparent` | `boolean` | `true` | Controls sorted Splat blending; stochastic-enabled Splats stay at the end of the opaque list |
 | `depthTest` | `boolean` | `true` | Reads the depth buffer for occlusion with regular meshes |
 | `depthWrite` | `boolean` | `false` | Writes depth; normally undesirable for transparent Splats |
@@ -108,7 +109,7 @@ Custom XR graphs must restore the XR output target before calling `resolve(rende
 | `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGLRenderer; custom GLSL is rejected by WebGPURenderer on either backend |
 | `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
 
-Worker/WASM sorting is the default on all three backends. Switching `synchronousSort` off keeps the current order visible until the worker result is ready.
+Both WebGL backends use asynchronous Worker/WASM sorting and keep the current order until the worker result is ready. Native WebGPU uses 32-bit GPU sorting before drawing; equal-depth Splats have no guaranteed source order. Stochastic rendering skips sorting.
 
 ```ts
 type TargetOptions = {
@@ -142,8 +143,8 @@ WebGPURenderer (including its WebGL2 fallback) decodes stored sRGB colors into `
 
 | API | Description |
 | --- | --- |
-| `update({ scene, camera })` | Manually generates and sorts Splats; returns `Promise<void>` |
-| `shrinkResources({ scene, camera })` | Updates the scene, clears cached readbacks, and shrinks renderer GPU/worker allocations; the current display stays active until its replacement is ready |
+| `update({ scene, camera })` | Updates Splats; returns `Promise<void>`. Native WebGPU defers GPU work until drawing |
+| `shrinkResources({ scene, camera })` | Updates the scene, clears cached readbacks, and shrinks renderer GPU/worker allocations; native WebGPU applies resizing at the next draw |
 | `clearSplats()` | Clears the current display buffer without removing scene objects |
 | `render(scene, camera)` | Renders with this instance active; normally use the Three.js renderer directly |
 | `renderTarget({ scene, camera })` | Renders to the target configured in the constructor |
@@ -155,9 +156,10 @@ WebGPURenderer (including its WebGL2 fallback) decodes stored sRGB colors into `
 | `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
 | `dispose()` | Releases materials, geometry, textures, targets, and the sorting worker |
 | `stochasticActive` | Read-only flag indicating that the current frame is using the stochastic path |
+| `synchronousSort` | Read-only sorting mode: `true` for native WebGPU, `false` for both WebGL backends |
 | `depthMesh` | Lazily created depth-only companion mesh |
 
-`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `synchronousSort`, `autoStochastic`, `stochastic`, and `renderDepth` are also writable properties with the behavior listed above.
+`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, and `renderDepth` are also writable properties with the behavior listed above.
 
 For manual updates after scene or camera changes:
 

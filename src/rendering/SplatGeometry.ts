@@ -1,19 +1,32 @@
 import * as THREE from "three";
 
-// SplatGeometry is an internal class used by GaussianSplatRenderer to render a collection
-// of Gsplats in a single draw call by extending THREE.InstancedBufferGeometry.
-// Each Gsplat is drawn as two triangles, with the order of the Gsplats determined
-// by a texture lookup via gl_InstanceID.
+export const WEBGPU_SPLATS_PER_INSTANCE = 128;
 
+/** Repeated quads; position.z identifies the Splat within each instance. */
 export class SplatGeometry extends THREE.InstancedBufferGeometry {
-  constructor() {
+  constructor(readonly splatsPerInstance = 1) {
     super();
-    this.setAttribute("position", new THREE.BufferAttribute(QUAD_VERTICES, 3));
-    this.setIndex(new THREE.BufferAttribute(QUAD_INDICES, 1));
+    const vertices = new Float32Array(splatsPerInstance * 12);
+    const indices = new Uint16Array(splatsPerInstance * 6);
+    for (let splat = 0; splat < splatsPerInstance; splat++) {
+      for (let vertex = 0; vertex < 4; vertex++) {
+        const offset = splat * 12 + vertex * 3;
+        vertices[offset] = QUAD_VERTICES[vertex * 3];
+        vertices[offset + 1] = QUAD_VERTICES[vertex * 3 + 1];
+        vertices[offset + 2] = splat;
+      }
+      for (let index = 0; index < 6; index++)
+        indices[splat * 6 + index] = splat * 4 + QUAD_INDICES[index];
+    }
+    this.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
+    this.setIndex(new THREE.BufferAttribute(indices, 1));
+  }
+
+  setSplatCount(count: number) {
+    this.instanceCount = Math.ceil(count / this.splatsPerInstance);
   }
 }
 
-// Each instance draws to triangles covering a quad over coords (-1,-1,0)..(1,1,0)
 const QUAD_VERTICES = new Float32Array([
   -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0,
 ]);

@@ -32,7 +32,8 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     }
     setHidden("stochastic", autoStochastic);
     setHidden("renderDepth", autoStochastic);
-    setHidden("minSortIntervalMs", getValue("synchronousSort") === true);
+    const nativeWebGPU = getValue("rendererBackend") === "webgpu";
+    setHidden("minSortIntervalMs", nativeWebGPU);
   }
 
   function createRow(option) {

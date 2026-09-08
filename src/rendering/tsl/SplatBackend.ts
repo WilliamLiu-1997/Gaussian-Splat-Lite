@@ -4,6 +4,7 @@ import type { SplatMaterialOptions } from "../backend";
 import { usesNativeWebGPU } from "../rendererUtils";
 import type { Uniforms } from "../uniforms";
 import {
+  type ProjectedVertexData,
   type SplatNodeMaterial,
   createSplatNodeMaterial,
 } from "./SplatMaterial";
@@ -42,6 +43,7 @@ export class NodeSplatBackend {
     uniforms: Uniforms,
     options: SplatMaterialOptions,
     orderingNode?: TSLNode,
+    private readonly vertexData?: (camera: THREE.Camera) => ProjectedVertexData,
   ) {
     if (options.vertexShader || options.fragmentShader) {
       throw new Error(
@@ -52,6 +54,7 @@ export class NodeSplatBackend {
       uniforms,
       ...options,
       orderingNode,
+      vertexData,
     });
   }
 
@@ -63,6 +66,7 @@ export class NodeSplatBackend {
       transparent: false,
       depthTest: true,
       depthWrite: true,
+      vertexData: this.vertexData,
     });
   }
 

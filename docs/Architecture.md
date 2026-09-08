@@ -20,8 +20,8 @@
 | `src/utils/` | Numeric conversion, spatial transforms, Three.js helpers and the public utility namespace |
 | `src/rendering/` | Shared renderer, accumulator, sort cache, stochastic resolve and backend selection |
 | `src/rendering/webgl/` | GLSL materials, array-target generation, ordering textures, uploads and readback |
-| `src/rendering/tsl/` | Shared TSL draw, generation and resolve programs, node materials and renderer readback |
-| `src/rendering/webgpu/` | Native compute generation, radix sorting, storage buffers and WGSL compatibility patches |
+| `src/rendering/tsl/` | Shared TSL generation, projection, draw and resolve programs, view uniforms, node materials and readback |
+| `src/rendering/webgpu/` | Native compute projection, projection caches, GPU sorting and indirect drawing |
 | `src/rendering/webgl-fallback/` | WebGPURenderer WebGL2 raster generation and integer ordering textures |
 
 ## Rendering boundaries
@@ -29,23 +29,25 @@
 | Owner | Responsibility |
 | --- | --- |
 | `GaussianSplatRenderer` | Updates, accumulator handoff, sorting, stochastic state, and companion depth |
-| `SplatAccumulator` | Scene mappings, versions, camera-relative data, and generation |
+| `SplatAccumulator` | Scene mappings, versions, camera-relative data, and WebGL texture generation |
 | `StochasticResolvePass` | Scene composition, XR eye atlas, and renderer-state restoration |
 | WebGL backend | GLSL materials, ordering textures, array-target generation, readback, and PMREM |
-| WebGPU backend | Compute generation, ordering buffers and GPU sorting |
+| WebGPU backend | Compute projection, caches, GPU sorting and indirect drawing |
 | WebGL fallback backend | Raster generation and CPU-sorted ordering textures |
 | Shared TSL code | Splat/resolve materials, generation math, output handling, readback and PMREM |
 
-The backend is selected at construction after `WebGPURenderer.init()`. Renderer identity selects the material API; the actual backend selects compute/storage or raster/textures. Worker/WASM sorting is shared and remains the default on all three backends.
+The backend is selected at construction after `WebGPURenderer.init()`. Renderer identity selects the material API; the actual backend selects compute/storage or raster/textures. Both WebGL backends use asynchronous Worker/WASM sorting; native WebGPU sorts on the GPU before drawing.
 
 Resource rules:
 
-- Keep ordering buffers owned by the GPU sorter during handoff to worker results.
+- Keep native ordering and visible counts on the GPU; worker ordering belongs to the WebGL backends.
 - Wait for outstanding GPU compilation before disposing the sorter.
-- Preserve WebGPU compute nodes when resizing buffers and textures.
+- Preserve WebGPU compute nodes when resizing buffers and textures or adding and removing source meshes.
 - Keep backend-specific color and XR output handling with each backend.
 
-Shared TSL shaders live in `tsl/`, split into `SplatMaterial.ts` (drawing), `GenerateProgram.ts` (generation), `ResolveMaterial.ts` (resolve), and `shaderUtils.ts` (helpers). WebGL shaders live under `webgl/shaders/`.
+Shared TSL shaders live in `tsl/`: `GenerateProgram.ts` and `ProjectionProgram.ts` (generation and projection), `SplatMaterial.ts` and `ResolveMaterial.ts` (drawing and resolve), `viewUniforms.ts` (view data), and `shaderUtils.ts` (helpers). WebGL shaders live under `webgl/shaders/`.
+
+In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting; `ProjectionCache.ts` owns projected textures and encoding; `RadixSort.ts` owns the sort passes.
 
 ## Decoder boundaries
 
@@ -101,5 +103,5 @@ See [RAD loading and streaming](RadStreamScheduler.md) for options and public li
 - Internal modules import helpers from their owner; `utils/index.ts` is the public entry only.
 - Keep scene updates, sorting handoffs, and stochastic transitions in shared rendering code.
 - Keep options, types, and small helpers beside their owner. TSL types belong in `tsl/`.
-- Shared uniform defaults must not import backends. The GPU sorter reads texture defaults from `data/`.
+- Shared uniform defaults must not import backends. Native projected-cache layout belongs in `webgpu/`, separately from packed source layout in `data/`.
 - Separate numeric codecs from Three.js object unpacking so decode workers avoid scene dependencies.

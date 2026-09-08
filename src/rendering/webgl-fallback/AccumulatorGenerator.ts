@@ -10,7 +10,6 @@ import {
   createWebGLAccumulatorTarget,
   renderAccumulatorLayers,
 } from "../webgl/AccumulatorGenerator";
-import { installWebGLFallbackCompatibilityPatches } from "./compatibility";
 
 const N = TSL as Record<string, TSLNode>;
 
@@ -55,7 +54,6 @@ export class WebGLFallbackAccumulatorGenerator {
 
   generate(options: AccumulatorRenderOptions<WebGPURenderer>) {
     if (options.count <= 0) return;
-    installWebGLFallbackCompatibilityPatches(options.renderer);
     renderAccumulatorLayers(options, this.uniforms, () =>
       this.quad.render(options.renderer),
     );
