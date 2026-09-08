@@ -12,6 +12,15 @@ export function isWebGPURenderer(
   return "isWebGPURenderer" in renderer && renderer.isWebGPURenderer === true;
 }
 
+export function usesNativeWebGPU(
+  renderer: GaussianSplatCompatibleRenderer,
+): renderer is WebGPURenderer & { backend: { isWebGPUBackend: true } } {
+  return (
+    isWebGPURenderer(renderer) &&
+    (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
+  );
+}
+
 export function getRenderFrame(renderer: GaussianSplatCompatibleRenderer) {
   return isWebGPURenderer(renderer)
     ? renderer.info.render.calls
@@ -36,16 +45,18 @@ export function setXRRenderTargetFlag(
 export function assertSupportedRenderer(
   renderer: GaussianSplatCompatibleRenderer,
 ) {
-  const backend = isWebGPURenderer(renderer)
-    ? (renderer.backend as { isWebGPUBackend?: boolean } | undefined)
-    : undefined;
-  if (
-    isWebGPURenderer(renderer) &&
-    (renderer.initialized !== true || backend?.isWebGPUBackend !== true)
-  ) {
+  if (!isWebGPURenderer(renderer)) return;
+  if (renderer.initialized !== true) {
     throw new Error(
-      "Gaussian Splat Lite requires an initialized WebGPURenderer using the native WebGPU backend",
+      "Initialize WebGPURenderer with await renderer.init() before using Gaussian Splat Lite",
     );
+  }
+  const backend = renderer.backend as {
+    isWebGPUBackend?: boolean;
+    isWebGLBackend?: boolean;
+  };
+  if (backend.isWebGPUBackend !== true && backend.isWebGLBackend !== true) {
+    throw new Error("Gaussian Splat Lite requires a WebGPU or WebGL backend");
   }
 }
 

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import * as TSL from "three/tsl";
 import { NodeMaterial, StorageBufferAttribute } from "three/webgpu";
-import type { Uniforms } from "../uniforms";
+import { ORDERING_TEXTURE_WIDTH, type Uniforms } from "../uniforms";
 import {
   E,
   type TSLNode,
@@ -10,6 +10,7 @@ import {
   decodeLnScales,
   decodeQuaternion,
   decodeRgba,
+  load2D,
   loadArray,
   quatQuat,
   quatVec,
@@ -18,7 +19,7 @@ import {
   uniformBinding,
 } from "./shaderUtils";
 
-export type WebGPUSplatMaterial = NodeMaterial & {
+export type SplatNodeMaterial = NodeMaterial & {
   uniforms: Uniforms;
   orderingNode: TSLNode;
 };
@@ -239,7 +240,7 @@ function createSplatFragment({
   };
 }
 
-export function createWebGPUSplatMaterial({
+export function createSplatNodeMaterial({
   uniforms,
   orderingNode: providedOrderingNode,
   premultipliedAlpha,
@@ -253,7 +254,7 @@ export function createWebGPUSplatMaterial({
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
-}): WebGPUSplatMaterial {
+}): SplatNodeMaterial {
   const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
   const splats2 = textureBinding(uniforms, "splats2", true);
@@ -314,7 +315,17 @@ export function createWebGPUSplatMaterial({
 
     const splatIndex = N.uint(N.instanceIndex).toVar();
     N.If(stochastic.or(depthOnly).not(), () => {
-      splatIndex.assign(orderingNode.element(N.uint(N.instanceIndex)));
+      const index = N.uint(N.instanceIndex);
+      if (orderingNode.isTextureNode) {
+        const texel = index.shiftRight(2);
+        const coord = N.ivec2(
+          texel.mod(ORDERING_TEXTURE_WIDTH),
+          texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
+        );
+        splatIndex.assign(load2D(orderingNode, coord).element(index.bitAnd(3)));
+      } else {
+        splatIndex.assign(orderingNode.element(index));
+      }
     });
 
     N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {

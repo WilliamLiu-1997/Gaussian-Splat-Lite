@@ -53,11 +53,22 @@ export function textureBinding(
 export function load2D(binding: TSLNode, coord: TSLNode) {
   const texel = binding.load(coord);
   texel.setUpdateMatrix(false);
-  return texel;
+  return updateTextureLoad(binding, texel);
 }
 
 export function loadArray(binding: TSLNode, coord: TSLNode) {
-  return binding.load(coord.xy).depth(coord.z);
+  return updateTextureLoad(binding, binding.load(coord.xy).depth(coord.z));
+}
+
+function updateTextureLoad(binding: TSLNode, texel: TSLNode) {
+  const update = texel.update;
+  texel.onObjectUpdate((frame: TSLNode) => {
+    // Refresh the texture before Three derives its GL render-target Y flip.
+    // Otherwise the first draw still uses the placeholder's orientation.
+    binding.update(frame);
+    update.call(texel, frame);
+  });
+  return texel;
 }
 
 export const splatTexCoord = N.Fn(([index]: TSLNode[]) => {

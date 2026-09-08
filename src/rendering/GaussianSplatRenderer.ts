@@ -51,7 +51,8 @@ function getCameraWorldScale(camera: THREE.Camera): number {
 export interface GaussianSplatRendererOptions {
   /**
    * Pass in a THREE.WebGLRenderer or an initialized THREE.WebGPURenderer so
-   * Gaussian Splat Lite can perform work outside the usual render loop. It
+   * Gaussian Splat Lite can perform work outside the usual render loop. Both
+   * native WebGPU and the WebGL2 fallback are supported. The renderer
    * should be created with antialias: false (the default) because MSAA does not
    * improve Gaussian Splatting and significantly reduces performance.
    */
@@ -149,8 +150,8 @@ export interface GaussianSplatRendererOptions {
    */
   minSortIntervalMs?: number;
   /**
-   * Uses one accumulator and sorts before drawing. WebGPU uses a GPU radix
-   * sort; WebGL sorts on the main thread.
+   * Uses one accumulator and sorts before drawing. Native WebGPU uses a GPU
+   * radix sort; both WebGL backends use main-thread WASM sorting.
    * @default false
    */
   synchronousSort?: boolean;

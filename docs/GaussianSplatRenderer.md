@@ -12,7 +12,7 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | WebGL2 renderer or initialized WebGPU renderer; the WebGPU renderer's WebGL fallback is unsupported |
+| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | WebGLRenderer or initialized WebGPURenderer, including `forceWebGL` and automatic WebGL2 fallback |
 | `onDirty` | `() => void` | `undefined` | Called when loading, generation, or sorting requires another render |
 | `premultipliedAlpha` | `boolean` | `true` | Uses premultiplied alpha while accumulating Splat RGB |
 | `timer` | `THREE.Timer` | New internal timer | Caller owns and updates a supplied timer |
@@ -97,16 +97,16 @@ Custom XR graphs must restore the XR output target before calling `resolve(rende
 | --- | --- | --- | --- |
 | `sortRadial` | `boolean` | `false` | Sorts by geometric distance when `true`, or by Z depth when `false` |
 | `minSortIntervalMs` | `number` | `0` | Minimum interval between sort calls, in milliseconds |
-| `synchronousSort` | `boolean` | `false` | Sorts before drawing and ignores `minSortIntervalMs`: GPU radix sort on WebGPU, main-thread WASM sort on WebGL |
+| `synchronousSort` | `boolean` | `false` | Sorts before drawing and ignores `minSortIntervalMs`: GPU radix sort on native WebGPU, main-thread WASM sort on either WebGL backend |
 | `transparent` | `boolean` | `true` | Controls sorted Splat blending; stochastic-enabled Splats stay at the end of the opaque list |
 | `depthTest` | `boolean` | `true` | Reads the depth buffer for occlusion with regular meshes |
 | `depthWrite` | `boolean` | `false` | Writes depth; normally undesirable for transparent Splats |
 | `extraUniforms` | `Record<string, unknown>` | `undefined` | Additional values merged into the default shader uniforms |
-| `vertexShader` | `string` | Built in | Replaces the default Splat vertex shader in WebGL; custom GLSL is rejected by WebGPU |
-| `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGL; custom GLSL is rejected by WebGPU |
+| `vertexShader` | `string` | Built in | Replaces the default Splat vertex shader in WebGLRenderer; custom GLSL is rejected by WebGPURenderer on either backend |
+| `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGLRenderer; custom GLSL is rejected by WebGPURenderer on either backend |
 | `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
 
-Worker/WASM sorting is the default on both backends. Switching `synchronousSort` off keeps the current order visible until the worker result is ready.
+Worker/WASM sorting is the default on all three backends. Switching `synchronousSort` off keeps the current order visible until the worker result is ready.
 
 ```ts
 type TargetOptions = {
@@ -134,7 +134,7 @@ If a display renderer shares the scene, use `layers` or `visible` to keep both S
 
 ### Color management
 
-WebGPU decodes stored sRGB colors into `THREE.ColorManagement.workingColorSpace`, then uses the renderer's output conversion. WebGL decodes sRGB only for linear and offscreen targets.
+WebGPURenderer (including its WebGL2 fallback) decodes stored sRGB colors into `THREE.ColorManagement.workingColorSpace`, then uses the renderer's output conversion. WebGL decodes sRGB only for linear and offscreen targets.
 
 ## Common properties and methods
 

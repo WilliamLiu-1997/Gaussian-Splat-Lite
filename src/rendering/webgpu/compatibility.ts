@@ -3,7 +3,7 @@ import { IntType, UnsignedIntType } from "three";
 
 import {
   type GaussianSplatCompatibleRenderer,
-  isWebGPURenderer,
+  usesNativeWebGPU,
 } from "../rendererUtils";
 
 type WebGPURenderer = import("three/webgpu").WebGPURenderer;
@@ -93,9 +93,9 @@ function patchNodeBuilder(builder: WebGPUNodeBuilder) {
 export function installWebGPUCompatibilityPatches(
   renderer: GaussianSplatCompatibleRenderer,
 ) {
-  if (!isWebGPURenderer(renderer)) return;
+  if (!usesNativeWebGPU(renderer)) return;
 
-  const webGPURenderer = renderer as PatchableWebGPURenderer;
+  const webGPURenderer = renderer as unknown as PatchableWebGPURenderer;
   if (patchedRenderers.has(webGPURenderer)) return;
 
   const previous = webGPURenderer.debug.onNodeBuilderCreated;

@@ -4,7 +4,9 @@
 
 Low-level GPU storage for combining visible Splat meshes. Applications normally use `GaussianSplatRenderer.update()` instead.
 
-WebGPU deferred generation submits meshes in batches using 32 reusable compute nodes per accumulator. `GaussianSplatRenderer` creates all slots and starts `compileComputeAsync()` when its accumulators are initialized; the first update waits for their precompilation to finish. Each node has independent uniforms and texture bindings, while all nodes share the accumulator's output textures. Nodes and pipelines are reused across scene changes and texture resizing. Disposal during precompilation releases resources after compilation settles. All visible meshes are generated in the same update, including the final partial batch. Direct calls to `generate()` still submit immediately once any requested precompilation has finished.
+Native WebGPU deferred generation submits meshes in batches using 32 reusable compute nodes per accumulator. `GaussianSplatRenderer` creates all slots and starts `compileComputeAsync()` when its accumulators are initialized; the first update waits for their precompilation to finish. Each node has independent uniforms and texture bindings, while all nodes share the accumulator's output textures. Nodes and pipelines are reused across scene changes and texture resizing. Disposal during precompilation releases resources after compilation settles. All visible meshes are generated in the same update, including the final partial batch. Direct calls to `generate()` still submit immediately once any requested precompilation has finished.
+
+The WebGPURenderer WebGL2 fallback rasterizes the same TSL generation program into integer array render targets. Both WebGL paths pad each mesh to texture rows and use CPU sorting. The pinned Three.js fallback build requires at least two array layers, so fallback accumulator textures reserve a second layer even for smaller scenes.
 
 ## Constructor
 
@@ -31,7 +33,7 @@ new SplatAccumulator()
 | `getTextures()` | Returns the two generated standard-layout Splat textures, or empty fallback textures before allocation |
 | `generateMapping(splatCounts, compact?)` | Assigns ranges and returns their required capacity; compact ranges omit per-mesh row padding |
 | `ensureGenerate({ maxSplats, renderer?, shrinkResources? })` | Allocates, grows, or optionally shrinks the backend-appropriate GPU storage |
-| `precompileGenerate(renderer)` | Starts WebGPU generation precompilation once; await `generateReady` before direct generation and inspect `generateError` for failure; no-op on WebGL |
+| `precompileGenerate(renderer)` | Starts native WebGPU generation precompilation once; await `generateReady` before direct generation and inspect `generateError` for failure; no-op on WebGL |
 | `generate({ mesh, base, count, renderer })` | Generates one mesh into its assigned accumulator range |
 | `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collects visible meshes, runs frame updates, compares versions, and returns a deferred generation plan |
 | `checkVersions(mapping)` | Reports generated-data, mapping, and sorting changes relative to another mapping |

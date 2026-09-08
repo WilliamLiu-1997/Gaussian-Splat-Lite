@@ -14,11 +14,11 @@ import {
   stochasticResolveRequired,
 } from "./stochastic";
 
-import { createWebGLResolveMaterial } from "./webgl/ResolveMaterial";
 import {
-  configureWebGPUResolveOutput,
-  createWebGPUResolveMaterial,
-} from "./webgpu/ResolveMaterial";
+  configureNodeResolveOutput,
+  createNodeResolveMaterial,
+} from "./tsl/ResolveMaterial";
+import { createWebGLResolveMaterial } from "./webgl/ResolveMaterial";
 
 export type ResolveState = {
   sourceTexture: { value: THREE.Texture };
@@ -60,9 +60,7 @@ export class StochasticResolvePass {
   private readonly geometry = new THREE.BufferGeometry();
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly webGLMaterial: THREE.ShaderMaterial;
-  private readonly webGPUMaterial: ReturnType<
-    typeof createWebGPUResolveMaterial
-  >;
+  private readonly webGPUMaterial: ReturnType<typeof createNodeResolveMaterial>;
   private readonly mesh: THREE.Mesh;
   private readonly drawingBufferSize = new THREE.Vector2();
   private composeTarget: THREE.RenderTarget | null = null;
@@ -82,7 +80,7 @@ export class StochasticResolvePass {
     };
 
     this.webGLMaterial = createWebGLResolveMaterial(this.state);
-    this.webGPUMaterial = createWebGPUResolveMaterial(this.state);
+    this.webGPUMaterial = createNodeResolveMaterial(this.state);
 
     this.geometry.setAttribute(
       "position",
@@ -411,7 +409,7 @@ export class StochasticResolvePass {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
       if (webGPU) {
-        configureWebGPUResolveOutput(this.webGPUMaterial, renderer, xrOutput);
+        configureNodeResolveOutput(this.webGPUMaterial, renderer, xrOutput);
       }
       setRendererRenderTarget(renderer, outputTarget);
       if (this.clear) {
