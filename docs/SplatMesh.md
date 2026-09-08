@@ -49,7 +49,7 @@ await splat.initialized;
 | `fileType` | `SplatFileType` | Inferred from name | Explicitly selects `PLY`, `SPZ`, `SOG`, or `RAD` |
 | `fileName` | `string` | `File.name` when available | Supplies a name for inferring the input format |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
-| `postDecode` | `SplatPostDecodeProgram` | `undefined` | **`Experimental`** Serializable per-Splat transform executed in the decode worker |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
 | `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
 | `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |
 | `constructSplats` | `(splats) => void \| Promise<void>` | `undefined` | Populates `Splats` during initialization |

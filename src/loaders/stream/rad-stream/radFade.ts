@@ -5,7 +5,6 @@ import { type RadLodSelection, radChunkIndex } from "./radLod";
 export type RadFade = {
   indices: Uint32Array;
   fades: Uint8Array;
-  hasOutgoing: boolean;
 };
 
 export type RadStreamSelection = RadLodSelection & {
@@ -32,7 +31,6 @@ export function mergeRadFade(
     return {
       indices: next,
       fades: new Uint8Array(next.length).fill(1),
-      hasOutgoing: false,
     };
 
   const indices = new Uint32Array(previous.length + next.length);
@@ -40,7 +38,6 @@ export function mergeRadFade(
   let oldOffset = 0;
   let newOffset = 0;
   let count = 0;
-  let hasOutgoing = false;
   while (oldOffset < previous.length || newOffset < next.length) {
     const oldIndex = previous[oldOffset] ?? Number.POSITIVE_INFINITY;
     const newIndex = next[newOffset] ?? Number.POSITIVE_INFINITY;
@@ -51,7 +48,6 @@ export function mergeRadFade(
     } else if (oldIndex < newIndex) {
       indices[count] = oldIndex;
       fades[count] = 2;
-      hasOutgoing = true;
       oldOffset++;
     } else {
       indices[count] = newIndex;
@@ -63,7 +59,6 @@ export function mergeRadFade(
   return {
     indices: indices.subarray(0, count),
     fades: fades.subarray(0, count),
-    hasOutgoing,
   };
 }
 /** Only pools containing changed nodes need new index/opacity maps. */

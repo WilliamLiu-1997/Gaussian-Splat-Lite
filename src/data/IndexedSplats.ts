@@ -104,9 +104,14 @@ export abstract class IndexedSplats extends Splats {
     this.assertLive();
     if (indices.length > this.maxSplats)
       throw new Error("Visible indices exceed source capacity");
+    // In-place fade compaction already owns this storage and needs no copy.
+    const inPlace =
+      indices.buffer === this.sourceIndices.buffer &&
+      indices.byteOffset === this.sourceIndices.byteOffset;
     if (
-      indices.length > this.sourceIndices.length ||
-      indices.length < this.sourceIndices.length / 4
+      !inPlace &&
+      (indices.length > this.sourceIndices.length ||
+        indices.length < this.sourceIndices.length / 4)
     ) {
       const layout = getTextureSize(Math.max(1, Math.ceil(indices.length / 4)));
       if (this.indexTexture !== Splats.emptyTexture)
@@ -119,7 +124,7 @@ export abstract class IndexedSplats extends Splats {
         layout.depth,
       );
     }
-    this.sourceIndices.set(indices);
+    if (!inPlace) this.sourceIndices.set(indices);
     this.numSplats = indices.length;
     if (this.indexTexture !== Splats.emptyTexture)
       this.indexTexture.needsUpdate = true;
@@ -407,6 +412,7 @@ export abstract class IndexedSplats extends Splats {
     uniforms.sourceLayerBits.value = Math.log2(this.layerSize);
     uniforms.sourceBlockBits.value = this.blockBits;
     uniforms.sourceBlocks.value = this.opacities.texture;
+    uniforms.sourceOpacities.value = this.opacities.opacityTexture;
     uniforms.sourceIndexed.value = true;
     uniforms.sourceIndices.value = this.indexTexture;
     this.needsUpdate = false;

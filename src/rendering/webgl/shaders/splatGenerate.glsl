@@ -14,6 +14,7 @@ uniform usampler2DArray sourceSplats2;
 uniform uint sourceLayerBits;
 uniform uint sourceBlockBits;
 uniform usampler2DArray sourceBlocks;
+uniform usampler2DArray sourceOpacities;
 uniform bool sourceIndexed;
 uniform usampler2DArray sourceIndices;
 
@@ -294,14 +295,15 @@ void produceSplat(int index) {
     }
     float blockOpacity = 1.0;
     if (sourceBlockBits < 32u) {
-        // Opacity layers follow the source layers, at one texel per block.
+        // Group layers follow the source layers, at one texel per block.
         uint blockMask = (1u << (sourceLayerBits - sourceBlockBits)) - 1u;
         uint block = sourceIndex >> sourceBlockBits;
-        blockOpacity = uintBitsToFloat(texelFetch(sourceBlocks, ivec3(
+        uint group = texelFetch(sourceBlocks, ivec3(
             block & min(blockMask, SPLAT_TEX_WIDTH_MASK),
             (block & blockMask) >> SPLAT_TEX_WIDTH_BITS,
             sourceIndex >> sourceLayerBits
-        ), 0).r);
+        ), 0).r;
+        blockOpacity = uintBitsToFloat(texelFetch(sourceOpacities, splatTexCoord(int(group)), 0).r);
     }
     if (blockOpacity <= 0.0) return;
     uint layerMask = (1u << sourceLayerBits) - 1u;

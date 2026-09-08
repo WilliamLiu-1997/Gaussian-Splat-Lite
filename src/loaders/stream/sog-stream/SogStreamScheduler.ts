@@ -29,12 +29,12 @@ import {
 import {
   type SogLodFile,
   type SogLodIndex,
+  type SogLodLeaf,
   type SogLodRange,
-  type SogVisibleLeaf,
+  readSogLodLeaf,
   resolveSogLod,
-  selectSogLods,
 } from "./sogLod";
-import { SogVisibility } from "./sogVisibility";
+import { type SogView, captureSogView } from "./sogVisibility";
 
 export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
   StreamSchedulerOptions;
@@ -76,6 +76,8 @@ type LeafState = {
   pending?: PendingRegion;
 };
 
+const EMPTY_SELECTION = new Uint32Array(0);
+
 /** Camera-driven Streamed SOG loading with per-chunk sources and region fades. */
 export class SogStreamScheduler {
   readonly group: THREE.Group;
@@ -91,7 +93,11 @@ export class SogStreamScheduler {
   private readonly loader: SogStreamLoader;
   private readonly abort = new AbortController();
   private manifest?: SogLodIndex;
-  private visibility?: SogVisibility;
+  private readonly lodLeaves = new Map<number, SogLodLeaf>();
+  private view?: SogView;
+  private lastRequestedKey = "";
+  private selecting = false;
+  private selection: Uint32Array = EMPTY_SELECTION;
   private chunks: Chunk[] = [];
   private environment?: Chunk;
   private leaves = new Map<number, LeafState>();
@@ -136,16 +142,25 @@ export class SogStreamScheduler {
   }
 
   get stats(): SogStreamStats {
+    const { retainedIndexBytes, ...loaderStats } = this.loader.stats;
+    const manifest = this.manifest;
     const stats: SogStreamStats = {
       visibleSplats: 0,
       visibleRegions: 0,
       visibleMeshes: 0,
       residentMeshes: 0,
       residentChunks: 0,
-      residentBytes: 0,
+      residentBytes:
+        retainedIndexBytes +
+        (manifest
+          ? manifest.nodes.byteLength +
+            manifest.leafOffsets.byteLength +
+            manifest.lods.byteLength +
+            manifest.counts.byteLength
+          : 0),
       pendingBytes: 0,
       loadingChunks: 0,
-      ...this.loader.stats,
+      ...loaderStats,
     };
     for (const { batch, data, controller } of this.chunks) {
       if (batch) {
@@ -187,7 +202,6 @@ export class SogStreamScheduler {
     const manifest = await this.loader.initialize(this.abort.signal);
     this.abort.signal.throwIfAborted();
     this.manifest = manifest;
-    this.visibility = new SogVisibility(manifest);
     const files: SogLodFile[] = manifest.urls.map((url, index) => ({
       url,
       count: manifest.counts[index],
@@ -219,23 +233,23 @@ export class SogStreamScheduler {
 
   /** Call before rendering. Returns whether the displayed data changed. */
   update(camera: THREE.Camera): boolean {
-    if (this.disposed || !this.visibility) return false;
+    if (this.disposed || !this.manifest) return false;
     this.tick++;
     for (const chunk of this.chunks) {
       if (chunk.data && !chunk.data.alive) chunk.data = undefined;
       chunk.batch?.beginUpdate();
     }
-    const { shown, visible } = this.visibility.collect(camera, this.group);
+    this.view = captureSogView(camera, this.group);
+    const { shown } = this.view;
     this.shown = shown;
+    if (!shown) {
+      this.selection = EMPTY_SELECTION;
+      this.lastRequestedKey = "";
+    }
     const now = performance.now();
-    const { selected, refinements } = this.selectRegions(shown, visible);
+    const { selected, refinements } = this.selectRegions();
     const changed = this.applySelection(selected, now);
-    for (const [leaf, chunk] of refinements) {
-      if (leaf.current?.range === leaf.target) this.wanted.add(chunk);
-    }
-    for (const chunk of this.chunks) {
-      if (chunk.controller && !this.wanted.has(chunk)) chunk.controller.abort();
-    }
+    this.updateRequests(refinements, now);
     this.releaseUnused();
     if (
       shown &&
@@ -245,20 +259,64 @@ export class SogStreamScheduler {
       )
     )
       this.resolveFirst(this);
-    this.pump(now);
+    void this.requestSelection();
     if (changed) this.changed();
     return changed;
   }
 
-  private selectRegions(shown: boolean, visible: SogVisibleLeaf[]) {
-    for (const leaf of this.leaves.values()) leaf.target = undefined;
-    const environmentCount = shown
-      ? Math.max(0, this.environment?.file.count ?? 0)
-      : 0;
-    const targets = selectSogLods(
-      visible,
-      Math.max(0, this.splatBudget - environmentCount),
+  private async requestSelection() {
+    const view = this.view;
+    if (
+      this.disposed ||
+      !this.shown ||
+      this.selecting ||
+      !this.manifest?.lods.length ||
+      !view
+    )
+      return;
+    const budget = Math.max(
+      0,
+      this.splatBudget - Math.max(0, this.environment?.file.count ?? 0),
     );
+    const key = `${view.modelView.join(",")}/${view.projection.join(",")}/${view.coordinateSystem}/${view.reversedDepth}/${budget}`;
+    if (key === this.lastRequestedKey) return;
+    this.lastRequestedKey = key;
+    this.selecting = true;
+    try {
+      const selection = await this.loader.selectLod(view, budget);
+      if (this.disposed || !this.shown) return;
+      // Keep one completed result; accepting camera lag avoids starving motion.
+      // Resolve it against current caches, never worker-time resource snapshots.
+      this.selection = selection;
+      const { selected, refinements } = this.selectRegions();
+      const now = performance.now();
+      this.queueExtractions(selected, now);
+      this.updateRequests(refinements, now);
+      this.changed();
+    } catch (error) {
+      if (!this.disposed) {
+        this.rejectFirst(error);
+        this.failed(error, this.options.url);
+      }
+    } finally {
+      this.selecting = false;
+      // Updates replace the latest view while this task runs; no request queue.
+      void this.requestSelection();
+    }
+  }
+
+  private updateRequests(refinements: [LeafState, Chunk][], now: number) {
+    for (const [leaf, chunk] of refinements) {
+      if (leaf.current?.range === leaf.target) this.wanted.add(chunk);
+    }
+    for (const chunk of this.chunks) {
+      if (chunk.controller && !this.wanted.has(chunk)) chunk.controller.abort();
+    }
+    this.pump(now);
+  }
+
+  private selectRegions() {
+    for (const leaf of this.leaves.values()) leaf.target = undefined;
     const selected: LeafState[] = [];
     this.wanted.clear();
     const show = (range: SogLodRange) => {
@@ -267,26 +325,34 @@ export class SogStreamScheduler {
       selected.push(leaf);
       if (leaf.current?.range !== range) this.wanted.add(this.chunkFor(range));
     };
-    if (shown && this.environment) {
+    if (this.shown && this.environment) {
       const current = this.leaves.get(-1)?.current;
       const range = current?.range ?? this.environment.file.ranges[0];
-      if (range && (current || this.environment.data)) show(range);
+      if (range && (current || this.environment.data?.alive)) show(range);
       else if (this.environment.file.count !== 0)
         this.wanted.add(this.environment);
     }
     // Shared files load once. Show the best loaded level no finer than the
     // target, then halve the remaining LOD gap; keep the old LOD during a switch.
     const refinements: [LeafState, Chunk][] = [];
-    visible.sort((a, b) => b.weight - a.weight || a.leaf.id - b.leaf.id);
-    for (const { leaf } of visible) {
-      const target = targets.get(leaf.id);
-      if (!target) continue;
+    for (
+      let offset = 0;
+      this.shown && offset < this.selection.length;
+      offset += 2
+    ) {
+      const id = this.selection[offset];
+      let leaf = this.lodLeaves.get(id);
+      if (!leaf) {
+        leaf = readSogLodLeaf(this.manifest as SogLodIndex, id);
+        this.lodLeaves.set(id, leaf);
+      }
+      const target = leaf.lods[this.selection[offset + 1]];
       const state = this.leafState(leaf.id);
       const { range, load, refinement } = resolveSogLod(
         leaf,
         target,
         state.current?.range,
-        (lod) => !!this.chunks[lod.file].data,
+        (lod) => this.chunks[lod.file].data?.alive === true,
       );
       if (range) show(range);
       if (load) {
@@ -294,6 +360,10 @@ export class SogStreamScheduler {
         if (range && refinement) refinements.push([state, chunk]);
         else this.wanted.add(chunk);
       }
+    }
+    for (const leaf of this.leaves.values()) {
+      if (leaf.pending?.data && leaf.target !== leaf.pending.range)
+        leaf.pending = undefined;
     }
     return { selected, refinements };
   }
@@ -326,10 +396,7 @@ export class SogStreamScheduler {
   private updateRegionVisibility(now: number) {
     let changed = false;
     for (const leaf of this.leaves.values()) {
-      const { current, outgoing, pending, target } = leaf;
-      if (pending?.data && target !== pending.range) {
-        leaf.pending = undefined;
-      }
+      const { current, outgoing, target } = leaf;
       if (current) changed = this.fadeRegion(current, !!target, now) || changed;
       if (outgoing) changed = this.fadeRegion(outgoing, false, now) || changed;
     }
@@ -361,7 +428,8 @@ export class SogStreamScheduler {
       if (batch) bytes = batch.uploadBytes(start, count);
       else {
         const { capacity } = sogBatchTextureLayout(chunk.batchCapacity);
-        bytes = getSplatTextureBytes(capacity, numSh) + (capacity / 64) * 4;
+        bytes =
+          getSplatTextureBytes(capacity, numSh) + (capacity / 64) * 4 + 16;
       }
       if (!uploads.reserve(bytes)) continue;
       if (!batch) {
@@ -609,6 +677,8 @@ export class SogStreamScheduler {
       if (!this.disposed)
         queueMicrotask(() => {
           this.pump(performance.now());
+          // Loading the environment changes the budget available to LOD.
+          if (chunk === this.environment) void this.requestSelection();
           this.changed();
         });
     }
@@ -651,6 +721,8 @@ export class SogStreamScheduler {
     this.chunks = [];
     this.environment = undefined;
     this.manifest = undefined;
-    this.visibility = undefined;
+    this.lodLeaves.clear();
+    this.view = undefined;
+    this.selection = EMPTY_SELECTION;
   }
 }

@@ -1,8 +1,8 @@
-# postDecode `Experimental`
+# postDecode
 
 [Back to documentation](../README.md#documentation)
 
-Transforms each Splat while decoding PLY/SPZ files. Experimental: developed for [3D-Tiles-RendererJS-3DGS-Plugin](https://github.com/WilliamLiu-1997/3D-Tiles-RendererJS-3DGS-Plugin), and may change or be removed.
+Transforms each Splat in the decode worker while loading PLY/SPZ/SOG/RAD files.
 
 `define()` runs its callback immediately to build an expression program. The worker executes that program; the library handles packing and sorting centers.
 

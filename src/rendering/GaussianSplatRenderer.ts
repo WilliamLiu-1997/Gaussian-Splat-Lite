@@ -459,8 +459,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     clearTimeout(this.updateTimeoutId);
     this.updateTimeoutId = -1;
 
-    // @ts-ignore Object base class has a dispose method in Three.js >= r186
-    super.dispose?.();
+    // @ts-expect-error @types/three 0.185.x does not declare Object3D.dispose().
+    super.dispose();
 
     if (this.target) {
       this.target.dispose();

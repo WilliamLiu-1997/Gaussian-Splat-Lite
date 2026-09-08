@@ -6,7 +6,7 @@ Low-level scene mappings and WebGL GPU storage for combining visible Splat meshe
 
 Native WebGPU uses this class only for scene mappings, edit metadata and the camera-relative origin. Texture generation is WebGL-only; `ensureGenerate()` and `generate()` reject native WebGPU renderers.
 
-The WebGPURenderer WebGL2 fallback rasterizes the same TSL generation program into integer array render targets. Both WebGL paths pad each mesh to texture rows and use CPU sorting. The pinned Three.js fallback build requires at least two array layers, so fallback accumulator textures reserve a second layer even for smaller scenes.
+The WebGPURenderer WebGL2 fallback rasterizes the same TSL generation program into integer array render targets. Both WebGL paths pad each mesh to texture rows and use CPU sorting. The Three.js r186 fallback backend requires at least two array layers, so fallback accumulator textures reserve a second layer even for smaller scenes.
 
 ## Constructor
 

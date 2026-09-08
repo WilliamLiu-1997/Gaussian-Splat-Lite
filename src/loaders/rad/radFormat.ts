@@ -35,8 +35,6 @@ export type RadChunkData = SplatResult & {
   childStart?: Uint32Array;
   childCount?: Uint16Array;
   lodRadii?: Float32Array;
-  /** Tree arrays retained by the dedicated worker, excluding codebooks/WASM. */
-  retainedTreeBytes?: number;
 };
 
 export type RadDecodedChunk = PostDecodeSplatData & {

@@ -18,7 +18,7 @@ export function createWebGLFallbackAccumulatorTarget(
   height: number,
   depth: number,
 ) {
-  // The pinned fallback backend recognizes array attachments only at depth > 1.
+  // The r186 fallback backend recognizes array attachments only at depth > 1.
   return createWebGLAccumulatorTarget(width, height, Math.max(2, depth));
 }
 

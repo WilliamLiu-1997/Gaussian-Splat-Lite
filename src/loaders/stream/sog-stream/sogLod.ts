@@ -47,7 +47,7 @@ export type SogLodIndex = {
   environment?: string;
 };
 
-/** Runs in the worker; the main thread traverses this layout without rebuilding a tree. */
+/** Flatten the tree and ranges into transferable typed arrays. */
 export function packSogLodIndex(manifest: SogLodManifest): SogLodIndex {
   const { leaves, files, environment } = manifest;
   const nodes = new Float64Array((leaves.length * 2 - 1) * 8);

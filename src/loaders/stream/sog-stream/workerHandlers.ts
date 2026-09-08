@@ -3,6 +3,7 @@ import { getSplatByteLength, getSplatShDegree } from "../../../data/splatData";
 import { extractSplatRange } from "../../../data/splatRange";
 import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes";
 import { packSogLodIndex, parseSogLodManifest } from "./sogLod";
+import { type SogView, SogVisibility } from "./sogVisibility";
 
 export type SogChunkInfo = {
   numSplats: number;
@@ -10,16 +11,7 @@ export type SogChunkInfo = {
   byteLength: number;
 };
 
-function parseSogIndex({
-  bytes,
-  baseUrl,
-}: { bytes: ArrayBuffer; baseUrl: string }) {
-  return packSogLodIndex(
-    parseSogLodManifest(JSON.parse(new TextDecoder().decode(bytes)), baseUrl),
-  );
-}
-
-/** Each worker owns its chunk cache and supplies the shared decoder. */
+/** Workers own either LOD traversal or decoded chunk caches. */
 export function createSogStreamHandlers(
   loadSplats: (
     args: SplatLoadArgs,
@@ -28,6 +20,30 @@ export function createSogStreamHandlers(
 ) {
   const sogChunks = new Map<number, SplatResult>();
   const sogLoads = new Map<number, AbortController>();
+  let visibility: SogVisibility | undefined;
+
+  function parseSogIndex({
+    bytes,
+    baseUrl,
+  }: { bytes: ArrayBuffer; baseUrl: string }) {
+    const index = packSogLodIndex(
+      parseSogLodManifest(JSON.parse(new TextDecoder().decode(bytes)), baseUrl),
+    );
+    visibility = new SogVisibility(index);
+    // RPC transfers the return buffers; traversal retains its own index.
+    return {
+      ...index,
+      nodes: index.nodes.slice(),
+      leafOffsets: index.leafOffsets.slice(),
+      lods: index.lods.slice(),
+      counts: index.counts.slice(),
+    };
+  }
+
+  function selectSogLod({ view, budget }: { view: SogView; budget: number }) {
+    if (!visibility) throw new Error("SOG LOD index is not initialized");
+    return visibility.select(view, budget);
+  }
 
   function cacheSogChunk({
     id,
@@ -84,5 +100,6 @@ export function createSogStreamHandlers(
     extractSogRegions,
     releaseSogChunk,
     parseSogIndex,
+    selectSogLod,
   };
 }

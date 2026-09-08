@@ -4,9 +4,41 @@ import {
   type SogLodLeaf,
   type SogVisibleLeaf,
   readSogLodLeaf,
+  selectSogLods,
 } from "./sogLod";
 
-/** Per-index traversal state keeps leaf identities stable between frames. */
+export type SogView = {
+  modelView: number[];
+  projection: number[];
+  coordinateSystem: THREE.CoordinateSystem;
+  reversedDepth: boolean;
+  shown: boolean;
+};
+
+/** Capture the view without traversing the manifest or reducing matrix precision. */
+export function captureSogView(
+  camera: THREE.Camera,
+  group: THREE.Object3D,
+): SogView {
+  camera.updateWorldMatrix(true, false);
+  group.updateWorldMatrix(true, false);
+  const modelView = new THREE.Matrix4().multiplyMatrices(
+    camera.matrixWorldInverse,
+    group.matrixWorld,
+  );
+  let shown = camera.layers.test(group.layers);
+  for (let node: THREE.Object3D | null = group; node; node = node.parent)
+    shown &&= node.visible;
+  return {
+    modelView: modelView.elements,
+    projection: camera.projectionMatrix.toArray(),
+    coordinateSystem: camera.coordinateSystem,
+    reversedDepth: camera.reversedDepth,
+    shown,
+  };
+}
+
+/** Worker traversal state keeps leaf identities stable between selections. */
 export class SogVisibility {
   private readonly leaves = new Map<number, SogLodLeaf>();
   private readonly clip = new THREE.Matrix4();
@@ -20,27 +52,20 @@ export class SogVisibility {
 
   constructor(private readonly manifest: SogLodIndex) {}
 
-  collect(camera: THREE.Camera, group: THREE.Object3D) {
-    camera.updateWorldMatrix(true, false);
-    group.updateWorldMatrix(true, false);
-    this.modelView.multiplyMatrices(
-      camera.matrixWorldInverse,
-      group.matrixWorld,
-    );
-    this.clip.multiplyMatrices(camera.projectionMatrix, this.modelView);
+  private collect(view: SogView) {
+    this.modelView.fromArray(view.modelView);
+    this.clip.fromArray(view.projection).multiply(this.modelView);
     this.inverseModelView.copy(this.modelView).invert();
     this.cameraPosition.setFromMatrixPosition(this.inverseModelView);
     this.frustum.setFromProjectionMatrix(
       this.clip,
-      camera.coordinateSystem,
-      camera.reversedDepth,
+      view.coordinateSystem,
+      view.reversedDepth,
     );
     const visible: SogVisibleLeaf[] = [];
-    let shown = camera.layers.test(group.layers);
-    for (let node: THREE.Object3D | null = group; node; node = node.parent)
-      shown &&= node.visible;
+    const { shown } = view;
     const nodes = this.manifest.nodes;
-    const projection = camera.projectionMatrix.elements;
+    const projection = view.projection;
     const fovScale =
       1 /
       (Math.max(Math.abs(projection[0]), Math.abs(projection[5])) *
@@ -77,6 +102,22 @@ export class SogVisibility {
         });
       }
     }
-    return { shown, visible };
+    return visible;
+  }
+
+  /** Transfer only [leaf ID, LOD ordinal] pairs in loading priority order. */
+  select(view: SogView, budget: number): Uint32Array {
+    const visible = this.collect(view);
+    const targets = selectSogLods(visible, budget);
+    visible.sort((a, b) => b.weight - a.weight || a.leaf.id - b.leaf.id);
+    const result = new Uint32Array(targets.size * 2);
+    let offset = 0;
+    for (const { leaf } of visible) {
+      const target = targets.get(leaf.id);
+      if (!target) continue;
+      result[offset++] = leaf.id;
+      result[offset++] = leaf.lods.indexOf(target);
+    }
+    return result;
   }
 }

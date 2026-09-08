@@ -1,6 +1,7 @@
 import {
   RadPagedSplats,
   type RadPagedSplatsOptions,
+  type RadPreparedSelection,
 } from "../../../data/RadPagedSplats";
 import { SplatMesh } from "../../../scene/SplatMesh";
 
@@ -31,9 +32,18 @@ export class RadStreamBatch extends SplatMesh {
     return true;
   }
 
-  finishFadeIn() {
-    if (!this.source.finishFadeIn()) return false;
-    this.updateVersion({ sort: false });
+  commitSelection(prepared: RadPreparedSelection) {
+    this.source.commitSelection(prepared);
+    this.numSplats = this.source.getNumSplats();
+    this.updateMappingVersion();
+  }
+
+  finishFade() {
+    if (!this.source.finishFade()) return false;
+    if (this.numSplats !== this.source.getNumSplats()) {
+      this.numSplats = this.source.getNumSplats();
+      this.updateMappingVersion();
+    } else this.updateVersion({ sort: false });
     return true;
   }
 
