@@ -9,97 +9,39 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added WebGPURenderer WebGL2 backend support, including `forceWebGL` and automatic fallback, shared TSL shaders, raster accumulation, CPU sorting, depth/resolve and viewer backend selection.
-
-- Added RAD visibility fades and LOD crossfades on WebGL/WebGPU, matching SOG's `fadeDurationMs` option and 200 ms default. Shared nodes stay opaque, RAD and SOG share group-based opacity tables, and fade ticks reuse source/index textures and sort data. Outgoing pages remain pinned through fade-out.
-
-- Added local split SOG loading from `meta.json` and companion images, including Viewer multi-file selection and drop. SOG and RAD share `resolveFile` for external files, with async resolution, cancellation and caller-owned byte inputs.
-
-- Added native Spark RAD version 1 decoding for monolithic and split files, all property codecs and SH0–SH3/codebooks. Ordinary loaders detect RAD0 and extract leaves before post-decode transforms.
-- Added Splat record indices to raycast hits, with a stable file-index lookup for paged RAD scenes.
-- Added `RadStreamScheduler` with worker tree LOD, fixed page slots, selected-index rendering on WebGL/WebGPU, Splat and upload budgets, cooldown retirement/reloading, cancellation and retries. Added RAD Viewer loading and local companion-page selection.
-
-- Added `SogStreamScheduler` for Streamed SOG indexes, with camera-driven LOD selection, refinement loads that halve the remaining LOD gap, worker-side chunk caching and region extraction, one shared Mesh per chunk with fixed region slots, adaptive source texture layers, partial uploads and independent region fades, LOD crossfades, reference-based cooldown retirement and cancellation. Chunk capacity follows its data without a configured per-Mesh Splat limit. The viewer accepts `lod-meta.json` URLs and displays the source Mesh count.
-- Added `Splats.extractRange()` for independent packed range copies and an optional `AbortSignal` to `SplatLoader.loadAsync()`.
-- Added ordinary SOG V1/V2 loading from ZIP bundles or directory metadata, with automatic HTTP Range access, concurrent property-image downloads and grouped decoding through the existing PLY/SPZ loading API. Indexed streaming chunks use independent workers for concurrent loading and caching.
-- Added `.sog` support to the viewer's file picker, drag-and-drop, and URL loading.
-- Added WebGPU rendering with shared TSL shaders. WebGL2 remains supported.
-- Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Companion depth draws use unsorted Splat indices with stochastic coverage.
-- Added `StochasticResolvePass` for spatial noise reduction through EffectComposer, direct scene composition, or a custom render graph. Manual stochastic rendering and per-eye resolve are supported in WebGL/WebGPU XR; automatic stochastic switching remains disabled in XR.
-- Added viewer controls for rendering backend, output color space, and stochastic rendering.
-- Added a viewer grid and red/blue X/Z axes using screen-space wide lines, with a shared visibility toggle. References span 1.5 times the model's largest dimension, have 20 divisions per axis, and do not intercept picking.
+- Added `WebGPURenderer` support for native WebGPU, `forceWebGL`, and automatic WebGL2 fallback, using shared TSL shaders. Native WebGPU projects and culls Splats before 32-bit GPU sorting and indirect drawing; both WebGL backends use asynchronous Worker/WASM sorting. The new read-only `synchronousSort` property reports the backend's sorting mode.
+- Added `stochastic` and `autoStochastic` for sorting-free transparency, plus `renderDepth` for companion depth draws with stochastic alpha coverage. Automatic mode uses stochastic rendering during camera motion until a fresh sort is ready.
+- Added `StochasticResolvePass` for spatial noise reduction through direct scene composition, WebGL `EffectComposer`, or a custom render graph. Manual stochastic rendering and per-eye resolve support WebGL/WebGPU XR; automatic switching is disabled in XR.
+- Added SOG V1/V2 loading from ZIP bundles or directory metadata through the existing loading APIs, with HTTP Range access, concurrent property-image downloads, and grouped decoding.
+- Added Spark RAD version 1 loading for monolithic `.rad` files and split files with external `.radc` pages, including all property codecs and SH0–SH3/codebooks. Ordinary loading detects the RAD0 signature and extracts leaf records before applying `postDecode`.
+- Added `RadStreamScheduler` and `SogStreamScheduler` for camera-driven LOD and on-demand loading of RAD pages and Streamed SOG `lod-meta.json` scenes. Both support WebGL/WebGPU rendering, SDF edits, raycasting, visibility fades, LOD crossfades, cancellation, retries, and streaming statistics.
+- Added shared streaming controls for Splat budgets, upload allowance, load concurrency, and cooldown retirement. Defaults are 3,000,000 Splats, 8 MiB per update, four concurrent loads, 100 cooldown ticks, and 200 ms fades. LOD workers run separately from decoding workers and coalesce pending requests to the latest view; fixed source slots, compact visible indices, and partial uploads reduce repeated work.
+- Added `resolveFile` for local SOG companion images and RAD pages, accepting synchronous or asynchronous URL, Blob, or byte-array results with cancellation support.
+- Added an optional `AbortSignal` to `SplatLoader.loadAsync()`. Disposing loaded sources or replacing their initialization cancels pending downloads and decoding.
+- Added `Splats.extractRange()` to copy packed records, spherical harmonics, and sort centers into an independent source.
+- Added Splat record indices to raycast hits and `RadStreamScheduler.getGlobalIndex()` to map current batch indices to stable file-global RAD node indices.
+- Added viewer backend switching, output color-space and stochastic controls, WebGPU Inspector integration, and a toggleable grid with X/Z reference axes. The viewer accepts SOG/RAD files, streamed scene URLs, and multi-file selection or drop for local split assets.
 
 ### Changed
 
-- Enabled reversed depth buffers in the viewer on WebGPU and both WebGL2 backends when supported.
-- Standardized feature documentation for WebGPU, depth rendering, RAD/SOG streaming and `postDecode`.
-- Coalesce pending SOG/RAD decisions to the latest view and separate LOD traversal from decoding workers.
-- Avoid redundant RAD reselection when displayed nodes are unchanged.
-- Reserve decoded RAD page slots before LOD selection to request deeper pages earlier.
-- Moved RAD LOD traversal to Rust/WASM with resident page trees and fewer priority-queue operations.
-- Release RAD decoder slots before tree registration completes, retaining pending page byte limits.
-- Batched RAD selection updates and compacted outgoing indices in place.
-- Reworked native WebGPU rendering with projection and culling before 32-bit GPU sorting, reusable compute nodes, compact caches and indirect drawing.
-- Changed native WebGPU intermediate precision and projection-cache encoding. Splat footprints, opacity and equal-depth blending order may differ from previous versions.
-- Fixed sorting by backend: asynchronous Worker/WASM on both WebGL backends and GPU sorting on native WebGPU.
-
-- Reduced WebGL fallback sorting uploads to active rows when reusing the ordering texture, retaining its allocation until growth or explicit shrinking.
-
+- Updated the Three.js peer dependency from `>=0.185.1` to `^0.186.0`, pinned development to `0.186.0`, and removed compatibility workarounds fixed upstream.
+- Replaced `stream` and `streamLength` loading inputs with `file: Blob` (including `File`) in `Splats` and `SplatMesh`. PLY/SPZ files stream inside the worker; local SOG/RAD files use random reads. Existing `url` and `fileBytes` inputs remain available.
+- Changed the default `preBlurAmount` from `0` to `0.3` and `blurAmount` from `0.3` to `0`, expanding projected Splats without the previous blur opacity compensation. Set them to `0` and `0.3`, respectively, to restore the previous behavior.
+- Corrected `minPixelRadius` to use screen pixels independently of `focalAdjustment`. Its default remains `1`; divide previous values by `focalAdjustment` to preserve the old cutoff.
 - Increased the default `SplatMesh.minRaycastOpacity` from `0.1` to `0.15`.
-
-- Changed the default `preBlurAmount` to `0.3` and `blurAmount` to `0`, retaining opacity while expanding projected splats. Set them to `0` and `0.3` respectively to restore compensated blur.
-
-- Set the default `minPixelRadius` to 1 and corrected its units to screen pixels in both GLSL and TSL shaders. Divide old explicit values by `focalAdjustment` to preserve their previous cutoff.
-
-- Consolidated RAD/SOG streaming under `loaders/stream/`, sharing indexed data, workers, configuration and byte accounting. Separated format sources, ZIP access and index loading.
-- Added random reads and bounded page prefetch to ordinary RAD URL loading.
-
-- Increased SOG streaming's default `maxConcurrentLoads` from two to four, matching RAD streaming.
-- Increased RAD streaming's default `maxConcurrentLoads` from two to four, allowing up to four concurrent page downloads and decoding workers while retaining upload backpressure.
-
-- Unified RAD and SOG with the PLY/SPZ decoder architecture: platform-independent decoding in `gaussian-splat-lib`, shared `SplatReceiver` output, and thin WASM bridges in `gaussian-splat-rs`. Preserved grouped SOG decoding and direct packed SH palette writes.
-
-- Aligned common RAD streaming settings with SOG: a 3,000,000 visible Splat budget, `cooldownTicks` and upload allowance. Removed separate memory and LOD tuning options; SH degree is read automatically from the file. Unused page pools release their storage after cooldown.
-- Streamed SOG rendering, sorting and raycasting now use compact visible indices instead of scanning through hidden source slots. Index maps are reused during opacity fades, and batch rendering no longer allocates sort centers for the entire chunk.
-- Replaced `stream`/`streamLength` loading inputs with `file: Blob` (including `File`). PLY/SPZ stream directly in the worker; local SOG files use random reads without buffering the whole archive. Viewer URL loads now use the URL loader for all formats.
-- Read and flush packed Splat buffers independently, skipping old-data reads for complete decode batches.
-- Moved built-in Splat color conversion to the vertex shader in WebGPU and WebGL.
-- Trimmed wide-kernel coverage using a conservative alpha bound in both rendering backends. Wide kernels retain their original minimum-pixel-radius visibility cutoff.
-- Simplified documentation into a README quick start and focused API references, consolidating duplicate guides and examples.
-- Updated the required Three.js version to r186 (`0.186.x`) from npm, pinned development to `0.186.0`, and removed the compatibility patches fixed upstream.
-- Replaced the bundled Lion example with Multi Material Splats by hybridherbst, distributed as SPZ v4 with SH3 data and CC BY 4.0 attribution.
-- Limited the viewer to one GPU frame in flight, retaining pending redraws and processing camera input while the GPU is busy.
-- Reused PLY output batches and SPZ decompression buffers, and shared loading, spherical-harmonic codecs, and texture compatibility checks to reduce duplicate work and temporary allocations.
-- Reorganized source files into data, loaders, runtime, scene, rendering, and utility modules, with separate WebGL/WebGPU backends and an architecture guide. Existing package entry-point exports remain available.
-- Changed `npm run dev` to serve source directly through Vite and consolidated WASM builds into a cross-platform Node script. Removed the separate `build:watch` command and platform-specific WASM scripts; ES module and CommonJS bundles now build separately.
-
-### Removed
-
-- Removed the `synchronousSort` constructor option, setter and viewer toggle. The getter reports the backend's fixed sorting mode.
-- Removed native WebGPU accumulator generation and the `precompileGenerate()`, `generateReady` and `generateError` APIs. Accumulator texture generation now supports only WebGL backends.
+- Moved built-in Splat color conversion to vertex shaders and trimmed wide-kernel coverage using a conservative alpha bound while preserving the full-support visibility cutoff. Native WebGPU projection quantization can produce slight visual differences, and equal-depth Splats have no guaranteed source order.
+- Unified PLY/SPZ/SOG/RAD decoding around the platform-independent Rust library and shared receiver output, with thin WASM bridges. Reused PLY batches and SPZ decompression buffers, and reduced packed-buffer reads, writes, and temporary allocations.
+- Reorganized source code into data, loaders, runtime, scene, rendering, and utility modules while preserving existing package entry-point exports. Simplified the README and API references, and added architecture and streaming guides.
+- Updated the viewer to use reversed depth buffers where supported and allow only one GPU frame in flight while retaining pending redraws and processing camera input. Replaced the bundled Lion model with Multi Material Splats by hybridherbst in SPZ v4 with SH3 data and CC BY 4.0 attribution.
+- Changed `npm run dev` to serve source directly through Vite, consolidated WASM builds into a cross-platform Node script, and split ES module and CommonJS bundle builds. Removed `build:watch` and the platform-specific WASM scripts.
 
 ### Fixed
 
-- Updated viewer pivot cleanup to notify `Object3D.dispose()` and preserved its overlay order with Three.js r186's reversed depth sorting.
-- Recreate terminated WebGL sorting workers on the next sort and discard late sorting results after renderer disposal.
-- Preserve native WebGPU initialization errors when Three.js falls back to WebGL2, showing the cause in the viewer and Inspector.
-
-- Corrected streaming reads and iteration to follow selected indices, preserving original opacity for picking during fades.
-- Preserved caller-owned RAD buffers during worker transfers, including Node.js Buffer inputs.
-
-- Accept exact-length RAD HTTP 206 responses when CORS hides `Content-Range`, retaining strict validation when that header is exposed. Compare resource validators without automatically adding `If-Range`, so public storage hosts can load without a preflight.
-- Corrected the shared SH exponent choice in Rust and TypeScript so coefficients between powers of two retain their magnitude instead of saturating at the lower power. Packed layout and shader decoding are unchanged.
-- Ignore empty LOD placeholders when validating Streamed SOG chunk coverage and LOD consistency.
-- Corrected the viewer's WebGPU Inspector FPS to count rendered frames instead of animation ticks, including GPU waits and idle on-demand rendering.
-- Routed remote SOG files in the viewer directly through the URL loader so HTTP Range reads and grouped download/decode overlap remain available.
-- Reported known SOG download sizes through progress callbacks so URL loading displays a percentage, with indeterminate progress when the total is unknown.
-- Preserved the SH2 coefficient sharing the SH1 texture when updating SH1, and cleared unused SH padding.
-- Initialized WebGPU projection dimensions before the orthographic/perspective branch so orthographic Splats render correctly.
-- Validated gzip header checksums, payload checksums, and decoded sizes for legacy SPZ files, rejecting missing trailers and trailing data. Optional gzip headers remain supported across input chunks.
-- Validated SPZ v4 Zstandard checksums and declared frame sizes against the stream table, rejecting corrupt or inconsistent files.
-- Preserved finite SH color channels when another channel is NaN, using the same packing rules in `Splats` and `postDecode`.
-- Rebuilt Splat textures when either source buffer changes, including changes to typed-array offsets and lengths, instead of retaining stale GPU data.
-- Corrected per-eye viewport sizing in WebXR so Splat projection uses each eye's dimensions rather than the full drawing buffer.
+- Corrected shared SH exponent selection in Rust and TypeScript so coefficients between powers of two no longer saturate at the lower power. Preserved finite color channels when another channel is NaN, and preserved the SH2 coefficient stored alongside SH1 when updating SH1. The packed layout and shader decoding are unchanged.
+- Rebuilt Splat textures when either source buffer, typed-array offset, or length changes, preventing stale GPU data.
+- Validated legacy SPZ gzip header and payload checksums, decoded sizes, trailers, and trailing data. Validated SPZ v4 Zstandard checksums and declared frame sizes against the stream table, rejecting corrupt or inconsistent files.
+- Corrected WebXR projection to use each eye's viewport dimensions instead of the full drawing buffer.
+- Recreated terminated WebGL sorting workers on the next sort and discarded late sorting results after renderer disposal.
 
 ## [0.1.16] - 2026-09-03
 

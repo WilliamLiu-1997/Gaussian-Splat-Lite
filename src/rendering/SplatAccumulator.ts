@@ -219,12 +219,14 @@ export class SplatAccumulator {
     scene,
     timer,
     camera,
+    layerCamera = camera,
     previous,
   }: {
     renderer: GaussianSplatCompatibleRenderer;
     scene: THREE.Scene;
     timer: THREE.Timer;
     camera: THREE.Camera;
+    layerCamera?: THREE.Camera;
     previous: SplatAccumulator;
   }) {
     // Preserve the previous metadata before replacing this accumulator's
@@ -240,9 +242,18 @@ export class SplatAccumulator {
     this.time = timer.getElapsed();
     this.deltaTime = timer.getDelta();
 
+    // Collect all eyes' meshes; native projection still filters each eye separately.
+    const array = layerCamera as THREE.ArrayCamera;
+    const layerMask =
+      usesNativeWebGPU(renderer) &&
+      array.isArrayCamera &&
+      array.cameras.length > 0
+        ? array.cameras.reduce((mask, eye) => mask | eye.layers.mask, 0)
+        : layerCamera.layers.mask;
+
     const allMeshes: SplatMesh[] = [];
     scene.traverse((node) => {
-      if (node instanceof SplatMesh && camera.layers.test(node.layers)) {
+      if (node instanceof SplatMesh && (layerMask & node.layers.mask) !== 0) {
         allMeshes.push(node);
       }
     });
@@ -276,7 +287,7 @@ export class SplatAccumulator {
       // remains fully transparent even when an SDF sets or adds opacity.
       if (
         node instanceof SplatMesh &&
-        camera.layers.test(node.layers) &&
+        (layerMask & node.layers.mask) !== 0 &&
         node.opacity > 0
       ) {
         visibleMeshes.push(node);

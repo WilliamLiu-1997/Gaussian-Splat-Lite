@@ -227,13 +227,20 @@ export function createProjectionProgram(
           const b = p0.dot(p1);
           const d = p1.dot(p1).add(preBlurAmount).toVar();
           const detOrig = a.mul(d).sub(b.mul(b)).toVar();
-          a.addAssign(blurAmount);
-          d.addAssign(blurAmount);
-          const det = a.mul(d).sub(b.mul(b)).toVar();
-          N.If(det.greaterThan(0), () => {
-            alpha.mulAssign(detOrig.div(det).max(0).sqrt());
+          N.If(blurAmount.equal(0), () => {
+            // No opacity compensation is needed, but reject degenerate covariance.
+            N.If(detOrig.greaterThan(0).not(), () => {
+              alpha.assign(0);
+            });
           }).Else(() => {
-            alpha.assign(0);
+            a.addAssign(blurAmount);
+            d.addAssign(blurAmount);
+            const det = a.mul(d).sub(b.mul(b)).toVar();
+            N.If(det.greaterThan(0), () => {
+              alpha.mulAssign(detOrig.div(det).max(0).sqrt());
+            }).Else(() => {
+              alpha.assign(0);
+            });
           });
 
           const alphaVisible = alpha
@@ -254,18 +261,6 @@ export function createProjectionProgram(
             const eigen1 = eigenAverage.add(eigenDelta).toVar();
             // Keep a small positive minor axis when subtraction rounds to zero.
             const eigen2 = eigenAverage.sub(eigenDelta).max(1e-4).toVar();
-            const eigenVector1 = N.vec2(0).toVar();
-            N.If(b.abs().greaterThan(0.001), () => {
-              eigenVector1.assign(N.vec2(b, eigen1.sub(a)).normalize());
-            }).Else(() => {
-              eigenVector1.assign(
-                N.select(a.greaterThanEqual(d), N.vec2(1, 0), N.vec2(0, 1)),
-              );
-            });
-            const eigenVector2 = N.vec2(
-              eigenVector1.y,
-              eigenVector1.x.negate(),
-            );
             const supportScale = N.select(
               maximumSupportRadius.greaterThan(0),
               supportRadius.div(maximumSupportRadius),
@@ -294,6 +289,19 @@ export function createProjectionProgram(
                     .greaterThanEqual(minProjectedRadius),
                 ),
               () => {
+                // Only surviving splats need an oriented covariance basis.
+                const eigenVector1 = N.vec2(0).toVar();
+                N.If(b.abs().greaterThan(0.001), () => {
+                  eigenVector1.assign(N.vec2(b, eigen1.sub(a)).normalize());
+                }).Else(() => {
+                  eigenVector1.assign(
+                    N.select(a.greaterThanEqual(d), N.vec2(1, 0), N.vec2(0, 1)),
+                  );
+                });
+                const eigenVector2 = N.vec2(
+                  eigenVector1.y,
+                  eigenVector1.x.negate(),
+                );
                 projectedClipCenter.assign(clipCenter);
                 projectedViewDepth.assign(viewCenter.z.negate());
                 projectedAxis1.assign(

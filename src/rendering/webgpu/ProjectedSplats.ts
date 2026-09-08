@@ -202,6 +202,7 @@ export class ProjectedSplats {
     const direction = u("sortDirection", "vec3");
     const sortOffset = u("sortOffset", "vec3");
     const radial = u("sortRadial", "bool");
+    const stochastic = u("stochastic", "bool");
     const centerRange = u("clipXY", "float").abs().max(1).mul(1.000001);
     const pixelScale = u("renderSize", "vec2")
       .mul(u("focalAdjustment", "float"))
@@ -228,26 +229,34 @@ export class ProjectedSplats {
           pixelScale,
           centerRange,
         );
-        // Preserve the previous 32-bit key mapping exactly, including radial sort.
-        const center = generated.center.add(sortOffset);
-        const metric = N.select(
-          radial,
-          center.dot(center),
-          center.dot(direction).add(100),
-        );
-        const bits = N.floatBitsToUint(metric);
-        const key = N.uint(0xffffffff).toVar();
-        N.If(
-          metric.greaterThanEqual(0).and(bits.lessThan(N.uint(0x7f800000))),
-          () => {
-            key.assign(N.uint(0xffffffff).sub(bits));
-          },
-        );
         // Append only survivors. The payload remains the original cache entry;
         // equal keys retain atomic arrival order, not source-index order.
         const slot = N.atomicAdd(counter.element(0), N.uint(1)).toVar();
-        keys.element(slot).assign(key);
         compact.element(slot).assign(original);
+        N.If(stochastic.not(), () => {
+          // Signed float keys preserve back-to-front order across negative view depths.
+          const center = generated.center.add(sortOffset);
+          const metric = N.select(
+            radial,
+            center.dot(center),
+            center.dot(direction),
+          );
+          const bits = N.floatBitsToUint(metric);
+          const key = N.uint(0xffffffff).toVar();
+          N.If(
+            bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
+            () => {
+              key.assign(
+                N.select(
+                  bits.bitAnd(N.uint(0x80000000)).notEqual(0),
+                  bits,
+                  bits.bitXor(N.uint(0x7fffffff)),
+                ),
+              );
+            },
+          );
+          keys.element(slot).assign(key);
+        });
       });
     })()
       .compute(1, [WORKGROUP_SIZE])

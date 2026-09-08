@@ -20,12 +20,11 @@ A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/Web
 
 | Focus | What you get |
 | --- | --- |
-| **WebGPU / WebGL2** | Shared scene API with GPU sorting on native WebGPU and asynchronous Worker/WASM sorting on both WebGL2 backends |
+| **WebGPU / WebGL2** | Shared Three.js scene API with GPU sorting on native WebGPU and asynchronous Worker/WASM sorting on both WebGL2 backends |
 | **Depth Rendering** | Separate unsorted depth draw with stochastic coverage at transparent edges |
 | **Large-scene streaming** | RAD tree LOD and SOG `lod-meta.json` scenes with camera-driven selection, on-demand loading, worker decoding, caching, and opacity crossfades for smooth LOD changes on both backends |
 | **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
 | **SDF edits** | Region-based color and opacity editing without moving Splats |
-| **Three.js integration** | Standard scenes, cameras, transforms, raycasting, and global sorting across multiple `SplatMesh` objects |
 | **Data and precision** | PLY/SPZ/SOG/RAD from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
 
 ## Installation

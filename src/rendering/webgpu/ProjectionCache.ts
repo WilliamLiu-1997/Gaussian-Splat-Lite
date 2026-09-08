@@ -122,15 +122,21 @@ export class ProjectionCache {
       N.floatBitsToUint(largest.x.max(largest.y)).shiftRight(23),
     );
     const scaleCode = N.uint(exponent.sub(141).max(0).add(7).div(8)).toVar();
-    const axisScale = N.uintBitsToFloat(
-      scaleCode.mul(8).add(127).shiftLeft(23),
-    );
-    const packedAxis = N.packHalf2x16(axis1.div(axisScale));
-    // RGB and minor length are nonnegative. Their four unused sign bits
+    // Construct the reciprocal power of two without division.
+    const invAxisScale = N.uintBitsToFloat(
+      N.uint(127).sub(scaleCode.mul(8)).shiftLeft(23),
+    ).toVar();
+    const packedAxis = N.packHalf2x16(axis1.mul(invAxisScale)).toVar();
+    // Cache the ratio of the existing half-precision lengths once per splat.
+    const minorLength = N.unpackHalf2x16(
+      N.packHalf2x16(N.vec2(axis2.mul(invAxisScale).length(), 0)),
+    ).x;
+    const axisRatio = minorLength
+      .div(N.unpackHalf2x16(packedAxis).length().max(1e-20))
+      .min(65504); // Keep degenerate axes finite when packing to half.
+    // RGB and axis ratio are nonnegative. Their four unused sign bits
     // hold the shared axis exponent; the float32 fields remain untouched.
-    const minorRed = N.packHalf2x16(
-      N.vec2(axis2.div(axisScale).length(), projection.rgba.r),
-    )
+    const ratioRed = N.packHalf2x16(N.vec2(axisRatio, projection.rgba.r))
       .bitAnd(N.uint(0x7fff7fff))
       .bitOr(scaleCode.bitAnd(1).shiftLeft(15))
       .bitOr(scaleCode.bitAnd(2).shiftLeft(30));
@@ -145,7 +151,7 @@ export class ProjectionCache {
         N.packSnorm2x16(ndc.div(centerRange)),
         N.floatBitsToUint(projection.viewDepth),
         packedAxis,
-        minorRed,
+        ratioRed,
       ),
     );
     store(
@@ -203,11 +209,9 @@ export class ProjectionCache {
       scaleCode.mul(8).add(127).shiftLeft(23),
     );
     const axis1 = N.unpackHalf2x16(first.z).toVar();
-    const minorRed = N.unpackHalf2x16(first.w.bitAnd(N.uint(0x7fff7fff)));
+    const ratioRed = N.unpackHalf2x16(first.w.bitAnd(N.uint(0x7fff7fff)));
     const greenBlue = N.unpackHalf2x16(second.x.bitAnd(N.uint(0x7fff7fff)));
-    const axis2 = N.vec2(axis1.y, axis1.x.negate()).mul(
-      minorRed.x.div(axis1.length().max(1e-20)),
-    );
+    const axis2 = N.vec2(axis1.y, axis1.x.negate()).mul(ratioRed.x);
     const offset = axis1
       .mul(N.positionGeometry.x)
       .add(axis2.mul(N.positionGeometry.y))
@@ -215,7 +219,7 @@ export class ProjectionCache {
     const supportRadius = N.uintBitsToFloat(second.z);
     return {
       clipPosition: N.vec4(ndc.add(offset).mul(clipW), clipZ, clipW),
-      rgba: N.vec4(minorRed.y, greenBlue, N.uintBitsToFloat(second.y)),
+      rgba: N.vec4(ratioRed.y, greenBlue, N.uintBitsToFloat(second.y)),
       splatUv: N.positionGeometry.xy.mul(supportRadius),
       supportRadiusSquared: supportRadius.mul(supportRadius),
       kernelPower: N.uintBitsToFloat(second.w),

@@ -30,6 +30,7 @@ const renderTranslationTmp = new THREE.Matrix4();
 type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
+  layerCamera?: THREE.Camera;
   shrinkResources: boolean;
   skipSort: boolean;
   settleRevision: number | null;
@@ -756,6 +757,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       const updateRequest = {
         scene,
         camera: useCamera,
+        layerCamera:
+          gaussianSplatRenderer.backend.kind === "webgpu" ? camera : undefined,
         shrinkResources: false,
         skipSort: gaussianSplatRenderer.frameSkipSort,
         settleRevision: gaussianSplatRenderer.frameSettleRevision,
@@ -906,8 +909,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (this.disposed) return Promise.resolve();
 
     if (this.backend.kind === "webgpu") {
-      const { scene, camera, shrinkResources, skipSort, settleRevision } =
-        request;
+      const {
+        scene,
+        camera,
+        layerCamera,
+        shrinkResources,
+        skipSort,
+        settleRevision,
+      } = request;
       if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
       if (this.ownsTimer) this.timer.update();
       if (shrinkResources) {
@@ -927,6 +936,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         scene,
         timer: this.timer,
         camera,
+        layerCamera,
         previous: this.current,
       });
       // The accumulator only carries source mappings and the camera-relative
