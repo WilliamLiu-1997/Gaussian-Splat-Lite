@@ -11,7 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Added WebGPURenderer WebGL2 backend support, including `forceWebGL` and automatic fallback, shared TSL shaders, raster accumulation, CPU sorting, depth/resolve and viewer backend selection.
 
-- Added RAD visibility fades and LOD crossfades on WebGL/WebGPU, matching SOG's `fadeDurationMs` option and 200 ms default. Shared nodes stay opaque, RAD and SOG share an opacity table, and fade ticks reuse source/index textures and sort data. Outgoing pages remain pinned through fade-out.
+- Added RAD visibility fades and LOD crossfades on WebGL/WebGPU, matching SOG's `fadeDurationMs` option and 200 ms default. Shared nodes stay opaque, RAD and SOG share group-based opacity tables, and fade ticks reuse source/index textures and sort data. Outgoing pages remain pinned through fade-out.
 
 - Added local split SOG loading from `meta.json` and companion images, including Viewer multi-file selection and drop. SOG and RAD share `resolveFile` for external files, with async resolution, cancellation and caller-owned byte inputs.
 
@@ -31,6 +31,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Enabled reversed depth buffers in the viewer on WebGPU and both WebGL2 backends when supported.
+- Standardized feature documentation for WebGPU, depth rendering, RAD/SOG streaming and `postDecode`.
+- Coalesce pending SOG/RAD decisions to the latest view and separate LOD traversal from decoding workers.
+- Avoid redundant RAD reselection when displayed nodes are unchanged.
+- Reserve decoded RAD page slots before LOD selection to request deeper pages earlier.
+- Moved RAD LOD traversal to Rust/WASM with resident page trees and fewer priority-queue operations.
+- Release RAD decoder slots before tree registration completes, retaining pending page byte limits.
+- Batched RAD selection updates and compacted outgoing indices in place.
 - Reworked native WebGPU rendering with projection and culling before 32-bit GPU sorting, reusable compute nodes, compact caches and indirect drawing.
 - Changed native WebGPU intermediate precision and projection-cache encoding. Splat footprints, opacity and equal-depth blending order may differ from previous versions.
 - Fixed sorting by backend: asynchronous Worker/WASM on both WebGL backends and GPU sorting on native WebGPU.
@@ -58,7 +66,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Moved built-in Splat color conversion to the vertex shader in WebGPU and WebGL.
 - Trimmed wide-kernel coverage using a conservative alpha bound in both rendering backends. Wide kernels retain their original minimum-pixel-radius visibility cutoff.
 - Simplified documentation into a README quick start and focused API references, consolidating duplicate guides and examples.
-- Updated the required Three.js snapshot to `9769a98e5079348c5ef34c67e35e0ddb176873f5` and removed the compatibility patches fixed upstream.
+- Updated the required Three.js version to r186 (`0.186.x`) from npm, pinned development to `0.186.0`, and removed the compatibility patches fixed upstream.
 - Replaced the bundled Lion example with Multi Material Splats by hybridherbst, distributed as SPZ v4 with SH3 data and CC BY 4.0 attribution.
 - Limited the viewer to one GPU frame in flight, retaining pending redraws and processing camera input while the GPU is busy.
 - Reused PLY output batches and SPZ decompression buffers, and shared loading, spherical-harmonic codecs, and texture compatibility checks to reduce duplicate work and temporary allocations.
@@ -72,6 +80,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Updated viewer pivot cleanup to notify `Object3D.dispose()` and preserved its overlay order with Three.js r186's reversed depth sorting.
 - Recreate terminated WebGL sorting workers on the next sort and discard late sorting results after renderer disposal.
 - Preserve native WebGPU initialization errors when Three.js falls back to WebGL2, showing the cause in the viewer and Inspector.
 
@@ -128,7 +137,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added `tan`, `asin`, `atan`, and vector-aware `atan2(y, x)` operations to the experimental post-decode expression API.
+- Added `tan`, `asin`, `atan`, and vector-aware `atan2(y, x)` operations to the post-decode expression API.
 
 ## [0.1.12] - 2026-08-31
 

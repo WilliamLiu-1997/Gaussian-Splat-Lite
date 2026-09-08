@@ -8,6 +8,7 @@ use crate::{decoder::ChunkDecoder, splats::SplatsData};
 
 mod decoder;
 mod rad;
+mod rad_lod;
 mod raycast;
 mod sog;
 mod sort;

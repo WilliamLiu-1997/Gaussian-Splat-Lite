@@ -44,14 +44,14 @@ Nonempty streamed files require a LOD tree rooted at record zero. Files without 
 | `splatBudget` | `3_000_000` | Maximum records in the selected LOD tree cut, before fade overlap |
 | `cooldownTicks` | `100` | Updates to retain unused pages after fade-out; `0` releases eligible pages immediately |
 | `fadeDurationMs` | `200` | Initial visibility and LOD fade duration in milliseconds; `0` switches immediately |
-| `maxConcurrentLoads` | `4` | Maximum concurrent page downloads/decodes and decoding workers |
+| `maxConcurrentLoads` | `4` | Maximum concurrent page downloads/decodes and decoding workers, separate from the LOD worker |
 | `maxUploadBytesPerUpdate` | `8 MiB` | Estimated source upload allowance, including initial allocation; one oversized page may proceed alone |
 | `manager` | `THREE.DefaultLoadingManager` | Loading manager and URL modifiers |
 | `requestHeader` / `withCredentials` | `{}` / `false` | Request settings; sensitive settings are not forwarded to other origins |
 | `onChange` | — | Redraw callback for data, visibility and fade changes |
 | `onError` | Console error | Failure callback: `(error, url)` |
 
-A parent stays visible until its complete replacement is resident. LOD changes crossfade between at most two cuts; shared nodes render once, but fade overlap can temporarily exceed `splatBudget`. With `fadeDurationMs: 0`, cuts switch immediately.
+A parent stays visible until its complete replacement is resident. Decoded pages reserve source slots before LOD selection; selected data is written before display. LOD changes crossfade between at most two cuts; shared nodes render once, but fade overlap can temporarily exceed `splatBudget`. With `fadeDurationMs: 0`, cuts switch immediately.
 
 Pages retain fixed source slots while an index map selects visible records. Unused pages retire after `cooldownTicks`; pages needed by fades or traversal remain protected, and the root stays resident for fallback. Empty pools release their source storage.
 
@@ -70,7 +70,7 @@ Active loads and pending uploads have separate limits. `pendingBytes` includes q
 | `stats` | Visible/resident counts, estimated resident and pending bytes, active loads, downloaded bytes, WASM peak memory, page budget and traversal time |
 | `dispose()` | Aborts loads, terminates workers, releases pools and rejects pending readiness with `AbortError`; safe to call repeatedly |
 
-For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so fades, retries and retirement advance. Do not await `firstRenderable` before starting the update loop. Header errors reject both readiness promises; page failures call `onError` and retry with backoff while needed. There is no all-pages-loaded promise.
+For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so fades, retries and retirement advance. Pending LOD requests coalesce to the latest view while one traversal runs. Do not await `firstRenderable` before starting the update loop. Header errors reject both readiness promises; page failures call `onError` and retry with backoff while needed. There is no all-pages-loaded promise.
 
 Apply `group.matrixWorld` to `getBoundingBox()` for world-space camera framing. Bounds include both selected cuts during a fade.
 

@@ -4,7 +4,7 @@ import { SPLAT_TEX_WIDTH } from "../data/defines";
 import { emptySplatTexture, getTextureSize } from "../data/textureLayout";
 import { SplatEdit, SplatEdits } from "../scene/SplatEdit";
 import { SplatMesh } from "../scene/SplatMesh";
-import { threeMrtArray } from "../utils/three";
+import { threeRevision } from "../utils/three";
 import { decomposeSplatTransform } from "../utils/transforms";
 import {
   type GaussianSplatCompatibleRenderer,
@@ -51,8 +51,8 @@ export class SplatAccumulator {
   private fallbackGenerator: WebGLFallbackAccumulatorGenerator | null = null;
 
   constructor() {
-    if (!threeMrtArray) {
-      throw new Error("Gaussian Splat Lite requires THREE.js r179 or above");
+    if (threeRevision < 186) {
+      throw new Error("Gaussian Splat Lite requires Three.js r186 or above");
     }
   }
 

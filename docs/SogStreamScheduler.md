@@ -34,7 +34,7 @@ Transform `streaming.group` to position, rotate or scale the scene. Streamed mes
 | `splatBudget` | `3_000_000` | Target visible Splat count, including the environment |
 | `cooldownTicks` | `100` | Updates to retain unused data after fade-out; `0` releases it immediately |
 | `fadeDurationMs` | `200` | Visibility and LOD fade duration in milliseconds; `0` disables fades |
-| `maxConcurrentLoads` | `4` | Maximum concurrent chunk downloads/decodes and decoding workers |
+| `maxConcurrentLoads` | `4` | Maximum concurrent chunk downloads/decodes and decoding workers, separate from the LOD worker |
 | `maxUploadBytesPerUpdate` | `8 MiB` | Estimated source upload allowance, including initial allocation; one oversized region or layer may proceed alone |
 | `manager` | `THREE.DefaultLoadingManager` | Loading manager and URL modifiers |
 | `requestHeader` / `withCredentials` | `{}` / `false` | Fetch settings; headers and credentials are not forwarded to cross-origin chunks |
@@ -60,7 +60,7 @@ A custom `loadChunk` must return initialized, independently owned data in its or
 | `stats` | Visible/resident counts, resident and pending bytes, active loads, cumulative downloaded bytes and worker WASM peak memory |
 | `dispose()` | Cancels requests, terminates streaming workers and releases owned meshes |
 
-For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so fades and cache retirement advance. `cooldownTicks` counts updates, not seconds.
+For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so fades and cache retirement advance. Pending LOD requests coalesce to the latest view while one traversal runs. `cooldownTicks` counts updates, not seconds.
 
 `pendingBytes` includes queued copies and reservations; `residentBytes` excludes them and WASM memory. Download totals include the index and chunks.
 

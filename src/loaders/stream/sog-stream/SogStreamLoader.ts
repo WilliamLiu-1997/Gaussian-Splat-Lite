@@ -8,6 +8,7 @@ import { StreamWorkerPool } from "../StreamWorkerPool";
 import type { StreamRequestOptions } from "../streamOptions";
 import { SogStreamWorker } from "./SogStreamWorker";
 import type { SogLodIndex } from "./sogLod";
+import type { SogView } from "./sogVisibility";
 import type { SogChunkInfo } from "./workerHandlers";
 
 export type SogStreamLoaderOptions = StreamRequestOptions & {
@@ -44,14 +45,16 @@ export class SogChunkSource {
   }
 }
 
-/** Owns index transport, bounded workers and retained chunk cache handles. */
+/** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */
 export class SogStreamLoader {
+  private readonly lodWorker: SogStreamWorker;
   private readonly pool: StreamWorkerPool<SogStreamWorker>;
   private readonly controller = new AbortController();
   private initialization?: Promise<SogLodIndex>;
   private nextId = 0;
   private baseUrl = "";
   private downloadedBytes = 0;
+  private retainedIndexBytes = 0;
 
   constructor(
     private readonly options: SogStreamLoaderOptions,
@@ -62,19 +65,30 @@ export class SogStreamLoader {
       () => new SogStreamWorker(() => queueMicrotask(onChange)),
       maxConcurrentLoads,
     );
+    this.lodWorker = new SogStreamWorker(() => queueMicrotask(onChange));
   }
 
   get stats() {
     return {
       downloadedBytes: this.downloadedBytes,
-      peakWasmMemoryBytes: this.pool.peakWasmMemoryBytes,
+      peakWasmMemoryBytes:
+        this.pool.peakWasmMemoryBytes + this.lodWorker.peakWasmMemoryBytes,
+      retainedIndexBytes: this.lodWorker.disposed ? 0 : this.retainedIndexBytes,
     };
+  }
+
+  private assertActive() {
+    this.controller.signal.throwIfAborted();
+    if (this.lodWorker.disposed) throw new Error("SOG LOD worker terminated");
   }
 
   initialize(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    this.controller.signal.throwIfAborted();
-    this.initialization ??= this.readIndex();
+    this.assertActive();
+    this.initialization ??= this.readIndex().catch((error) => {
+      this.dispose();
+      throw error;
+    });
     return abortable(this.initialization, signal);
   }
 
@@ -101,17 +115,18 @@ export class SogStreamLoader {
         signal,
       );
       const bytes = new Uint8Array(joinBytes(chunks, size)).buffer;
-      const lease = await this.pool.acquire(signal);
-      try {
-        const index = await lease.worker.call("parseSogIndex", {
-          bytes,
-          baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
-        });
-        signal.throwIfAborted();
-        return index;
-      } finally {
-        lease.release();
-      }
+      this.assertActive();
+      const index = await this.lodWorker.call("parseSogIndex", {
+        bytes,
+        baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
+      });
+      this.assertActive();
+      this.retainedIndexBytes =
+        index.nodes.byteLength +
+        index.leafOffsets.byteLength +
+        index.lods.byteLength +
+        index.counts.byteLength;
+      return index;
     } catch (error) {
       manager.itemError(url);
       throw error;
@@ -120,7 +135,13 @@ export class SogStreamLoader {
     }
   }
 
+  async selectLod(view: SogView, budget: number): Promise<Uint32Array> {
+    this.assertActive();
+    return this.lodWorker.call("selectSogLod", { view, budget });
+  }
+
   async load(url: string, count: number, signal: AbortSignal) {
+    this.assertActive();
     const request = linkedAbortController(this.controller.signal, signal);
     const activeSignal = request.signal;
     const lease = await this.pool.acquire(activeSignal).catch((error) => {
@@ -142,6 +163,7 @@ export class SogStreamLoader {
     let loaded = 0;
     try {
       activeSignal.throwIfAborted();
+      this.assertActive();
       let info: SogChunkInfo;
       if (this.options.loadChunk) {
         custom = await this.options.loadChunk(url, activeSignal);
@@ -186,6 +208,7 @@ export class SogStreamLoader {
         );
       }
       activeSignal.throwIfAborted();
+      this.assertActive();
       return new SogChunkSource(worker, id, info, lease.retain());
     } catch (error) {
       release();
@@ -201,9 +224,13 @@ export class SogStreamLoader {
   }
 
   dispose() {
+    if (this.controller.signal.aborted) return;
     this.controller.abort(
       new DOMException("SOG loader disposed", "AbortError"),
     );
     this.pool.dispose(this.controller.signal.reason);
+    this.lodWorker.dispose(this.controller.signal.reason);
+    this.initialization = undefined;
+    this.retainedIndexBytes = 0;
   }
 }

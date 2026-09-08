@@ -300,17 +300,13 @@ class PointerTracker {
 }
 
 class PivotPointMesh extends Mesh {
-  constructor(renderer, size = 15, thickness = 3, reversedDepth = false) {
+  constructor(renderer, size = 15, thickness = 3) {
     const material = renderer.isWebGPURenderer
       ? new PivotNodeMaterial(size, thickness)
       : new PivotMaterial(size, thickness);
     super(new PlaneGeometry(0, 0), material);
-    // Three.js reverses the transparent render list when reversed depth is
-    // active, including explicit renderOrder values. Keep the pivot last in
-    // either depth mode so Gaussian splats cannot draw over it.
-    this.renderOrder = reversedDepth
-      ? Number.NEGATIVE_INFINITY
-      : Number.POSITIVE_INFINITY;
+    // Three.js r186 preserves renderOrder with either depth mode.
+    this.renderOrder = Number.POSITIVE_INFINITY;
   }
 
   set focus(value) {
@@ -326,6 +322,7 @@ class PivotPointMesh extends Mesh {
   }
 
   dispose() {
+    super.dispose();
     this.geometry.dispose();
     this.material.dispose();
   }
@@ -601,14 +598,7 @@ class CameraController extends EventDispatcher {
     this.#pointerTracker = new PointerTracker();
     this.#raycaster = new Raycaster();
     this.#raycaster.params.Points.threshold = 0.1;
-    this.#pivotMesh = new PivotPointMesh(
-      renderer,
-      PIVOT_SIZE,
-      PIVOT_THICKNESS,
-      renderer.capabilities?.reversedDepthBuffer ??
-        renderer.reversedDepthBuffer ??
-        false,
-    );
+    this.#pivotMesh = new PivotPointMesh(renderer, PIVOT_SIZE, PIVOT_THICKNESS);
     this.#pivotMesh.visible = false;
     this.#pivotShownAt = 0;
     this.#pivotHideTimeout = null;

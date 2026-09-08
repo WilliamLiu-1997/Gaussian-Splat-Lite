@@ -13,6 +13,7 @@ import { createFrameGate } from "./frameGate.js";
 import { getModelRotationX } from "./modelOrientation.js";
 import {
   detectFileType,
+  filesFromDrop,
   modelFromLocalFiles,
   modelFromUrl,
 } from "./modelSource.js";
@@ -59,6 +60,7 @@ camera.position.set(0, 0, 3);
 const rendererParameters = {
   alpha: true,
   powerPreference: "high-performance",
+  reversedDepthBuffer: true,
 };
 let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = outputColorSpace;
@@ -236,15 +238,15 @@ function requestRender() {
 
 function renderFrame(time) {
   controls.update(time);
-  // Keep input current while the GPU is busy, retaining any redraw request.
-  if (!frameGate.isReady()) {
-    updateStats(time, false);
-    return;
-  }
   activeStream?.update(camera, {
     width: renderer.domElement.width,
     height: renderer.domElement.height,
   });
+  // Keep LOD requests current while GPU draws wait, retaining pending redraws.
+  if (!frameGate.isReady()) {
+    updateStats(time, false);
+    return;
+  }
   if (renderOnDemand && !needsRender) {
     updateStats(time, false);
     return;
@@ -450,6 +452,7 @@ const frameCenter = new THREE.Vector3();
 let activeSplat = null;
 let modelUpAxis = "auto";
 let activeStream = null;
+let disposeActiveSource = null;
 let cancelActiveLoad = null;
 let activeLoad = 0;
 let dragDepth = 0;
@@ -472,6 +475,8 @@ function clearActiveModel() {
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
   else activeSplat?.dispose();
+  disposeActiveSource?.();
+  disposeActiveSource = null;
   activeSplat = null;
   activeStream = null;
   ui.clearModelInfo();
@@ -518,7 +523,7 @@ function frameSplat(splat) {
     : Math.min(defaultCameraDistance, radius);
 
   camera.near = radius * 0.001;
-  camera.far = radius * 10;
+  camera.far = radius * 100;
   camera.updateProjectionMatrix();
   camera.position
     .set(0, 5, 5 * Math.sqrt(3))
@@ -530,7 +535,12 @@ function frameSplat(splat) {
   controls.setCamera(camera);
 }
 
-async function initializeModel(model, file, { url, resolveFile }, loadId) {
+async function initializeModel(
+  model,
+  file,
+  { url, resolveFile, manager },
+  loadId,
+) {
   const fileType = await detectFileType(file, url);
   if (loadId !== activeLoad) return;
   const sogStream = url && file.name.toLowerCase() === "lod-meta.json";
@@ -569,6 +579,7 @@ async function initializeModel(model, file, { url, resolveFile }, loadId) {
   if (sogStream) {
     model.stream = new SogStreamScheduler({
       url,
+      manager,
       onChange: requestRender,
       onError: (error, chunkUrl) =>
         console.error("Streaming chunk failed", chunkUrl, error),
@@ -588,7 +599,10 @@ async function initializeModel(model, file, { url, resolveFile }, loadId) {
   await (model.stream ?? model.splat).initialized;
 }
 
-async function loadFile(file, { credit = "", url, button, resolveFile } = {}) {
+async function loadFile(
+  file,
+  { credit = "", url, button, resolveFile, manager, dispose } = {},
+) {
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
   clearActiveModel();
@@ -599,6 +613,7 @@ async function loadFile(file, { credit = "", url, button, resolveFile } = {}) {
     if (model.splat && activeSplat === model.splat) clearActiveModel();
     else if (model.stream) model.stream.dispose();
     else model.splat?.dispose();
+    dispose?.();
   };
   cancelActiveLoad = disposeModel;
   if (button) {
@@ -609,7 +624,7 @@ async function loadFile(file, { credit = "", url, button, resolveFile } = {}) {
   ui.setStatus(`Loading ${file.name}`, "loading");
 
   try {
-    await initializeModel(model, file, { url, resolveFile }, loadId);
+    await initializeModel(model, file, { url, resolveFile, manager }, loadId);
 
     if (loadId !== activeLoad) {
       disposeModel();
@@ -622,6 +637,7 @@ async function loadFile(file, { credit = "", url, button, resolveFile } = {}) {
     );
     activeSplat = model.splat;
     activeStream = model.stream;
+    disposeActiveSource = dispose;
     scene.add(activeSplat);
     requestRender();
     if (model.stream instanceof RadStreamScheduler) {
@@ -711,8 +727,8 @@ urlForm.addEventListener("submit", (event) => {
 
 function loadLocalFiles(files) {
   try {
-    const { file, resolveFile } = modelFromLocalFiles(files);
-    void loadFile(file, { resolveFile });
+    const { file, ...source } = modelFromLocalFiles(files);
+    void loadFile(file, source);
   } catch (error) {
     ui.showToast(error.message);
   }
@@ -769,16 +785,27 @@ window.addEventListener("dragleave", (event) => {
   if (dragDepth === 0) ui.setDropOverlayVisible(false);
 });
 
-window.addEventListener("drop", (event) => {
+window.addEventListener("drop", async (event) => {
   event.preventDefault();
   clearDragState();
 
-  const files = Array.from(event.dataTransfer?.files ?? []);
-  if (files.length) {
-    loadLocalFiles(files);
-  } else {
-    ui.showToast("Drop a model, or SOG meta.json together with its images.");
-    ui.setStatus("PLY, SPZ, SOG, and RAD files are supported", "error");
+  cancelLoading();
+  const loadId = activeLoad;
+  try {
+    const files = await filesFromDrop(event.dataTransfer);
+    if (loadId !== activeLoad) return;
+    if (files.length) {
+      loadLocalFiles(files);
+    } else {
+      ui.showToast(
+        "Drop a model or a SOG folder containing lod-meta.json and its chunks.",
+      );
+      ui.setStatus("PLY, SPZ, SOG, and RAD files are supported", "error");
+    }
+  } catch (error) {
+    if (loadId !== activeLoad) return;
+    ui.showToast(`Could not read dropped files: ${error.message}`);
+    ui.setStatus("Could not read dropped files", "error");
   }
 });
 
@@ -790,8 +817,7 @@ window.addEventListener("beforeunload", () => {
   rendererSwitchToken += 1;
   renderer.setAnimationLoop(null);
   cancelActiveLoad?.();
-  if (activeStream) activeStream.dispose();
-  else activeSplat?.dispose();
+  clearActiveModel();
   stochasticResolvePass.dispose();
   referenceHelpers.dispose();
   disposeRendererState(rendererState);

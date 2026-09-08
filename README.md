@@ -31,12 +31,8 @@ A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/Web
 ## Installation
 
 ```sh
-npm install gaussian-splat-lite github:mrdoob/three.js#9769a98e5079348c5ef34c67e35e0ddb176873f5
+npm install gaussian-splat-lite three@0.186.0
 ```
-
-Use the pinned Three.js snapshot above. The browser must support the selected graphics backend, WebAssembly, Web Workers, and ES modules. Cross-origin Splat URLs need CORS headers.
-
-The [changelog](CHANGELOG.md#unreleased) currently lists WebGPU, the new depth options, and RAD/SOG streaming under **Unreleased**. To try the implementation in this checkout, follow [Development](#development).
 
 ## Quick start
 
@@ -162,7 +158,7 @@ With default depth settings, the companion draw uses unsorted Splats on non-stoc
 - [Splats](docs/Splats.md) — Data access and updates.
 - [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG/RAD formats.
 - [SplatEdit / SplatEditSdf](docs/SplatEdit.md) — Color and opacity editing.
-- [postDecode](docs/PostDecode.md) — Experimental decode transformations.
+- [postDecode](docs/PostDecode.md) — Per-Splat transformations during decoding.
 - [SplatAccumulator](docs/SplatAccumulator.md) — Low-level GPU buffers.
 
 ## Development
@@ -177,9 +173,15 @@ npm run dev
 
 Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGL2 / WebGPU / WebGPU · WebGL2** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
 
-To try streaming, load a RAD file or enter a SOG `lod-meta.json` URL. The viewer streams RAD files with a LOD tree automatically and falls back to ordinary loading when no tree is present. Move the camera to see LOD selection and on-demand loading.
+The viewer enables `reversedDepthBuffer` for depth precision on WebGPU and both WebGL2 backends. WebGL2 uses it when `EXT_clip_control` is available.
+
+For streaming, load a RAD file or enter a SOG `lod-meta.json` URL. The viewer streams RAD files with a LOD tree automatically and falls back to ordinary loading when no tree is present. Move the camera to see LOD selection and on-demand loading.
 
 See [Contributing](CONTRIBUTING.md#validation) for validation and release commands. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
+
+## Acknowledgements
+
+The overall architecture of Gaussian Splat Lite draws on [Spark](https://github.com/sparkjsdev/spark) and [SuperSplat](https://github.com/playcanvas/supersplat).
 
 ## License
 

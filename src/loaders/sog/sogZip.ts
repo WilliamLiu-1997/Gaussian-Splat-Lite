@@ -1,8 +1,4 @@
-import {
-  type ByteSource as Source,
-  checkRange,
-  joinBytes as join,
-} from "../source";
+import type { ByteSource as Source } from "../source";
 
 type Entry = {
   name: string;

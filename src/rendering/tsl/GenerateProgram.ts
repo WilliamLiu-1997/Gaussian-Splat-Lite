@@ -121,6 +121,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
   const sourceBlockBits = bindUniform("sourceBlockBits", "uint");
   const sourceBlocks = bindTexture("sourceBlocks", true);
+  const sourceOpacities = bindTexture("sourceOpacities", true);
   const sourceIndexed = bindUniform("sourceIndexed", "bool");
   const sourceIndices = bindTexture("sourceIndices", true);
   const numSh = bindUniform("numSh", "int");
@@ -285,17 +286,16 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
           .shiftLeft(sourceLayerBits.sub(sourceBlockBits))
           .sub(N.uint(1));
         const block = sourceIndex.shiftRight(sourceBlockBits);
-        blockOpacity.assign(
-          N.uintBitsToFloat(
-            loadArray(
-              sourceBlocks,
-              N.ivec3(
-                N.int(block.bitAnd(blockMask.min(N.uint(SPLAT_TEX_WIDTH - 1)))),
-                N.int(block.bitAnd(blockMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
-                N.int(sourceIndex.shiftRight(sourceLayerBits)),
-              ),
-            ).r,
+        const group = loadArray(
+          sourceBlocks,
+          N.ivec3(
+            N.int(block.bitAnd(blockMask.min(N.uint(SPLAT_TEX_WIDTH - 1)))),
+            N.int(block.bitAnd(blockMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
+            N.int(sourceIndex.shiftRight(sourceLayerBits)),
           ),
+        ).r;
+        blockOpacity.assign(
+          N.uintBitsToFloat(loadArray(sourceOpacities, splatTexCoord(group)).r),
         );
       });
       const layerMask = N.uint(1).shiftLeft(sourceLayerBits).sub(N.uint(1));

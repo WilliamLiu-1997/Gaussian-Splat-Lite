@@ -183,8 +183,8 @@ export class SplatMesh extends THREE.Object3D {
   }
 
   dispose() {
-    // @ts-ignore Object base class has a dispose method in Three.js >= r186
-    super.dispose?.();
+    // @ts-expect-error @types/three 0.185.x does not declare Object3D.dispose().
+    super.dispose();
 
     this.sdfEdits?.dispose();
     this.sdfEdits = null;

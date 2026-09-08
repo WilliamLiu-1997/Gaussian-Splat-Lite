@@ -90,6 +90,7 @@ export function makeGenerateUniforms(): Uniforms {
     sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },
     sourceBlockBits: { value: SPLAT_BLOCKS_DISABLED },
     sourceBlocks: { value: emptySplatTexture },
+    sourceOpacities: { value: emptySplatTexture },
     sourceIndexed: { value: false },
     sourceIndices: { value: emptySplatTexture },
     numSh: { value: 0 },

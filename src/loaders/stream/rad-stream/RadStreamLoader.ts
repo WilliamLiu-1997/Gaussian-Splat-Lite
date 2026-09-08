@@ -17,10 +17,10 @@ export type RadStreamLoaderOptions = Pick<
   | "withCredentials"
 >;
 
-/** Bounded parallel decoders; the first worker also owns LOD traversal. */
+/** Dedicated LOD traversal with a separate bounded pool of parallel decoders. */
 export class RadStreamLoader {
   readonly source: RadSource;
-  private readonly worker: RadStreamWorker;
+  private readonly lodWorker: RadStreamWorker;
   private readonly pool: StreamWorkerPool<RadStreamWorker>;
   private readonly decoderReady = new WeakMap<RadStreamWorker, Promise<void>>();
   private readonly controller = new AbortController();
@@ -33,39 +33,30 @@ export class RadStreamLoader {
     number,
     { task: Promise<RadChunkData>; signal?: AbortSignal }
   >();
-  private readonly retained = new Map<
-    number,
-    { bytes: number; generation: number }
-  >();
   private nextDecodeGeneration = 0;
   private estimatedCodebookBytes = 0;
 
   constructor(
     private readonly options: RadStreamLoaderOptions,
-    private readonly maxConcurrentLoads = 4,
+    maxConcurrentLoads = 4,
   ) {
     this.source = new RadSource({
       ...options,
       manager: options.manager ?? DefaultLoadingManager,
     });
-    this.worker = new RadStreamWorker();
+    this.lodWorker = new RadStreamWorker();
     this.pool = new StreamWorkerPool(
       () => new RadStreamWorker(),
       maxConcurrentLoads,
       true,
-      this.worker,
     );
-    this.decoderReady.set(this.worker, Promise.resolve());
   }
 
   get stats() {
     return {
       ...this.source.stats,
-      retainedTreeBytes: [...this.retained.values()].reduce(
-        (sum, { bytes }) => sum + bytes,
-        0,
-      ),
-      peakWasmMemoryBytes: this.pool.peakWasmMemoryBytes,
+      peakWasmMemoryBytes:
+        this.pool.peakWasmMemoryBytes + this.lodWorker.peakWasmMemoryBytes,
       estimatedCodebookBytes:
         this.estimatedCodebookBytes *
         this.pool.workers.filter((worker) => !worker.disposed).length,
@@ -73,16 +64,21 @@ export class RadStreamLoader {
     };
   }
 
+  private assertActive() {
+    this.controller.signal.throwIfAborted();
+    if (this.lodWorker.disposed) throw new Error("RAD LOD worker terminated");
+  }
+
   initialize(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    this.controller.signal.throwIfAborted();
+    this.assertActive();
     this.initialization ??= this.source
       .readHeader(this.controller.signal)
       .then(async (bytes) => {
-        const header = await this.worker.call("initializeRad", {
+        const header = await this.lodWorker.call("initializeRad", {
           bytes,
         });
-        this.controller.signal.throwIfAborted();
+        this.assertActive();
         this.header = header;
         const degree = header.meta.maxSh ?? 0;
         this.estimatedCodebookBytes =
@@ -92,25 +88,32 @@ export class RadStreamLoader {
     return abortable(this.initialization, signal);
   }
 
-  loadChunk(index: number, signal?: AbortSignal): Promise<RadChunkData> {
+  async loadChunk(
+    index: number,
+    signal?: AbortSignal,
+    onDecoded?: () => void,
+  ): Promise<RadChunkData> {
     signal?.throwIfAborted();
-    this.controller.signal.throwIfAborted();
+    this.assertActive();
     let pending = this.pending.get(index);
     if (!pending || pending.signal?.aborted) {
-      const task = this.loadChunkInternal(index, signal).finally(() => {
-        if (this.pending.get(index) === pending) this.pending.delete(index);
-      });
+      const task = this.loadChunkInternal(index, signal, onDecoded).finally(
+        () => {
+          if (this.pending.get(index) === pending) this.pending.delete(index);
+        },
+      );
       pending = { task, signal };
       this.pending.set(index, pending);
     }
-    return abortable(pending.task, signal);
+    // Keep cancelled synchronous work reserved until its worker reply arrives.
+    return pending.task;
   }
 
   private async loadChunkInternal(
     index: number,
     signal?: AbortSignal,
+    onDecoded?: () => void,
   ): Promise<RadChunkData> {
-    signal?.throwIfAborted();
     const header = await this.initialize(signal);
     if (
       !Number.isInteger(index) ||
@@ -120,7 +123,12 @@ export class RadStreamLoader {
       throw new Error(`RAD: missing chunk ${index}`);
     // Codebooks live in chunk zero. Its initial geometry is held only until the
     // caller requests that page, avoiding a duplicate fetch during races.
-    this.rootReady ??= this.decode(0, header, this.controller.signal)
+    this.rootReady ??= this.decode(
+      0,
+      header,
+      this.controller.signal,
+      index === 0 ? onDecoded : undefined,
+    )
       .then((data) => {
         this.initialRoot = data;
       })
@@ -134,15 +142,22 @@ export class RadStreamLoader {
       this.initialRoot = undefined;
       return root;
     }
-    return this.decode(index, header, signal);
+    return this.decode(index, header, signal, onDecoded);
   }
 
-  private async decode(index: number, header: RadHeader, signal?: AbortSignal) {
+  private async decode(
+    index: number,
+    header: RadHeader,
+    signal?: AbortSignal,
+    onDecoded?: () => void,
+  ) {
+    this.assertActive();
     const generation = ++this.nextDecodeGeneration;
     const lease = await this.pool.acquire(signal);
     const worker = lease.worker;
     let retained = false;
     try {
+      this.assertActive();
       let ready = this.decoderReady.get(worker);
       if (!ready) {
         ready = worker
@@ -162,39 +177,32 @@ export class RadStreamLoader {
         ready,
       ]);
       signal?.throwIfAborted();
-      this.controller.signal.throwIfAborted();
+      this.assertActive();
       const rootBytes =
-        index === 0 &&
-        this.estimatedCodebookBytes &&
-        this.maxConcurrentLoads > 1
-          ? bytes.slice()
-          : undefined;
-      // Cancellation must not terminate the tree owner or discard codebooks.
+        index === 0 && this.estimatedCodebookBytes ? bytes.slice() : undefined;
+      // Keep decoder codebooks warm when a page is cancelled. Root bytes also
+      // seed replacement decoders after a worker failure, even at concurrency 1.
       const result = await worker.call("decodeRadChunk", {
         index,
         bytes,
-        generation,
-        retain: worker === this.worker,
       });
-      retained = worker === this.worker;
-      this.controller.signal.throwIfAborted();
+      this.assertActive();
       signal?.throwIfAborted();
-      if (result.tree) {
-        await this.worker.call("retainRadChunk", {
-          index,
-          generation,
-          tree: result.tree,
-        });
-        retained = true;
-      }
+      const registration = this.lodWorker.call("retainRadChunk", {
+        index,
+        generation,
+        tree: result.tree,
+      });
+      // Tree registration owns no decoder state. Its page stays reserved while
+      // the decoder starts another job within the scheduler's pending budget.
+      lease.release();
+      onDecoded?.();
+      await registration;
+      retained = true;
       // Publish only after the complete tree is available to LOD traversal.
-      this.controller.signal.throwIfAborted();
+      this.assertActive();
       signal?.throwIfAborted();
       if (rootBytes) this.rootBytes = rootBytes;
-      this.retained.set(index, {
-        bytes: result.data.retainedTreeBytes ?? 0,
-        generation,
-      });
       return result.data;
     } catch (error) {
       if (retained) this.releaseChunk(index, generation);
@@ -211,11 +219,15 @@ export class RadStreamLoader {
     return root ?? (this.options.file as File | undefined)?.name ?? "RAD";
   }
 
-  selectLod(request: RadLodRequest, previous?: Uint32Array, fade = false) {
-    this.controller.signal.throwIfAborted();
+  async selectLod(
+    request: RadLodRequest,
+    previous?: Uint32Array,
+    fade = false,
+  ) {
+    this.assertActive();
     // Keep the live cut on the main thread; transfer a snapshot for comparison
     // and fade merging so large LOD changes do not block the next frame.
-    return this.worker.call("selectRadLod", {
+    return this.lodWorker.call("selectRadLod", {
       ...request,
       previous: previous?.slice(),
       fade,
@@ -223,14 +235,9 @@ export class RadStreamLoader {
   }
 
   releaseChunk(index: number, generation?: number) {
-    if (
-      generation === undefined ||
-      this.retained.get(index)?.generation === generation
-    )
-      this.retained.delete(index);
     if (index === 0 && generation === undefined) this.initialRoot = undefined;
-    if (!this.worker.disposed)
-      void this.worker
+    if (!this.lodWorker.disposed)
+      void this.lodWorker
         .call("releaseRadChunk", { index, generation })
         .catch(() => {});
   }
@@ -242,8 +249,8 @@ export class RadStreamLoader {
     );
     this.source.dispose();
     this.pool.dispose(this.controller.signal.reason);
+    this.lodWorker.dispose(this.controller.signal.reason);
     this.pending.clear();
-    this.retained.clear();
     this.initialRoot = undefined;
     this.rootBytes = undefined;
     this.estimatedCodebookBytes = 0;

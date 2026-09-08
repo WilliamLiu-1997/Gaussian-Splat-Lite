@@ -39,7 +39,7 @@ Review new or changed dependency install scripts and update `allowScripts` with 
 
 Pushing a `v*` tag runs `.github/workflows/publish.yml`. It requires a matching `package.json` version, skips existing npm versions, and creates the GitHub release from `CHANGELOG.md`.
 
-Before the first automated release, make the repository public and publish once from a maintainer account:
+To publish manually from a maintainer account:
 
 ```bash
 npm run release:check

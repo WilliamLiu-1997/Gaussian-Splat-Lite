@@ -10,6 +10,23 @@ export type RadPagedSplatsOptions = {
   maxArrayLayers?: number;
 };
 
+/** Page ranges in a sorted, file-global cut; used only by RAD streaming. */
+export type RadSelectionRange = {
+  start: number;
+  end: number;
+  slot: number;
+  sourceOffset: number;
+};
+
+export type RadPreparedSelection = {
+  indices: Uint32Array;
+  fades?: Uint8Array;
+  selectedPages: Uint32Array;
+  fadeKinds: number;
+};
+
+const NO_FADES = new Uint8Array(0);
+
 /** One power-of-two texture layer per page, with no shared upload layers. */
 export function radPageTextureLayout({
   pageSize = 65_536,
@@ -53,8 +70,10 @@ export class RadPagedSplats extends IndexedSplats {
   readonly pageCount: number;
   private pageOccupancy: Int32Array;
   private selectedPages: Uint32Array;
-  private selectedFades = new Uint8Array(0);
+  private selectedFades: Uint8Array = NO_FADES;
   private fadeProgress = 1;
+  private fadeKinds = 0;
+  private sharedFadeGroups = true;
 
   constructor(options: RadPagedSplatsOptions) {
     const layout = radPageTextureLayout(options);
@@ -115,7 +134,7 @@ export class RadPagedSplats extends IndexedSplats {
       if (same) return false;
     }
     const selectedPages = new Uint32Array(this.pageCount);
-    let hasFades = false;
+    let fadeKinds = 0;
     for (let index = 0; index < indices.length; index++) {
       const source = indices[index];
       const slot = Math.floor(source / this.pageStride);
@@ -129,25 +148,103 @@ export class RadPagedSplats extends IndexedSplats {
       selectedPages[slot]++;
       const fade = fades?.[index] ?? 0;
       if (fade > 2) throw new Error("Invalid RAD index fade kind");
-      hasFades ||= fade !== 0;
+      fadeKinds |= fade;
     }
-    this.commitIndices(indices);
-    this.selectedFades = hasFades
-      ? (fades as Uint8Array).slice()
-      : new Uint8Array(0);
-    this.fadeProgress = hasFades ? 0 : 1;
-    for (let index = 0; index < indices.length; index++)
-      this.opacities.setOpacity(
-        indices[index],
-        1,
-        fades?.[index] === 1 ? 0 : 1,
-      );
-    this.selectedPages = selectedPages;
+    // Public callers may repeat a record with conflicting fade kinds. Preserve
+    // their sequential opacity writes; streaming cuts always contain unique IDs.
+    const sharedFadeGroups =
+      !fadeKinds || new Set(indices).size === indices.length;
+    this.commitSelection(
+      {
+        indices,
+        fades: fadeKinds ? fades?.slice() : undefined,
+        selectedPages,
+        fadeKinds,
+      },
+      sharedFadeGroups,
+    );
     return true;
   }
 
-  /** Update only opacity layers during a fade, retaining source/index textures
-   * and sort data until outgoing records are removed. */
+  /** Prepare owned per-pool data without modifying the displayed selection. */
+  prepareSelection(
+    indices: Uint32Array,
+    fades: Uint8Array | undefined,
+    ranges: readonly RadSelectionRange[],
+  ): RadPreparedSelection {
+    this.assertLive();
+    if (fades && fades.length !== indices.length)
+      throw new Error("RAD fade map must match the selection length");
+    let count = 0;
+    for (const range of ranges) {
+      this.pageStart(range.slot);
+      if (
+        !Number.isSafeInteger(range.start) ||
+        !Number.isSafeInteger(range.end) ||
+        !Number.isSafeInteger(range.sourceOffset) ||
+        range.start < 0 ||
+        range.end < range.start ||
+        range.end > indices.length
+      )
+        throw new Error("Invalid RAD selection range");
+      count += range.end - range.start;
+    }
+    if (count > this.maxSplats)
+      throw new Error("RAD selection exceeds page pool capacity");
+    const target = new Uint32Array(count);
+    const targetFades = fades ? new Uint8Array(count) : undefined;
+    const selectedPages = new Uint32Array(this.pageCount);
+    let offset = 0;
+    let fadeKinds = 0;
+    for (const { start, end, slot, sourceOffset } of ranges) {
+      const first = slot * this.pageStride;
+      const last = first + this.pageOccupancy[slot];
+      selectedPages[slot] += end - start;
+      for (let index = start; index < end; index++) {
+        const source = indices[index] + sourceOffset;
+        const fade = fades?.[index] ?? 0;
+        if (source < first || source >= last)
+          throw new Error(
+            "RAD selection references an unloaded page or page padding",
+          );
+        if (fade > 2) throw new Error("Invalid RAD index fade kind");
+        target[offset] = source;
+        if (targetFades) targetFades[offset] = fade;
+        fadeKinds |= fade;
+        offset++;
+      }
+    }
+    return {
+      indices: target,
+      fades: fadeKinds ? targetFades : undefined,
+      selectedPages,
+      fadeKinds,
+    };
+  }
+
+  /** Internal commit of validated data; the caller gives up the prepared arrays. */
+  commitSelection(prepared: RadPreparedSelection, sharedFadeGroups = true) {
+    this.commitIndices(prepared.indices);
+    this.selectedPages = prepared.selectedPages;
+    this.selectedFades = prepared.fades ?? NO_FADES;
+    this.fadeKinds = prepared.fadeKinds;
+    this.sharedFadeGroups = sharedFadeGroups;
+    this.fadeProgress = this.fadeKinds ? 0 : 1;
+    this.opacities.setGroupOpacity(2, this.fadeKinds ? 0 : 1);
+    this.opacities.setGroupOpacity(3, 1);
+    if (sharedFadeGroups) {
+      this.opacities.setIndexed(prepared.indices, prepared.fades);
+    } else {
+      for (let index = 0; index < prepared.indices.length; index++)
+        this.opacities.setOpacity(
+          prepared.indices[index],
+          1,
+          prepared.fades?.[index] === 1 ? 0 : 1,
+        );
+    }
+  }
+
+  /** A normal streaming fade changes only two group coefficients. */
   setFadeProgress(progress: number) {
     this.assertLive();
     if (!Number.isFinite(progress) || progress < 0 || progress > 1)
@@ -155,6 +252,14 @@ export class RadPagedSplats extends IndexedSplats {
     if (progress === this.fadeProgress) return false;
     this.fadeProgress = progress;
     if (!this.selectedFades.length) return false;
+    if (this.sharedFadeGroups) {
+      const fadeIn = this.opacities.setGroupOpacity(2, progress);
+      const fadeOut = this.opacities.setGroupOpacity(3, 1 - progress);
+      return (
+        (!!(this.fadeKinds & 1) && fadeIn) ||
+        (!!(this.fadeKinds & 2) && fadeOut)
+      );
+    }
     let changed = false;
     for (let index = 0; index < this.numSplats; index++) {
       const fade = this.selectedFades[index];
@@ -174,11 +279,33 @@ export class RadPagedSplats extends IndexedSplats {
     return this.selectedPages[slot] > 0;
   }
 
-  /** The scheduler uses this only when no outgoing records need removal. */
+  /** Complete opacity changes without removing outgoing records. */
   finishFadeIn() {
     const changed = this.setFadeProgress(1);
-    this.selectedFades = new Uint8Array(0);
+    this.selectedFades = NO_FADES;
+    this.fadeKinds = 0;
     return changed;
+  }
+
+  /** Keep final records in their existing order without remapping the global cut. */
+  finishFade() {
+    this.assertLive();
+    if (!(this.fadeKinds & 2)) return this.finishFadeIn();
+    let count = 0;
+    for (let index = 0; index < this.numSplats; index++) {
+      const source = this.sourceIndices[index];
+      if (this.selectedFades[index] === 2) {
+        this.selectedPages[Math.floor(source / this.pageStride)]--;
+      } else this.sourceIndices[count++] = source;
+    }
+    const indices = this.sourceIndices.subarray(0, count);
+    if (!this.sharedFadeGroups) {
+      this.setSelection(indices);
+    } else {
+      this.commitIndices(indices);
+      this.finishFadeIn();
+    }
+    return true;
   }
 
   /** Selected pages must be removed from the cut before their slots are reused. */
@@ -202,6 +329,6 @@ export class RadPagedSplats extends IndexedSplats {
     super.dispose();
     this.pageOccupancy = new Int32Array(0);
     this.selectedPages = new Uint32Array(0);
-    this.selectedFades = new Uint8Array(0);
+    this.selectedFades = NO_FADES;
   }
 }

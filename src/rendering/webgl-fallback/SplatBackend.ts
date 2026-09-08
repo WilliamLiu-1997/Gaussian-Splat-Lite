@@ -79,7 +79,7 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
       if (activeSplats > 0) {
         // Finish any pending allocation before uploading only active rows.
         this.renderer.initTexture(this.ordering);
-        // The pinned fallback's copyTextureToTexture allocates a GPU source;
+        // The r186 fallback's copyTextureToTexture allocates a GPU source;
         // update the destination directly to avoid that staging texture.
         const backend = this.renderer
           .backend as unknown as TextureUploadBackend;

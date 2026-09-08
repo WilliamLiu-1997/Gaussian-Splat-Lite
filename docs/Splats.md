@@ -29,7 +29,7 @@ The constructor and `initialize()` accept `SplatsOptions`:
 | `fileType` | `SplatFileType` | Inferred from name | Explicit file format |
 | `fileName` | `string` | `File.name` when available | Name used to infer the input format |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
-| `postDecode` | `SplatPostDecodeProgram` | `undefined` | **`Experimental`** Serializable per-Splat transform executed in the decode worker |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `construct` | `(splats) => void \| Promise<void>` | `undefined` | Populates the source during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |

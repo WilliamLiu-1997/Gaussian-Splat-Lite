@@ -10,7 +10,6 @@ type Slot<W> = {
   worker: W;
   busy: boolean;
   references: number;
-  pinned: boolean;
 };
 
 /** Bounded worker leases. Cache handles retain slots; cancellation never kills unrelated work. */
@@ -24,16 +23,8 @@ export class StreamWorkerPool<W extends StreamWorker> {
     private readonly createWorker: () => W,
     readonly concurrency: number,
     private readonly retainIdle = false,
-    primary?: W,
   ) {
     positiveInteger(concurrency, "maxConcurrentLoads");
-    if (primary)
-      this.slots.push({
-        worker: primary,
-        busy: false,
-        references: 0,
-        pinned: true,
-      });
   }
 
   get workers() {
@@ -53,7 +44,7 @@ export class StreamWorkerPool<W extends StreamWorker> {
 
   private retire(slot: Slot<W>) {
     this.peakBytes = this.peakWasmMemoryBytes;
-    if (!this.retainIdle && !slot.pinned && !slot.busy && !slot.references)
+    if (!this.retainIdle && !slot.busy && !slot.references)
       slot.worker.dispose();
   }
 
@@ -61,15 +52,12 @@ export class StreamWorkerPool<W extends StreamWorker> {
     for (;;) {
       signal?.throwIfAborted();
       this.controller.signal.throwIfAborted();
-      if (this.slots.some((slot) => slot.pinned && slot.worker.disposed))
-        throw new Error("Primary streaming worker terminated");
       let slot = this.slots.find((candidate) => !candidate.busy);
       if (!slot && this.slots.length < this.concurrency) {
         slot = {
           worker: this.createWorker(),
           busy: false,
           references: 0,
-          pinned: false,
         };
         this.slots.push(slot);
       }
