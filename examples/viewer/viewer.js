@@ -147,18 +147,15 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
           }
         }
       }
-      state.renderer.setSize(
-        viewport.clientWidth,
-        viewport.clientHeight,
-        false,
-      );
-      await state.splatRenderer.update({ scene, camera });
     }
     state.controls = new CameraController(state.renderer, scene, camera, {
       worldUp: camera.up,
     });
     if (previous) state.controls.minDistance = previous.controls.minDistance;
-    state.frameGate = createFrameGate(state.renderer, requestRender);
+    state.frameGate = createFrameGate(
+      state.renderer,
+      previous ? undefined : requestRender,
+    );
     return state;
   } catch (error) {
     disposeRendererState(state);
@@ -167,6 +164,8 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
 }
 
 function disposeRendererState(state) {
+  if (!state || state.disposed) return;
+  state.disposed = true;
   state.renderer?.setAnimationLoop(null);
   state.frameGate?.dispose();
   state.controls?.removeEventListener("update", requestRender);
@@ -178,24 +177,30 @@ function disposeRendererState(state) {
     state.inspector.dispose();
   }
   state.renderer?.dispose();
+  state.renderer?.domElement.remove();
 }
 
-function mountRendererState(state, previous) {
+function mountRendererState(state, attachInspector = true) {
   const { renderer, controls, splatRenderer, inspector } = state;
   const webGPU = usesNodeRenderer(renderer);
   THREE.ColorManagement.workingColorSpace = webGPU
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
-  configureRenderer(renderer);
+  renderer.outputColorSpace = outputColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
   controls.addEventListener("update", requestRender);
   scene.add(splatRenderer);
-  if (previous) previous.renderer.domElement.replaceWith(renderer.domElement);
-  else viewport.append(renderer.domElement);
-  ui.mountInspector(inspector?.domElement);
-  if (inspector) renderer.inspector = inspector;
+  if (renderer.domElement.parentNode !== viewport) {
+    viewport.append(renderer.domElement);
+  }
+  if (attachInspector) {
+    ui.mountInspector(inspector?.domElement);
+    if (inspector && renderer.inspector !== inspector) {
+      renderer.inspector = inspector;
+    }
+  }
   // Finalize the drawing buffer after the canvas and Inspector are mounted.
   resizeRenderer();
 }
@@ -287,6 +292,9 @@ const renderOptionActions = {
 };
 
 let rendererSwitchToken = 0;
+let rendererSwitchTask = Promise.resolve();
+let retiringRendererState = null;
+let viewerDisposed = false;
 
 function usesNodeRenderer(value) {
   return value.isWebGPURenderer === true;
@@ -302,53 +310,128 @@ function syncRendererOption(backend, disabled = false) {
   optionsPanel.setDisabled("rendererBackend", disabled);
 }
 
-async function switchRendererBackend(backend) {
+function switchRendererBackend(backend) {
   const switchToken = ++rendererSwitchToken;
+  // Reset can request another backend while the selector is disabled.
+  rendererSwitchTask = rendererSwitchTask
+    .then(() => performRendererSwitch(backend, switchToken))
+    .catch((error) => console.error("Renderer switch failed", error));
+  return rendererSwitchTask;
+}
+
+function detachRendererState(state) {
+  state.renderer.setAnimationLoop(null);
+  state.controls.enabled = false;
+  state.controls.removeEventListener("update", requestRender);
+  state.controls.indicator.removeFromParent();
+  state.splatRenderer.removeFromParent();
+  stochasticResolvePass.removeSplatRenderer(state.splatRenderer);
+}
+
+function activateRendererState(state, attachInspector = true) {
+  rendererState = state;
+  ({ renderer, controls, splatRenderer, frameGate } = state);
+  stochasticResolvePass.addSplatRenderer(splatRenderer);
+  mountRendererState(state, attachInspector);
+}
+
+async function performRendererSwitch(backend, switchToken) {
+  if (viewerDisposed || switchToken !== rendererSwitchToken) return;
   if (backend === getRendererBackend()) {
     syncRendererOption(backend);
     return;
   }
 
   syncRendererOption(backend, true);
+  const previous = rendererState;
+  const previousCanvas = previous.renderer.domElement;
+  const previousOpacity = previousCanvas.style.opacity;
+  const previousControlsEnabled = previous.controls.enabled;
   let next;
+  let activated = false;
+  let committed = false;
   let webGPUFailureMessage;
   try {
-    next = await createRendererState(backend, rendererState, (message) => {
+    next = await createRendererState(backend, previous, (message) => {
       webGPUFailureMessage = message;
       if (switchToken === rendererSwitchToken) ui.showToast(message);
     });
+    checkRendererSwitch(switchToken);
+    // Prepare the replacement in the DOM while the old canvas stays visible.
+    const canvas = next.renderer.domElement;
+    canvas.style.opacity = "0";
+    canvas.style.pointerEvents = "none";
+    viewport.append(canvas);
+    await waitForCanvasPaint(switchToken);
+
+    retiringRendererState = previous;
+    activated = true;
+    detachRendererState(previous);
+    // Finalize the drawing buffer before waiting for visibility. Keep the old
+    // Inspector attached until disposal, then attach the replacement once.
+    activateRendererState(next, false);
+    await next.splatRenderer.update({ scene, camera });
+    checkRendererSwitch(switchToken);
+    canvas.style.removeProperty("opacity");
+    await waitForCanvasPaint(switchToken);
+
+    previousCanvas.style.opacity = "0";
+    requestRender();
+    renderFrame(performance.now());
+    while (!next.frameGate.isReady()) {
+      await waitForCanvasPaint(switchToken);
+    }
+    await waitForCanvasPaint(switchToken);
+
+    disposeRendererState(previous);
+    retiringRendererState = null;
+    committed = true;
+    ui.mountInspector(next.inspector?.domElement);
+    if (next.inspector) renderer.inspector = next.inspector;
+    canvas.style.removeProperty("pointer-events");
+    controls.enabled = previousControlsEnabled;
+    renderer.setAnimationLoop(renderFrame);
+    if (next.failureMessage) {
+      ui.showToast(`${next.failureMessage} Using WebGL2.`);
+    }
   } catch (error) {
-    if (switchToken !== rendererSwitchToken) return;
-    syncRendererOption(getRendererBackend());
+    if (!viewerDisposed && activated && !committed) {
+      previousCanvas.style.opacity = previousOpacity;
+      detachRendererState(next);
+      disposeRendererState(next);
+      activateRendererState(previous);
+      controls.enabled = previousControlsEnabled;
+      renderer.setAnimationLoop(renderFrame);
+      requestRender();
+    }
+    if (viewerDisposed || switchToken !== rendererSwitchToken) return;
     const detail = error instanceof Error ? error.message : String(error);
     console.error("Could not switch renderer", error);
     const message = `Could not switch renderer: ${detail}`;
     ui.showToast(
       webGPUFailureMessage ? `${webGPUFailureMessage}\n${message}` : message,
     );
-    return;
+  } finally {
+    if (!committed) disposeRendererState(next);
+    if (retiringRendererState === previous) retiringRendererState = null;
+    if (!viewerDisposed && switchToken === rendererSwitchToken) {
+      syncRendererOption(getRendererBackend());
+    }
   }
+}
 
-  if (switchToken !== rendererSwitchToken) {
-    disposeRendererState(next);
-    return;
+function checkRendererSwitch(switchToken) {
+  if (viewerDisposed || switchToken !== rendererSwitchToken) {
+    throw new DOMException("Renderer switch cancelled", "AbortError");
   }
+}
 
-  const previous = rendererState;
-  previous.renderer.setAnimationLoop(null);
-  rendererState = next;
-  ({ renderer, controls, splatRenderer, frameGate } = next);
-  stochasticResolvePass.addSplatRenderer(splatRenderer);
-  stochasticResolvePass.removeSplatRenderer(previous.splatRenderer);
-  // Dispose the old Inspector before attaching its replacement.
-  disposeRendererState(previous);
-  mountRendererState(next, previous);
-  syncRendererOption(getRendererBackend());
-  if (next.failureMessage) {
-    ui.showToast(`${next.failureMessage} Using WebGL2.`);
-  }
-  renderer.setAnimationLoop(renderFrame);
-  requestRender();
+async function waitForCanvasPaint(switchToken) {
+  checkRendererSwitch(switchToken);
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+  checkRendererSwitch(switchToken);
 }
 
 function applyRenderOption(property, value) {
@@ -703,6 +786,7 @@ window.addEventListener("blur", clearDragState);
 
 window.addEventListener("resize", resizeRenderer);
 window.addEventListener("beforeunload", () => {
+  viewerDisposed = true;
   rendererSwitchToken += 1;
   renderer.setAnimationLoop(null);
   cancelActiveLoad?.();
@@ -711,6 +795,7 @@ window.addEventListener("beforeunload", () => {
   stochasticResolvePass.dispose();
   referenceHelpers.dispose();
   disposeRendererState(rendererState);
+  disposeRendererState(retiringRendererState);
   ui.dispose();
 });
 
