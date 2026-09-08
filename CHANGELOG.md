@@ -56,6 +56,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Preserve native WebGPU initialization errors when Three.js falls back to WebGL2, showing the cause in the viewer and Inspector.
+
 - Corrected streaming reads and iteration to follow selected indices, preserving original opacity for picking during fades.
 - Preserved caller-owned RAD buffers during worker transfers, including Node.js Buffer inputs.
 
