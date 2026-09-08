@@ -20,21 +20,21 @@ A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/Web
 
 | Focus | What you get |
 | --- | --- |
-| **WebGPU / WebGL2** | Shared scene API and Worker/WASM sorting; TSL supports native WebGPU and its WebGL2 fallback, with compute generation and optional GPU radix sorting on native WebGPU |
-| **Depth Rendering** | Separate depth draw in input order with stochastic coverage at transparent edges |
+| **WebGPU / WebGL2** | Shared scene API with GPU sorting on native WebGPU and asynchronous Worker/WASM sorting on both WebGL2 backends |
+| **Depth Rendering** | Separate unsorted depth draw with stochastic coverage at transparent edges |
 | **Large-scene streaming** | RAD tree LOD and SOG `lod-meta.json` scenes with camera-driven selection, on-demand loading, worker decoding, caching, and opacity crossfades for smooth LOD changes on both backends |
 | **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
-| **SDF edits** | Region-based color and opacity editing, preserving Splat centers and sort order |
+| **SDF edits** | Region-based color and opacity editing without moving Splats |
 | **Three.js integration** | Standard scenes, cameras, transforms, raycasting, and global sorting across multiple `SplatMesh` objects |
 | **Data and precision** | PLY/SPZ/SOG/RAD from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
 
 ## Installation
 
 ```sh
-npm install gaussian-splat-lite github:mrdoob/three.js#d2fc542d58f5c91fa7b585e6a3efb7ba67b295ca
+npm install gaussian-splat-lite github:mrdoob/three.js#9769a98e5079348c5ef34c67e35e0ddb176873f5
 ```
 
-Use the pinned Three.js snapshot above: the WebGPU compatibility patches depend on its built modules. The browser must support the selected graphics backend, WebAssembly, Web Workers, and ES modules. Cross-origin Splat URLs need CORS headers.
+Use the pinned Three.js snapshot above. The browser must support the selected graphics backend, WebAssembly, Web Workers, and ES modules. Cross-origin Splat URLs need CORS headers.
 
 The [changelog](CHANGELOG.md#unreleased) currently lists WebGPU, the new depth options, and RAD/SOG streaming under **Unreleased**. To try the implementation in this checkout, follow [Development](#development).
 
@@ -150,7 +150,7 @@ const streaming = new SogStreamScheduler({
 | `stochastic` | `false` | Forces sorting-free stochastic rendering with direct depth writes |
 | `autoStochastic` | `false` | Uses stochastic rendering during motion and enables companion depth on sorted frames |
 
-With default depth settings, the companion draw runs on non-stochastic frames in input order and samples alpha coverage so transparent edges do not become solid. Stochastic frames already write their own depth.
+With default depth settings, the companion draw uses unsorted Splats on non-stochastic frames and samples alpha coverage so transparent edges do not become solid. Stochastic frames already write their own depth.
 
 ## Documentation
 

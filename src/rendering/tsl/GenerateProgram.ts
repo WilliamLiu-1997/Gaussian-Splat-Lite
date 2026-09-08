@@ -240,7 +240,29 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     return result;
   });
 
-  const generateValues = (index: TSLNode) => {
+  const addShColor = (rgb: TSLNode, coord: TSLNode, center: TSLNode) => {
+    N.If(numSh.greaterThan(N.int(0)), () => {
+      const inverseObjectQuaternion = N.vec4(
+        objectQuaternion.xyz.negate(),
+        objectQuaternion.w,
+      );
+      const sourceViewDirection = quatVec(
+        inverseObjectQuaternion,
+        center.add(objectOffset),
+      ).normalize();
+      rgb.addAssign(evaluateSH(coord, sourceViewDirection));
+    });
+  };
+
+  const generateValues = (index: TSLNode, deferColor = false) => {
+    const deferredColor = deferColor
+      ? {
+          coord: N.ivec3(0).toVar(),
+          center: N.vec3(0).toVar(),
+          scale: N.vec3(1).toVar(),
+          offset: N.vec3(0).toVar(),
+        }
+      : null;
     const valid = N.bool(false).toVar();
     const center = N.vec3(0).toVar();
     const lnScales = N.vec3(0).toVar();
@@ -301,17 +323,12 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
         rgba.assign(decodeRgba(sourceB, alphaShape.x));
         shapeAmount.assign(alphaShape.y);
 
-        N.If(numSh.greaterThan(N.int(0)), () => {
-          const inverseObjectQuaternion = N.vec4(
-            objectQuaternion.xyz.negate(),
-            objectQuaternion.w,
-          );
-          const sourceViewDirection = quatVec(
-            inverseObjectQuaternion,
-            center.add(objectOffset),
-          ).normalize();
-          rgba.rgb.addAssign(evaluateSH(coord, sourceViewDirection));
-        });
+        if (deferredColor) {
+          deferredColor.coord.assign(coord);
+          deferredColor.center.assign(center);
+        } else {
+          addShColor(rgba.rgb, coord, center);
+        }
 
         const editPosition = center.toVar();
         center.addAssign(objectOffset);
@@ -520,23 +537,47 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
               semanticOpacityDecoded.assign(true);
             });
 
-            const target = rgba.toVar();
+            // Alpha keeps the original per-edit operations. Native rendering
+            // composes RGB edits so SH can wait for the final visibility test.
+            const input = deferredColor ? rgba.a : rgba;
+            const value = deferredColor ? sdfRgba.a : sdfRgba;
+            const mask = deferredColor ? sdfRgbaMask.a : sdfRgbaMask;
+            const one = deferredColor ? N.float(1) : N.vec4(1);
+            const target = input.toVar();
             N.If(blendMode.equal(N.uint(0)), () => {
-              target.assign(rgba.mul(N.vec4(1).add(sdfRgba).sub(sdfRgbaMask)));
+              target.assign(input.mul(one.add(value).sub(mask)));
+              if (deferredColor) {
+                const scale = N.vec3(1)
+                  .add(sdfRgba.rgb.sub(sdfRgbaMask.rgb).mul(amount))
+                  .toVar();
+                deferredColor.scale.mulAssign(scale);
+                deferredColor.offset.mulAssign(scale);
+              }
             })
               .ElseIf(blendMode.equal(N.uint(1)), () => {
-                target.assign(
-                  rgba.mul(N.vec4(1).sub(sdfRgbaMask)).add(sdfRgba),
-                );
+                target.assign(input.mul(one.sub(mask)).add(value));
+                if (deferredColor) {
+                  const scale = N.vec3(1)
+                    .sub(sdfRgbaMask.rgb.mul(amount))
+                    .toVar();
+                  deferredColor.scale.mulAssign(scale);
+                  deferredColor.offset.assign(
+                    deferredColor.offset
+                      .mul(scale)
+                      .add(sdfRgba.rgb.mul(amount)),
+                  );
+                }
               })
               .ElseIf(blendMode.equal(N.uint(2)), () => {
-                target.assign(rgba.add(sdfRgba));
+                target.assign(input.add(value));
+                if (deferredColor)
+                  deferredColor.offset.addAssign(sdfRgba.rgb.mul(amount));
               });
-            rgba.assign(N.mix(rgba, target, amount));
+            input.assign(N.mix(input, target, amount));
           },
         );
 
-        rgba.rgb.mulAssign(recolor.rgb);
+        if (!deferredColor) rgba.rgb.mulAssign(recolor.rgb);
         const opacityScale = recolor.a.mul(blockOpacity);
         N.If(
           semanticOpacityDecoded.not().and(opacityScale.greaterThanEqual(1)),
@@ -561,11 +602,18 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       });
     });
 
-    return { valid, center, lnScales, quaternion, rgba, shapeAmount };
+    return {
+      valid,
+      center,
+      lnScales,
+      quaternion,
+      rgba,
+      shapeAmount,
+      deferredColor,
+    };
   };
 
-  const generateAccumulator = (index: TSLNode) => {
-    const generated = generateValues(index);
+  const packAccumulator = (generated: ReturnType<typeof generateValues>) => {
     const accumulatorA = N.uvec4(0).toVar();
     const accumulatorB = N.uvec4(0).toVar();
 
@@ -591,5 +639,33 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     return { accumulatorA, accumulatorB };
   };
 
-  return generateAccumulator;
+  const generateAccumulator = (index: TSLNode) =>
+    packAccumulator(generateValues(index));
+
+  // SDFs update alpha and compose RGB scale/offset in one traversal. Apply the
+  // composed color transform after visibility and SH. Composition preserves
+  // the affine edit semantics, but can change float32 rounding between edits.
+  const prepare = (index: TSLNode) => {
+    const generated = generateValues(index, true);
+    const color = generated.deferredColor;
+    if (!color) throw new Error("Deferred Splat color is not initialized");
+    return {
+      ...generated,
+      // Call in the branch that passes projection and screen-footprint culling.
+      resolveRgb: () => {
+        const rgb = generated.rgba.rgb.toVar();
+        addShColor(rgb, color.coord, color.center);
+        rgb.assign(rgb.mul(color.scale).add(color.offset));
+        rgb.mulAssign(recolor.rgb);
+        // Preserve the accumulator's half-float color quantization before
+        // the nonnegative clamp and vertex color conversion.
+        return N.vec3(
+          N.unpackHalf2x16(N.packHalf2x16(rgb.rg)),
+          N.unpackHalf2x16(N.packHalf2x16(N.vec2(rgb.b, 0))).x,
+        ).max(0);
+      },
+    };
+  };
+
+  return Object.assign(generateAccumulator, { prepare });
 }

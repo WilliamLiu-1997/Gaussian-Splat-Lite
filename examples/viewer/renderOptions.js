@@ -71,15 +71,6 @@ export const renderOptionGroups = [
     description: "Trade image stability for rendering work.",
     options: [
       {
-        property: "synchronousSort",
-        label: "Synchronous sorting",
-        description:
-          "Sorts before drawing and ignores the asynchronous sort interval.",
-        defaultValue: false,
-        falseLabel: "Async",
-        trueLabel: "Sync",
-      },
-      {
         property: "sortRadial",
         description:
           "Radial is stable while orbiting; Z-depth can match trained scenes more accurately.",
@@ -90,7 +81,7 @@ export const renderOptionGroups = [
       {
         property: "minSortIntervalMs",
         description:
-          "Limits asynchronous depth sorting. Higher values save work but may lag while moving.",
+          "Limits asynchronous WebGL sorting. Higher values save work but may lag while moving.",
         min: 0,
         max: 500,
         step: 10,

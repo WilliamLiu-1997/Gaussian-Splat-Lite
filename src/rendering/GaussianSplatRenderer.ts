@@ -1,14 +1,9 @@
-import { set_sort_center_state, sort32_centers } from "gaussian-splat-rs";
 import * as THREE from "three";
 import { SplatWorker } from "../runtime/SplatWorker";
-import {
-  WASM_READY,
-  isInitialized as isWasmInitialized,
-} from "../runtime/wasm";
 import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
-import { SplatGeometry } from "./SplatGeometry";
+import { SplatGeometry, WEBGPU_SPLATS_PER_INSTANCE } from "./SplatGeometry";
 import {
   type SplatBackend,
   type SplatMaterial,
@@ -146,16 +141,11 @@ export interface GaussianSplatRendererOptions {
    */
   sortRadial?: boolean;
   /**
-   * Minimum interval between sort calls in milliseconds.
+   * Minimum interval between WebGL sort calls in milliseconds. Native WebGPU
+   * projects and sorts each draw without CPU throttling.
    * @default 0
    */
   minSortIntervalMs?: number;
-  /**
-   * Uses one accumulator and sorts before drawing. Native WebGPU uses a GPU
-   * radix sort; both WebGL backends use main-thread WASM sorting.
-   * @default false
-   */
-  synchronousSort?: boolean;
   /**
    * Automatically uses sorting-free stochastic transparency while the camera
    * is moving, then requests one clean sorted frame after it settles. Sorted
@@ -264,7 +254,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   focalAdjustment: number;
   sortRadial: boolean;
   minSortIntervalMs: number;
-  private _synchronousSort: boolean;
   private _autoStochastic: boolean;
   private _stochastic: boolean;
   private _renderDepth: boolean;
@@ -305,7 +294,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   private updatePromise: Promise<void> = Promise.resolve();
   private queuedUpdate: UpdateRequest | null = null;
   private disposed = false;
-  private sortModeRevision = 0;
   private readonly stochasticMotion = new StochasticMotionState();
   private stochasticPhase: StochasticRenderPhase | null = null;
   private stochasticWasForced = false;
@@ -314,8 +302,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   private stochasticResolveMarkerUsers = 0;
   private stochasticPreviousRenderOrder: number | null = null;
   private _depthMesh: THREE.Mesh<SplatGeometry, SplatMaterial> | null = null;
-
-  private static synchronousSortOwner: GaussianSplatRenderer | null = null;
+  private pendingProjectionShrink = false;
 
   target?: THREE.WebGLRenderTarget;
   backTarget?: THREE.WebGLRenderTarget;
@@ -351,7 +338,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         "Stochastic and renderDepth modes require the built-in Splat shaders",
       );
     }
-    const geometry = new SplatGeometry();
     const backend = createSplatBackend(options.renderer, uniforms, {
       premultipliedAlpha,
       transparent: options.transparent ?? true,
@@ -360,6 +346,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       vertexShader: options.vertexShader,
       fragmentShader: options.fragmentShader,
     });
+    const geometry = new SplatGeometry(
+      backend.kind === "webgpu" ? WEBGPU_SPLATS_PER_INSTANCE : 1,
+    );
     const material = backend.material;
 
     super(geometry, material);
@@ -402,16 +391,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.focalAdjustment = options.focalAdjustment ?? 2.0;
     this.sortRadial = options.sortRadial ?? false;
     this.minSortIntervalMs = options.minSortIntervalMs ?? 0;
-    this._synchronousSort = options.synchronousSort ?? false;
 
     const { timer, ownsTimer } = resolveTimer(options.timer);
     this.timer = timer;
     this.ownsTimer = ownsTimer;
 
-    this.display = this.createAccumulator();
+    this.display = new SplatAccumulator();
     this.current = this.display;
-    if (!this._synchronousSort) {
-      this.accumulators.push(this.createAccumulator());
+    if (backend.kind !== "webgpu") {
+      this.accumulators.push(new SplatAccumulator());
+    }
+
+    if (backend.kind === "webgpu") {
+      backend.precompile?.then(() => {
+        if (!this.disposed) this.setDirty();
+      });
     }
 
     if (options.target) {
@@ -494,9 +488,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.accumulators.length = 0;
 
     this.resetSortWorker();
-    if (GaussianSplatRenderer.synchronousSortOwner === this) {
-      GaussianSplatRenderer.synchronousSortOwner = null;
-    }
     this.releaseReadbackBuffers();
     this.orderingBuffer = new Uint32Array(0);
     this.maxSplats = 0;
@@ -506,44 +497,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.material.dispose();
   }
 
+  /** Native WebGPU sorts on the GPU before drawing; WebGL sorts in a worker. */
   get synchronousSort() {
-    return this._synchronousSort;
-  }
-
-  set synchronousSort(value: boolean) {
-    const nextValue = Boolean(value);
-    if (nextValue === this._synchronousSort) return;
-
-    this._synchronousSort = nextValue;
-    this.sortModeRevision += 1;
-    this.sortDirty = true;
-    this.sortedCenter.setScalar(Number.NEGATIVE_INFINITY);
-    this.sortedDir.setScalar(0);
-    this.sortedRadial = undefined;
-    this.sortCenterCache.dispose();
-    this.uploadedSortStateRevision = -1;
-    if (GaussianSplatRenderer.synchronousSortOwner === this) {
-      GaussianSplatRenderer.synchronousSortOwner = null;
-    }
-
-    if (nextValue) {
-      // A candidate accumulator can be waiting for an asynchronous ordering.
-      // Drop it and keep displaying the last internally consistent state.
-      if (this.current !== this.display) {
-        this.current.dispose();
-        this.current = this.display;
-      }
-      for (const accumulator of this.accumulators) accumulator.dispose();
-      this.accumulators.length = 0;
-      if (this.backend.kind === "webgpu") {
-        this.orderingBuffer = new Uint32Array(0);
-      }
-    } else if (this.accumulators.length === 0) {
-      this.accumulators.push(this.createAccumulator());
-    }
-
-    if (!this.sorting) this.resetSortWorker();
-    this.setDirty();
+    return this.backend.kind === "webgpu";
   }
 
   setDirty() {
@@ -565,16 +521,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.targetPixels = undefined;
   }
 
-  private createAccumulator() {
-    const accumulator = new SplatAccumulator();
-    accumulator.precompileGenerate(this.renderer);
-    return accumulator;
-  }
-
   private takeAccumulator() {
-    const accumulator = this.accumulators.pop() ?? this.createAccumulator();
-    accumulator.precompileGenerate(this.renderer);
-    return accumulator;
+    return this.accumulators.pop() ?? new SplatAccumulator();
   }
 
   private releaseAccumulator(accumulator: SplatAccumulator) {
@@ -683,10 +631,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     mesh.visible = this.renderDepthEnabled && !this._depthWrite;
     mesh.onBeforeRender = () => {
       const owner = GaussianSplatRenderer.gaussianSplatOverride ?? this;
-      mesh.geometry.instanceCount =
-        owner.stochasticFrame || owner.activeSplats === 0
+      const compiling =
+        this.backend.kind === "webgpu" && this.backend.precompile !== null;
+      mesh.geometry.setSplatCount(
+        compiling || owner.stochasticFrame || owner.activeSplats === 0
           ? 0
-          : owner.display.numSplats;
+          : owner.display.numSplats,
+      );
     };
     this._depthMesh = mesh;
     this.add(mesh);
@@ -797,10 +748,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     // Trigger update after refreshing renderSize but before any uniforms that
     // depend on the active accumulator, avoiding both size and display latency.
     if (gaussianSplatRenderer.autoUpdate && isNewFrame) {
-      // Update before drawing when requested so the current frame can use the
-      // latest accumulator. WebXR updates after the active render pass.
+      // Native preparation only updates mappings and edit metadata. Its GPU
+      // projection runs below, so it can prepare before XR draws as well.
       const preUpdate =
-        gaussianSplatRenderer.preUpdate && !renderer.xr.isPresenting;
+        gaussianSplatRenderer.backend.kind === "webgpu" ||
+        (gaussianSplatRenderer.preUpdate && !renderer.xr.isPresenting);
       const updateRequest = {
         scene,
         camera: useCamera,
@@ -828,9 +780,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const display = gaussianSplatRenderer.display;
     this.uniforms.renderOrigin.value.copy(display.viewOrigin);
     const geometry = this.geometry as SplatGeometry;
-    geometry.instanceCount = gaussianSplatRenderer.stochasticFrame
-      ? display.numSplats
-      : gaussianSplatRenderer.activeSplats;
+    geometry.setSplatCount(
+      gaussianSplatRenderer.stochasticFrame
+        ? display.numSplats
+        : gaussianSplatRenderer.activeSplats,
+    );
 
     // Keep rig scale: Camera.matrixWorldInverse can strip it in Three.js.
     renderToViewMatrixTmp
@@ -866,15 +820,31 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.applyStochasticMaterialState(gaussianSplatRenderer.stochasticFrame);
     }
 
-    gaussianSplatRenderer.backend.bindOrdering(this.material, this.uniforms);
-    const splatTextures = display.getTextures();
-    this.uniforms.splats.value = splatTextures[0];
-    this.uniforms.splats2.value = splatTextures[1];
-
     this.uniforms.time.value = display.time;
     this.uniforms.deltaTime.value = display.deltaTime;
     // Alternating debug flag that can aid in visual debugging
     this.uniforms.debugFlag.value = (performance.now() / 1000.0) % 2.0 < 1.0;
+
+    if (this.backend.kind === "webgpu") {
+      if (this.backend.sortError) throw this.backend.sortError;
+      if (this.backend.precompile) {
+        geometry.instanceCount = 0;
+      } else {
+        this.backend.projection.render(
+          display,
+          camera,
+          geometry,
+          gaussianSplatRenderer.sortRadial,
+          gaussianSplatRenderer.pendingProjectionShrink,
+        );
+        gaussianSplatRenderer.pendingProjectionShrink = false;
+      }
+    } else {
+      gaussianSplatRenderer.backend.bindOrdering(this.material, this.uniforms);
+      const splatTextures = display.getTextures();
+      this.uniforms.splats.value = splatTextures[0];
+      this.uniforms.splats2.value = splatTextures[1];
+    }
 
     gaussianSplatRenderer.dirty = false;
   }
@@ -891,6 +861,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   clearSplats() {
     this.activeSplats = 0;
     this.display.numSplats = 0;
+    if (this.backend.kind === "webgpu") this.display.mapping = [];
     this.setDirty();
   }
 
@@ -901,6 +872,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     scene: THREE.Scene;
     camera: THREE.Camera;
   }) {
+    if (this.backend.kind === "webgpu") {
+      await this.backend.precompile;
+      if (this.backend.sortError) throw this.backend.sortError;
+    }
     await this.updateInternal({
       scene,
       camera,
@@ -929,6 +904,58 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
   private updateInternal(request: UpdateRequest): Promise<void> {
     if (this.disposed) return Promise.resolve();
+
+    if (this.backend.kind === "webgpu") {
+      const { scene, camera, shrinkResources, skipSort, settleRevision } =
+        request;
+      if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
+      if (this.ownsTimer) this.timer.update();
+      if (shrinkResources) {
+        this.releaseReadbackBuffers();
+        this.pendingProjectionShrink = true;
+      }
+      const previousVersion = this.current.version;
+      const viewChanged =
+        !this.current.viewOrigin.equals(
+          camera.getWorldPosition(renderToViewScaleTmp),
+        ) ||
+        !this.current.viewDirection.equals(
+          camera.getWorldDirection(renderToViewScaleTmp),
+        );
+      const { requiredMaxSplats } = this.current.prepareGenerate({
+        renderer: this.renderer,
+        scene,
+        timer: this.timer,
+        camera,
+        previous: this.current,
+      });
+      // The accumulator only carries source mappings and the camera-relative
+      // origin here. Projection, compaction and ordering happen on the GPU
+      // immediately before each draw, including independent capture views.
+      this.display = this.current;
+      this.activeSplats = this.current.numSplats;
+      this.maxSplats = requiredMaxSplats;
+      this.sortDirty = false;
+      if (
+        !skipSort &&
+        settleRevision !== null &&
+        this.stochasticMotion.complete(settleRevision)
+      ) {
+        this.stochasticPhase = null;
+        this.stochasticWasForced = false;
+        this.applyStochasticRenderOrder();
+        this.applyStochasticMaterialState(false);
+      }
+      if (
+        shrinkResources ||
+        viewChanged ||
+        previousVersion !== this.current.version ||
+        settleRevision !== null
+      ) {
+        this.setDirty();
+      }
+      return Promise.resolve();
+    }
 
     const pending = this.queuedUpdate;
     const shrinkResources =
@@ -970,47 +997,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     skipSort,
     settleRevision,
   }: UpdateRequest) {
-    if (this._synchronousSort && !skipSort) {
-      const initialization =
-        this.backend.kind === "webgpu"
-          ? this.backend.precompile
-          : isWasmInitialized()
-            ? null
-            : WASM_READY;
-      if (initialization) {
-        const sortModeRevision = this.sortModeRevision;
-        await initialization;
-        if (
-          this.disposed ||
-          sortModeRevision !== this.sortModeRevision ||
-          !this._synchronousSort
-        ) {
-          return;
-        }
-      }
-      if (this.backend.kind === "webgpu" && this.backend.sortError)
-        throw this.backend.sortError;
-    }
-
-    const inPlace = this._synchronousSort;
-    const next = inPlace ? this.current : this.takeAccumulator();
-    try {
-      if (next.generateReady) {
-        const sortModeRevision = this.sortModeRevision;
-        await next.generateReady;
-        if (this.disposed || sortModeRevision !== this.sortModeRevision) {
-          if (!inPlace) {
-            if (this.disposed) next.dispose();
-            else this.releaseAccumulator(next);
-          }
-          return;
-        }
-      }
-      if (next.generateError !== null) throw next.generateError;
-    } catch (error) {
-      if (!inPlace) this.releaseAccumulator(next);
-      throw error;
-    }
+    const next = this.takeAccumulator();
 
     const renderer = this.renderer;
     if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
@@ -1031,10 +1018,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.sortRadial !== this.sortedRadial;
 
     const previousVersion = this.current.version;
-    // prepareGenerate() temporarily replaces the origin even if generation is
-    // later skipped. Preserve the origin paired with the in-place GPU data.
-    const previousViewOrigin = inPlace ? next.viewOrigin.clone() : null;
-    if (!inPlace && next === this.current) {
+    if (next === this.current) {
       // Should never happen
       throw new Error(
         "Next accumulator is the same as the current accumulator",
@@ -1050,8 +1034,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         previous: this.current,
       });
     } catch (error) {
-      if (previousViewOrigin) next.viewOrigin.copy(previousViewOrigin);
-      else this.releaseAccumulator(next);
+      this.releaseAccumulator(next);
       throw error;
     }
     const { version, sortUpdated, requiredMaxSplats, generate } = preparation;
@@ -1063,17 +1046,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const needsSort = orderingNeedsShrink || viewChanged || sortUpdated;
 
     if (!doUpdate) {
-      if (previousViewOrigin) {
-        next.viewOrigin.copy(previousViewOrigin);
-      } else {
-        // Restore unused accumulator to the free list.
-        this.releaseAccumulator(next);
-      }
+      this.releaseAccumulator(next);
     } else {
       try {
         generate(shrinkResources);
       } catch (error) {
-        if (!inPlace) this.releaseAccumulator(next);
+        this.releaseAccumulator(next);
         throw error;
       }
 
@@ -1082,19 +1060,12 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
 
       if (skipSort) {
-        if (!inPlace) {
-          if (this.display !== next) this.releaseAccumulator(this.display);
-          if (this.current !== next && this.current !== this.display) {
-            this.releaseAccumulator(this.current);
-          }
+        if (this.display !== next) this.releaseAccumulator(this.display);
+        if (this.current !== next && this.current !== this.display) {
+          this.releaseAccumulator(this.current);
         }
         // The stochastic shader reads identity indices, so the latest generated
         // accumulator is immediately displayable without a matching ordering.
-        this.display = next;
-        this.current = next;
-      } else if (inPlace) {
-        // Generation and sorting both complete on this accumulator before the
-        // caller resumes, so no pending display/current pair is required.
         this.display = next;
         this.current = next;
       } else if (
@@ -1129,16 +1100,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       return;
     }
 
-    if (shrinkResources && this.backend.kind === "webgpu") {
-      if (
-        await this.backend.shrinkSort(
-          this.backend.getOrderingCapacity(requiredMaxSplats),
-        )
-      ) {
-        this.sortDirty = true;
-      }
-    }
-
     await this.driveSort(
       orderingNeedsShrink,
       shrinkResources || settleRevision !== null,
@@ -1164,27 +1125,22 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   private async driveSort(shrinkOrdering = false, forceSort = false) {
-    if (this.disposed || this.sorting || !this.sortDirty) {
+    if (
+      this.disposed ||
+      this.backend.kind === "webgpu" ||
+      this.sorting ||
+      !this.sortDirty
+    ) {
       return;
     }
 
-    const synchronousSort = this._synchronousSort;
-    const sortModeRevision = this.sortModeRevision;
     const now = performance.now();
     const nextSortTime = this.lastSortTime
       ? this.lastSortTime + this.minSortIntervalMs
       : now;
-    // Synchronous mode must keep the in-place accumulator and its ordering in
-    // lockstep, so it intentionally ignores asynchronous sort throttling.
-    if (!synchronousSort && !forceSort && now < nextSortTime) {
+    if (!forceSort && now < nextSortTime) {
       await new Promise((resolve) => setTimeout(resolve, nextSortTime - now));
-      if (
-        this.disposed ||
-        sortModeRevision !== this.sortModeRevision ||
-        synchronousSort !== this._synchronousSort
-      ) {
-        return;
-      }
+      if (this.disposed) return;
     }
 
     this.sorting = true;
@@ -1195,61 +1151,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
     try {
       const sortRadial = this.sortRadial;
-      const gpuBackend =
-        synchronousSort && this.backend.kind === "webgpu" ? this.backend : null;
-      let sortWorker: SplatWorker | null = null;
-      if (synchronousSort && !gpuBackend) {
-        if (!isWasmInitialized()) {
-          await WASM_READY;
-          if (
-            this.disposed ||
-            sortModeRevision !== this.sortModeRevision ||
-            !this._synchronousSort
-          ) {
-            return;
-          }
-        }
-        // The main-thread WASM instance owns one global sort state. Force a
-        // complete state upload whenever another renderer used it last.
-        if (GaussianSplatRenderer.synchronousSortOwner !== this) {
-          this.sortCenterCache.dispose();
-          this.uploadedSortStateRevision = -1;
-          GaussianSplatRenderer.synchronousSortOwner = this;
-        }
-        if (this.sortWorker) this.resetSortWorker();
-      } else if (!synchronousSort) {
-        if (shrinkOrdering) this.resetSortWorker();
-        if (this.sortWorker && this.sortedRadial !== sortRadial) {
-          this.resetSortWorker();
-        }
-        this.sortWorker ??= new SplatWorker();
-        sortWorker = this.sortWorker;
+      if (shrinkOrdering || this.sortWorker?.disposed) this.resetSortWorker();
+      if (this.sortWorker && this.sortedRadial !== sortRadial) {
+        this.resetSortWorker();
       }
+      this.sortWorker ??= new SplatWorker();
+      const sortWorker = this.sortWorker;
 
       const { numSplats, maxSplats } = current;
       const orderingMaxSplats = this.backend.getOrderingCapacity(maxSplats);
       this.maxSplats = shrinkOrdering
         ? orderingMaxSplats
         : Math.max(this.maxSplats, orderingMaxSplats);
-
-      if (gpuBackend) {
-        gpuBackend.sortAccumulator(
-          current,
-          this.maxSplats,
-          shrinkOrdering,
-          sortRadial,
-        );
-        this.activeSplats = numSplats;
-        this.sortedCenter.copy(current.viewOrigin);
-        this.sortedDir.copy(current.viewDirection);
-        this.sortedRadial = sortRadial;
-        if (this.current === current && this.display !== current) {
-          this.releaseAccumulator(this.display);
-          this.display = current;
-        }
-        this.setDirty();
-        return;
-      }
 
       if (this.orderingBuffer.length !== this.maxSplats) {
         this.orderingBuffer = new Uint32Array(this.maxSplats);
@@ -1258,103 +1171,45 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       const stateRevision = this.sortStateRevision;
       if (this.uploadedSortStateRevision !== stateRevision) {
         const { payload, commit } = this.sortCenterCache.prepare(current);
-        if (synchronousSort) {
-          set_sort_center_state(
-            payload.centerUpdateRangeIndices,
-            payload.updateCenters,
-            payload.matrixUpdateRangeIndices,
-            payload.updateMatrices,
-            payload.rangeMeshIds,
-            payload.rangeBases,
-            payload.rangeCounts,
-          );
-        } else {
-          if (!sortWorker) throw new Error("Sort worker is not initialized");
-          await sortWorker.call("setSortCenterState", payload);
-          if (
-            this.disposed ||
-            sortModeRevision !== this.sortModeRevision ||
-            this._synchronousSort
-          ) {
-            return;
-          }
-        }
+        await sortWorker.call("setSortCenterState", payload);
+        if (this.disposed) return;
         commit();
         this.uploadedSortStateRevision = stateRevision;
       }
 
-      let result: { activeSplats: number; ordering: Uint32Array };
-      if (synchronousSort) {
-        result = {
-          activeSplats: sort32_centers(
-            numSplats,
-            current.viewOrigin.x,
-            current.viewOrigin.y,
-            current.viewOrigin.z,
-            current.viewDirection.x,
-            current.viewDirection.y,
-            current.viewDirection.z,
-            sortRadial,
-            this.orderingBuffer,
-          ),
-          ordering: this.orderingBuffer,
-        };
-      } else {
-        if (!sortWorker) throw new Error("Sort worker is not initialized");
-        result = await sortWorker.call("sortCenters32", {
-          numSplats,
-          cameraPosition: [
-            current.viewOrigin.x,
-            current.viewOrigin.y,
-            current.viewOrigin.z,
-          ],
-          direction: [
-            current.viewDirection.x,
-            current.viewDirection.y,
-            current.viewDirection.z,
-          ],
-          radial: sortRadial,
-          ordering: this.orderingBuffer,
-        });
-        if (
-          this.disposed ||
-          sortModeRevision !== this.sortModeRevision ||
-          this._synchronousSort
-        ) {
-          // Recover the transferred buffer even though this result belongs to
-          // the previous mode; the replacement sort will overwrite it.
-          this.orderingBuffer = result.ordering;
-          return;
-        }
-      }
+      const result = await sortWorker.call("sortCenters32", {
+        numSplats,
+        cameraPosition: [
+          current.viewOrigin.x,
+          current.viewOrigin.y,
+          current.viewOrigin.z,
+        ],
+        direction: [
+          current.viewDirection.x,
+          current.viewDirection.y,
+          current.viewDirection.z,
+        ],
+        radial: sortRadial,
+        ordering: this.orderingBuffer,
+      });
+      if (this.disposed) return;
 
       this.activeSplats = result.activeSplats;
-      const previousOrdering = synchronousSort
-        ? null
-        : this.backend.cpuOrdering;
+      const previousOrdering = this.backend.cpuOrdering;
       this.backend.setCPUOrdering({
         ordering: result.ordering,
         activeSplats: result.activeSplats,
-        capacity: this.maxSplats,
         requiredCapacity: orderingMaxSplats,
         shrink: shrinkOrdering,
       });
 
-      if (synchronousSort) {
-        // WASM and the GPU resource retain the same CPU-side array. It is
-        // overwritten in place by the next blocking sort.
-        this.orderingBuffer = result.ordering;
-      } else {
-        // Alternate two buffers so the texture's CPU-side source stays attached
-        // while the other buffer is transferred to the worker for the next sort.
-        this.orderingBuffer =
-          previousOrdering instanceof Uint32Array &&
-          previousOrdering.length === this.maxSplats
-            ? previousOrdering
-            : new Uint32Array(this.maxSplats);
-      }
-
-      // console.log(`Sorted (${this.minSortIntervalMs}) ${numSplats} splats in ${(performance.now() - now).toFixed(0)} ms`);
+      // Keep the displayed texture's CPU source attached while transferring
+      // the other buffer to the worker for the next sort.
+      this.orderingBuffer =
+        previousOrdering instanceof Uint32Array &&
+        previousOrdering.length === this.maxSplats
+          ? previousOrdering
+          : new Uint32Array(this.maxSplats);
 
       this.sortedCenter.copy(current.viewOrigin);
       this.sortedDir.copy(current.viewDirection);
@@ -1366,13 +1221,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.setDirty();
     } catch (error) {
       if (this.disposed) return;
-      if (
-        sortModeRevision !== this.sortModeRevision ||
-        synchronousSort !== this._synchronousSort
-      ) {
-        return;
-      }
-
       this.sortDirty = true;
       if (
         this.current === current &&
@@ -1500,6 +1348,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     scene: THREE.Scene;
     camera: THREE.Camera;
   }): Promise<Uint8Array> {
+    if (this.backend.kind === "webgpu") await this.backend.precompile;
     this.renderTarget({ scene, camera });
     return this.readTarget();
   }

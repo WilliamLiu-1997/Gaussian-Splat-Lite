@@ -20,7 +20,6 @@ import {
   generateWebGLAccumulator,
   getWebGLGenerateUniforms,
 } from "./webgl/AccumulatorGenerator";
-import { WebGPUAccumulatorGenerator } from "./webgpu/AccumulatorGenerator";
 
 export type SplatMapping = {
   node: SplatMesh;
@@ -49,7 +48,6 @@ export class SplatAccumulator {
 
   private transformScale = new THREE.Vector3();
   private transformQuaternion = new THREE.Quaternion();
-  private webGPUGenerator: WebGPUAccumulatorGenerator | null = null;
   private fallbackGenerator: WebGLFallbackAccumulatorGenerator | null = null;
 
   constructor() {
@@ -69,31 +67,14 @@ export class SplatAccumulator {
   private disposeStorage() {
     this.target?.dispose();
     this.target = null;
-    this.webGPUGenerator?.dispose();
-    this.webGPUGenerator = null;
     this.fallbackGenerator?.dispose();
     this.fallbackGenerator = null;
     this.maxSplats = 0;
   }
 
   getTextures(): SplatDataTextures {
-    return (this.webGPUGenerator?.textures ??
-      this.target?.textures ??
+    return (this.target?.textures ??
       SplatAccumulator.emptyTextures) as SplatDataTextures;
-  }
-
-  precompileGenerate(renderer: GaussianSplatCompatibleRenderer) {
-    if (!usesNativeWebGPU(renderer)) return;
-    this.ensureGenerate({ maxSplats: 1, renderer });
-    this.webGPUGenerator?.precompile(renderer);
-  }
-
-  get generateReady() {
-    return this.webGPUGenerator?.ready ?? null;
-  }
-
-  get generateError() {
-    return this.webGPUGenerator?.compileError ?? null;
   }
 
   generateMapping(splatCounts: number[], compact = false) {
@@ -117,6 +98,11 @@ export class SplatAccumulator {
     renderer?: GaussianSplatCompatibleRenderer;
     shrinkResources?: boolean;
   }) {
+    if (renderer && usesNativeWebGPU(renderer)) {
+      throw new Error(
+        "Accumulator texture generation requires a WebGL backend",
+      );
+    }
     const {
       width,
       height,
@@ -126,23 +112,6 @@ export class SplatAccumulator {
     const reusable = shrinkResources
       ? capacity === this.maxSplats
       : capacity <= this.maxSplats;
-
-    if (renderer && usesNativeWebGPU(renderer)) {
-      if (this.webGPUGenerator && reusable) return false;
-
-      if (this.webGPUGenerator) {
-        this.webGPUGenerator.setSize(width, height, depth);
-      } else {
-        this.disposeStorage();
-        this.webGPUGenerator = new WebGPUAccumulatorGenerator({
-          width,
-          height,
-          depth,
-        });
-      }
-      this.maxSplats = capacity;
-      return true;
-    }
 
     const fallback = renderer !== undefined && isWebGPURenderer(renderer);
     if (
@@ -165,7 +134,7 @@ export class SplatAccumulator {
     return true;
   }
 
-  private prepareUniforms(mesh: SplatMesh, uniforms: GenerateUniforms) {
+  prepareUniforms(mesh: SplatMesh, uniforms: GenerateUniforms) {
     const source = mesh.splats;
     if (!source) {
       throw new Error("SplatMesh has no source");
@@ -219,17 +188,13 @@ export class SplatAccumulator {
     count: number;
     renderer: GaussianSplatCompatibleRenderer;
   }) {
+    if (usesNativeWebGPU(renderer)) {
+      throw new Error(
+        "Accumulator texture generation requires a WebGL backend",
+      );
+    }
     if (base + count > this.maxSplats) {
       throw new Error("Splat generation range exceeds accumulator capacity");
-    }
-
-    if (usesNativeWebGPU(renderer)) {
-      if (!this.webGPUGenerator) {
-        throw new Error("WebGPU accumulator is not initialized");
-      }
-      this.prepareUniforms(mesh, this.webGPUGenerator.uniforms);
-      this.webGPUGenerator.generate({ renderer, base, count });
-      return;
     }
 
     if (!this.target) throw new Error("Accumulator target is not initialized");
@@ -263,9 +228,9 @@ export class SplatAccumulator {
     previous: SplatAccumulator;
   }) {
     // Preserve the previous metadata before replacing this accumulator's
-    // mapping. In synchronous-sort mode `previous` and `this` are the same
-    // accumulator, so reading these values later would compare the new mapping
-    // with itself and suppress required regeneration/sorting.
+    // mapping. Native WebGPU prepares this metadata in place, so reading these
+    // values later would compare the new mapping with itself and suppress
+    // required updates.
     const previousMapping = previous.mapping;
     const previousVersion = previous.version;
     const previousMappingVersion = previous.mappingVersion;
@@ -352,15 +317,8 @@ export class SplatAccumulator {
       requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
       generate: (shrinkResources = false) => {
         this.ensureGenerate({ maxSplats, renderer, shrinkResources });
-        const generate = () => {
-          for (const { node, base, count } of this.mapping) {
-            this.generate({ mesh: node, base, count, renderer });
-          }
-        };
-        if (usesNativeWebGPU(renderer)) {
-          this.webGPUGenerator?.batch(renderer, generate);
-        } else {
-          generate();
+        for (const { node, base, count } of this.mapping) {
+          this.generate({ mesh: node, base, count, renderer });
         }
       },
     };

@@ -14,7 +14,6 @@ import {
   type Uniforms,
   emptyOrdering,
 } from "../uniforms";
-import { installWebGLFallbackCompatibilityPatches } from "./compatibility";
 
 type TextureUploadBackend = {
   updateTexture(
@@ -38,7 +37,6 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
     options: SplatMaterialOptions,
   ) {
     super(renderer, uniforms, options, textureLoad(emptyOrdering));
-    installWebGLFallbackCompatibilityPatches(renderer);
   }
 
   getOrderingCapacity(count: number) {

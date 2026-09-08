@@ -23,14 +23,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Added `Splats.extractRange()` for independent packed range copies and an optional `AbortSignal` to `SplatLoader.loadAsync()`.
 - Added ordinary SOG V1/V2 loading from ZIP bundles or directory metadata, with automatic HTTP Range access, concurrent property-image downloads and grouped decoding through the existing PLY/SPZ loading API. Indexed streaming chunks use independent workers for concurrent loading and caching.
 - Added `.sog` support to the viewer's file picker, drag-and-drop, and URL loading.
-- Added WebGPU rendering with TSL shaders and compute-based Splat accumulation into compact GPU storage. WebGL2 remains supported.
-- Added `synchronousSort` for same-frame GPU radix sorting on WebGPU or main-thread WASM sorting on WebGL. Asynchronous Worker/WASM sorting remains the default.
-- Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Companion depth draws process Splats in input order with stochastic coverage.
+- Added WebGPU rendering with shared TSL shaders. WebGL2 remains supported.
+- Added `stochastic`, `autoStochastic`, and `renderDepth` options for sorting-free transparency during camera motion and companion depth draws. Companion depth draws use unsorted Splat indices with stochastic coverage.
 - Added `StochasticResolvePass` for spatial noise reduction through EffectComposer, direct scene composition, or a custom render graph. Manual stochastic rendering and per-eye resolve are supported in WebGL/WebGPU XR; automatic stochastic switching remains disabled in XR.
-- Added viewer controls for rendering backend, output color space, synchronous sorting, and stochastic rendering.
+- Added viewer controls for rendering backend, output color space, and stochastic rendering.
 - Added a viewer grid and red/blue X/Z axes using screen-space wide lines, with a shared visibility toggle. References span 1.5 times the model's largest dimension, have 20 divisions per axis, and do not intercept picking.
 
 ### Changed
+
+- Reworked native WebGPU rendering with projection and culling before 32-bit GPU sorting, reusable compute nodes, compact caches and indirect drawing.
+- Changed native WebGPU intermediate precision and projection-cache encoding. Splat footprints, opacity and equal-depth blending order may differ from previous versions.
+- Fixed sorting by backend: asynchronous Worker/WASM on both WebGL backends and GPU sorting on native WebGPU.
 
 - Reduced WebGL fallback sorting uploads to active rows when reusing the ordering texture, retaining its allocation until growth or explicit shrinking.
 
@@ -55,15 +58,21 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Moved built-in Splat color conversion to the vertex shader in WebGPU and WebGL.
 - Trimmed wide-kernel coverage using a conservative alpha bound in both rendering backends. Wide kernels retain their original minimum-pixel-radius visibility cutoff.
 - Simplified documentation into a README quick start and focused API references, consolidating duplicate guides and examples.
-- Changed the required Three.js dependency from the npm version range to the tested development snapshot `d2fc542d58f5c91fa7b585e6a3efb7ba67b295ca`, which the WebGPU compatibility code depends on.
+- Updated the required Three.js snapshot to `9769a98e5079348c5ef34c67e35e0ddb176873f5` and removed the compatibility patches fixed upstream.
 - Replaced the bundled Lion example with Multi Material Splats by hybridherbst, distributed as SPZ v4 with SH3 data and CC BY 4.0 attribution.
 - Limited the viewer to one GPU frame in flight, retaining pending redraws and processing camera input while the GPU is busy.
 - Reused PLY output batches and SPZ decompression buffers, and shared loading, spherical-harmonic codecs, and texture compatibility checks to reduce duplicate work and temporary allocations.
 - Reorganized source files into data, loaders, runtime, scene, rendering, and utility modules, with separate WebGL/WebGPU backends and an architecture guide. Existing package entry-point exports remain available.
 - Changed `npm run dev` to serve source directly through Vite and consolidated WASM builds into a cross-platform Node script. Removed the separate `build:watch` command and platform-specific WASM scripts; ES module and CommonJS bundles now build separately.
 
+### Removed
+
+- Removed the `synchronousSort` constructor option, setter and viewer toggle. The getter reports the backend's fixed sorting mode.
+- Removed native WebGPU accumulator generation and the `precompileGenerate()`, `generateReady` and `generateError` APIs. Accumulator texture generation now supports only WebGL backends.
+
 ### Fixed
 
+- Recreate terminated WebGL sorting workers on the next sort and discard late sorting results after renderer disposal.
 - Preserve native WebGPU initialization errors when Three.js falls back to WebGL2, showing the cause in the viewer and Inspector.
 
 - Corrected streaming reads and iteration to follow selected indices, preserving original opacity for picking during fades.
