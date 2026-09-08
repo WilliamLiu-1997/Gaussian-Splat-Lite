@@ -16,6 +16,17 @@ import {
 } from "../uniforms";
 import { installWebGLFallbackCompatibilityPatches } from "./compatibility";
 
+type TextureUploadBackend = {
+  updateTexture(
+    texture: THREE.DataTexture,
+    options: {
+      width: number;
+      height: number;
+      image: THREE.DataTexture["image"];
+    },
+  ): void;
+};
+
 /** TSL drawing with CPU-sorted indices stored in an integer texture. */
 export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   readonly kind = "webgl-fallback";
@@ -41,10 +52,22 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
     return (this.ordering?.image.data as Uint32Array | null) ?? null;
   }
 
-  setCPUOrdering({ ordering, capacity }: CPUOrderingUpdate) {
-    const rows = capacity / SPLATS_PER_ORDERING_ROW;
-    if (this.ordering?.image.height !== rows) {
-      this.ordering?.dispose();
+  setCPUOrdering({
+    ordering,
+    activeSplats,
+    requiredCapacity,
+    shrink,
+  }: CPUOrderingUpdate) {
+    const rows = requiredCapacity / SPLATS_PER_ORDERING_ROW;
+    if (
+      this.ordering &&
+      (rows > this.ordering.image.height ||
+        (shrink && rows !== this.ordering.image.height))
+    ) {
+      this.ordering.dispose();
+      this.ordering = null;
+    }
+    if (!this.ordering) {
       this.ordering = new THREE.DataTexture(
         ordering,
         ORDERING_TEXTURE_WIDTH,
@@ -52,10 +75,23 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
         THREE.RGBAIntegerFormat,
         THREE.UnsignedIntType,
       );
+      this.ordering.needsUpdate = true;
     } else {
       this.ordering.image.data = ordering;
+      if (activeSplats > 0) {
+        // Finish any pending allocation before uploading only active rows.
+        this.renderer.initTexture(this.ordering);
+        // The pinned fallback's copyTextureToTexture allocates a GPU source;
+        // update the destination directly to avoid that staging texture.
+        const backend = this.renderer
+          .backend as unknown as TextureUploadBackend;
+        backend.updateTexture(this.ordering, {
+          width: ORDERING_TEXTURE_WIDTH,
+          height: Math.ceil(activeSplats / SPLATS_PER_ORDERING_ROW),
+          image: this.ordering.image,
+        });
+      }
     }
-    this.ordering.needsUpdate = true;
     this.material.orderingNode.value = this.ordering;
   }
 

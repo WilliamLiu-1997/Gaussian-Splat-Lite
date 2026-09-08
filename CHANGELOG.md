@@ -32,6 +32,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Reduced WebGL fallback sorting uploads to active rows when reusing the ordering texture, retaining its allocation until growth or explicit shrinking.
+
 - Increased the default `SplatMesh.minRaycastOpacity` from `0.1` to `0.15`.
 
 - Changed the default `preBlurAmount` to `0.3` and `blurAmount` to `0`, retaining opacity while expanding projected splats. Set them to `0` and `0.3` respectively to restore compensated blur.
