@@ -79,3 +79,5 @@ Use `op` for runtime expressions; JavaScript `if` cannot inspect a Splat value.
 - rotations: `quaternion`, `quatMul`, and `rotateVector`;
 
 Scalar arithmetic broadcasts over vector operands. Values from different `postDecode` programs cannot be combined.
+
+For expression construction, compilation and worker execution internals, see [Post-decode boundaries](Architecture.md#post-decode-boundaries).

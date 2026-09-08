@@ -1,6 +1,6 @@
 import type { SplatResult } from "../../data/defines";
 import { getSplatByteLength } from "../../data/splatData";
-import type { PostDecodeSplatData } from "../postDecodeRuntime";
+import type { PostDecodeSplatData } from "../postDecode/protocol";
 
 const HEADER_LIMIT = 16 * 1024 * 1024;
 export const RAD_FULL_LOAD_LIMIT = 2 * 1024 * 1024 * 1024;

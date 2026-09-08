@@ -62,3 +62,5 @@ Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs 
 - `setSplats()` requires equally sized index and Splat arrays. Removal indices may be unordered; duplicates are removed once.
 - `copySplatRecords()`, `copySortCenters()`, and `setTextureUniforms()` are low-level renderer methods. Texture data from `setTextureUniforms()` aliases source storage and is read-only.
 - RAD/SOG streaming reads and iteration use selected indices; display fades preserve source and picking opacity. These sources reject mutation and reinitialization; `extractRange()` returns a mutable copy.
+
+For the separation between data loading, source initialization and scene objects, see [Decoder boundaries](Architecture.md#decoder-boundaries).

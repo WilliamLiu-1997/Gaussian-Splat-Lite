@@ -9,7 +9,7 @@ import {
 import { type SplatInput, Splats } from "../data/Splats";
 import type { SplatFileType } from "../data/defines";
 import type { SplatFileResolver } from "../loaders/loadTypes";
-import type { SplatPostDecodeProgram } from "../loaders/postDecode";
+import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
 import * as wasm from "../runtime/wasm";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
 

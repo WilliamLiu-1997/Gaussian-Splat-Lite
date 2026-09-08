@@ -28,7 +28,10 @@ export {
 export type { SplatWorker } from "./runtime/SplatWorker";
 
 export { Splats, type SplatInput, type SplatsOptions } from "./data/Splats";
-export { postDecode, type SplatPostDecodeProgram } from "./loaders/postDecode";
+export {
+  postDecode,
+  type SplatPostDecodeProgram,
+} from "./loaders/postDecode/program";
 
 export {
   SplatEdit,

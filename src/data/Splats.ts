@@ -1,7 +1,7 @@
 import * as THREE from "three";
 
 import type { SplatFileResolver } from "../loaders/loadTypes";
-import type { SplatPostDecodeProgram } from "../loaders/postDecode";
+import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
 import { toHalf } from "../utils/numeric";
 import {
   SPLAT_BLOCKS_DISABLED,
@@ -267,8 +267,9 @@ export class Splats {
     signal?: AbortSignal,
   ): Promise<Splats> {
     if (hasFileInput(options)) {
-      const { SplatLoader } = await import("../loaders/SplatLoader");
-      return new SplatLoader().loadInternalAsync({
+      const { loadSplatData } = await import("../loaders/loadSplatData");
+      let initialized!: Splats;
+      await loadSplatData({
         url: options.url,
         file: options.file,
         fileBytes: options.fileBytes,
@@ -277,8 +278,12 @@ export class Splats {
         resolveFile: options.resolveFile,
         postDecode: options.postDecode,
         onProgress: options.onProgress,
+        onLoad: (decoded) => {
+          initialized = new Splats(decoded as SplatsInitializationOptions);
+        },
         signal,
       });
+      return initialized;
     }
 
     const initialized = new Splats({ maxSplats: options.maxSplats });

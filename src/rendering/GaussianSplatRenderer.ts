@@ -3,6 +3,7 @@ import { SplatWorker } from "../runtime/SplatWorker";
 import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
+import { SplatCapture } from "./SplatCapture";
 import { SplatGeometry, WEBGPU_SPLATS_PER_INSTANCE } from "./SplatGeometry";
 import {
   type SplatBackend,
@@ -14,7 +15,6 @@ import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
   getRenderFrame,
-  setRendererRenderTarget,
 } from "./rendererUtils";
 import {
   type StochasticMotionPhase,
@@ -273,6 +273,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   dirty: boolean;
 
   private readonly backend: SplatBackend;
+  private readonly capture: SplatCapture;
   private orderingBuffer: Uint32Array = new Uint32Array(0);
   maxSplats = 0;
   activeSplats = 0;
@@ -355,6 +356,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     super(geometry, material);
     this.renderer = options.renderer;
     this.backend = backend;
+    this.capture = new SplatCapture(this, backend, () => this.beginCapture());
     this.material = material;
     this.uniforms = uniforms;
     this.supportsStochasticShaders = supportsStochasticShaders;
@@ -409,42 +411,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       });
     }
 
-    if (options.target) {
-      const {
-        width,
-        height,
-        doubleBuffer,
-        superXY: origSuperXY,
-        ...origTargetOptions
-      } = options.target;
-      const superXY = Math.max(1, Math.min(4, origSuperXY ?? 1));
-      if (width * superXY > 8192 || height * superXY > 8192) {
-        throw new Error("Target size too large");
-      }
-      this.superXY = superXY;
-
-      const superWidth = width * superXY;
-      const superHeight = height * superXY;
-      const targetOptions: THREE.RenderTargetOptions = {
-        format: THREE.RGBAFormat,
-        type: THREE.UnsignedByteType,
-        colorSpace: THREE.SRGBColorSpace,
-        ...origTargetOptions,
-      };
-
-      this.target = new THREE.WebGLRenderTarget(
-        superWidth,
-        superHeight,
-        targetOptions,
-      );
-      if (doubleBuffer) {
-        this.backTarget = new THREE.WebGLRenderTarget(
-          superWidth,
-          superHeight,
-          targetOptions,
-        );
-      }
-    }
+    this.capture.initialize(options.target);
   }
 
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]) {}
@@ -463,14 +430,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     // @ts-expect-error @types/three 0.185.x does not declare Object3D.dispose().
     super.dispose();
 
-    if (this.target) {
-      this.target.dispose();
-      this.target = undefined;
-    }
-    if (this.backTarget) {
-      this.backTarget.dispose();
-      this.backTarget = undefined;
-    }
+    this.capture.dispose();
     this.backend.dispose();
     this._depthMesh?.removeFromParent();
     this._depthMesh?.material.dispose();
@@ -1262,93 +1222,29 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     }
   }
 
+  private beginCapture() {
+    const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
+    this.forceSortedRenderDepth += 1;
+    return {
+      activate: () => {
+        GaussianSplatRenderer.gaussianSplatOverride = this;
+      },
+      restore: () => {
+        this.forceSortedRenderDepth -= 1;
+        GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
+      },
+    };
+  }
+
   renderTarget({
     scene,
     camera,
   }: { scene: THREE.Scene; camera: THREE.Camera }): THREE.WebGLRenderTarget {
-    const target = this.backTarget ?? this.target;
-    if (!target) {
-      throw new Error("No target");
-    }
-
-    const previousTarget = this.renderer.getRenderTarget();
-    const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
-    try {
-      this.forceSortedRenderDepth += 1;
-      this.renderer.setRenderTarget(target);
-      GaussianSplatRenderer.gaussianSplatOverride = this;
-      this.renderer.render(scene, camera);
-    } finally {
-      this.forceSortedRenderDepth -= 1;
-      GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
-      setRendererRenderTarget(this.renderer, previousTarget);
-    }
-
-    if (target !== this.target) {
-      // Swap back buffer and target
-      [this.target, this.backTarget] = [this.backTarget, this.target];
-    }
-    return target;
+    return this.capture.renderTarget({ scene, camera });
   }
 
-  // Read back the previously rendered target image as a Uint8Array of packed
-  // RGBA values (in that order). Subsequent calls to this.readTarget()
-  // will reuse the same buffers to minimize memory allocations.
   async readTarget(): Promise<Uint8Array> {
-    if (!this.target) {
-      throw new Error("Must initialize with target");
-    }
-    const { width, height } = this.target;
-    const byteSize = width * height * 4;
-    if (!this.superPixels || this.superPixels.length < byteSize) {
-      this.superPixels = new Uint8Array(byteSize);
-      // console.log(`Allocated superPixels: ${width}x${height} = ${pixelCount} bytes`);
-    }
-    const superPixels = this.superPixels;
-
-    await this.backend.readPixels(this.target, superPixels);
-
-    const { superXY } = this;
-    if (superXY === 1) {
-      return superPixels;
-    }
-
-    const subWidth = width / superXY;
-    const subHeight = height / superXY;
-    const subSize = subWidth * subHeight * 4;
-    if (!this.targetPixels || this.targetPixels.length < subSize) {
-      this.targetPixels = new Uint8Array(subSize);
-      // console.log(`Allocated targetPixels: ${subWidth}x${subHeight} = ${subSize} bytes`);
-    }
-    const targetPixels = this.targetPixels;
-
-    const super2 = superXY * superXY;
-    for (let y = 0; y < subHeight; y++) {
-      const row = y * subWidth;
-      for (let x = 0; x < subWidth; x++) {
-        const superCol = x * superXY;
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let a = 0;
-        for (let sy = 0; sy < superXY; sy++) {
-          const superRow = (y * superXY + sy) * width;
-          for (let sx = 0; sx < superXY; sx++) {
-            const superIndex = (superRow + superCol + sx) * 4;
-            r += superPixels[superIndex];
-            g += superPixels[superIndex + 1];
-            b += superPixels[superIndex + 2];
-            a += superPixels[superIndex + 3];
-          }
-        }
-        const pixelIndex = (row + x) * 4;
-        targetPixels[pixelIndex] = r / super2;
-        targetPixels[pixelIndex + 1] = g / super2;
-        targetPixels[pixelIndex + 2] = b / super2;
-        targetPixels[pixelIndex + 3] = a / super2;
-      }
-    }
-    return targetPixels;
+    return this.capture.readTarget();
   }
 
   async renderReadTarget({
@@ -1358,27 +1254,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     scene: THREE.Scene;
     camera: THREE.Camera;
   }): Promise<Uint8Array> {
-    if (this.backend.kind === "webgpu") await this.backend.precompile;
-    this.renderTarget({ scene, camera });
-    return this.readTarget();
+    return this.capture.renderReadTarget({ scene, camera });
   }
 
-  // Data and buffers used for environment map rendering
-  private static cubeRender: {
-    target: THREE.WebGLCubeRenderTarget;
-    cubeCamera: THREE.CubeCamera;
-    near: number;
-    far: number;
-  } | null = null;
-  private static pmrem: {
-    fromCubemap(texture: THREE.Texture): { texture: THREE.Texture };
-    dispose(): void;
-  } | null = null;
-  private static pmremRenderer: GaussianSplatCompatibleRenderer | null = null;
-
-  // Renders out the scene to a cube map that can be used for
-  // Image-based lighting or similar applications. First optionally updates Gsplats,
-  // sorts them with respect to the provided worldCenter, renders 6 cube faces.
   async renderCubeMap({
     scene,
     worldCenter,
@@ -1398,88 +1276,22 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     update: boolean;
     filter: boolean;
   }): Promise<THREE.CubeTexture> {
-    if (
-      !GaussianSplatRenderer.cubeRender ||
-      GaussianSplatRenderer.cubeRender.target.width !== size ||
-      GaussianSplatRenderer.cubeRender.near !== near ||
-      GaussianSplatRenderer.cubeRender.far !== far
-    ) {
-      if (GaussianSplatRenderer.cubeRender) {
-        GaussianSplatRenderer.cubeRender.target.dispose();
-      }
-      const target = new THREE.WebGLCubeRenderTarget(size, {
-        format: THREE.RGBAFormat,
-        type: THREE.UnsignedByteType,
-        generateMipmaps: filter,
-        minFilter: filter ? THREE.LinearMipMapLinearFilter : THREE.LinearFilter,
-        magFilter: THREE.LinearFilter,
-        colorSpace: filter ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace,
-      });
-      const cubeCamera = new THREE.CubeCamera(near, far, target);
-      GaussianSplatRenderer.cubeRender = { target, cubeCamera, near, far };
-    }
-
-    const { target, cubeCamera } = GaussianSplatRenderer.cubeRender;
-    cubeCamera.position.copy(worldCenter);
-
-    // Save the visibility state of objects we want to hide before render
-    const objectVisibility = new Map<THREE.Object3D, boolean>();
-    for (const object of hideObjects) {
-      if (!objectVisibility.has(object)) {
-        objectVisibility.set(object, object.visible);
-      }
-      object.visible = false;
-    }
-
-    const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
-    try {
-      this.forceSortedRenderDepth += 1;
-      if (update) {
-        const tempCamera = new THREE.Camera();
-        tempCamera.position.copy(worldCenter);
-        await this.update({ scene, camera: tempCamera });
-      }
-
-      GaussianSplatRenderer.gaussianSplatOverride = this;
-      // Update the CubeCamera, which performs 6 cube face renders
-      cubeCamera.update(this.renderer as THREE.WebGLRenderer, scene);
-      return target.texture;
-    } finally {
-      this.forceSortedRenderDepth -= 1;
-      GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
-      for (const [object, visible] of objectVisibility.entries()) {
-        object.visible = visible;
-      }
-    }
+    return this.capture.renderCubeMap({
+      scene,
+      worldCenter,
+      size,
+      near,
+      far,
+      hideObjects,
+      update,
+      filter,
+    });
   }
 
   async readCubeTargets(): Promise<Uint8Array[]> {
-    if (!GaussianSplatRenderer.cubeRender) {
-      throw new Error("No cube render");
-    }
-
-    const { target } = GaussianSplatRenderer.cubeRender;
-    const { width, height } = target;
-    const promises = [];
-    const buffers = [];
-
-    for (let i = 0; i < target.texture.images.length; ++i) {
-      const byteSize = width * height * 4;
-      const readback = new Uint8Array(byteSize);
-      buffers.push(readback);
-      const promise = this.backend.readPixels(target, readback, i);
-      promises.push(promise);
-    }
-
-    await Promise.all(promises);
-    return buffers;
+    return this.capture.readCubeTargets();
   }
 
-  // Renders out the scene to an environment map that can be used for
-  // Image-based lighting or similar applications. First optionally updates Gsplats,
-  // sorts them with respect to the provided worldCenter, renders 6 cube faces,
-  // then pre-filters them using THREE.PMREMGenerator and returns a THREE.Texture
-  // that can assigned directly to a THREE.MeshStandardMaterial.envMap property.
   async renderEnvMap({
     scene,
     worldCenter,
@@ -1497,7 +1309,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     hideObjects: THREE.Object3D[];
     update: boolean;
   }): Promise<THREE.Texture> {
-    const cubeTexture = await this.renderCubeMap({
+    return this.capture.renderEnvMap({
       scene,
       worldCenter,
       size,
@@ -1505,38 +1317,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       far,
       hideObjects,
       update,
-      filter: true,
     });
-    // Pre-filter the cube map using THREE.PMREMGenerator if requested
-    if (GaussianSplatRenderer.pmremRenderer !== this.renderer) {
-      GaussianSplatRenderer.pmrem?.dispose();
-      GaussianSplatRenderer.pmrem = this.backend.createPMREMGenerator();
-      GaussianSplatRenderer.pmremRenderer = this.renderer;
-    }
-
-    const pmrem = GaussianSplatRenderer.pmrem;
-    if (!pmrem) throw new Error("PMREM generator is not initialized");
-    return pmrem.fromCubemap(cubeTexture).texture;
   }
 
-  // Utility function to recursively set the envMap property for any
-  // THREE.MeshStandardMaterial within the subtree of root.
   recurseSetEnvMap(root: THREE.Object3D, envMap: THREE.Texture) {
-    root.traverse((node) => {
-      if (node instanceof THREE.Mesh) {
-        if (Array.isArray(node.material)) {
-          for (const material of node.material) {
-            if (material instanceof THREE.MeshStandardMaterial) {
-              material.envMap = envMap;
-            }
-          }
-        } else {
-          if (node.material instanceof THREE.MeshStandardMaterial) {
-            node.material.envMap = envMap;
-          }
-        }
-      }
-    });
+    return this.capture.recurseSetEnvMap(root, envMap);
   }
 
   /** Depth-only companion mesh, created lazily and owned by this renderer. */

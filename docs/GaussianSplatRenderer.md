@@ -214,3 +214,5 @@ requestRender(); // Loading may finish after the render scheduler becomes idle.
 splat.opacity = 0.5;
 requestRender();
 ```
+
+For capture delegation, renderer state and backend responsibilities, see [Rendering boundaries](Architecture.md#rendering-boundaries).

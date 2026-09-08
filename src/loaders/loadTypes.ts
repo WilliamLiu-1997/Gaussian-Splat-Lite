@@ -1,4 +1,4 @@
-import type { SerializedSplatPostDecode } from "./postDecode";
+import type { SerializedSplatPostDecode } from "./postDecode/protocol";
 
 export type SplatFileInput = string | Blob | Uint8Array | ArrayBuffer;
 /** Resolves an external SOG image or RAD page named by its metadata. */

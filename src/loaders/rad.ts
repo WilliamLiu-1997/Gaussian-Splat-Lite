@@ -3,7 +3,7 @@ import { SH_KEYS, getSplatTextureBytes } from "../data/splatData";
 import { getTextureSize } from "../data/textureLayout";
 import { linkedAbortController } from "../runtime/abort";
 import type { SplatSourceArgs as LoadRadArgs } from "./loadTypes";
-import type { PostDecodeSplatData } from "./postDecodeRuntime";
+import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { RadSource } from "./rad/RadSource";
 import {
   RAD_FULL_LOAD_LIMIT,

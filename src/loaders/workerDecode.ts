@@ -8,10 +8,8 @@ import type {
   SplatLoadArgs,
   SplatLoadStatus,
 } from "./loadTypes";
-import {
-  type PostDecodeSplatData,
-  applySplatPostDecode,
-} from "./postDecodeRuntime";
+import type { PostDecodeSplatData } from "./postDecode/protocol";
+import { applySplatPostDecode } from "./postDecode/runtime";
 import { isRadPrefix, loadRad } from "./rad";
 import { isSogPrefix, loadSog } from "./sog";
 

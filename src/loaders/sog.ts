@@ -1,7 +1,7 @@
 import { SogDecodeSession, decode_sog_meta } from "gaussian-splat-rs";
 import { linkedAbortController } from "../runtime/abort";
 import type { SplatSourceArgs } from "./loadTypes";
-import type { PostDecodeSplatData } from "./postDecodeRuntime";
+import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { openSogSource, readSogAsset } from "./sog/SogSource";
 import { readZip } from "./sog/sogZip";
 import { joinBytes as join } from "./source";

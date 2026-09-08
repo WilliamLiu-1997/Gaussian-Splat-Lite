@@ -9,6 +9,7 @@
 | `src/data/` | Packed Splat data, codecs, texture layout and CPU unpacking |
 | `src/scene/` | Scene objects, mesh transforms, raycasting and SDF edits |
 | `src/loaders/` | File loading, decode requests and post-decode expression programs |
+| `src/loaders/postDecode/` | Post-decode expression building, bytecode protocol, compilation, register allocation and execution |
 | `src/loaders/rad/` | RAD source reads and container types |
 | `src/loaders/sog/` | SOG source reads and ZIP access |
 | `src/loaders/stream/` | Shared workers, budgets, options and statistics |
@@ -18,7 +19,7 @@
 | `rust/gaussian-splat-rs/src/` | WASM bridges, `SplatsData` output arrays, sorting and raycasting |
 | `src/runtime/` | Worker RPC, pooling, transferable discovery and WebAssembly initialization |
 | `src/utils/` | Numeric conversion, spatial transforms, Three.js helpers and the public utility namespace |
-| `src/rendering/` | Shared renderer, accumulator, sort cache, stochastic resolve and backend selection |
+| `src/rendering/` | Shared renderer, accumulator, sort cache, stochastic resolve, offscreen capture and backend selection |
 | `src/rendering/webgl/` | GLSL materials, array-target generation, ordering textures, uploads and readback |
 | `src/rendering/tsl/` | Shared TSL generation, projection, draw and resolve programs, view uniforms, node materials and readback |
 | `src/rendering/webgpu/` | Native compute projection, projection caches, GPU sorting and indirect drawing |
@@ -28,7 +29,8 @@
 
 | Owner | Responsibility |
 | --- | --- |
-| `GaussianSplatRenderer` | Updates, accumulator handoff, sorting, stochastic state, and companion depth |
+| `GaussianSplatRenderer` | Updates, accumulator handoff, sorting, stochastic state, companion depth, and capture render scopes |
+| `SplatCapture` | Offscreen targets, supersampled readback, cube captures and environment-map filtering |
 | `SplatAccumulator` | Scene mappings, versions, camera-relative data, and WebGL texture generation |
 | `StochasticResolvePass` | Scene composition, XR eye atlas, and renderer-state restoration |
 | WebGL backend | GLSL materials, ordering textures, array-target generation, readback, and PMREM |
@@ -37,6 +39,8 @@
 | Shared TSL code | Splat/resolve materials, generation math, output handling, readback and PMREM |
 
 The backend is selected at construction after `WebGPURenderer.init()`. Renderer identity selects the material API; the actual backend selects compute/storage or raster/textures. Both WebGL backends use asynchronous Worker/WASM sorting; native WebGPU sorts on the GPU before drawing.
+
+`GaussianSplatRenderer` forwards its existing capture methods to [`SplatCapture`](../src/rendering/SplatCapture.ts). Public target and pixel-buffer fields remain on the renderer; capture scopes restore the renderer override and sorted-render state. Cube targets and PMREM caching retain their shared lifetime.
 
 Resource rules:
 
@@ -58,7 +62,20 @@ PLY, SPZ, SOG and RAD decode in `gaussian-splat-lib` and publish through `SplatR
 - RAD retains its dataset codebooks between page requests. Each page decodes into a `SplatReceiver` and returns separate page/tree metadata for LOD scheduling.
 - `SplatReceiver.set_sh_palette()` has a native fallback through the SH band setters. `SplatsData` overrides it to copy packed palette words directly, preserving SOG's compact palette and avoiding a full float SH expansion.
 
+[`loadSplatData`](../src/loaders/loadSplatData.ts) coordinates main-thread decode requests, URL/file resolvers, cancellation, progress and loading-manager callbacks, and returns packed `SplatResult` data. It does not import `Splats` or scene classes. `Splats` uses it directly for file initialization; `SplatLoader` adapts it to the Three.js loader API and constructs or updates `Splats`. Completion callbacks run before the loading manager ends the item.
+
 `RadSource` and `SogSource` share byte reads, request settings and cancellation through `loaders/source.ts`. `sogZip.ts` handles ZIP access; ordinary loaders coordinate prefetch, decoding and assembly.
+
+## Post-decode boundaries
+
+- [`program.ts`](../src/loaders/postDecode/program.ts) owns the public `postDecode.define()` API, program identity and serialization entry point.
+- [`builder.ts`](../src/loaders/postDecode/builder.ts) builds typed expressions and validates output patches.
+- [`protocol.ts`](../src/loaders/postDecode/protocol.ts) defines opcodes, packed layouts and shared data types without importing the builder or runtime.
+- [`compiler.ts`](../src/loaders/postDecode/compiler.ts) reads the instruction graph, resolves conditional flow and dependencies, and packs instructions and attribute snapshots.
+- [`registers.ts`](../src/loaders/postDecode/registers.ts) allocates runtime registers and carries live values across condition stages.
+- [`operations.ts`](../src/loaders/postDecode/operations.ts) reads packed inputs and executes instruction ranges; [`runtime.ts`](../src/loaders/postDecode/runtime.ts) coordinates blocks, conditional execution and packed output writes.
+
+Decode workers import the runtime and protocol directly, keeping expression construction and compilation outside the worker dependency graph.
 
 ## Shared streaming boundaries
 

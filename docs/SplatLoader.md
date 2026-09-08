@@ -63,3 +63,4 @@ scene.add(mesh);
 await mesh.initialized;
 ```
 
+For the shared data-loading implementation used by `SplatLoader` and `Splats`, see [Decoder boundaries](Architecture.md#decoder-boundaries).
