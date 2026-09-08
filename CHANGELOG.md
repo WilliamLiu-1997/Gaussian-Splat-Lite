@@ -32,6 +32,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Increased the default `SplatMesh.minRaycastOpacity` from `0.1` to `0.15`.
+
+- Changed the default `preBlurAmount` to `0.3` and `blurAmount` to `0`, retaining opacity while expanding projected splats. Set them to `0` and `0.3` respectively to restore compensated blur.
+
+- Set the default `minPixelRadius` to 1 and corrected its units to screen pixels in both GLSL and TSL shaders. Divide old explicit values by `focalAdjustment` to preserve their previous cutoff.
+
 - Consolidated RAD/SOG streaming under `loaders/stream/`, sharing indexed data, workers, configuration and byte accounting. Separated format sources, ZIP access and index loading.
 - Added random reads and bounded page prefetch to ordinary RAD URL loading.
 

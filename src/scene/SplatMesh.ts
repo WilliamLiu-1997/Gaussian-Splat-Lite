@@ -123,7 +123,7 @@ export class SplatMesh extends THREE.Object3D {
     this.numSplats = this.splats.getNumSplats();
     this.editable = options.editable ?? true;
     this.raycastable = options.raycastable ?? true;
-    this.minRaycastOpacity = options.minRaycastOpacity ?? 0.1;
+    this.minRaycastOpacity = options.minRaycastOpacity ?? 0.15;
     this.onFrame = options.onFrame;
 
     if (!this.splats.isInitialized) {

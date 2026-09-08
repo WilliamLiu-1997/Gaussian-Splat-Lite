@@ -158,7 +158,7 @@ export const renderOptionGroups = [
         min: 0,
         max: 2,
         step: 0.01,
-        defaultValue: 0,
+        defaultValue: 0.3,
         format: (value) => value.toFixed(2),
       },
       {
@@ -168,7 +168,7 @@ export const renderOptionGroups = [
         min: 0,
         max: 2,
         step: 0.01,
-        defaultValue: 0.3,
+        defaultValue: 0,
         format: (value) => value.toFixed(2),
       },
       {

@@ -476,13 +476,17 @@ export function createSplatNodeMaterial({
               const scale2 = fullScale2.mul(supportScale);
               // Preserve the original wide-kernel minimum-size cutoff.
               const cullScale = N.select(kernelPower.equal(0), supportScale, 1);
+              // Match the internal projection scale to keep the cutoff in screen pixels.
+              const minProjectedRadius = minPixelRadius.mul(focalAdjustment);
 
               N.If(
                 fullScale1
                   .mul(cullScale)
-                  .greaterThanEqual(minPixelRadius)
+                  .greaterThanEqual(minProjectedRadius)
                   .or(
-                    fullScale2.mul(cullScale).greaterThanEqual(minPixelRadius),
+                    fullScale2
+                      .mul(cullScale)
+                      .greaterThanEqual(minProjectedRadius),
                   ),
                 () => {
                   const pixelOffset = eigenVector1

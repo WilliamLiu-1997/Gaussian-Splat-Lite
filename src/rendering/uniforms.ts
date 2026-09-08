@@ -48,9 +48,9 @@ export function makeSplatUniforms() {
     // Minimum alpha value for splat rendering
     minAlpha: { value: DEFAULT_MIN_ALPHA },
     // Add to projected 2D splat covariance diagonal (thickens and brightens)
-    preBlurAmount: { value: 0.0 },
+    preBlurAmount: { value: 0.3 },
     // Add to 2D splat covariance diagonal and adjust opacity (anti-aliasing)
-    blurAmount: { value: 0.3 },
+    blurAmount: { value: 0.0 },
     // Clip Gsplats that are clipXY times beyond the +-1 frustum bounds
     clipXY: { value: 1.25 },
     // Debug renderSize scale factor
