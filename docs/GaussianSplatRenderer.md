@@ -83,13 +83,15 @@ Custom XR graphs must restore the XR output target before calling `resolve(rende
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `maxStdDev` | `number` | `Math.sqrt(8)` | Maximum standard deviations drawn from each Gaussian center; lower values improve speed but crop edges |
-| `minPixelRadius` | `number` | `1` | Minimum screen-space Splat radius |
+| `minPixelRadius` | `number` | `1` | Minimum Splat radius in screen pixels, independent of the internal `focalAdjustment` scale |
 | `maxPixelRadius` | `number` | `512` | Maximum screen-space Splat radius |
 | `minAlpha` | `number` | `0.5 / 255` | Fragments below this alpha are discarded |
-| `preBlurAmount` | `number` | `0` | Adds to the covariance diagonal before opacity correction |
-| `blurAmount` | `number` | `0.3` | Anti-aliasing blur amount with opacity correction |
+| `preBlurAmount` | `number` | `0.3` | Adds to the covariance diagonal before opacity correction |
+| `blurAmount` | `number` | `0` | Anti-aliasing blur amount with opacity correction |
 | `clipXY` | `number` | `1.25` | Center-clipping factor relative to the X/Y frustum boundary; `1` clips immediately outside it |
 | `focalAdjustment` | `number` | `2` | Projected Splat-size adjustment; larger values generally look sharper |
+
+`minPixelRadius=1` means approximately a 1 px screen-radius cutoff. Previously, the effective cutoff was `minPixelRadius / focalAdjustment`; divide an old explicit value by `focalAdjustment` to preserve its previous cutoff. Wide kernels retain the full-support size test before transparent-tail trimming.
 
 ## Sorting, material, and offscreen options
 

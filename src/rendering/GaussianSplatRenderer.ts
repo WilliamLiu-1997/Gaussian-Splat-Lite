@@ -92,10 +92,10 @@ export interface GaussianSplatRendererOptions {
    * @default Math.sqrt(8)
    */
   maxStdDev?: number;
-  /*
-   **
-   * Minimum pixel radius for splat rendering.
-   * @default 0.0
+  /**
+   * Minimum screen-pixel radius for splat rendering, independent of the
+   * internal projection scale used by focalAdjustment.
+   * @default 1.0
    */
   minPixelRadius?: number;
   /**
@@ -112,13 +112,14 @@ export interface GaussianSplatRendererOptions {
    * Scalar value to add to 2D splat covariance diagonal, effectively blurring +
    * enlarging splats. In scenes trained without the Gsplat anti-aliasing tweak
    * this value was typically 0.3, but with anti-aliasing it is 0.0
-   * @default 0.0
+   * @default 0.3
    */
   preBlurAmount?: number;
   /**
-   * Scalar value to add to 2D splat covarianve diagonal, with opacity adjustment
-   * to correctly account for "blurring" when anti-aliasing. Typically 0.3
-   * (equivalent to approx 0.5 pixel radius) in scenes trained with anti-aliasing.
+   * Scalar value to add to the projected 2D splat covariance diagonal, with
+   * opacity adjustment for anti-aliasing. Set to 0.3 with preBlurAmount = 0
+   * to enable compensated blur. Its screen-space scale depends on focalAdjustment.
+   * @default 0.0
    */
   blurAmount?: number;
   /**
@@ -395,8 +396,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.minPixelRadius = options.minPixelRadius ?? 1.0;
     this.maxPixelRadius = options.maxPixelRadius ?? 512.0;
     this.minAlpha = options.minAlpha ?? DEFAULT_MIN_ALPHA;
-    this.preBlurAmount = options.preBlurAmount ?? 0.0;
-    this.blurAmount = options.blurAmount ?? 0.3;
+    this.preBlurAmount = options.preBlurAmount ?? 0.3;
+    this.blurAmount = options.blurAmount ?? 0.0;
     this.clipXY = options.clipXY ?? 1.25;
     this.focalAdjustment = options.focalAdjustment ?? 2.0;
     this.sortRadial = options.sortRadial ?? false;

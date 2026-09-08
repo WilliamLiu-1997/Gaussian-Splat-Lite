@@ -225,7 +225,9 @@ void main() {
     // Wide kernels previously used their full support for the size cutoff.
     // Keep that visibility decision when trimming only their transparent tails.
     float cullScale = (kernelPower == 0.0) ? supportScale : 1.0;
-    if (scale1 * cullScale < minPixelRadius && scale2 * cullScale < minPixelRadius) {
+    // Projected radii use scaledRenderSize; convert the screen-pixel cutoff too.
+    float minProjectedRadius = minPixelRadius * focalAdjustment;
+    if (scale1 * cullScale < minProjectedRadius && scale2 * cullScale < minProjectedRadius) {
         return;
     }
     scale1 *= supportScale;
