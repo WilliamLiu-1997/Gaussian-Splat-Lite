@@ -30,8 +30,10 @@ A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/Web
 ## Installation
 
 ```sh
-npm install gaussian-splat-lite three@0.186.0
+npm install gaussian-splat-lite three
 ```
+
+Requires Three.js `>=0.186.0`.
 
 ## Quick start
 

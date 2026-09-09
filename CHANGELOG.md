@@ -24,7 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Updated the Three.js peer dependency from `>=0.185.1` to `^0.186.0`, pinned development to `0.186.0`, and removed compatibility workarounds fixed upstream.
+- Updated the Three.js peer dependency from `>=0.185.1` to `>=0.186.0`, pinned development to `0.186.0`, and removed compatibility workarounds fixed upstream.
 - Replaced `stream` and `streamLength` loading inputs with `file: Blob` (including `File`) in `Splats` and `SplatMesh`. PLY/SPZ files stream inside the worker; local SOG/RAD files use random reads. Existing `url` and `fileBytes` inputs remain available.
 - Changed the default `preBlurAmount` from `0` to `0.3` and `blurAmount` from `0.3` to `0`, expanding projected Splats without the previous blur opacity compensation. Set them to `0` and `0.3`, respectively, to restore the previous behavior.
 - Corrected `minPixelRadius` to use screen pixels independently of `focalAdjustment`. Its default remains `1`; divide previous values by `focalAdjustment` to preserve the old cutoff.
