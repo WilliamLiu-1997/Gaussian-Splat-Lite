@@ -152,6 +152,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     }
     state.controls = new CameraController(state.renderer, scene, camera, {
       worldUp: camera.up,
+      damping: 0.1,
     });
     if (previous) state.controls.minDistance = previous.controls.minDistance;
     state.frameGate = createFrameGate(
