@@ -1134,7 +1134,7 @@ button {
 
 .drop-overlay {
   position: fixed;
-  z-index: 10;
+  z-index: 20;
   inset: 0.6rem;
   display: grid;
   place-items: center;
@@ -1181,7 +1181,7 @@ button {
   position: fixed;
   right: 1rem;
   bottom: 4.2rem;
-  z-index: 12;
+  z-index: 30;
   max-width: min(28rem, calc(100vw - 2rem));
   padding: 0.78rem 0.9rem;
   border: 1px solid rgb(255 127 117 / 30%);
