@@ -95,7 +95,7 @@ Keep the rest of the example, including `renderDepth`.
 
 ## Streaming large scenes
 
-Use `RadStreamScheduler` for RAD files with a LOD tree, or `SogStreamScheduler` for SOG scenes indexed by `lod-meta.json`. Both work with the same `GaussianSplatRenderer` on WebGPU and WebGL2, loading and retaining data as the camera moves.
+Use `RadStreamScheduler` for RAD files, or `SogStreamScheduler` for SOG scenes. Both work with the same `GaussianSplatRenderer` on WebGPU and WebGL2, loading and retaining data as the camera moves.
 
 For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
 
@@ -173,10 +173,6 @@ npm run dev
 ```
 
 Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGL2 / WebGPU / WebGPU · WebGL2** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
-
-The viewer enables `reversedDepthBuffer` for depth precision on WebGPU and both WebGL2 backends. WebGL2 uses it when `EXT_clip_control` is available.
-
-For streaming, load a RAD file or enter a SOG `lod-meta.json` URL. The viewer streams RAD files with a LOD tree automatically and falls back to ordinary loading when no tree is present. Move the camera to see LOD selection and on-demand loading.
 
 See [Contributing](CONTRIBUTING.md#validation) for validation and release commands. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
 
