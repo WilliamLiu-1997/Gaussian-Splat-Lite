@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-09
+
 ### Added
 
 - Added `WebGPURenderer` support for native WebGPU, `forceWebGL`, and automatic WebGL2 fallback, using shared TSL shaders. Native WebGPU projects and culls Splats before 32-bit GPU sorting and indirect drawing; both WebGL backends use asynchronous Worker/WASM sorting. The new read-only `synchronousSort` property reports the backend's sorting mode.
@@ -229,7 +231,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.16...v1.0.0
 [0.1.16]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.13...v0.1.14
