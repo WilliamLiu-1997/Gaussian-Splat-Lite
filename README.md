@@ -14,7 +14,7 @@
 
 </div>
 
-A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering for scene occlusion**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD files into standard Three.js scenes, stream RAD and SOG scenes with camera-driven LOD, and render multiple Splat objects together.
+3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering for scene occlusion**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD files into standard Three.js scenes, stream RAD and SOG scenes with camera-driven LOD, and render multiple Splat objects together.
 
 ## Features
 
