@@ -18,8 +18,23 @@ export default defineConfig({
   },
 
   build: {
+    target: "es2022",
     outDir: "site-dist",
     sourcemap: true,
+  },
+
+  server: {
+    watch: {
+      // Keep polling for external drives without scanning Rust build artifacts.
+      usePolling: true,
+      interval: 1000,
+      ignored: ["**/rust/target/**", "**/dist/**", "**/._*"],
+    },
+    port: 8080,
+  },
+
+  optimizeDeps: {
+    exclude: ["three", "three/webgpu", "three/tsl"],
   },
 
   worker: {

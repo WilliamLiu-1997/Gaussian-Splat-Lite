@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="A PLY and SPZ Gaussian Splatting viewer powered by Gaussian Splat Lite."
+      content="A PLY, SPZ, SOG and RAD Gaussian Splatting viewer powered by Gaussian Splat Lite."
     />
     <title>Gaussian Splat Lite · Gaussian Splatting Viewer</title>
     <link
@@ -69,6 +69,19 @@
             <span class="reset-view-label">Reset view</span>
           </button>
           <button
+            id="reference-toggle"
+            class="button button-quiet reference-toggle"
+            type="button"
+            aria-label="Grid and axes"
+            aria-pressed="true"
+            title="Hide grid and axes"
+          >
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M3 3h14v14H3z" />
+              <path d="M3 10h14M10 3v14" stroke-dasharray="2 2" />
+            </svg>
+          </button>
+          <button
             id="render-options-toggle"
             class="button button-quiet"
             type="button"
@@ -89,6 +102,31 @@
           >
             Open file
           </button>
+        </div>
+        <div id="source-up-axis" class="source-up-axis" role="radiogroup" aria-labelledby="source-up-axis-label" hidden>
+          <span id="source-up-axis-label">Up axis</span>
+          <div class="source-up-axis-choices">
+            <label title="Use the model's default orientation">
+              <input type="radio" name="source-up-axis" value="auto" checked />
+              <span>Default</span>
+            </label>
+            <label>
+              <input type="radio" name="source-up-axis" value="y-up" />
+              <span>Y up</span>
+            </label>
+            <label>
+              <input type="radio" name="source-up-axis" value="y-down" />
+              <span>Y down</span>
+            </label>
+            <label>
+              <input type="radio" name="source-up-axis" value="z-up" />
+              <span>Z up</span>
+            </label>
+            <label>
+              <input type="radio" name="source-up-axis" value="z-down" />
+              <span>Z down</span>
+            </label>
+          </div>
         </div>
       </header>
 
@@ -114,8 +152,12 @@
           <p class="eyebrow">Gaussian Splatting Viewer</p>
           <h1 id="viewer-title">Drop a splat file here</h1>
           <p class="empty-description">
-            Choose a <strong>.ply</strong> or <strong>.spz</strong> file from your
-            device, or load one from a URL. The model is decoded in this browser.
+            Choose a <strong>.ply</strong>, <strong>.spz</strong>,
+            <strong>.sog</strong>, or <strong>.rad</strong> file from your device,
+            or load one from a URL. For split scenes, include SOG meta.json and its
+            .webp images, or the RAD header and its .radc files. For streamed SOG,
+            drop the folder containing lod-meta.json and its chunks, or select all its files.
+            The model is decoded in this browser.
           </p>
           <div class="source-actions">
             <button
@@ -124,7 +166,7 @@
               type="button"
               data-file-picker
             >
-              Choose PLY or SPZ
+              Choose PLY, SPZ, SOG, or RAD
             </button>
             <button
               id="load-example"
@@ -139,7 +181,7 @@
           </div>
           <form id="url-form" class="url-form">
             <label class="visually-hidden" for="model-url">
-              PLY or SPZ model URL
+              PLY, SPZ, SOG, RAD, or Streamed SOG model URL
             </label>
             <input
               id="model-url"
@@ -154,7 +196,7 @@
               Load
             </button>
           </form>
-          <p class="url-hint">Remote host must allow CORS</p>
+          <p class="url-hint">Stream RAD or a SOG lod-meta.json scene. Remote hosts must allow CORS; single-file RAD streaming requires byte-range requests.</p>
         </section>
       </main>
 
@@ -201,12 +243,12 @@
           <a
             id="model-credit"
             class="model-credit"
-            href="https://superspl.at/user?id=rohls"
+            href="https://superspl.at/scene/16e528da"
             target="_blank"
             rel="noreferrer"
-            title="Lion model by Renaud"
+            title="Multi Material Splats by hybridherbst (CC BY 4.0)"
             hidden
-          >Renaud</a>
+          >hybridherbst</a>
         </div>
       </footer>
     </div>
@@ -242,12 +284,12 @@
       <div class="drop-overlay-card">
         <span class="drop-plus" aria-hidden="true">+</span>
         <strong>Drop to open</strong>
-        <span>PLY and SPZ files only</span>
+        <span>PLY, SPZ, SOG, or RAD; drop a scene folder or include all companion files</span>
       </div>
     </div>
 
     <div id="toast" class="toast" role="alert" hidden></div>
-    <input id="file-input" type="file" accept=".ply,.spz" hidden />
+    <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp" multiple hidden />
 
     <script type="module" src="/examples/viewer/viewer.js"></script>
   </body>

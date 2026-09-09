@@ -11,6 +11,7 @@ use miniz_oxide::inflate::{
 
 use crate::{
     ply::{PlyDecoder, PLY_MAGIC},
+    splat_encode::decode_splat_sh_rgb,
     spz::{SpzDecoder, SPZ_MAGIC},
 };
 
@@ -88,6 +89,37 @@ pub trait SplatReceiver: 'static {
     fn set_sh1(&mut self, base: usize, count: usize, sh1: &[f32]) {}
     fn set_sh2(&mut self, base: usize, count: usize, sh2: &[f32]) {}
     fn set_sh3(&mut self, base: usize, count: usize, sh3: &[f32]) {}
+
+    /// Expands a packed shared SH palette through the normal band setters.
+    /// Encoded receivers can override this to copy palette words directly.
+    fn set_sh_palette(
+        &mut self,
+        base: usize,
+        count: usize,
+        degree: usize,
+        palette: &[u32],
+        labels: &[u16],
+    ) {
+        let stride = [0, 4, 8, 16][degree];
+        let mut values = Vec::new();
+        let mut offset = 0;
+        for (band, coefficients) in [3, 5, 7].into_iter().enumerate().take(degree) {
+            values.resize(count * coefficients * 3, 0.0);
+            for (i, &label) in labels.iter().take(count).enumerate() {
+                for coefficient in 0..coefficients {
+                    let word = palette[label as usize * stride + offset + coefficient];
+                    let start = (i * coefficients + coefficient) * 3;
+                    values[start..start + 3].copy_from_slice(&decode_splat_sh_rgb(word));
+                }
+            }
+            match band {
+                0 => self.set_sh1(base, count, &values),
+                1 => self.set_sh2(base, count, &values),
+                _ => self.set_sh3(base, count, &values),
+            }
+            offset += coefficients;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -286,72 +318,9 @@ fn new_decoder<T: SplatReceiver>(file_type: SplatFileType, splats: T) -> Box<dyn
 }
 
 fn try_gunzip(buffer: &[u8], max_bytes: usize) -> anyhow::Result<Option<Vec<u8>>> {
-    if buffer.len() < 10 {
+    let Some(end) = parse_gzip_header(buffer)? else {
         return Ok(None);
-    }
-    if buffer[0] != 0x1f || buffer[1] != 0x8b || buffer[2] != 8 {
-        return Err(anyhow::anyhow!("Invalid gzip header"));
-    }
-
-    let flags = buffer[3];
-    let mut end = 10;
-
-    if (flags & 0x04) != 0 {
-        if buffer.len() < end + 2 {
-            return Ok(None);
-        }
-        let extra_len = (buffer[end] as usize) | ((buffer[end + 1] as usize) << 8);
-        end += 2;
-        if buffer.len() < end + extra_len {
-            return Ok(None);
-        }
-        end += extra_len;
-    }
-
-    if (flags & 0x08) != 0 {
-        let mut null = end;
-        let mut found = false;
-        while null < buffer.len() {
-            if buffer[null] == 0 {
-                null += 1;
-                found = true;
-                break;
-            }
-            null += 1;
-        }
-        if !found {
-            return Ok(None);
-        }
-        end = null;
-    }
-
-    if (flags & 0x10) != 0 {
-        let mut null = end;
-        let mut found = false;
-        while null < buffer.len() {
-            if buffer[null] == 0 {
-                null += 1;
-                found = true;
-                break;
-            }
-            null += 1;
-        }
-        if !found {
-            return Ok(None);
-        }
-        end = null;
-    }
-
-    if (flags & 0x02) != 0 {
-        if buffer.len() < end + 2 {
-            return Ok(None);
-        }
-        end += 2;
-    }
-
-    if buffer.len() <= end {
-        return Ok(None);
-    }
+    };
 
     let mut buffer_gz = vec![0u8; max_bytes];
     let mut decompressor = DecompressorOxide::new();
@@ -374,4 +343,53 @@ fn try_gunzip(buffer: &[u8], max_bytes: usize) -> anyhow::Result<Option<Vec<u8>>
         }
         _ => Err(anyhow::anyhow!("Decompression failed: {:?}", status)),
     }
+}
+
+pub(crate) fn parse_gzip_header(buffer: &[u8]) -> anyhow::Result<Option<usize>> {
+    if buffer.len() < 10 {
+        return Ok(None);
+    }
+    if buffer[0] != 0x1f || buffer[1] != 0x8b || buffer[2] != 8 {
+        return Err(anyhow::anyhow!("Invalid gzip header"));
+    }
+
+    let flags = buffer[3];
+    if flags & 0xe0 != 0 {
+        return Err(anyhow::anyhow!("Invalid gzip flags"));
+    }
+    let mut end = 10;
+
+    if (flags & 0x04) != 0 {
+        if buffer.len() < end + 2 {
+            return Ok(None);
+        }
+        let extra_len = (buffer[end] as usize) | ((buffer[end + 1] as usize) << 8);
+        end += 2;
+        if buffer.len() < end + extra_len {
+            return Ok(None);
+        }
+        end += extra_len;
+    }
+
+    for flag in [0x08, 0x10] {
+        if flags & flag != 0 {
+            let Some(null) = buffer[end..].iter().position(|byte| *byte == 0) else {
+                return Ok(None);
+            };
+            end += null + 1;
+        }
+    }
+
+    if (flags & 0x02) != 0 {
+        if buffer.len() < end + 2 {
+            return Ok(None);
+        }
+        let expected = u16::from_le_bytes([buffer[end], buffer[end + 1]]);
+        if crc32fast::hash(&buffer[..end]) as u16 != expected {
+            return Err(anyhow::anyhow!("Gzip header checksum mismatch"));
+        }
+        end += 2;
+    }
+
+    Ok(Some(end))
 }

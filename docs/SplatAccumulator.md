@@ -1,8 +1,12 @@
 # SplatAccumulator
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-`SplatAccumulator` is the low-level GPU generation buffer used by `GaussianSplatRenderer` to combine visible `SplatMesh` objects into renderable texture arrays. Applications normally should not construct or update it directly.
+Low-level scene mappings and WebGL GPU storage for combining visible Splat meshes. Applications normally use `GaussianSplatRenderer.update()` instead.
+
+Native WebGPU uses this class only for scene mappings, edit metadata and the camera-relative origin. Texture generation is WebGL-only; `ensureGenerate()` and `generate()` reject native WebGPU renderers.
+
+The WebGPURenderer WebGL2 fallback rasterizes the same TSL generation program into integer array render targets. Both WebGL paths pad each mesh to texture rows and use CPU sorting. The Three.js r186 fallback backend requires at least two array layers, so fallback accumulator textures reserve a second layer even for smaller scenes.
 
 ## Constructor
 
@@ -26,12 +30,10 @@ new SplatAccumulator()
 
 | API | Description |
 | --- | --- |
-| `getTextures()` | Returns the two generated standard-layout Splat data textures, or empty fallback textures before allocation |
-| `generateMapping(splatCounts)` | Assigns texture-row-aligned ranges and returns their required capacity |
-| `ensureGenerate({ maxSplats })` | Allocates or grows the generation target; returns whether a new target was created |
+| `getTextures()` | Returns the two generated standard-layout Splat textures, or empty fallback textures before allocation |
+| `generateMapping(splatCounts, compact?)` | Assigns ranges and returns their required capacity; compact ranges omit per-mesh row padding |
+| `ensureGenerate({ maxSplats, renderer?, shrinkResources? })` | Allocates, grows, or optionally shrinks accumulator GPU storage |
 | `generate({ mesh, base, count, renderer })` | Generates one mesh into its assigned accumulator range |
-| `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collects visible meshes, runs frame updates, compares versions, and returns a deferred generation plan |
+| `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collects visible meshes, runs frame updates, compares versions, and returns mappings and a deferred generation plan |
 | `checkVersions(mapping)` | Reports generated-data, mapping, and sorting changes relative to another mapping |
-| `dispose()` | Releases the render target and drops retained mesh mappings |
-
-`prepareGenerate()`, `generate()`, and version management are renderer plumbing. Use `GaussianSplatRenderer.update()` for normal manual updates.
+| `dispose()` | Releases accumulator GPU storage and drops retained mesh mappings |

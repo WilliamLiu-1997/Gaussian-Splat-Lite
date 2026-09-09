@@ -1,0 +1,802 @@
+import * as THREE from "three";
+import {
+  type RadSelectionRange,
+  radPageTextureLayout,
+} from "../../../data/RadPagedSplats";
+import { getSplatTextureBytes } from "../../../data/splatData";
+import type { RadChunkData, RadMeta } from "../../rad/radFormat";
+import { getRadChunkByteLength, getRadChunkSpan } from "../../rad/radFormat";
+import { StreamByteBudget } from "../StreamByteBudget";
+import {
+  type StreamSchedulerOptions,
+  type StreamStats,
+  notifyStreamChange,
+  notifyStreamError,
+  retryDelay,
+  streamPendingLimit,
+  streamSettings,
+} from "../streamOptions";
+import { RadStreamBatch } from "./RadStreamBatch";
+import {
+  RadStreamLoader,
+  type RadStreamLoaderOptions,
+} from "./RadStreamLoader";
+import type { RadStreamSelection } from "./radFade";
+import { type RadLodSelection, type RadLodView, radChunkIndex } from "./radLod";
+
+export type RadStreamSchedulerOptions = RadStreamLoaderOptions &
+  StreamSchedulerOptions;
+export type RadStreamStats = StreamStats & {
+  pageBudget: number;
+  lodTimeMs: number;
+};
+
+type Pool = {
+  batch: RadStreamBatch;
+  slots: (Page | undefined)[];
+};
+type Page = {
+  index: number;
+  base: number;
+  count: number;
+  /** Reserved before writing; data remains present until the slot is populated. */
+  pool?: Pool;
+  slot?: number;
+  data?: RadChunkData;
+  controller?: AbortController;
+  decoded?: boolean;
+  reservedBytes: number;
+  failures: number;
+  retryAt: number;
+  expiresAt?: number;
+};
+
+const EMPTY_INDICES = new Uint32Array(0);
+
+/** Camera-driven RAD tree cuts with crossfades, on-demand pages and cooldown. */
+export class RadStreamScheduler {
+  readonly group: THREE.Group;
+  readonly initialized: Promise<this>;
+  readonly firstRenderable: Promise<this>;
+  readonly splatBudget: number;
+  readonly cooldownTicks: number;
+  readonly fadeDurationMs: number;
+  readonly maxConcurrentLoads: number;
+  readonly maxUploadBytesPerUpdate: number;
+  private readonly loader: RadStreamLoader;
+  private readonly abort = new AbortController();
+  private readonly pages = new Map<number, Page>();
+  private readonly pools: Pool[] = [];
+  private readonly bounds = new THREE.Box3();
+  private readonly matrix = new THREE.Matrix4();
+  private readonly point = new THREE.Vector3();
+  private meta?: RadMeta;
+  private pageSize = 0;
+  private pageStride = 0;
+  private pageBudget = 0;
+  private numSh = 0;
+  private maxPagePendingBytes = 0;
+  private tick = 0;
+  private disposed = false;
+  private shown = true;
+  private selection?: RadLodSelection;
+  private readySelection?: RadStreamSelection;
+  private reselectAfterReady = false;
+  private transition?: {
+    startedAt: number;
+    pools: Set<Pool>;
+  };
+  private wanted = new Set<number>();
+  private protectedPages = new Set<number>();
+  private inFlightPages?: Set<number>;
+  private readyPages?: Set<number>;
+  private revision = 0;
+  private lastRequestedRevision = -1;
+  private lastViewKey = "";
+  private views: RadLodView[] = [];
+  private lodTimeMs = 0;
+  private resolveFirst!: (value: this) => void;
+  private rejectFirst!: (error: unknown) => void;
+
+  constructor(private readonly options: RadStreamSchedulerOptions) {
+    this.group = options.group ?? new THREE.Group();
+    const settings = streamSettings(options);
+    this.splatBudget = settings.splatBudget;
+    this.cooldownTicks = settings.cooldownTicks;
+    this.fadeDurationMs = settings.fadeDurationMs;
+    this.maxConcurrentLoads = settings.maxConcurrentLoads;
+    this.maxUploadBytesPerUpdate = settings.maxUploadBytesPerUpdate;
+    this.loader = new RadStreamLoader(options, this.maxConcurrentLoads);
+    this.firstRenderable = new Promise((resolve, reject) => {
+      this.resolveFirst = resolve;
+      this.rejectFirst = reject;
+    });
+    this.initialized = this.initialize().catch((error) => {
+      this.rejectFirst(error);
+      this.loader.dispose();
+      throw error;
+    });
+    void this.initialized.catch(() => {});
+    void this.firstRenderable.catch(() => {});
+  }
+
+  get stats(): RadStreamStats {
+    const loader = this.loader.stats;
+    let pendingBytes = 0;
+    let residentChunks = 0;
+    let loadingChunks = 0;
+    for (const page of this.pages.values()) {
+      if (page.pool && !page.data) residentChunks++;
+      if (page.controller && !page.decoded) loadingChunks++;
+      pendingBytes += page.data
+        ? getRadChunkByteLength(page.data)
+        : page.reservedBytes;
+    }
+    return {
+      visibleSplats: this.shown
+        ? this.pools.reduce((sum, { batch }) => sum + batch.numSplats, 0)
+        : 0,
+      visibleMeshes: this.shown
+        ? this.pools.filter(({ batch }) => batch.numSplats > 0).length
+        : 0,
+      residentChunks,
+      residentMeshes: this.pools.length,
+      residentBytes:
+        this.pools.reduce(
+          (sum, { batch }) => sum + batch.source.residentBytes,
+          0,
+        ) +
+        loader.estimatedCodebookBytes +
+        loader.bootstrapBytes +
+        loader.cachedBytes +
+        (this.selection?.indices.byteLength ?? 0),
+      pendingBytes,
+      loadingChunks,
+      downloadedBytes: loader.downloadedBytes,
+      peakWasmMemoryBytes: loader.peakWasmMemoryBytes,
+      pageBudget: this.pageBudget,
+      lodTimeMs: this.lodTimeMs,
+    };
+  }
+
+  /** Group-local root bounds plus selected Gaussian extents; approximate while streaming. */
+  getBoundingBox(): THREE.Box3 {
+    const box = this.bounds.clone();
+    // Coarse centers can cluster inside large Gaussians. Include their extent
+    // here so callers can frame the scene without inspecting owned batches.
+    for (const { batch } of this.pools) {
+      if (!batch.numSplats) continue;
+      if (batch.matrixAutoUpdate) batch.updateMatrix();
+      box.union(batch.getBoundingBox(false).applyMatrix4(batch.matrix));
+    }
+    return box;
+  }
+
+  private async initialize() {
+    const { meta } = await this.loader.initialize(this.abort.signal);
+    this.abort.signal.throwIfAborted();
+    if (meta.count && !meta.lodTree) {
+      const error = new Error(
+        "RAD streaming requires a LOD tree; load this file with SplatMesh instead",
+      );
+      error.name = "RadLodRequiredError";
+      throw error;
+    }
+    this.meta = meta;
+    this.numSh = meta.maxSh ?? 0;
+    if (!meta.count) {
+      this.resolveFirst(this);
+      this.changed();
+      return this;
+    }
+    this.pageSize = getRadChunkSpan(meta, 0).count;
+    for (let index = 1; index < meta.chunks.length; index++)
+      this.pageSize = Math.max(
+        this.pageSize,
+        getRadChunkSpan(meta, index).count,
+      );
+    this.pageStride = radPageTextureLayout({
+      pageSize: this.pageSize,
+      pageCount: 1,
+    }).pageStride;
+    const paddedCount = Math.ceil(this.pageSize / 2048) * 2048;
+    this.maxPagePendingBytes =
+      getSplatTextureBytes(paddedCount, this.numSh) +
+      paddedCount * 12 +
+      // Child metadata plus the separate tree copy awaiting worker registration.
+      this.pageSize * 32;
+    this.pageBudget = meta.chunks.length;
+    this.wanted.add(0);
+    this.pump();
+    this.changed();
+    return this;
+  }
+
+  /** Call before rendering; physical pixel dimensions include device pixel ratio.
+   * ArrayCamera uses a shared cut selected at the greatest per-eye detail. */
+  update(
+    camera: THREE.Camera,
+    viewport: { width: number; height: number } = { width: 1024, height: 1024 },
+  ): boolean {
+    if (this.disposed || !this.meta) return false;
+    if (
+      !(viewport.width > 0 && viewport.height > 0) ||
+      !Number.isFinite(viewport.width + viewport.height)
+    )
+      throw new Error("RAD viewport dimensions must be positive and finite");
+    this.tick++;
+    for (const { batch } of this.pools) batch.source.beginUpdate();
+    const now = performance.now();
+    camera.updateWorldMatrix(true, false);
+    this.group.updateWorldMatrix(true, false);
+    let shown = true;
+    for (
+      let object: THREE.Object3D | null = this.group;
+      object;
+      object = object.parent
+    )
+      shown &&= object.visible;
+    shown &&= camera.layers.test(this.group.layers);
+    let changed = false;
+    if (shown !== this.shown) {
+      this.shown = shown;
+      this.revision++;
+      if (!shown) {
+        for (const { batch } of this.pools)
+          changed = batch.setSelection(EMPTY_INDICES) || changed;
+        this.selection = undefined;
+        this.readySelection = undefined;
+        this.reselectAfterReady = false;
+        this.readyPages = undefined;
+        this.transition = undefined;
+        this.protectedPages.clear();
+        this.wanted.clear();
+        this.cancelUnusedLoads();
+      }
+    }
+    for (const { batch } of this.pools)
+      batch.layers.mask = this.group.layers.mask;
+    const cameras = (camera as THREE.ArrayCamera).isArrayCamera
+      ? (camera as THREE.ArrayCamera).cameras
+      : [camera];
+    this.views = cameras.map((eye) => {
+      eye.updateWorldMatrix(true, false);
+      this.matrix
+        .copy(eye.matrixWorld)
+        .invert()
+        .multiply(this.group.matrixWorld);
+      const eyeViewport = (
+        eye as THREE.PerspectiveCamera & { viewport?: THREE.Vector4 }
+      ).viewport;
+      const width = eyeViewport?.z ?? viewport.width;
+      const height = eyeViewport?.w ?? viewport.height;
+      return {
+        viewFromObject: this.matrix.elements.slice(),
+        pixelScale:
+          Math.max(
+            Math.abs(eye.projectionMatrix.elements[0]) * width,
+            Math.abs(eye.projectionMatrix.elements[5]) * height,
+          ) / 2,
+        orthographic:
+          (eye as THREE.OrthographicCamera).isOrthographicCamera === true,
+      };
+    });
+    const key = this.views
+      .map(
+        (view) =>
+          `${view.viewFromObject.join(",")}/${view.pixelScale}/${view.orthographic}`,
+      )
+      .join(";");
+    if (key !== this.lastViewKey) {
+      this.lastViewKey = key;
+      this.revision++;
+    }
+    if (shown && this.meta.count && !this.pages.get(0)?.pool)
+      this.wanted.add(0);
+    changed = this.updateFade(now) || changed;
+    if (shown) {
+      this.reservePages();
+      changed = this.uploadPages() || changed;
+    }
+    // Traversal can use reserved slots; drawing waits for their data and fades.
+    if (
+      this.readySelection &&
+      !this.transition &&
+      this.selectionPagesReady(this.readySelection)
+    ) {
+      const selected = this.readySelection;
+      this.readySelection = undefined;
+      this.readyPages = undefined;
+      changed = this.applySelection(selected, now) || changed;
+      if (this.reselectAfterReady) {
+        this.reselectAfterReady = false;
+        this.revision++;
+      }
+    }
+    changed = this.releaseUnused() || changed;
+    if (shown) {
+      void this.requestSelection();
+      this.pump();
+    }
+    if (changed) this.changed();
+    return changed;
+  }
+
+  private async requestSelection() {
+    if (
+      this.disposed ||
+      !this.shown ||
+      this.inFlightPages ||
+      !this.meta?.count ||
+      !this.views.length ||
+      this.lastRequestedRevision === this.revision ||
+      !this.pages.get(0)?.pool
+    )
+      return;
+    const residentChunks = [...this.pages.values()]
+      .filter((page) => page.pool)
+      .map((page) => page.index);
+    this.inFlightPages = new Set(residentChunks);
+    this.lastRequestedRevision = this.revision;
+    const previous = this.selection;
+    const started = performance.now();
+    try {
+      const selection = await this.loader.selectLod(
+        {
+          views: this.views,
+          splatBudget: this.splatBudget,
+          pixelThreshold: 2,
+          residentChunks,
+          hysteresis: 0.15,
+        },
+        previous?.indices,
+        this.fadeDurationMs > 0,
+      );
+      if (this.disposed || !this.shown) return;
+      this.lodTimeMs = performance.now() - started;
+      // Keep the selected tree path while its reserved pages await writing.
+      this.wanted = new Set(selection.wantedChunks);
+      for (const index of selection.touchedChunks) this.wanted.add(index);
+      this.cancelUnusedLoads();
+      this.pump();
+      // A completed cut may be applied or hidden during traversal. Recompute
+      // against its new fade baseline, but accept camera lag to avoid starvation.
+      if (this.selection !== previous) {
+        this.lastRequestedRevision = -1;
+        this.changed();
+        return;
+      }
+      if (
+        this.readySelection &&
+        !this.transition &&
+        !this.selectionPagesReady(selection)
+      ) {
+        // Finish the waiting cut instead of chasing newly decoded pages forever.
+        // Loading still follows the latest result; refresh after publication.
+        this.reselectAfterReady = true;
+      } else {
+        this.readySelection = selection;
+        this.readyPages = new Set(selection.touchedChunks);
+        this.reselectAfterReady = false;
+      }
+      this.changed();
+    } catch (error) {
+      if (!this.disposed) {
+        this.rejectFirst(error);
+        this.failed(error, -1);
+      }
+    } finally {
+      this.inFlightPages = undefined;
+      // Release unused reservations before the next snapshot pins them again.
+      if (!this.disposed) {
+        const revision = this.revision;
+        this.cancelUnusedLoads();
+        const released = this.releaseUnused();
+        if (released || revision !== this.revision) {
+          this.changed();
+          this.pump();
+        }
+      }
+      // Updates overwrite views/revision while this task runs. Dispatch their
+      // latest snapshot immediately; ready results never block the next task.
+      void this.requestSelection();
+    }
+  }
+
+  private selectionPagesReady(selection: RadStreamSelection) {
+    // Shared and outgoing nodes are already displayed; only changed pages may
+    // still be unwritten. Ancestors need not delay publishing the selected cut.
+    return selection.changedChunks.every((index) => {
+      const page = this.pages.get(index);
+      return page?.pool && !page.data;
+    });
+  }
+
+  private renderSelection(
+    indices: Uint32Array,
+    fades: Uint8Array | undefined,
+    affected: Set<Pool>,
+  ) {
+    const meta = this.meta as RadMeta;
+    const selections = new Map<Pool, RadSelectionRange[]>();
+    // Cuts and fade unions are sorted by file index. Resolve each page once,
+    // rather than looking up pages and pools for every selected node twice.
+    for (let start = 0; start < indices.length; ) {
+      const page = this.pages.get(radChunkIndex(meta, indices[start]));
+      if (!page?.pool || page.slot === undefined)
+        throw new Error("RAD cut references a retired page");
+      const pageEnd = page.base + page.count;
+      let end = start + 1;
+      let high = indices.length;
+      while (end < high) {
+        const middle = Math.floor((end + high) / 2);
+        if (indices[middle] < pageEnd) end = middle + 1;
+        else high = middle;
+      }
+      const pool = page.pool;
+      if (!affected.has(pool)) {
+        start = end;
+        continue;
+      }
+      const ranges = selections.get(pool) ?? [];
+      ranges.push({
+        start,
+        end,
+        slot: page.slot,
+        sourceOffset: pool.batch.source.pageStart(page.slot) - page.base,
+      });
+      selections.set(pool, ranges);
+      start = end;
+    }
+    // Validate and prepare every affected pool before changing the live cut.
+    const prepared = Array.from(affected, (pool) => ({
+      pool,
+      selection: pool.batch.source.prepareSelection(
+        indices,
+        fades,
+        selections.get(pool) ?? [],
+      ),
+    }));
+    for (const { pool, selection } of prepared) {
+      pool.batch.commitSelection(selection);
+      if (pool.batch.numSplats > 0 && pool.batch.parent !== this.group)
+        this.group.add(pool.batch);
+      else if (pool.batch.numSplats === 0) pool.batch.removeFromParent();
+    }
+  }
+
+  private applySelection(prepared: RadStreamSelection, now: number) {
+    const { fade, changedChunks, ...selection } = prepared;
+    const affected = new Set<Pool>();
+    for (const index of changedChunks) {
+      const pool = this.pages.get(index)?.pool;
+      if (!pool) throw new Error("RAD transition references a retired page");
+      affected.add(pool);
+    }
+    const changed = affected.size > 0;
+    if (changed)
+      this.renderSelection(
+        fade?.indices ?? selection.indices,
+        fade?.fades,
+        affected,
+      );
+    if (fade) {
+      this.transition = {
+        startedAt: now,
+        pools: affected,
+      };
+    }
+    // Unchanged nodes keep the fade baseline valid for an in-flight decision.
+    if (this.selection && !changedChunks.length) {
+      this.selection.touchedChunks = selection.touchedChunks;
+      this.selection.wantedChunks = selection.wantedChunks;
+    } else this.selection = selection;
+    this.protectedPages = new Set(selection.touchedChunks);
+    this.cancelUnusedLoads();
+    if (selection.indices.length && !fade) this.resolveFirst(this);
+    return changed;
+  }
+
+  private cancelUnusedLoads() {
+    for (const page of this.pages.values()) {
+      if (
+        !this.wanted.has(page.index) &&
+        !this.inFlightPages?.has(page.index) &&
+        !this.readyPages?.has(page.index) &&
+        page.index !== 0
+      ) {
+        page.controller?.abort();
+        if (page.data) this.releasePage(page);
+      }
+    }
+  }
+
+  private updateFade(now: number) {
+    const transition = this.transition;
+    if (!transition) return false;
+    const progress = THREE.MathUtils.clamp(
+      (now - transition.startedAt) / this.fadeDurationMs,
+      0,
+      1,
+    );
+    if (progress > 0 && this.selection?.indices.length) this.resolveFirst(this);
+    if (progress === 1) {
+      this.transition = undefined;
+      let changed = false;
+      for (const { batch } of transition.pools) {
+        changed = batch.finishFade() || changed;
+        if (batch.numSplats === 0) batch.removeFromParent();
+      }
+      return changed;
+    }
+    let changed = false;
+    for (const { batch } of transition.pools)
+      if (batch.numSplats > 0)
+        changed = batch.setFadeProgress(progress) || changed;
+    return changed;
+  }
+
+  private page(index: number) {
+    let page = this.pages.get(index);
+    if (!page) {
+      const range = getRadChunkSpan(this.meta as RadMeta, index);
+      page = {
+        index,
+        base: range.base,
+        count: range.count,
+        reservedBytes: 0,
+        failures: 0,
+        retryAt: 0,
+      };
+      this.pages.set(index, page);
+    }
+    return page;
+  }
+
+  private pump() {
+    if (this.disposed || !this.meta) return;
+    let loading = 0;
+    let pendingBytes = 0;
+    for (const page of this.pages.values()) {
+      if (page.controller && !page.decoded) loading++;
+      pendingBytes += page.data
+        ? getRadChunkByteLength(page.data)
+        : page.reservedBytes;
+    }
+    const pending = new StreamByteBudget(
+      streamPendingLimit(
+        this.maxConcurrentLoads,
+        this.maxUploadBytesPerUpdate,
+        this.maxPagePendingBytes,
+      ),
+      pendingBytes,
+    );
+    const now = performance.now();
+    for (const index of this.wanted) {
+      const page = this.page(index);
+      if (page.pool || page.data || page.controller || now < page.retryAt)
+        continue;
+      if (
+        loading >= this.maxConcurrentLoads ||
+        !pending.reserve(this.maxPagePendingBytes)
+      )
+        break;
+      const controller = new AbortController();
+      page.controller = controller;
+      page.decoded = false;
+      page.reservedBytes = this.maxPagePendingBytes;
+      loading++;
+      void this.loader
+        .loadChunk(index, controller.signal, () => {
+          if (
+            this.disposed ||
+            controller.signal.aborted ||
+            page.controller !== controller
+          )
+            return;
+          page.decoded = true;
+          this.pump();
+        })
+        .then((data) => {
+          if (this.disposed || controller.signal.aborted) return;
+          page.data = data;
+          page.failures = 0;
+          if (index === 0) this.setInitialBounds(data);
+          this.reservePages();
+        })
+        .catch((error) => {
+          if (!this.disposed && !controller.signal.aborted) {
+            page.retryAt = performance.now() + retryDelay(page.failures++);
+            this.failed(error, index);
+          }
+        })
+        .finally(() => {
+          page.controller = undefined;
+          page.decoded = false;
+          page.reservedBytes = 0;
+          if (!this.disposed) {
+            void this.requestSelection();
+            this.changed();
+            this.pump();
+          }
+        });
+    }
+  }
+
+  private setInitialBounds(data: RadChunkData) {
+    const positions = new Float32Array(
+      data.splatArrays[0].buffer,
+      data.splatArrays[0].byteOffset,
+      data.splatArrays[0].length,
+    );
+    for (let index = 0; index < data.numSplats; index++) {
+      this.point.set(
+        positions[index * 4],
+        positions[index * 4 + 1],
+        positions[index * 4 + 2],
+      );
+      this.bounds.expandByPoint(this.point);
+    }
+    if (this.bounds.min.equals(this.bounds.max))
+      this.bounds.expandByScalar(Math.max(0.001, data.lodRadii?.[0] ?? 1));
+  }
+
+  private findSlot(): { pool: Pool; slot: number } | undefined {
+    for (const pool of this.pools) {
+      const slot = pool.slots.indexOf(undefined);
+      if (slot !== -1) return { pool, slot };
+    }
+    const capacity = this.pools.reduce(
+      (sum, pool) => sum + pool.slots.length,
+      0,
+    );
+    if (capacity < this.pageBudget) {
+      const pageBytes =
+        getSplatTextureBytes(this.pageStride, this.numSh) + this.pageStride * 4;
+      const uploadPages = Math.max(
+        1,
+        Math.floor(this.maxUploadBytesPerUpdate / pageBytes),
+      );
+      const count = Math.min(8, uploadPages, this.pageBudget - capacity);
+      const batch = new RadStreamBatch({
+        pageSize: this.pageSize,
+        pageCount: count,
+        numSh: this.numSh,
+      });
+      batch.layers.mask = this.group.layers.mask;
+      const pool: Pool = {
+        batch,
+        slots: Array(count).fill(undefined),
+      };
+      this.pools.push(pool);
+      return { pool, slot: 0 };
+    }
+    return undefined;
+  }
+
+  private reservePages() {
+    for (const page of this.pages.values()) {
+      if (!page.data || page.pool) continue;
+      const available = this.findSlot();
+      if (!available) continue;
+      const { pool, slot } = available;
+      pool.slots[slot] = page;
+      page.pool = pool;
+      page.slot = slot;
+      this.revision++;
+    }
+  }
+
+  private uploadPages() {
+    const uploads = new StreamByteBudget(this.maxUploadBytesPerUpdate);
+    let changed = false;
+    const pages = new Set([...(this.readyPages ?? []), ...this.wanted]);
+    for (const index of pages) {
+      const page = this.pages.get(index);
+      if (!page?.data || !page.pool) continue;
+      const { pool } = page;
+      const slot = page.slot as number;
+      const uploadBytes = pool.batch.source.uploadBytes(
+        pool.batch.source.pageStart(slot),
+        this.pageStride,
+      );
+      if (!uploads.reserve(uploadBytes)) break;
+      pool.batch.source.writePage(slot, page.data);
+      page.data = undefined;
+      page.expiresAt = undefined;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private releasePage(page: Page) {
+    if (page.pool) {
+      page.pool.batch.source.releasePage(page.slot as number);
+      page.pool.slots[page.slot as number] = undefined;
+      page.pool = undefined;
+      page.slot = undefined;
+    }
+    page.data = undefined;
+    page.expiresAt = undefined;
+    this.loader.releaseChunk(page.index);
+    this.revision++;
+  }
+
+  private releaseUnused() {
+    let changed = false;
+    for (const page of this.pages.values()) {
+      if (!page.pool || page.index === 0) continue;
+      if (
+        this.protectedPages.has(page.index) ||
+        this.wanted.has(page.index) ||
+        page.pool.batch.source.isPageSelected(page.slot as number)
+      ) {
+        page.expiresAt = undefined;
+        continue;
+      }
+      page.expiresAt ??= this.tick + this.cooldownTicks;
+      // A traversal snapshot delays release without renewing unused pages.
+      if (
+        this.tick < page.expiresAt ||
+        this.inFlightPages?.has(page.index) ||
+        this.readyPages?.has(page.index)
+      )
+        continue;
+      this.releasePage(page);
+      changed = true;
+    }
+    // Like streamed SOG, release source storage once its contents retire.
+    for (let index = this.pools.length - 1; index >= 0; index--) {
+      const pool = this.pools[index];
+      if (pool.slots.every((page) => page === undefined)) {
+        pool.batch.dispose();
+        this.pools.splice(index, 1);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Map a raycast hit's rendered index back to its stable file index. */
+  getGlobalIndex(mesh: THREE.Object3D, renderedIndex: number) {
+    const pool = this.pools.find(({ batch }) => batch === mesh);
+    if (!pool) throw new Error("Mesh does not belong to this RAD dataset");
+    const source = pool.batch.source.getSourceIndex(renderedIndex);
+    const slot = Math.floor(source / pool.batch.source.pageStride);
+    const page = pool.slots[slot];
+    if (!page) throw new Error("RAD raycast references a retired page");
+    return page.base + source - pool.batch.source.pageStart(slot);
+  }
+
+  private changed() {
+    if (!this.disposed) notifyStreamChange(this.options);
+  }
+
+  private failed(error: unknown, index: number) {
+    notifyStreamError(this.options, error, this.loader.getChunkUrl(index));
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    const reason = new DOMException("RAD scheduler disposed", "AbortError");
+    this.abort.abort(reason);
+    this.rejectFirst(reason);
+    for (const page of this.pages.values()) page.controller?.abort(reason);
+    this.loader.dispose();
+    for (const { batch } of this.pools) batch.dispose();
+    this.pools.length = 0;
+    this.pages.clear();
+    this.wanted.clear();
+    this.protectedPages.clear();
+    this.inFlightPages = undefined;
+    this.readyPages = undefined;
+    this.selection = undefined;
+    this.readySelection = undefined;
+    this.reselectAfterReady = false;
+    this.transition = undefined;
+    this.meta = undefined;
+    this.bounds.makeEmpty();
+    this.views = [];
+  }
+}

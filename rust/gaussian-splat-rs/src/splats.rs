@@ -25,7 +25,7 @@ pub struct SplatsData {
     buffer_b: Vec<u32>,
     buffer_base: usize,
     buffer_count: usize,
-    buffer_dirty: bool,
+    buffer_dirty: [bool; 2],
 }
 
 impl SplatsData {
@@ -47,7 +47,7 @@ impl SplatsData {
             buffer_b: Vec::new(),
             buffer_base: 0,
             buffer_count: 0,
-            buffer_dirty: false,
+            buffer_dirty: [false; 2],
         }
     }
 
@@ -113,41 +113,39 @@ impl SplatsData {
         self.buffer_a.resize(count * 4, 0);
     }
 
-    fn flush_buffers(&mut self) {
-        if self.buffer_dirty {
-            let base = self.buffer_base;
-            let count = self.buffer_count;
-            self.splat_arrays[0]
-                .subarray((base * 4) as u32, ((base + count) * 4) as u32)
-                .copy_from(&self.buffer_a);
-            self.splat_arrays[1]
-                .subarray((base * 4) as u32, ((base + count) * 4) as u32)
-                .copy_from(&self.buffer_b);
-            self.buffer_dirty = false;
-        }
-    }
-
     fn invalidate_buffers(&mut self) {
-        self.flush_buffers();
+        let base = self.buffer_base;
+        let count = self.buffer_count;
+        for (index, buffer) in [&self.buffer_a, &self.buffer_b].into_iter().enumerate() {
+            if self.buffer_dirty[index] {
+                self.splat_arrays[index]
+                    .subarray((base * 4) as u32, ((base + count) * 4) as u32)
+                    .copy_from(buffer);
+                self.buffer_dirty[index] = false;
+            }
+        }
         self.buffer_base = 0;
         self.buffer_count = 0;
-        self.buffer_dirty = false;
     }
 
-    fn prepare_buffers(&mut self, base: usize, count: usize) {
+    fn prepare_buffer(&mut self, base: usize, count: usize, index: usize, overwrite: bool) {
         if self.buffer_base != base || self.buffer_count != count {
-            self.flush_buffers();
-            self.ensure_buffers(count);
-            let subarray =
-                self.splat_arrays[0].subarray((base * 4) as u32, ((base + count) * 4) as u32);
-            subarray.copy_to(&mut self.buffer_a[0..count * 4]);
-            let subarray =
-                self.splat_arrays[1].subarray((base * 4) as u32, ((base + count) * 4) as u32);
-            subarray.copy_to(&mut self.buffer_b[0..count * 4]);
+            self.invalidate_buffers();
             self.buffer_base = base;
             self.buffer_count = count;
-            self.buffer_dirty = false;
         }
+        let buffer = if index == 0 {
+            &mut self.buffer_a
+        } else {
+            &mut self.buffer_b
+        };
+        buffer.resize(count * 4, 0);
+        if !overwrite && !self.buffer_dirty[index] {
+            self.splat_arrays[index]
+                .subarray((base * 4) as u32, ((base + count) * 4) as u32)
+                .copy_to(buffer);
+        }
+        self.buffer_dirty[index] = true;
     }
 
     fn copy_sort_centers(&self, base: usize, count: usize, centers: &[f32]) {
@@ -199,7 +197,8 @@ impl SplatsData {
             } else {
                 encode_splat
             };
-            self.prepare_buffers(base, count);
+            self.prepare_buffer(base, count, 0, true);
+            self.prepare_buffer(base, count, 1, true);
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
                 let center = array::from_fn(|d| batch.center[i3 + d]);
@@ -216,7 +215,6 @@ impl SplatsData {
                     quat,
                 );
             }
-            self.buffer_dirty = true;
             self.invalidate_zero_scale_sort_centers(base, count, scale, ln_scale.is_some());
         } else {
             if !batch.center.is_empty() {
@@ -246,6 +244,10 @@ impl SplatsData {
 impl SplatReceiver for SplatsData {
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
         let (_, _, _, max_splats) = get_splat_tex_size(init.num_splats);
+        anyhow::ensure!(
+            max_splats as u64 * 4 <= u32::MAX as u64,
+            "packed output exceeds the typed-array length range"
+        );
         self.max_splats = max_splats;
         self.num_splats = init.num_splats;
         self.max_sh_degree = init.max_sh_degree;
@@ -277,7 +279,7 @@ impl SplatReceiver for SplatsData {
 
         self.buffer_base = 0;
         self.buffer_count = 0;
-        self.buffer_dirty = false;
+        self.buffer_dirty = [false; 2];
 
         Ok(())
     }
@@ -305,7 +307,7 @@ impl SplatReceiver for SplatsData {
 
     fn set_center(&mut self, base: usize, count: usize, center: &[f32]) {
         self.copy_sort_centers(base, count, center);
-        self.prepare_buffers(base, count);
+        self.prepare_buffer(base, count, 0, false);
         for i in 0..count {
             let [i3, i4] = [i * 3, i * 4];
             encode_splat_center(
@@ -313,20 +315,18 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| center[i3 + d]),
             );
         }
-        self.buffer_dirty = true;
     }
 
     fn set_opacity(&mut self, base: usize, count: usize, opacity: &[f32]) {
-        self.prepare_buffers(base, count);
+        self.prepare_buffer(base, count, 0, false);
         for i in 0..count {
             let i4 = i * 4;
             encode_splat_opacity(&mut self.buffer_a[i4..i4 + 4], opacity[i]);
         }
-        self.buffer_dirty = true;
     }
 
     fn set_rgb(&mut self, base: usize, count: usize, rgb: &[f32]) {
-        self.prepare_buffers(base, count);
+        self.prepare_buffer(base, count, 1, false);
         for i in 0..count {
             let [i3, i4] = [i * 3, i * 4];
             encode_splat_rgb(
@@ -334,11 +334,10 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| rgb[i3 + d]),
             );
         }
-        self.buffer_dirty = true;
     }
 
     fn set_scale(&mut self, base: usize, count: usize, scale: &[f32]) {
-        self.prepare_buffers(base, count);
+        self.prepare_buffer(base, count, 1, false);
         for i in 0..count {
             let [i3, i4] = [i * 3, i * 4];
             encode_splat_scale(
@@ -346,12 +345,11 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| scale[i3 + d]),
             );
         }
-        self.buffer_dirty = true;
         self.invalidate_zero_scale_sort_centers(base, count, scale, false);
     }
 
     fn set_ln_scale(&mut self, base: usize, count: usize, ln_scale: &[f32]) {
-        self.prepare_buffers(base, count);
+        self.prepare_buffer(base, count, 1, false);
         for i in 0..count {
             let [i3, i4] = [i * 3, i * 4];
             encode_splat_ln_scale(
@@ -359,12 +357,11 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| ln_scale[i3 + d]),
             );
         }
-        self.buffer_dirty = true;
         self.invalidate_zero_scale_sort_centers(base, count, ln_scale, true);
     }
 
     fn set_quat(&mut self, base: usize, count: usize, quat: &[f32]) {
-        self.prepare_buffers(base, count);
+        self.prepare_buffer(base, count, 1, false);
         for i in 0..count {
             let i4 = i * 4;
             encode_splat_quat(
@@ -372,7 +369,33 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| quat[i4 + d]),
             );
         }
-        self.buffer_dirty = true;
+    }
+
+    fn set_sh_palette(
+        &mut self,
+        base: usize,
+        count: usize,
+        degree: usize,
+        palette: &[u32],
+        labels: &[u16],
+    ) {
+        self.invalidate_buffers();
+        self.ensure_buffer_a(count);
+        let stride = [0, 4, 8, 16][degree];
+        for (block, output) in [&self.sh1, &self.sh2, &self.sh3a, &self.sh3b]
+            .into_iter()
+            .enumerate()
+            .take(stride / 4)
+        {
+            let Some(output) = output else { continue };
+            for (i, &label) in labels.iter().take(count).enumerate() {
+                let offset = label as usize * stride + block * 4;
+                self.buffer_a[i * 4..i * 4 + 4].copy_from_slice(&palette[offset..offset + 4]);
+            }
+            output
+                .subarray((base * 4) as u32, ((base + count) * 4) as u32)
+                .copy_from(&self.buffer_a);
+        }
     }
 
     fn set_sh(&mut self, base: usize, count: usize, sh1: &[f32], sh2: &[f32], sh3: &[f32]) {
@@ -392,6 +415,14 @@ impl SplatReceiver for SplatsData {
         self.ensure_buffer_a(count);
         if let Some(packed_sh1) = self.sh1.as_ref() {
             let buffer = &mut self.buffer_a[0..count * 4];
+            if self.sh2.is_some() {
+                // The fourth word belongs to SH2 and must survive SH1 updates.
+                packed_sh1
+                    .subarray((base * 4) as u32, ((base + count) * 4) as u32)
+                    .copy_to(buffer);
+            } else {
+                buffer.fill(0);
+            }
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
                 for k in 0..3 {
@@ -453,6 +484,7 @@ impl SplatReceiver for SplatsData {
                         buffer_b[i4 + (k - 4)] =
                             encode_splat_sh_rgb([sh3[k3], sh3[k3 + 1], sh3[k3 + 2]]);
                     }
+                    buffer_b[i4 + 3] = 0;
                 }
                 packed_sh3a
                     .subarray((base * 4) as u32, ((base + count) * 4) as u32)

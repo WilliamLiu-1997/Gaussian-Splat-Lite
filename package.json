@@ -1,7 +1,7 @@
 {
   "name": "gaussian-splat-lite",
   "version": "0.1.16",
-  "description": "A lightweight Three.js Gaussian Splatting renderer with PLY/SPZ loading, WebAssembly-accelerated sorting and raycasting, multi-Splat rendering, and high-precision GIS/ECEF coordinate support",
+  "description": "A lightweight Three.js Gaussian Splatting renderer with PLY/SPZ/SOG/RAD loading and paged LOD, WebAssembly-accelerated sorting and raycasting, multi-Splat rendering, and high-precision GIS/ECEF coordinate support",
   "author": "William Liu <lyz15972107087@gmail.com>",
   "type": "module",
   "license": "Apache-2.0",
@@ -22,16 +22,15 @@
   },
   "scripts": {
     "build": "npm run build:production && npm run build:dev && npm run build:types:cjs",
-    "build:dev": "vite build --mode dev",
-    "build:production": "vite build --mode production",
+    "build:dev": "vite build --mode dev-es && vite build --mode dev-cjs",
+    "build:production": "vite build --mode production-es && vite build --mode production-cjs",
     "build:site": "vite build --config vite.site.config.ts",
     "build:types:cjs": "node scripts/build-cjs-types.js",
     "build:wasm": "node rust/build_wasm.js",
-    "build:watch": "onchange 'src/**/*.{ts,glsl}' -- npm run build:dev",
     "check": "tsc --noEmit",
     "check:rust": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check",
     "clean": "rm -rf dist/ node_modules/ rust/target/ rust/gaussian-splat-rs/pkg/",
-    "dev": "npm run build:dev && node scripts/dev.js",
+    "dev": "vite --config vite.site.config.ts --host",
     "format": "biome format .",
     "format:fix": "biome format . --fix",
     "lint": "biome check .",
@@ -72,11 +71,10 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
-    "@types/three": "0.185.1",
+    "@types/three": "0.185.4",
     "gaussian-splat-rs": "file:rust/gaussian-splat-rs/pkg",
-    "onchange": "7.1.0",
     "publint": "0.3.24",
-    "three": "^0.185.1",
+    "three": "0.186.0",
     "ts-node": "10.9.2",
     "typescript": "^5.7.3",
     "vite": "^6.0.11",
@@ -85,7 +83,7 @@
     "vite-plugin-glsl": "^1.3.1"
   },
   "peerDependencies": {
-    "three": ">=0.185.1"
+    "three": "^0.186.0"
   },
   "keywords": [
     "3d",
@@ -95,11 +93,15 @@
     "gis",
     "gsplats",
     "ply",
+    "rad",
+    "sog",
+    "streaming",
     "spz",
     "three.js",
     "threejs",
     "webassembly",
-    "webgl"
+    "webgl",
+    "webgpu"
   ],
   "allowScripts": {
     "@biomejs/biome@1.9.4": true,

@@ -14,10 +14,11 @@ repository = "https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
+crc32fast = "1.5.0"
 half = { version = "2.6.0", features = ["std"] }
 js-sys = "0.3.77"
 miniz_oxide = "0.8.9"
-ruzstd = { version = "0.7.3", default-features = false, features = ["std"] }
+ruzstd = { version = "0.7.3", default-features = false, features = ["std", "hash"] }
 wasm-bindgen = "0.2.100"
 
 [profile.release]

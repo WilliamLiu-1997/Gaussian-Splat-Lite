@@ -10,8 +10,6 @@ pub const SPLAT_TEX_HEIGHT: usize = 1 << SPLAT_TEX_HEIGHT_BITS;
 pub const SPLAT_TEX_MIN_HEIGHT: usize = 1;
 pub const SPLAT_TEX_LAYER_SIZE: usize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
 
-const MAX_SPLAT_OPACITY: f32 = 1000.0;
-
 pub fn get_splat_tex_size(num_splats: usize) -> (usize, usize, usize, usize) {
     let (width, height, depth, max_splats) = get_splat_tex_size_u64(num_splats as u64);
     (
@@ -88,13 +86,13 @@ pub fn decode_splat_center(splat_a: &[u32]) -> [f32; 3] {
     ]
 }
 
-/// Encodes raw opacity through 1000 as regular alpha plus Spark's nonlinear
-/// wider-kernel shape amount.
+/// Encodes raw opacity as regular alpha plus Spark's nonlinear wider-kernel
+/// shape amount. Shape is limited to [0, 1], matching the renderer's [1, 5].
 pub fn encode_splat_opacity(splat_a: &mut [u32], opacity: f32) {
-    let raw_opacity = opacity.clamp(0.0, MAX_SPLAT_OPACITY);
+    let raw_opacity = opacity.clamp(0.0, f32::INFINITY);
     splat_a[3] = if raw_opacity > 1.0 {
         let shape_amount = 0.25 * (raw_opacity.ln().mul_add(std::f32::consts::E, 1.0).sqrt() - 1.0);
-        f16::ONE.to_bits() as u32 | ((f16::from_f32(shape_amount).to_bits() as u32) << 16)
+        f16::ONE.to_bits() as u32 | ((f16::from_f32(shape_amount.min(1.0)).to_bits() as u32) << 16)
     } else {
         // Keep the common Gaussian path in the low lane only. This also
         // preserves the existing NaN representation without encoding zero.
@@ -112,10 +110,8 @@ pub fn decode_splat_opacity(splat_a: &[u32]) -> f32 {
 
     let shape_amount = f16::from_bits(shape_amount_bits).to_f32();
     if shape_amount > 0.0 {
-        let kernel_shape = shape_amount.mul_add(4.0, 1.0);
-        ((kernel_shape * kernel_shape - 1.0) / std::f32::consts::E)
-            .exp()
-            .min(MAX_SPLAT_OPACITY)
+        let kernel_shape = shape_amount.min(1.0).mul_add(4.0, 1.0);
+        ((kernel_shape * kernel_shape - 1.0) / std::f32::consts::E).exp()
     } else {
         f16::from_bits(opacity_word as u16).to_f32()
     }
@@ -213,12 +209,29 @@ pub fn decode_quat_oct101012(encoded: u32) -> [f32; 4] {
 pub fn encode_splat_sh_rgb(rgb: [f32; 3]) -> u32 {
     let abs_rgb = rgb.map(|x| x.abs());
     let max_abs = abs_rgb[0].max(abs_rgb[1].max(abs_rgb[2]));
-    let base = (max_abs.log2().floor() + 15.0).clamp(0.0, 31.0).round() as i32;
-    let divisor = ((base - 15) as f32).exp2() / 255.0;
+    // The shared exponent is the upper endpoint of the unsigned mantissa's
+    // range. Rounding down would saturate every value above a power of two.
+    let base = (max_abs.log2().ceil() + 15.0).clamp(0.0, 31.0) as u32;
+    // base is in 0..=31, so 2^(base - 15) is an exact normal f32.
+    let divisor = f32::from_bits((base + 112) << 23) / 255.0;
     let u_rgb = abs_rgb.map(|x| (x / divisor).clamp(0.0, 255.0).round() as u32);
-    let exp_signs = ((base as u32) << 3)
+    let exp_signs = (base << 3)
         | if rgb[0] < 0.0 { 0x1 } else { 0 }
         | if rgb[1] < 0.0 { 0x2 } else { 0 }
         | if rgb[2] < 0.0 { 0x4 } else { 0 };
     u_rgb[0] | (u_rgb[1] << 8) | (u_rgb[2] << 16) | (exp_signs << 24)
+}
+
+/// Decodes a shared-exponent RGB SH coefficient written by encode_splat_sh_rgb.
+pub fn decode_splat_sh_rgb(word: u32) -> [f32; 3] {
+    let exponent_and_signs = word >> 24;
+    let scale = f32::from_bits(((exponent_and_signs >> 3) + 112) << 23) / 255.0;
+    array::from_fn(|component| {
+        let magnitude = ((word >> (component * 8)) & 255) as f32 * scale;
+        if exponent_and_signs & (1 << component) != 0 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    })
 }

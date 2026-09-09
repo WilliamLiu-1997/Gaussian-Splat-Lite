@@ -2,7 +2,7 @@
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system,
     BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #07090d;
+  background: #080808;
   color: #f5f7f3;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -25,12 +25,7 @@ body {
 }
 
 body {
-  background: radial-gradient(
-      circle at 18% 22%,
-      rgb(90 124 255 / 12%),
-      transparent 34%
-    ), radial-gradient(circle at 82% 74%, rgb(207 255 88 / 7%), transparent 32%),
-    #07090d;
+  background: inherit;
 }
 
 button,
@@ -155,12 +150,61 @@ button {
   visibility: visible;
 }
 
-.interface {
+/* Keep the native Inspector widget in the toolbar and its panels on screen. */
+.three-inspector.viewer-inspector {
+  position: static;
+  /* Above viewer controls, below file and loading dialogs. */
+  z-index: 13;
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* Theme only the toolbar widget; panels keep the native Inspector palette. */
+.three-inspector.viewer-inspector
+  :is(
+    .profiler-toggle.panel-open .toggle-icon,
+    .profiler-toggle .builtin-tab-btn.active
+  ) {
+  background-color: rgb(207 255 88 / 20%);
+}
+
+.three-inspector.viewer-inspector
+  :is(
+    .profiler-toggle.panel-open:hover .toggle-icon,
+    .profiler-toggle .builtin-tab-btn.active:hover
+  ) {
+  background-color: rgb(207 255 88 / 30%);
+}
+
+.three-inspector.viewer-inspector .profiler-toggle {
+  --color-accent: #cfff58;
+  --text-primary: #f5f7f3;
+  --text-secondary: #9097a4;
+  position: relative;
+  /* Expanded and detached panels must cover the toolbar widget. */
+  z-index: 0;
+  inset: auto;
+  height: 2.35rem;
+  flex-direction: row;
+  border-radius: 0.65rem;
+}
+
+.three-inspector.viewer-inspector .profiler-panel,
+.three-inspector.viewer-inspector .profiler-mini-panel,
+.three-inspector.viewer-inspector .detached-tab-panel {
   position: fixed;
+}
+
+.interface {
+  /* Avoid trapping Inspector panels in a stacking context below overlays. */
+  position: absolute;
   inset: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
   padding: clamp(0.75rem, 2vw, 1.5rem);
+  padding-bottom: clamp(0.5rem, 1.5vw, 1rem);
   pointer-events: none;
 }
 
@@ -228,19 +272,22 @@ button {
 
 .toolbar-actions {
   position: relative;
-  z-index: 2;
   display: flex;
   align-items: center;
   gap: 0.55rem;
 }
 
+.toolbar-actions > :not(.viewer-inspector) {
+  z-index: 2;
+}
+
 .interface.is-source-panel-open .brand {
-  z-index: 8;
+  z-index: 18;
 }
 
 .source-panel-backdrop {
   position: fixed;
-  z-index: 3;
+  z-index: 14;
   inset: 0;
   background: rgb(7 9 13 / 22%);
   cursor: default;
@@ -305,6 +352,24 @@ button {
   color: #c4c9d2;
 }
 
+.reference-toggle {
+  width: 2.35rem;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.reference-toggle .button-icon {
+  width: 1.4rem;
+  height: 1.4rem;
+  stroke-width: 0.9;
+}
+
+.reference-toggle[aria-pressed="true"] {
+  border-color: rgb(207 255 88 / 42%);
+  background: rgb(207 255 88 / 10%);
+  color: #cfff58;
+}
+
 .button-large {
   min-height: 2.8rem;
   padding-inline: 1.15rem;
@@ -326,7 +391,7 @@ button {
 
 .options-panel {
   position: fixed;
-  top: clamp(4.2rem, 8vw, 5.2rem);
+  top: clamp(6.8rem, 10vw, 7.8rem);
   right: clamp(0.75rem, 2vw, 1.5rem);
   bottom: clamp(4.2rem, 8vw, 5rem);
   z-index: 5;
@@ -392,11 +457,8 @@ button {
 }
 
 .icon-button:focus-visible,
-.text-button:focus-visible {
-  outline: 2px solid #b9d9ff;
-  outline-offset: 2px;
-}
-
+.text-button:focus-visible,
+.select-input:focus-visible,
 .range-input:focus-visible {
   outline: 2px solid #b9d9ff;
   outline-offset: 2px;
@@ -469,6 +531,20 @@ button {
   min-width: 0;
   align-items: center;
   justify-items: stretch;
+}
+
+.select-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 0.35rem;
+  background: #171b21;
+  color: #d4d8df;
+  font: inherit;
+  font-size: 0.65rem;
+  cursor: pointer;
+  color-scheme: dark;
 }
 
 .range-value {
@@ -573,6 +649,11 @@ button {
   transform: translateX(0.92rem);
 }
 
+.toggle-input:disabled + .toggle-track {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .toggle-input:focus-visible + .toggle-track {
   outline: 2px solid #b9d9ff;
   outline-offset: 2px;
@@ -611,7 +692,7 @@ button {
 
 .empty-state {
   position: relative;
-  z-index: 4;
+  z-index: 15;
   width: min(32rem, calc(100vw - 2rem));
   padding: clamp(1.75rem, 5vw, 3rem);
   border: 1px solid rgb(255 255 255 / 11%);
@@ -779,7 +860,7 @@ button {
 
 .loading-backdrop {
   position: fixed;
-  z-index: 6;
+  z-index: 16;
   inset: 0;
   background: rgb(7 9 13 / 32%);
   backdrop-filter: blur(6px) saturate(72%);
@@ -790,7 +871,7 @@ button {
   position: fixed;
   top: 50%;
   left: 50%;
-  z-index: 7;
+  z-index: 17;
   width: min(27rem, calc(100vw - 2rem));
   padding: 1.1rem 1.15rem;
   border: 1px solid rgb(255 255 255 / 12%);
@@ -869,27 +950,21 @@ button {
   transform-origin: left;
 }
 
-.progress-track::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 42%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #7896ff, #cfff58);
-  content: "";
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-120%);
+.progress-track.is-indeterminate {
+  background: linear-gradient(
+    90deg,
+    rgb(255 255 255 / 7%) 0%,
+    rgb(120 150 255 / 18%) 35%,
+    rgb(207 255 88 / 24%) 50%,
+    rgb(120 150 255 / 18%) 65%,
+    rgb(255 255 255 / 7%) 100%
+  );
+  background-size: 220% 100%;
+  animation: progress-scan 1.2s ease-in-out infinite;
 }
 
 .progress-track.is-indeterminate span {
   opacity: 0;
-}
-
-.progress-track.is-indeterminate::after {
-  animation: progress-scan 1s ease-in-out infinite;
-  opacity: 1;
 }
 
 .loading-detail {
@@ -897,6 +972,79 @@ button {
   margin-top: 0.65rem;
   color: #777f8c;
   font-size: 0.68rem;
+}
+
+.source-up-axis {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  max-width: 100%;
+  padding: 0.35rem 0.65rem;
+  pointer-events: auto;
+}
+
+.source-up-axis::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.65rem;
+  background: linear-gradient(rgb(30 34 42 / 30%), rgb(13 16 22 / 25%));
+  backdrop-filter: blur(14px) saturate(115%);
+  -webkit-backdrop-filter: blur(14px) saturate(115%);
+  pointer-events: none;
+  content: "";
+}
+
+#source-up-axis-label {
+  color: #c4c9d2;
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.source-up-axis-choices {
+  display: flex;
+  gap: 0.7rem;
+}
+
+.source-up-axis-choices label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 1.5rem;
+  color: #c4c9d2;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.source-up-axis-choices input {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 2px;
+  appearance: none;
+  border: 1px solid #747d89;
+  border-radius: 50%;
+  background-clip: content-box;
+  cursor: pointer;
+}
+
+.source-up-axis-choices input:checked {
+  border-color: #b7d777;
+  background-color: #b7d777;
+}
+
+.source-up-axis-choices input:focus-visible {
+  outline: 2px solid #b9d9ff;
+  outline-offset: 3px;
 }
 
 .statusbar {
@@ -1057,11 +1205,11 @@ button {
 
 @keyframes progress-scan {
   0% {
-    transform: translateX(-120%);
+    background-position: 120% 0;
   }
 
   100% {
-    transform: translateX(340%);
+    background-position: -120% 0;
   }
 }
 
@@ -1079,7 +1227,7 @@ button {
 
 @media (max-width: 640px) {
   .interface {
-    padding: 0.75rem;
+    padding: 0.75rem 0.75rem 0.5rem;
   }
 
   .brand-copy small,
@@ -1093,7 +1241,7 @@ button {
   }
 
   .options-panel {
-    top: 4rem;
+    top: 7rem;
     right: 0.75rem;
     bottom: 5.3rem;
   }
@@ -1125,6 +1273,20 @@ button {
     gap: 0.45rem;
   }
 
+  .source-up-axis {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+  }
+
+  .source-up-axis-choices {
+    gap: 0.4rem;
+  }
+
+  .source-up-axis-choices label {
+    font-size: 0.7rem;
+  }
+
   .file-meta {
     width: 100%;
     justify-content: flex-start;
@@ -1150,8 +1312,8 @@ button {
     animation-iteration-count: 1 !important;
   }
 
-  .progress-track.is-indeterminate::after {
+  .progress-track.is-indeterminate {
     animation: none !important;
-    transform: translateX(70%);
+    background-position: center;
   }
 }

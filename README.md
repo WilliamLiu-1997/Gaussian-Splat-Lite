@@ -6,79 +6,67 @@
 [![CI](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+**Three.js Gaussian Splatting · WebGPU · Depth Rendering · Streaming**
+
 <p align="center">
   <img src="./Gaussian-Splat-Lite.svg" alt="Gaussian Splat Lite" width="1000">
 </p>
 
 </div>
 
-`Gaussian-Splat-Lite` is a lightweight 3D Gaussian Splatting renderer for Three.js. It is based on the overall architecture of [SparkJS](https://github.com/sparkjsdev/spark), simplified and adapted to retain a stable, general-purpose Gaussian Splat rendering pipeline while removing LoD, paging, dynamic shader graphs, and broad format compatibility layers. It also fixes SparkJS precision issues with large GIS/ECEF world coordinates and provides faster depth sorting and raycasting implementations.
-
-It works alongside standard Three.js scenes, cameras, meshes, and render loops, and supports unified generation, sorting, and blended rendering of multiple Splat objects.
+A lightweight 3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering for scene occlusion**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD files into standard Three.js scenes, stream RAD and SOG scenes with camera-driven LOD, and render multiple Splat objects together.
 
 ## Features
 
-- Native integration with the Three.js scene graph and rendering pipeline
-- Multiple `SplatMesh` objects rendered with correct global sorting
-- `.ply` and `.spz` file support
-- URL, in-memory byte, and standard `ReadableStream` inputs
-- Rust/WebAssembly file decoding, depth sorting, and raycasting
-- 3DGS rendering with configurable anti-aliasing
-- Spherical harmonics, offscreen rendering, and environment-map rendering
-- SDF-based color and opacity editing
-- Camera-relative rendering for large GIS/ECEF world coordinates
-- TypeScript declarations, ESM, and CommonJS builds
-
-## Requirements
-
-- A modern browser with WebGL2, WebAssembly, Web Workers, and ES modules
-- Three.js `0.185.1` or newer
-- Correct CORS headers when loading Splat files from another origin
+| Focus | What you get |
+| --- | --- |
+| **WebGPU / WebGL2** | Shared Three.js scene API with GPU sorting on native WebGPU and asynchronous Worker/WASM sorting on both WebGL2 backends |
+| **Depth Rendering** | Separate unsorted depth draw with stochastic coverage at transparent edges |
+| **Large-scene streaming** | RAD tree LOD and SOG `lod-meta.json` scenes with camera-driven selection, on-demand loading, worker decoding, caching, and opacity crossfades for smooth LOD changes on both backends |
+| **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
+| **SDF edits** | Region-based color and opacity editing without moving Splats |
+| **Data and precision** | PLY/SPZ/SOG/RAD from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
 
 ## Installation
 
 ```sh
-npm install gaussian-splat-lite three
+npm install gaussian-splat-lite three@0.186.0
 ```
 
 ## Quick start
 
+`SplatMesh` is a scene object. One `GaussianSplatRenderer` handles generation, sorting, and drawing for all visible Splat objects.
+
+### WebGPU
+
 ```js
 import * as THREE from "three";
+import { WebGPURenderer } from "three/webgpu";
 import { GaussianSplatRenderer, SplatMesh } from "gaussian-splat-lite";
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(
-  60,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  1000,
-);
-camera.position.set(0, 0, 3);
-
-const renderer = new THREE.WebGLRenderer({
-  antialias: false,
-  powerPreference: "high-performance",
-});
+const renderer = new WebGPURenderer({ antialias: false });
+await renderer.init(); // Initialize before constructing GaussianSplatRenderer.
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-// One GaussianSplatRenderer is normally enough for each Three.js renderer.
-const splatRenderer = new GaussianSplatRenderer({ renderer });
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(
+  60, window.innerWidth / window.innerHeight, 0.1, 1000,
+);
+camera.position.set(0, 0, 3);
+
+const splatRenderer = new GaussianSplatRenderer({
+  renderer,
+  renderDepth: true, // Add Splat depth after the sorted color draw.
+});
 scene.add(splatRenderer);
 
 const splat = new SplatMesh({ url: "/assets/scene.spz" });
 scene.add(splat);
-
-// Wait before reading loaded data such as the count or bounding box.
 await splat.initialized;
-console.log(`Loaded ${splat.numSplats} splats`);
 
-renderer.setAnimationLoop(() => {
-  renderer.render(scene, camera);
-});
-
+renderer.setAnimationLoop(() => renderer.render(scene, camera));
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -86,206 +74,114 @@ window.addEventListener("resize", () => {
 });
 ```
 
-`GaussianSplatRenderer` is itself a Three.js scene object. It collects visible `SplatMesh` objects, generates GPU data, sorts the combined collection, and draws it. Application code continues to use the standard `renderer.render(scene, camera)` call; it does not need to issue a separate draw call for each Splat.
+### WebGL2
 
-Some PLY/SPZ data uses a `+Y`-down, `+Z`-forward convention. If a model appears upside down or faces the wrong direction, rotate the object without changing its decoded data:
+`WebGPURenderer` automatically falls back to its WebGL2 backend when WebGPU is unavailable. To force this backend while keeping TSL materials:
 
 ```js
-splat.quaternion.set(1, 0, 0, 0); // Rotate 180 degrees around X.
+const renderer = new WebGPURenderer({ antialias: false, forceWebGL: true });
+await renderer.init();
 ```
 
-## Loading data
-
-### From a URL
+For the classic WebGL renderer, replace the WebGPU renderer creation and initialization with:
 
 ```js
-const splat = new SplatMesh({
-  url: "/assets/model.ply", // .spz is also supported.
-  onProgress: (event) => {
-    if (event.lengthComputable) {
-      console.log(`${Math.round((event.loaded / event.total) * 100)}%`);
-    }
-  },
-  onLoad: (mesh) => console.log(mesh.numSplats),
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+```
+
+Keep the rest of the example, including `renderDepth`.
+
+## Streaming large scenes
+
+Use `RadStreamScheduler` for RAD files with a LOD tree, or `SogStreamScheduler` for SOG scenes indexed by `lod-meta.json`. Both work with the same `GaussianSplatRenderer` on WebGPU and WebGL2, loading and retaining data as the camera moves.
+
+For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
+
+```js
+import { RadStreamScheduler } from "gaussian-splat-lite";
+
+const streaming = new RadStreamScheduler({
+  url: "/assets/scene.rad",
+  splatBudget: 3_000_000,
+  fadeDurationMs: 200, // Smooth LOD transitions (default).
+});
+scene.add(streaming.group);
+await streaming.initialized;
+
+const size = new THREE.Vector2();
+renderer.setAnimationLoop(() => {
+  renderer.getDrawingBufferSize(size);
+  streaming.update(camera, { width: size.x, height: size.y });
+  renderer.render(scene, camera);
 });
 
-scene.add(splat);
-await splat.initialized;
+// The update loop must be running before awaiting the first visible data.
+await streaming.firstRenderable;
+
+// When removing the model:
+// streaming.dispose();
+// streaming.group.removeFromParent();
 ```
 
-### From a File or ReadableStream
-
-This form is suitable for file pickers, drag and drop, and large local files. The data is decoded locally by WebAssembly and is not automatically uploaded anywhere.
+For streamed SOG, use this constructor and call `streaming.update(camera)` before rendering each frame; the group and readiness lifecycle are the same:
 
 ```js
-import { SplatFileType, SplatMesh } from "gaussian-splat-lite";
+import { SogStreamScheduler } from "gaussian-splat-lite";
 
-const file = fileInput.files[0];
-const fileType = file.name.toLowerCase().endsWith(".spz")
-  ? SplatFileType.SPZ
-  : SplatFileType.PLY;
-
-const splat = new SplatMesh({
-  fileName: file.name,
-  fileType,
-  stream: file.stream(),
-  streamLength: file.size,
-  onProgress: ({ loaded, total }) => console.log(loaded, total),
-});
-
-scene.add(splat);
-await splat.initialized;
-```
-
-Complete in-memory file data can also be supplied:
-
-```js
-const bytes = new Uint8Array(await file.arrayBuffer());
-const splat = new SplatMesh({
-  fileBytes: bytes,
-  fileType: SplatFileType.SPZ,
-});
-```
-
-**`Experimental`** Decoded values can be transformed in the worker with a
-serializable, per-Splat expression. The library continues to own packed arrays
-and encoding:
-
-```js
-import { postDecode } from "gaussian-splat-lite";
-
-const transform = postDecode.define(({ splat, op }) => ({
-  position: op.add(splat.position, [1, 0, 0]),
-  color: op.mul(splat.color, [1, 0.8, 0.8]),
-}));
-
-const splat = new SplatMesh({ fileBytes: bytes, postDecode: transform });
-```
-
-See [`postDecode`](docs/PostDecode.md) for external attributes, opacity,
-quaternions, scale, and spherical harmonics.
-
-When the input URL does not have a recognizable extension, specify `fileType` explicitly or provide a `.ply` / `.spz` name through `fileName`.
-
-### Creating Splats in code
-
-```js
-import * as THREE from "three";
-import { SplatMesh } from "gaussian-splat-lite";
-
-const splat = new SplatMesh({
-  maxSplats: 100,
-  constructSplats: (data) => {
-    data.pushSplats([{
-      center: new THREE.Vector3(0, 0, 0),
-      scales: new THREE.Vector3(0.2, 0.1, 0.1),
-      quaternion: new THREE.Quaternion(),
-      opacity: 1, // Raw opacity; 0..1 alpha, >1 LoD coverage (max 1000).
-      color: new THREE.Color(0x4f8cff),
-      sh: [], // Optional: 0, 3, 8, or 15 coefficients for SH0/1/2/3.
-    }]);
-  },
-});
-
-scene.add(splat);
-await splat.initialized;
-```
-
-## Core concepts and public API
-
-| API | Purpose |
-| --- | --- |
-| [`GaussianSplatRenderer`](docs/GaussianSplatRenderer.md) | Integrates with Three.js and generates, sorts, and draws every visible Splat |
-| [`SplatMesh`](docs/SplatMesh.md) | A transformable, visible, and raycastable Gaussian Splat scene object |
-| [`SplatLoader`](docs/SplatLoader.md) | A Three.js Loader-style PLY/SPZ decoder |
-| [`Splats`](docs/Splats.md) | The built-in mutable Splat source, with decoded reads and aligned batch mutation |
-| [`SplatEdit`](docs/SplatEdit.md) / [`SplatEditSdf`](docs/SplatEdit.md) | SDF-region RGBA editing objects |
-| [`SplatAccumulator`](docs/SplatAccumulator.md) | A low-level generation buffer used by the renderer; normally internal |
-| [`SplatFileType`](docs/SplatFileType.md) | File type enum containing `PLY` and `SPZ` |
-| [`postDecode`](docs/PostDecode.md) | **`Experimental`** Serializable per-Splat expressions executed inside the decode worker |
-
-## Large world coordinates / GIS / ECEF
-
-The renderer keeps large translations separate from float32 local coordinates. Rendering subtracts the camera origin while values are still JavaScript double-precision numbers, and sorting stores one float64 world origin per `SplatMesh` alongside its float32 local centers. This happens automatically and does not move scene objects or change the world-coordinate behavior of `SplatMesh`, Raycaster, or SDF edits.
-
-Source Splat centers should still remain local to their mesh wherever possible. Precision already lost by storing absolute ECEF coordinates in a float32 source cannot be recovered during rendering.
-
-## Manual updates and animation
-
-By default, the renderer automatically detects object-count, transform, appearance, and camera changes. Use `onFrame` for per-frame animation:
-
-```js
-const splat = new SplatMesh({
-  url: "/assets/model.spz",
-  onFrame: ({ mesh, time }) => {
-    mesh.rotation.y = time * 0.2;
-  },
+const streaming = new SogStreamScheduler({
+  url: "/assets/scene/lod-meta.json",
+  splatBudget: 3_000_000,
+  fadeDurationMs: 200, // Smooth LOD transitions (default).
 });
 ```
 
-When automatic updates are disabled, call `update()` after the scene or camera changes:
+## Depth Rendering
 
-```js
-const splatRenderer = new GaussianSplatRenderer({
-  renderer,
-  autoUpdate: false,
-});
+**`renderDepth` adds a dedicated depth draw while keeping sorted color blending.** Both WebGPU and WebGL2 support it.
 
-await splatRenderer.update({ scene, camera });
-renderer.render(scene, camera);
-```
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `renderDepth` | `false` | Adds Splat depth for geometry drawn later, including transparent meshes |
+| `stochastic` | `false` | Forces sorting-free stochastic rendering with direct depth writes |
+| `autoStochastic` | `false` | Uses stochastic rendering during motion and enables companion depth on sorted frames |
 
-## Offscreen rendering
+With default depth settings, the companion draw uses unsorted Splats on non-stochastic frames and samples alpha coverage so transparent edges do not become solid. Stochastic frames already write their own depth.
 
-```js
-const captureRenderer = new GaussianSplatRenderer({
-  renderer,
-  target: {
-    width: 1920,
-    height: 1080,
-    superXY: 2,
-  },
-});
-scene.add(captureRenderer);
+## Documentation
 
-await captureRenderer.update({ scene, camera });
-const rgba = await captureRenderer.renderReadTarget({ scene, camera });
-// rgba is a 1920 * 1080 * 4 Uint8Array.
-```
-
-If the same scene also contains a `GaussianSplatRenderer` used for canvas display, control the instances with `layers` or `visible` as appropriate so that both are not rendered as ordinary scene objects during the same pass.
+- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering, sorting, depth, resolve, and XR.
+- [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
+- [SplatLoader](docs/SplatLoader.md) — File loading.
+- [RadStreamScheduler](docs/RadStreamScheduler.md) — Spark RAD decoding, tree LOD and on-demand paging.
+- [SogStreamScheduler](docs/SogStreamScheduler.md) — Streamed SOG, camera-driven LOD and caching.
+- [Splats](docs/Splats.md) — Data access and updates.
+- [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG/RAD formats.
+- [SplatEdit / SplatEditSdf](docs/SplatEdit.md) — Color and opacity editing.
+- [postDecode](docs/PostDecode.md) — Per-Splat transformations during decoding.
+- [SplatAccumulator](docs/SplatAccumulator.md) — Low-level GPU buffers.
 
 ## Development
 
-Building from source requires Node.js 20.9 or newer, a Rust toolchain installed through `rustup`, and the `wasm32-unknown-unknown` target. `build:wasm` installs `wasm-pack` through Cargo when it is not already available.
+Requires Node.js 20.9+, Rust via `rustup`, and the `wasm32-unknown-unknown` target. `build:wasm` installs `wasm-pack` through Cargo if needed.
 
 ```sh
-npm install
+npm ci
 npm run build:wasm
-npm run build
-npm test
-```
-
-Start the local PLY/SPZ viewer with:
-
-```sh
 npm run dev
 ```
 
-Open the local URL printed by Vite, normally `http://localhost:8080/`. Drag a `.ply` or `.spz` file onto the viewer, or use its file picker. Files are decoded locally and are not uploaded.
+Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGL2 / WebGPU / WebGPU · WebGL2** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
 
-Other useful commands:
+The viewer enables `reversedDepthBuffer` for depth precision on WebGPU and both WebGL2 backends. WebGL2 uses it when `EXT_clip_control` is available.
 
-```sh
-npm run build:watch
-npm run check
-npm run lint
-npm run format
-npm run release:check
-```
+For streaming, load a RAD file or enter a SOG `lod-meta.json` URL. The viewer streams RAD files with a LOD tree automatically and falls back to ordinary loading when no tree is present. Move the camera to see LOD selection and on-demand loading.
 
-The package build emits ESM and CommonJS bundles in `dist/`, together with TypeScript declarations and source maps.
+See [Contributing](CONTRIBUTING.md#validation) for validation and release commands. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
+
+## Acknowledgements
+
+The overall architecture of Gaussian Splat Lite draws on [Spark](https://github.com/sparkjsdev/spark) and [SuperSplat](https://github.com/playcanvas/supersplat).
 
 ## License
 
-Gaussian Splat Lite is licensed under the [Apache License 2.0](LICENSE). Required attribution notices are provided in [NOTICE](NOTICE), and bundled third-party licenses are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+Licensed under [Apache 2.0](LICENSE). See [NOTICE](NOTICE) and [third-party licenses](THIRD_PARTY_LICENSES.md) for attribution.

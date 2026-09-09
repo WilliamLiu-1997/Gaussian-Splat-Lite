@@ -1,30 +1,27 @@
 # SplatFileType
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-`SplatFileType` identifies the two file formats decoded by Gaussian-Splat-Lite:
+Supported file formats:
 
 ```ts
 enum SplatFileType {
   PLY = "ply",
   SPZ = "spz",
+  SOG = "sog",
+  RAD = "rad",
 }
 ```
 
-The loader normally infers the type from a URL or `fileName` ending in `.ply` or `.spz`. Specify `fileType` when the input name has no recognizable extension or when loading unnamed in-memory data.
+Usually inferred from a `.ply`, `.spz`, `.sog`, `.rad`, or SOG `meta.json` URL or `fileName`. Otherwise, set it explicitly:
 
 ```js
 import { SplatFileType, SplatMesh } from "gaussian-splat-lite";
 
-const fromUrl = new SplatMesh({
+const splat = new SplatMesh({
   url: "/download/model",
   fileType: SplatFileType.SPZ,
 });
-
-const fromMemory = new SplatMesh({
-  fileBytes: bytes,
-  fileType: SplatFileType.PLY,
-});
 ```
 
-The same `fileType` option is accepted by `SplatMesh`, `Splats`, and the low-level `SplatLoader.loadInternal()` APIs.
+`SplatMesh` and `Splats` accept this option for URL, file, and byte input. `SplatLoader.load()` and `loadAsync()` infer the format from the URL or file contents.

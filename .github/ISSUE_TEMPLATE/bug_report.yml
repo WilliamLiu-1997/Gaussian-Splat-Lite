@@ -22,7 +22,7 @@ body:
     id: three_version
     attributes:
       label: Three.js version
-      placeholder: 0.185.1
+      placeholder: 0.186.0
     validations:
       required: true
 

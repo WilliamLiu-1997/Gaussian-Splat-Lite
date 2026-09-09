@@ -1,102 +1,221 @@
 import {
   GaussianSplatRenderer,
+  RadStreamScheduler,
+  SogStreamScheduler,
   SplatFileType,
   SplatMesh,
+  StochasticResolvePass,
 } from "gaussian-splat-lite";
 import * as THREE from "three";
+import { WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
+import { createFrameGate } from "./frameGate.js";
+import { getModelRotationX } from "./modelOrientation.js";
+import {
+  detectFileType,
+  filesFromDrop,
+  modelFromLocalFiles,
+  modelFromUrl,
+} from "./modelSource.js";
+import { createReferenceHelpers } from "./referenceHelpers.js";
+import { renderOptionGroups } from "./renderOptions.js";
+import { createRenderOptionsPanel } from "./renderOptionsPanel.js";
+import { ViewerInspector } from "./viewerInspector.js";
+import { createViewerUI } from "./viewerUI.js";
 
 const viewport = document.querySelector("#viewport");
-const interfaceRoot = document.querySelector(".interface");
-const toolbarActions = document.querySelector(".toolbar-actions");
-const statusBar = document.querySelector(".statusbar");
 const fileInput = document.querySelector("#file-input");
-const emptyState = document.querySelector("#empty-state");
-const sourcePanelBackdrop = document.querySelector("#source-panel-backdrop");
-const sourcePanelToggle = document.querySelector("#source-panel-toggle");
-const sourcePanelClose = document.querySelector("#source-panel-close");
-const chooseFileButton = document.querySelector("#choose-file");
-const resetViewButton = document.querySelector("#reset-view");
+const referenceToggle = document.querySelector("#reference-toggle");
 const loadExampleButton = document.querySelector("#load-example");
 const urlForm = document.querySelector("#url-form");
 const modelUrlInput = document.querySelector("#model-url");
 const loadUrlButton = document.querySelector("#load-url");
-const loadingBackdrop = document.querySelector("#loading-backdrop");
-const loadingPanel = document.querySelector("#loading-panel");
-const loadingCancelButton = document.querySelector("#loading-cancel");
-const loadingName = document.querySelector("#loading-name");
-const loadingProgress = document.querySelector("#loading-progress");
-const loadingProgressFill = document.querySelector("#loading-progress-fill");
-const loadingDetail = document.querySelector("#loading-detail");
-const statusDot = document.querySelector("#status-dot");
-const statusText = document.querySelector("#status-text");
-const fileMeta = document.querySelector("#file-meta");
-const fileName = document.querySelector("#file-name");
-const fileStats = document.querySelector("#file-stats");
-const modelCredit = document.querySelector("#model-credit");
-const modelCreditPrefix = document.querySelector("#model-credit-prefix");
-const modelCreditSeparator = document.querySelector("#model-credit-separator");
-const dropOverlay = document.querySelector("#drop-overlay");
-const toast = document.querySelector("#toast");
-const renderOptionsToggle = document.querySelector("#render-options-toggle");
-const renderOptionsPanel = document.querySelector("#render-options");
-const renderOptionsClose = document.querySelector("#render-options-close");
 const renderOptionsContent = document.querySelector("#render-options-content");
 const renderOptionsReset = document.querySelector("#render-options-reset");
-const performanceFps = document.querySelector("#performance-fps");
-const performanceHeap = document.querySelector("#performance-heap");
-const performanceHeapStat = performanceHeap.closest(".performance-stat");
+const sourceUpAxis = document.querySelector("#source-up-axis");
+
+const ui = createViewerUI({
+  onCancelLoad: cancelLoading,
+  onResetView: () => {
+    if (activeSplat) frameSplat(activeSplat);
+  },
+});
 
 const EXAMPLE_MODEL = {
-  name: "lion.v3.spz",
-  size: 4303196,
-  url: new URL("../lion.v3.spz", import.meta.url),
-  credit: "Renaud",
+  name: "multi-material-splats.v4.spz",
+  size: 5914266,
+  url: new URL("../multi-material-splats.v4.spz", import.meta.url),
+  credit: "hybridherbst",
 };
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(52, 1, 0.001, 10000);
+const controlsOverlayScene = new THREE.Scene();
+
+const referenceHelpers = createReferenceHelpers();
+scene.add(referenceHelpers.group);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.001, 10000);
 camera.position.set(0, 0, 3);
 
-const renderer = new THREE.WebGLRenderer({
+const rendererParameters = {
   alpha: true,
   powerPreference: "high-performance",
-});
-renderer.setClearColor(0x000000, 0);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-viewport.append(renderer.domElement);
+  reversedDepthBuffer: true,
+};
+let outputColorSpace = THREE.SRGBColorSpace;
+THREE.ColorManagement.workingColorSpace = outputColorSpace;
 
-const controls = new CameraController(renderer, scene, camera, {
-  worldUp: camera.up,
-});
+function configureRenderer(value) {
+  value.setClearColor(0x000000, 0);
+  value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  value.outputColorSpace = outputColorSpace;
+}
+
+async function initializeWebGPURenderer(value, backend, onFailure) {
+  let failureMessage;
+  if (backend === "webgpu") {
+    const getFallback = value._getFallback;
+    value._getFallback = (error) => {
+      // Three's fallback otherwise discards the native initialization error.
+      failureMessage = `Native WebGPU initialization failed: ${String(error)}`;
+      console.error("Native WebGPU initialization failed", error);
+      onFailure(failureMessage);
+      return getFallback.call(value, error);
+    };
+  }
+  await value.init();
+  if (backend === "webgpu" && !value.backend.isWebGPUBackend) {
+    // Inspector's saved Force WebGL setting can bypass native init entirely.
+    onFailure(
+      failureMessage ??
+        "Native WebGPU was not initialized. Disable Force WebGL in Inspector Settings to use WebGPU.",
+    );
+  }
+}
+
+function createViewerInspector(failureMessage) {
+  const inspector = new ViewerInspector();
+  if (failureMessage) inspector.console.addMessage("error", failureMessage);
+  // Leave the built-in Parameters tab hidden: only FPS and Inspector.
+  inspector.parameters.hide();
+  inspector.domElement.classList.add("viewer-inspector");
+  inspector.profiler.toggleButton.setAttribute(
+    "aria-label",
+    "Toggle Three.js Inspector",
+  );
+  inspector.profiler.toggleButton.title = "Three.js Inspector";
+  return inspector;
+}
+
+async function createRendererState(backend, previous, onFailure = () => {}) {
+  const state = {};
+  const webGPU = backend !== "webgl";
+  try {
+    if (webGPU) {
+      state.renderer = new WebGPURenderer({
+        ...rendererParameters,
+        forceWebGL: backend === "webgl-fallback",
+      });
+      await initializeWebGPURenderer(state.renderer, backend, (message) => {
+        state.failureMessage = message;
+        onFailure(message);
+      });
+      configureRenderer(state.renderer);
+      state.inspector = createViewerInspector(state.failureMessage);
+    } else {
+      // WebGL texture setup requires linear working space. Keep the active
+      // renderer's space intact until the replacement is ready to mount.
+      const workingColorSpace = THREE.ColorManagement.workingColorSpace;
+      try {
+        THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
+        state.renderer = new THREE.WebGLRenderer(rendererParameters);
+        configureRenderer(state.renderer);
+      } finally {
+        THREE.ColorManagement.workingColorSpace = workingColorSpace;
+      }
+    }
+
+    state.splatRenderer = new GaussianSplatRenderer({
+      renderer: state.renderer,
+      onDirty: requestRender,
+      autoStochastic: true,
+    });
+    if (previous) {
+      for (const group of renderOptionGroups) {
+        for (const option of group.options) {
+          if (!renderOptionActions[option.property]) {
+            state.splatRenderer[option.property] =
+              previous.splatRenderer[option.property];
+          }
+        }
+      }
+    }
+    state.controls = new CameraController(state.renderer, scene, camera, {
+      worldUp: camera.up,
+    });
+    if (previous) state.controls.minDistance = previous.controls.minDistance;
+    state.frameGate = createFrameGate(
+      state.renderer,
+      previous ? undefined : requestRender,
+    );
+    return state;
+  } catch (error) {
+    disposeRendererState(state);
+    throw error;
+  }
+}
+
+function disposeRendererState(state) {
+  if (!state || state.disposed) return;
+  state.disposed = true;
+  state.renderer?.setAnimationLoop(null);
+  state.frameGate?.dispose();
+  state.controls?.removeEventListener("update", requestRender);
+  state.controls?.dispose();
+  state.splatRenderer?.removeFromParent();
+  state.splatRenderer?.dispose();
+  // An attached Inspector is owned and disposed by the renderer.
+  if (state.inspector && state.renderer.inspector !== state.inspector) {
+    state.inspector.dispose();
+  }
+  state.renderer?.dispose();
+  state.renderer?.domElement.remove();
+}
+
+function mountRendererState(state, attachInspector = true) {
+  const { renderer, controls, splatRenderer, inspector } = state;
+  const webGPU = usesNodeRenderer(renderer);
+  THREE.ColorManagement.workingColorSpace = webGPU
+    ? outputColorSpace
+    : THREE.LinearSRGBColorSpace;
+  referenceHelpers.syncColors();
+  renderer.outputColorSpace = outputColorSpace;
+  referenceHelpers.setBackend(webGPU);
+  controlsOverlayScene.add(controls.indicator);
+  controls.addEventListener("update", requestRender);
+  scene.add(splatRenderer);
+  if (renderer.domElement.parentNode !== viewport) {
+    viewport.append(renderer.domElement);
+  }
+  if (attachInspector) {
+    ui.mountInspector(inspector?.domElement);
+    if (inspector && renderer.inspector !== inspector) {
+      renderer.inspector = inspector;
+    }
+  }
+  // Finalize the drawing buffer after the canvas and Inspector are mounted.
+  resizeRenderer();
+}
 
 let needsRender = true;
 let renderOnDemand = true;
+let rendererState = await createRendererState("webgpu");
+let { renderer, controls, splatRenderer, frameGate } = rendererState;
+mountRendererState(rendererState);
+
 const STATS_UPDATE_INTERVAL_MS = 500;
 let statsSampleStart = performance.now();
 let statsRenderedFrames = 0;
-
-function formatHeapSize(bytes) {
-  const mebibytes = bytes / (1024 * 1024);
-  if (mebibytes >= 1024) return `${(mebibytes / 1024).toFixed(1)} GB`;
-  return `${mebibytes.toFixed(mebibytes >= 100 ? 0 : 1)} MB`;
-}
-
-function updateHeapStat() {
-  const memory = performance.memory;
-  if (!memory || !Number.isFinite(memory.usedJSHeapSize)) {
-    performanceHeap.value = "N/A";
-    performanceHeapStat.dataset.tooltip =
-      "JS heap reporting is not available in this browser.";
-    return;
-  }
-
-  performanceHeap.value = formatHeapSize(memory.usedJSHeapSize);
-  performanceHeapStat.dataset.tooltip = Number.isFinite(memory.jsHeapSizeLimit)
-    ? `${formatHeapSize(memory.usedJSHeapSize)} used of ${formatHeapSize(memory.jsHeapSizeLimit)}`
-    : `${formatHeapSize(memory.usedJSHeapSize)} used`;
-}
 
 function updateStats(time, rendered) {
   if (rendered) statsRenderedFrames += 1;
@@ -104,14 +223,14 @@ function updateStats(time, rendered) {
   const elapsed = time - statsSampleStart;
   if (elapsed < STATS_UPDATE_INTERVAL_MS) return;
 
-  const fps = (statsRenderedFrames * 1000) / elapsed;
-  performanceFps.value = fps >= 10 ? Math.round(fps) : fps.toFixed(1);
-  updateHeapStat();
+  ui.updateStats({
+    fps: (statsRenderedFrames * 1000) / elapsed,
+    memory: performance.memory,
+    streamStats: activeStream?.stats,
+  });
   statsSampleStart = time;
   statsRenderedFrames = 0;
 }
-
-updateHeapStat();
 
 function requestRender() {
   needsRender = true;
@@ -119,661 +238,448 @@ function requestRender() {
 
 function renderFrame(time) {
   controls.update(time);
-  const rendered = !renderOnDemand || needsRender;
-  if (rendered) {
-    needsRender = false;
-    renderer.render(scene, camera);
+  activeStream?.update(camera, {
+    width: renderer.domElement.width,
+    height: renderer.domElement.height,
+  });
+  // Keep LOD requests current while GPU draws wait, retaining pending redraws.
+  if (!frameGate.isReady()) {
+    updateStats(time, false);
+    return;
   }
-  updateStats(time, rendered);
+  if (renderOnDemand && !needsRender) {
+    updateStats(time, false);
+    return;
+  }
+
+  // Synchronous preparation is consumed by this draw; worker completion can
+  // still request a later frame through onDirty.
+  needsRender = false;
+  stochasticResolvePass.compose(renderer, scene, camera);
+  // Draw the anchor after resolve so stochastic filtering cannot blur it.
+  // Its material disables depth testing/writes, so no depth clear is needed.
+  if (controls.indicator.visible) {
+    const previousAutoClear = renderer.autoClear;
+    try {
+      renderer.autoClear = false;
+      renderer.render(controlsOverlayScene, camera);
+    } finally {
+      renderer.autoClear = previousAutoClear;
+    }
+  }
+  frameGate.submitted();
+  updateStats(time, true);
 }
 
-controls.addEventListener("update", requestRender);
+const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
+stochasticResolvePass.enabled = true;
 
-const splatRenderer = new GaussianSplatRenderer({
-  renderer,
-  onDirty: requestRender,
-});
-scene.add(splatRenderer);
+const renderOptionActions = {
+  rendererBackend: (backend) => {
+    void switchRendererBackend(backend);
+  },
+  outputColorSpace: (enabled) => {
+    outputColorSpace = enabled
+      ? THREE.SRGBColorSpace
+      : THREE.LinearSRGBColorSpace;
+    renderer.outputColorSpace = outputColorSpace;
+    if (usesNodeRenderer(renderer)) {
+      THREE.ColorManagement.workingColorSpace = outputColorSpace;
+    }
+    referenceHelpers.syncColors();
+  },
+  renderOnDemand: (value) => {
+    renderOnDemand = value;
+  },
+};
 
-const renderOptionGroups = [
-  {
-    title: "Performance & diagnostics",
-    description: "Frame scheduling and live metrics.",
-    options: [
-      {
-        property: "renderOnDemand",
-        description:
-          "Skips unchanged frames. Disable it to render continuously for profiling.",
-        defaultValue: true,
-        falseLabel: "Continuous",
-        trueLabel: "On demand",
-        apply: (value) => {
-          renderOnDemand = value;
-        },
-      },
-      {
-        property: "preUpdate",
-        description:
-          "Updates splats before drawing. Disable it to defer updates until after the frame.",
-        defaultValue: true,
-        falseLabel: "Post-render",
-        trueLabel: "Pre-render",
-      },
-    ],
-  },
-  {
-    title: "Splat appearance",
-    description: "Shape, filtering, and screen-space size.",
-    options: [
-      {
-        property: "maxStdDev",
-        description:
-          "Draws more of each Gaussian tail. Higher is softer but costs more fill rate.",
-        min: 1,
-        max: 4,
-        step: 0.05,
-        defaultValue: Math.sqrt(8),
-        format: (value) => value.toFixed(2),
-      },
-      {
-        property: "minPixelRadius",
-        description:
-          "Hides splats whose two screen-space radii are below this pixel size.",
-        min: 0,
-        max: 4,
-        step: 0.05,
-        defaultValue: 1,
-        format: (value) => `${value.toFixed(2)} px`,
-      },
-      {
-        property: "maxPixelRadius",
-        description: "Caps very large nearby splats to limit overdraw.",
-        min: 16,
-        max: 1024,
-        step: 16,
-        defaultValue: 512,
-        format: (value) => `${Math.round(value)} px`,
-      },
-      {
-        property: "minAlpha",
-        description:
-          "Discards faint splats and fragments. Raise it to reveal the cutoff boundary.",
-        min: 0,
-        max: 0.1,
-        step: 0.5 / 255,
-        defaultValue: 0.5 / 255,
-        format: (value) => value.toFixed(4),
-      },
-      {
-        property: "preBlurAmount",
-        description: "Enlarges and brightens splats before opacity correction.",
-        min: 0,
-        max: 2,
-        step: 0.01,
-        defaultValue: 0,
-        format: (value) => value.toFixed(2),
-      },
-      {
-        property: "blurAmount",
-        description:
-          "Smooths small splats while correcting opacity to preserve their energy.",
-        min: 0,
-        max: 2,
-        step: 0.01,
-        defaultValue: 0.3,
-        format: (value) => value.toFixed(2),
-      },
-      {
-        property: "focalAdjustment",
-        description:
-          "Changes projected splat size. Higher values generally appear sharper.",
-        min: 0.5,
-        max: 4,
-        step: 0.05,
-        defaultValue: 2,
-        format: (value) => `${value.toFixed(2)}×`,
-      },
-    ],
-  },
-  {
-    title: "Culling & sorting",
-    description: "Trade image stability for rendering work.",
-    options: [
-      {
-        property: "clipXY",
-        description:
-          "Keeps splat centers this far beyond the viewport before culling them.",
-        min: 1,
-        max: 3,
-        step: 0.05,
-        defaultValue: 1.25,
-        format: (value) => `${value.toFixed(2)}×`,
-      },
-      {
-        property: "minSortIntervalMs",
-        description:
-          "Limits how often depth sorting runs. Higher values save work but may lag while moving.",
-        min: 0,
-        max: 500,
-        step: 10,
-        defaultValue: 0,
-        format: (value) => `${Math.round(value)} ms`,
-      },
-      {
-        property: "sortRadial",
-        description:
-          "Radial is stable while orbiting; Z-depth can match trained scenes more accurately.",
-        defaultValue: false,
-        falseLabel: "Z-depth",
-        trueLabel: "Radial",
-      },
-    ],
-  },
-  {
-    title: "Material pipeline",
-    description: "How splats blend with the Three.js scene.",
-    options: [
-      {
-        property: "premultipliedAlpha",
-        description:
-          "Uses RGB already multiplied by alpha for edge-correct blending.",
-        defaultValue: true,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
-      {
-        property: "depthTest",
-        description:
-          "Lets opaque Three.js geometry occlude splats using the depth buffer.",
-        defaultValue: true,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
-      {
-        property: "depthWrite",
-        description:
-          "Writes splats to depth. This can create hard artifacts in transparent areas.",
-        defaultValue: false,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
-      {
-        property: "transparent",
-        description:
-          "Places splats in Three.js’s transparent pass instead of its opaque pass.",
-        defaultValue: true,
-        falseLabel: "Opaque",
-        trueLabel: "Transparent",
-      },
-    ],
-  },
-];
+let rendererSwitchToken = 0;
+let rendererSwitchTask = Promise.resolve();
+let retiringRendererState = null;
+let viewerDisposed = false;
 
-const renderOptionInputs = new Map();
+function usesNodeRenderer(value) {
+  return value.isWebGPURenderer === true;
+}
 
-function applyRenderOption(option, value) {
-  if (option.apply) {
-    option.apply(value);
+function getRendererBackend() {
+  if (!usesNodeRenderer(renderer)) return "webgl";
+  return renderer.backend.isWebGPUBackend ? "webgpu" : "webgl-fallback";
+}
+
+function syncRendererOption(backend, disabled = false) {
+  optionsPanel.setValue("rendererBackend", backend);
+  optionsPanel.setDisabled("rendererBackend", disabled);
+}
+
+function switchRendererBackend(backend) {
+  const switchToken = ++rendererSwitchToken;
+  // Reset can request another backend while the selector is disabled.
+  rendererSwitchTask = rendererSwitchTask
+    .then(() => performRendererSwitch(backend, switchToken))
+    .catch((error) => console.error("Renderer switch failed", error));
+  return rendererSwitchTask;
+}
+
+function detachRendererState(state) {
+  state.renderer.setAnimationLoop(null);
+  state.controls.enabled = false;
+  state.controls.removeEventListener("update", requestRender);
+  state.controls.indicator.removeFromParent();
+  state.splatRenderer.removeFromParent();
+  stochasticResolvePass.removeSplatRenderer(state.splatRenderer);
+}
+
+function activateRendererState(state, attachInspector = true) {
+  rendererState = state;
+  ({ renderer, controls, splatRenderer, frameGate } = state);
+  stochasticResolvePass.addSplatRenderer(splatRenderer);
+  mountRendererState(state, attachInspector);
+}
+
+async function performRendererSwitch(backend, switchToken) {
+  if (viewerDisposed || switchToken !== rendererSwitchToken) return;
+  if (backend === getRendererBackend()) {
+    syncRendererOption(backend);
+    return;
+  }
+
+  syncRendererOption(backend, true);
+  const previous = rendererState;
+  const previousCanvas = previous.renderer.domElement;
+  const previousOpacity = previousCanvas.style.opacity;
+  const previousControlsEnabled = previous.controls.enabled;
+  let next;
+  let activated = false;
+  let committed = false;
+  let webGPUFailureMessage;
+  try {
+    next = await createRendererState(backend, previous, (message) => {
+      webGPUFailureMessage = message;
+      if (switchToken === rendererSwitchToken) ui.showToast(message);
+    });
+    checkRendererSwitch(switchToken);
+    // Prepare the replacement in the DOM while the old canvas stays visible.
+    const canvas = next.renderer.domElement;
+    canvas.style.opacity = "0";
+    canvas.style.pointerEvents = "none";
+    viewport.append(canvas);
+    await waitForCanvasPaint(switchToken);
+
+    retiringRendererState = previous;
+    activated = true;
+    detachRendererState(previous);
+    // Finalize the drawing buffer before waiting for visibility. Keep the old
+    // Inspector attached until disposal, then attach the replacement once.
+    activateRendererState(next, false);
+    await next.splatRenderer.update({ scene, camera });
+    checkRendererSwitch(switchToken);
+    canvas.style.removeProperty("opacity");
+    await waitForCanvasPaint(switchToken);
+
+    previousCanvas.style.opacity = "0";
+    requestRender();
+    renderFrame(performance.now());
+    while (!next.frameGate.isReady()) {
+      await waitForCanvasPaint(switchToken);
+    }
+    await waitForCanvasPaint(switchToken);
+
+    disposeRendererState(previous);
+    retiringRendererState = null;
+    committed = true;
+    ui.mountInspector(next.inspector?.domElement);
+    if (next.inspector) renderer.inspector = next.inspector;
+    canvas.style.removeProperty("pointer-events");
+    controls.enabled = previousControlsEnabled;
+    renderer.setAnimationLoop(renderFrame);
+    if (next.failureMessage) {
+      ui.showToast(`${next.failureMessage} Using WebGL2.`);
+    }
+  } catch (error) {
+    if (!viewerDisposed && activated && !committed) {
+      previousCanvas.style.opacity = previousOpacity;
+      detachRendererState(next);
+      disposeRendererState(next);
+      activateRendererState(previous);
+      controls.enabled = previousControlsEnabled;
+      renderer.setAnimationLoop(renderFrame);
+      requestRender();
+    }
+    if (viewerDisposed || switchToken !== rendererSwitchToken) return;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("Could not switch renderer", error);
+    const message = `Could not switch renderer: ${detail}`;
+    ui.showToast(
+      webGPUFailureMessage ? `${webGPUFailureMessage}\n${message}` : message,
+    );
+  } finally {
+    if (!committed) disposeRendererState(next);
+    if (retiringRendererState === previous) retiringRendererState = null;
+    if (!viewerDisposed && switchToken === rendererSwitchToken) {
+      syncRendererOption(getRendererBackend());
+    }
+  }
+}
+
+function checkRendererSwitch(switchToken) {
+  if (viewerDisposed || switchToken !== rendererSwitchToken) {
+    throw new DOMException("Renderer switch cancelled", "AbortError");
+  }
+}
+
+async function waitForCanvasPaint(switchToken) {
+  checkRendererSwitch(switchToken);
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+  checkRendererSwitch(switchToken);
+}
+
+function applyRenderOption(property, value) {
+  const apply = renderOptionActions[property];
+  if (apply) {
+    apply(value);
   } else {
-    splatRenderer[option.property] = value;
+    splatRenderer[property] = value;
     splatRenderer.setDirty();
   }
   requestRender();
 }
 
-function createRenderOptions() {
-  for (const group of renderOptionGroups) {
-    const section = document.createElement("section");
-    section.className = "option-group";
-
-    const heading = document.createElement("div");
-    heading.className = "option-group-heading";
-    heading.innerHTML = `<h3>${group.title}</h3><p>${group.description}</p>`;
-    section.append(heading);
-
-    for (const option of group.options) {
-      const row = document.createElement("div");
-      row.className = "option-row";
-
-      const copy = document.createElement("div");
-      copy.className = "option-copy";
-      const label = document.createElement("label");
-      label.htmlFor = `render-option-${option.property}`;
-      label.textContent = option.property;
-      const description = document.createElement("p");
-      description.textContent = option.description;
-      copy.append(label, description);
-
-      const control = document.createElement("div");
-      control.className = "option-control";
-      const input = document.createElement("input");
-      input.id = label.htmlFor;
-      input.dataset.renderOption = option.property;
-
-      if (typeof option.defaultValue === "boolean") {
-        row.classList.add("option-row-toggle");
-        input.type = "checkbox";
-        input.className = "toggle-input";
-        input.checked = option.defaultValue;
-        const toggle = document.createElement("label");
-        toggle.className = "toggle-track";
-        toggle.htmlFor = input.id;
-        toggle.setAttribute("aria-hidden", "true");
-        const value = document.createElement("output");
-        value.className = "toggle-value";
-        value.setAttribute("for", input.id);
-        const update = () => {
-          value.value = input.checked ? option.trueLabel : option.falseLabel;
-          value.textContent = value.value;
-          applyRenderOption(option, input.checked);
-        };
-        input.addEventListener("change", update);
-        control.append(value, input, toggle);
-        input.updateOption = update;
-      } else {
-        input.type = "range";
-        input.className = "range-input";
-        input.min = String(option.min);
-        input.max = String(option.max);
-        input.step = String(option.step);
-        input.value = String(option.defaultValue);
-        const value = document.createElement("output");
-        value.className = "range-value";
-        value.setAttribute("for", input.id);
-        const update = () => {
-          const numericValue = Number(input.value);
-          value.value = option.format(numericValue);
-          value.textContent = value.value;
-          applyRenderOption(option, numericValue);
-        };
-        input.addEventListener("input", update);
-        control.append(value, input);
-        input.updateOption = update;
-      }
-
-      renderOptionInputs.set(option.property, { input, option });
-      input.updateOption();
-      row.append(copy, control);
-      section.append(row);
-    }
-
-    renderOptionsContent.append(section);
-  }
-}
-
-function setRenderOptionsOpen(open) {
-  renderOptionsPanel.hidden = !open;
-  renderOptionsToggle.setAttribute("aria-expanded", String(open));
-  if (open) renderOptionsClose.focus();
-}
-
-function syncBackgroundInteractivity() {
-  const sourcePanelOpen = !emptyState.hidden;
-  const loading = !loadingPanel.hidden;
-  toolbarActions.inert = sourcePanelOpen || loading;
-  statusBar.inert = sourcePanelOpen || loading;
-  emptyState.inert = loading;
-  renderOptionsPanel.inert = loading;
-}
-
-function setSourcePanelOpen(open, { moveFocus = false } = {}) {
-  const shouldOpen = open || !activeSplat;
-  const restoreFocus =
-    !shouldOpen && emptyState.contains(document.activeElement);
-
-  if (shouldOpen && !renderOptionsPanel.hidden) {
-    setRenderOptionsOpen(false);
-  }
-
-  emptyState.hidden = !shouldOpen;
-  sourcePanelBackdrop.hidden = !shouldOpen;
-  interfaceRoot.classList.toggle("is-source-panel-open", shouldOpen);
-  syncBackgroundInteractivity();
-  sourcePanelToggle.setAttribute("aria-expanded", String(shouldOpen));
-  sourcePanelClose.hidden = !activeSplat;
-
-  if (moveFocus && shouldOpen) {
-    chooseFileButton.focus();
-  } else if (restoreFocus) {
-    sourcePanelToggle.focus();
-  }
-}
-
-function resetRenderOptions() {
-  for (const { input, option } of renderOptionInputs.values()) {
-    if (typeof option.defaultValue === "boolean") {
-      input.checked = option.defaultValue;
-    } else {
-      input.value = String(option.defaultValue);
-    }
-    input.updateOption();
-  }
-}
-
-createRenderOptions();
-
 const frameSize = new THREE.Vector3();
+const frameCenter = new THREE.Vector3();
 let activeSplat = null;
+let modelUpAxis = "auto";
+let activeStream = null;
+let disposeActiveSource = null;
+let cancelActiveLoad = null;
 let activeLoad = 0;
-let activeLoadController = null;
 let dragDepth = 0;
-let toastTimer;
 const remoteRequestByButton = new WeakMap();
 
-const formatNumber = new Intl.NumberFormat();
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unit = units[0];
-
-  for (let index = 1; value >= 1024 && index < units.length; index += 1) {
-    value /= 1024;
-    unit = units[index];
-  }
-
-  const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${unit}`;
-}
-
-function fileTypeFor(file) {
-  const name = file.name.toLowerCase();
-  if (name.endsWith(".ply")) return SplatFileType.PLY;
-  if (name.endsWith(".spz")) return SplatFileType.SPZ;
-  return undefined;
-}
-
-function modelFromUrl(value) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    return undefined;
-  }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-
-  const encodedName = url.pathname.split("/").filter(Boolean).at(-1) ?? "";
-  let name = encodedName;
-  try {
-    name = decodeURIComponent(encodedName);
-  } catch {
-    // Keep the encoded path segment when it contains malformed escape sequences.
-  }
-
-  if (!fileTypeFor({ name })) return undefined;
-  return { name, size: 0, url };
-}
+const optionsPanel = createRenderOptionsPanel({
+  container: renderOptionsContent,
+  groups: renderOptionGroups,
+  onChange: applyRenderOption,
+});
+syncRendererOption(getRendererBackend());
+// Keep the initialized backend, including any automatic WebGL fallback.
+optionsPanel.reset({ skip: ["rendererBackend"] });
 
 function isFileDrag(event) {
   return Array.from(event.dataTransfer?.types ?? []).includes("Files");
 }
 
-function setStatus(message, state = "ready") {
-  statusText.textContent = message;
-  statusDot.dataset.state = state;
-}
-
-function showToast(message) {
-  window.clearTimeout(toastTimer);
-  toast.textContent = message;
-  toast.hidden = false;
-  requestAnimationFrame(() => toast.classList.add("is-visible"));
-  toastTimer = window.setTimeout(() => {
-    toast.classList.remove("is-visible");
-    window.setTimeout(() => {
-      toast.hidden = true;
-    }, 180);
-  }, 4200);
-}
-
-function clearProgressShimmer() {
-  for (const animation of loadingProgress.getAnimations()) {
-    animation.cancel();
-  }
-  loadingProgress.dataset.shimmer = "";
-  loadingProgress.style.background = "";
-  loadingProgress.style.backgroundSize = "";
-  loadingProgress.style.backgroundPosition = "";
-}
-
-function startProgressShimmer() {
-  if (loadingProgress.dataset.shimmer === "true") return;
-  loadingProgress.dataset.shimmer = "true";
-  loadingProgress.style.background =
-    "linear-gradient(90deg, rgb(255 255 255 / 7%) 0%, rgb(120 150 255 / 18%) 35%, rgb(207 255 88 / 24%) 50%, rgb(120 150 255 / 18%) 65%, rgb(255 255 255 / 7%) 100%)";
-  loadingProgress.style.backgroundSize = "220% 100%";
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  loadingProgress.animate(
-    [{ backgroundPosition: "120% 0" }, { backgroundPosition: "-120% 0" }],
-    {
-      duration: 1200,
-      easing: "ease-in-out",
-      iterations: Number.POSITIVE_INFINITY,
-    },
-  );
-}
-
-function setLoading(file, loaded = 0, total = file.size) {
-  const wasHidden = loadingPanel.hidden;
-  loadingBackdrop.hidden = false;
-  loadingPanel.hidden = false;
-  syncBackgroundInteractivity();
-  loadingName.textContent = file.name;
-  loadingProgress.classList.remove("is-indeterminate");
-
-  if (wasHidden) loadingCancelButton.focus();
-
-  if (total > 0 && loaded >= 0) {
-    clearProgressShimmer();
-    const ratio = Math.min(loaded / total, 1);
-    const percent = Math.round(ratio * 100);
-    loadingProgressFill.style.transform = `scaleX(${ratio})`;
-    loadingProgress.setAttribute("aria-valuemin", "0");
-    loadingProgress.setAttribute("aria-valuemax", "100");
-    loadingProgress.setAttribute("aria-valuenow", String(percent));
-    loadingDetail.textContent =
-      ratio >= 1
-        ? "File received · Finalizing…"
-        : `${percent}% · ${formatBytes(loaded)} of ${formatBytes(total)}`;
-  } else {
-    loadingProgressFill.style.transform = "scaleX(0)";
-    loadingProgress.removeAttribute("aria-valuenow");
-    startProgressShimmer();
-    loadingDetail.textContent =
-      loaded > 0
-        ? `Downloading… · ${formatBytes(loaded)} received`
-        : "Starting download…";
-  }
-}
-
-function clearLoading() {
-  clearProgressShimmer();
-  loadingBackdrop.hidden = true;
-  loadingPanel.hidden = true;
-  loadingProgressFill.style.transform = "scaleX(0)";
-  syncBackgroundInteractivity();
+function clearActiveModel() {
+  if (activeSplat) scene.remove(activeSplat);
+  if (activeStream) activeStream.dispose();
+  else activeSplat?.dispose();
+  disposeActiveSource?.();
+  disposeActiveSource = null;
+  activeSplat = null;
+  activeStream = null;
+  ui.clearModelInfo();
+  requestRender();
 }
 
 function cancelLoading() {
-  if (loadingPanel.hidden) return;
-
-  const sourcePanelOpen = !emptyState.hidden;
   activeLoad += 1;
-  const controller = activeLoadController;
-  activeLoadController = null;
-  controller?.abort();
-  clearLoading();
-  setStatus("Loading canceled");
+  cancelActiveLoad?.();
+  cancelActiveLoad = null;
+}
 
-  if (sourcePanelOpen) {
-    chooseFileButton.focus();
-  } else {
-    sourcePanelToggle.focus();
-  }
+function applyModelOrientation(splat, streamed) {
+  // Transform the stream group so rendering and LOD culling share the same
+  // rotation; the decoded splats and index bounds remain in source space.
+  splat.rotation.set(getModelRotationX(modelUpAxis, streamed), 0, 0);
+  splat.updateMatrixWorld(true);
 }
 
 function frameSplat(splat) {
-  const bounds = splat.getBoundingBox(true);
+  const streamed = activeStream?.group === splat;
+  const bounds = streamed
+    ? activeStream.getBoundingBox()
+    : splat.getBoundingBox(true);
+  splat.updateWorldMatrix(true, false);
+  bounds.applyMatrix4(splat.matrixWorld);
+  bounds.getSize(frameSize);
+  if (streamed && !bounds.isEmpty()) bounds.getCenter(frameCenter);
+  else frameCenter.set(0, 0, 0);
+  const referenceSize =
+    Math.max(frameSize.x, frameSize.y, frameSize.z, 0.01) * 1.5;
+  referenceHelpers.setFrame(frameCenter, referenceSize);
   const radius = bounds.isEmpty()
     ? 0.01
-    : Math.max(bounds.getSize(frameSize).length() * 0.5, 0.01);
+    : Math.max(frameSize.length() * 0.5, 0.01);
   const defaultCameraDistance = 10;
-  const distance = Math.min(defaultCameraDistance, radius);
+  const verticalHalfFov =
+    THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2;
+  const horizontalHalfFov = Math.atan(
+    Math.tan(verticalHalfFov) * camera.aspect,
+  );
+  const distance = streamed
+    ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
+    : Math.min(defaultCameraDistance, radius);
 
-  camera.near = Math.max(radius / 1000, 0.0001);
-  camera.far = Math.max(distance + radius * 20, 100);
+  camera.near = radius * 0.001;
+  camera.far = radius * 100;
   camera.updateProjectionMatrix();
-  camera.position.set(0, 5, 5 * Math.sqrt(3)).setLength(distance);
-  camera.lookAt(0, 0, 0);
+  camera.position
+    .set(0, 5, 5 * Math.sqrt(3))
+    .setLength(distance)
+    .add(frameCenter);
+  camera.lookAt(frameCenter);
   camera.updateMatrixWorld(true);
   controls.minDistance = 0;
   controls.setCamera(camera);
 }
 
+async function initializeModel(
+  model,
+  file,
+  { url, resolveFile, manager },
+  loadId,
+) {
+  const fileType = await detectFileType(file, url);
+  if (loadId !== activeLoad) return;
+  const sogStream = url && file.name.toLowerCase() === "lod-meta.json";
+  if (!fileType && !sogStream && !url)
+    throw new Error("Choose a .ply, .spz, .sog, .rad, or SOG meta.json file.");
+
+  const source = {
+    url,
+    file: url === undefined ? file : undefined,
+    resolveFile,
+  };
+  if (fileType === SplatFileType.RAD) {
+    model.stream = new RadStreamScheduler({
+      ...source,
+      onChange: requestRender,
+      onError: (error, chunkUrl) => {
+        console.error("RAD chunk failed", chunkUrl, error);
+        if (loadId !== activeLoad || !ui.isLoading) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        ui.setLoadingDetail(`${chunkUrl}: ${detail}`);
+        ui.setStatus("Waiting for a RAD page · retry pending", "error");
+      },
+    });
+    try {
+      await model.stream.initialized;
+      model.splat = model.stream.group;
+      return;
+    } catch (error) {
+      model.stream.dispose();
+      model.stream = null;
+      if (loadId !== activeLoad) return;
+      if (error.name !== "RadLodRequiredError") throw error;
+    }
+  }
+
+  if (sogStream) {
+    model.stream = new SogStreamScheduler({
+      url,
+      manager,
+      onChange: requestRender,
+      onError: (error, chunkUrl) =>
+        console.error("Streaming chunk failed", chunkUrl, error),
+    });
+    model.splat = model.stream.group;
+  } else {
+    model.splat = new SplatMesh({
+      ...source,
+      fileName: file.name,
+      fileType,
+      onProgress: (event) => {
+        if (loadId !== activeLoad) return;
+        ui.showLoading(file, event.loaded, event.total || file.size);
+      },
+    });
+  }
+  await (model.stream ?? model.splat).initialized;
+}
+
 async function loadFile(
   file,
-  { credit = "", remoteController = null, loadToken = null } = {},
+  { credit = "", url, button, resolveFile, manager, dispose } = {},
 ) {
-  const fileType = fileTypeFor(file);
-  if (!fileType) {
-    showToast("Unsupported file. Choose a .ply or .spz file.");
-    setStatus("Only PLY and SPZ files are supported", "error");
-    return;
+  const loadId = ++activeLoad;
+  cancelActiveLoad?.();
+  clearActiveModel();
+
+  // Keep ownership available to cancellation while initialization is pending.
+  const model = { splat: null, stream: null };
+  const disposeModel = () => {
+    if (model.splat && activeSplat === model.splat) clearActiveModel();
+    else if (model.stream) model.stream.dispose();
+    else model.splat?.dispose();
+    dispose?.();
+  };
+  cancelActiveLoad = disposeModel;
+  if (button) {
+    remoteRequestByButton.set(button, loadId);
+    button.disabled = true;
   }
-
-  const controller = remoteController ?? new AbortController();
-  if (activeLoadController && activeLoadController !== controller) {
-    activeLoadController.abort();
-  }
-  activeLoadController = controller;
-
-  const loadId = loadToken ?? ++activeLoad;
-  setLoading(file);
-  setStatus(`Loading ${file.name}`, "loading");
-
-  const stream = file
-    .stream()
-    .pipeThrough(new TransformStream(), { signal: controller.signal });
-  const candidate = new SplatMesh({
-    fileName: file.name,
-    fileType,
-    stream,
-    streamLength: file.size || undefined,
-    onProgress: (event) => {
-      if (loadId !== activeLoad) return;
-      setLoading(file, event.loaded, event.total || file.size);
-    },
-  });
-
-  // Match the viewer convention: file-space +Y down / +Z forward
-  // becomes Three.js +Y up / -Z forward without changing decoded splat data.
-  candidate.quaternion.set(1, 0, 0, 0);
+  ui.showLoading(file);
+  ui.setStatus(`Loading ${file.name}`, "loading");
 
   try {
-    await candidate.initialized;
+    await initializeModel(model, file, { url, resolveFile, manager }, loadId);
 
     if (loadId !== activeLoad) {
-      candidate.dispose();
+      disposeModel();
       return;
     }
 
-    const previousSplat = activeSplat;
-    activeSplat = candidate;
+    applyModelOrientation(
+      model.splat,
+      model.stream instanceof SogStreamScheduler,
+    );
+    activeSplat = model.splat;
+    activeStream = model.stream;
+    disposeActiveSource = dispose;
     scene.add(activeSplat);
-    if (previousSplat) {
-      scene.remove(previousSplat);
-      previousSplat.dispose();
+    requestRender();
+    if (model.stream instanceof RadStreamScheduler) {
+      // The active stream advances loading until RAD bounds can frame the view.
+      await model.stream.firstRenderable;
+      if (loadId !== activeLoad) {
+        disposeModel();
+        return;
+      }
     }
     frameSplat(activeSplat);
-
-    setSourcePanelOpen(false);
-    resetViewButton.hidden = false;
-    fileMeta.hidden = false;
-    fileName.textContent = file.name;
-    const sizeLabel = file.size > 0 ? ` · ${formatBytes(file.size)}` : "";
-    fileStats.textContent = `${formatNumber.format(activeSplat.numSplats)} splats${sizeLabel}`;
-    modelCredit.textContent = credit;
-    modelCreditPrefix.hidden = !credit;
-    modelCredit.hidden = !credit;
-    modelCreditSeparator.hidden = !credit;
-    setStatus("Loaded and ready", "success");
-    clearLoading();
+    ui.showModelInfo(file, {
+      credit,
+      numSplats: activeSplat.numSplats,
+      streamed: Boolean(activeStream),
+    });
+    ui.clearLoading();
+    requestRender();
   } catch (error) {
-    candidate.dispose();
+    disposeModel();
     if (loadId !== activeLoad) return;
 
-    clearLoading();
-    setStatus(`Could not load ${file.name}`, "error");
+    ui.clearLoading();
+    ui.setStatus(`Could not load ${file.name}`, "error");
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`Failed to load ${file.name}`, error);
-    showToast(`Could not load ${file.name}: ${detail}`);
+    ui.showToast(`Could not load ${file.name}: ${detail}`);
   } finally {
-    if (activeLoadController === controller) {
-      activeLoadController = null;
-    }
-  }
-}
-
-async function loadRemoteModel(model, button) {
-  activeLoadController?.abort();
-  const controller = new AbortController();
-  activeLoadController = controller;
-  remoteRequestByButton.set(button, controller);
-
-  const requestId = ++activeLoad;
-  const pendingFile = { name: model.name, size: model.size };
-  button.disabled = true;
-  setLoading(pendingFile, -1, 0);
-  setStatus(`Loading ${model.name}`, "loading");
-
-  try {
-    const response = await fetch(model.url, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}`);
-    }
-    if (!response.body) {
-      throw new Error("The response did not include a readable stream");
-    }
-    if (requestId !== activeLoad) return;
-
-    const contentLength = Number(response.headers.get("content-length"));
-    const file = {
-      name: model.name,
-      size: contentLength > 0 ? contentLength : model.size,
-      stream: () => response.body,
-    };
-    await loadFile(file, {
-      credit: model.credit,
-      remoteController: controller,
-      loadToken: requestId,
-    });
-  } catch (error) {
-    if (requestId !== activeLoad || controller.signal.aborted) return;
-    clearLoading();
-    setStatus(`Could not load ${model.name}`, "error");
-    const detail =
-      error instanceof TypeError
-        ? "Request failed. Check the URL and the server's CORS headers."
-        : error instanceof Error
-          ? error.message
-          : String(error);
-    console.error(`Failed to load ${model.name}`, error);
-    showToast(`Could not load ${model.name}: ${detail}`);
-  } finally {
-    if (activeLoadController === controller) {
-      activeLoadController = null;
-    }
-    if (remoteRequestByButton.get(button) === controller) {
+    if (cancelActiveLoad === disposeModel) cancelActiveLoad = null;
+    if (button && remoteRequestByButton.get(button) === loadId) {
       remoteRequestByButton.delete(button);
       button.disabled = false;
     }
   }
 }
 
-function loadExample() {
-  loadRemoteModel(EXAMPLE_MODEL, loadExampleButton);
+function loadRemoteModel(model, button) {
+  return loadFile(model, {
+    url: model.url.toString(),
+    credit: model.credit,
+    button,
+  });
 }
 
 function openFilePicker() {
@@ -783,7 +689,7 @@ function openFilePicker() {
 
 function clearDragState() {
   dragDepth = 0;
-  dropOverlay.hidden = true;
+  ui.setDropOverlayVisible(false);
 }
 
 function resizeRenderer() {
@@ -799,31 +705,18 @@ for (const button of document.querySelectorAll("[data-file-picker]")) {
   button.addEventListener("click", openFilePicker);
 }
 
-sourcePanelToggle.addEventListener("click", () => {
-  setSourcePanelOpen(true, { moveFocus: true });
+loadExampleButton.addEventListener("click", () => {
+  loadRemoteModel(EXAMPLE_MODEL, loadExampleButton);
 });
-
-sourcePanelClose.addEventListener("click", () => {
-  setSourcePanelOpen(false);
-  sourcePanelToggle.focus();
-});
-
-sourcePanelBackdrop.addEventListener("click", () => {
-  if (!activeSplat) return;
-  setSourcePanelOpen(false);
-  sourcePanelToggle.focus();
-});
-
-loadingCancelButton.addEventListener("click", cancelLoading);
-
-loadExampleButton.addEventListener("click", loadExample);
 
 urlForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const model = modelFromUrl(modelUrlInput.value.trim());
   if (!model) {
-    showToast("Enter a valid HTTP(S) URL ending in .ply or .spz.");
-    setStatus("Enter a valid PLY or SPZ URL", "error");
+    ui.showToast(
+      "Enter an HTTP(S) model URL (.ply, .spz, .sog, .rad, or a scene index).",
+    );
+    ui.setStatus("Enter a valid model URL", "error");
     modelUrlInput.focus();
     return;
   }
@@ -832,45 +725,48 @@ urlForm.addEventListener("submit", (event) => {
   loadRemoteModel(model, loadUrlButton);
 });
 
-fileInput.addEventListener("change", () => {
-  const file = fileInput.files?.[0];
-  if (file) loadFile(file);
-});
-
-resetViewButton.addEventListener("click", () => {
-  if (activeSplat) frameSplat(activeSplat);
-});
-
-renderOptionsToggle.addEventListener("click", () => {
-  setRenderOptionsOpen(renderOptionsPanel.hidden);
-});
-
-renderOptionsClose.addEventListener("click", () => {
-  setRenderOptionsOpen(false);
-  renderOptionsToggle.focus();
-});
-
-renderOptionsReset.addEventListener("click", resetRenderOptions);
-
-window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-
-  if (!loadingPanel.hidden) {
-    cancelLoading();
-  } else if (!renderOptionsPanel.hidden) {
-    setRenderOptionsOpen(false);
-    renderOptionsToggle.focus();
-  } else if (!emptyState.hidden && activeSplat) {
-    setSourcePanelOpen(false);
-    sourcePanelToggle.focus();
+function loadLocalFiles(files) {
+  try {
+    const { file, ...source } = modelFromLocalFiles(files);
+    void loadFile(file, source);
+  } catch (error) {
+    ui.showToast(error.message);
   }
+}
+
+fileInput.addEventListener("change", () => {
+  const files = Array.from(fileInput.files ?? []);
+  if (files.length) loadLocalFiles(files);
+});
+
+referenceToggle.addEventListener("click", () => {
+  const visible = !referenceHelpers.visible;
+  referenceHelpers.setVisible(visible);
+  referenceToggle.setAttribute("aria-pressed", String(visible));
+  referenceToggle.title = visible ? "Hide grid and axes" : "Show grid and axes";
+  requestRender();
+});
+
+sourceUpAxis.addEventListener("change", (event) => {
+  modelUpAxis = event.target.value;
+  if (!activeSplat) return;
+  applyModelOrientation(
+    activeSplat,
+    activeStream instanceof SogStreamScheduler,
+  );
+  requestRender();
+});
+
+renderOptionsReset.addEventListener("click", () => {
+  // Apply material defaults before the asynchronous backend switch copies them.
+  optionsPanel.reset({ last: ["rendererBackend"] });
 });
 
 window.addEventListener("dragenter", (event) => {
   if (!isFileDrag(event)) return;
   event.preventDefault();
   dragDepth += 1;
-  dropOverlay.hidden = false;
+  ui.setDropOverlayVisible(true);
 });
 
 window.addEventListener("dragover", (event) => {
@@ -886,20 +782,30 @@ window.addEventListener("dragleave", (event) => {
   }
   if (!isFileDrag(event)) return;
   dragDepth = Math.max(0, dragDepth - 1);
-  if (dragDepth === 0) dropOverlay.hidden = true;
+  if (dragDepth === 0) ui.setDropOverlayVisible(false);
 });
 
-window.addEventListener("drop", (event) => {
+window.addEventListener("drop", async (event) => {
   event.preventDefault();
   clearDragState();
 
-  const files = Array.from(event.dataTransfer?.files ?? []);
-  const file = files.find((entry) => fileTypeFor(entry));
-  if (file) {
-    loadFile(file);
-  } else {
-    showToast("No supported file found. Drop a .ply or .spz file.");
-    setStatus("Only PLY and SPZ files are supported", "error");
+  cancelLoading();
+  const loadId = activeLoad;
+  try {
+    const files = await filesFromDrop(event.dataTransfer);
+    if (loadId !== activeLoad) return;
+    if (files.length) {
+      loadLocalFiles(files);
+    } else {
+      ui.showToast(
+        "Drop a model or a SOG folder containing lod-meta.json and its chunks.",
+      );
+      ui.setStatus("PLY, SPZ, SOG, and RAD files are supported", "error");
+    }
+  } catch (error) {
+    if (loadId !== activeLoad) return;
+    ui.showToast(`Could not read dropped files: ${error.message}`);
+    ui.setStatus("Could not read dropped files", "error");
   }
 });
 
@@ -907,15 +813,20 @@ window.addEventListener("blur", clearDragState);
 
 window.addEventListener("resize", resizeRenderer);
 window.addEventListener("beforeunload", () => {
-  activeLoadController?.abort();
+  viewerDisposed = true;
+  rendererSwitchToken += 1;
   renderer.setAnimationLoop(null);
-  controls.removeEventListener("update", requestRender);
-  controls.dispose();
-  activeSplat?.dispose();
-  splatRenderer.dispose();
-  renderer.dispose();
+  cancelActiveLoad?.();
+  clearActiveModel();
+  stochasticResolvePass.dispose();
+  referenceHelpers.dispose();
+  disposeRendererState(rendererState);
+  disposeRendererState(retiringRendererState);
+  ui.dispose();
 });
 
-setSourcePanelOpen(true);
 resizeRenderer();
+if (rendererState.failureMessage) {
+  ui.showToast(`${rendererState.failureMessage} Using WebGL2.`);
+}
 renderer.setAnimationLoop(renderFrame);

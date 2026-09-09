@@ -1,21 +1,8 @@
 # SDF color and opacity editing
 
-[Back to the API overview](../README.md#core-concepts-and-public-api)
+[Back to documentation](../README.md#documentation)
 
-SDF edits affect RGBA only. They do not move Splat centers or invalidate an existing depth order. Available shapes are:
-
-```ts
-SplatEditSdfType.ALL
-SplatEditSdfType.PLANE
-SplatEditSdfType.SPHERE
-SplatEditSdfType.BOX
-SplatEditSdfType.ELLIPSOID
-SplatEditSdfType.CYLINDER
-SplatEditSdfType.CAPSULE
-SplatEditSdfType.INFINITE_CONE
-```
-
-The following edit affects only `splat`:
+SDF edits change color and opacity within a region, preserving centers and sort order. Attach an edit to a `SplatMesh` to affect only that mesh:
 
 ```js
 import * as THREE from "three";
@@ -27,25 +14,22 @@ import {
 } from "gaussian-splat-lite";
 
 const edit = new SplatEdit({
-  name: "Warm sphere",
   rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY_RGBA,
   softEdge: 0.1,
-  sdfSmooth: 0,
 });
 
 const sphere = new SplatEditSdf({
   type: SplatEditSdfType.SPHERE,
-  color: new THREE.Color(1, 0.5, 0.5), // Assigns R, G, and B.
+  color: new THREE.Color(1, 0.5, 0.5),
   opacity: 0.4,
   radius: 1,
 });
 
-sphere.position.set(0, 0, 0);
 edit.add(sphere);
 splat.add(edit);
 ```
 
-Adding a `SplatEdit` directly to the scene, rather than below a particular `SplatMesh`, makes it a global edit for every editable Splat mesh:
+To affect all editable meshes, attach it to the scene:
 
 ```js
 scene.add(edit);
@@ -69,7 +53,7 @@ scene.add(edit);
 | `addSdf(sdf)` | Adds an SDF to the explicit `sdfs` list without adding the same object twice |
 | `removeSdf(sdf)` | Removes an SDF from the explicit `sdfs` list |
 
-`addSdf()` and `removeSdf()` manage the explicit list. When `sdfs` is not `null`, the renderer uses that list instead of traversing the `SplatEdit` child hierarchy. Use `edit.add(sdf)` and `edit.remove(sdf)` when the SDFs should instead be regular `THREE.Object3D` children.
+An explicit `sdfs` list takes precedence over child objects. For child shapes, use `edit.add(sdf)` and `edit.remove(sdf)`.
 
 ## RGBA blend modes
 
@@ -79,23 +63,7 @@ scene.add(edit);
 | `SET_RGBA` | Replaces each assigned channel with the corresponding SDF value |
 | `ADD_RGBA` | Adds the corresponding SDF value to each assigned channel |
 
-All three modes preserve channels that the SDF does not assign. For example,
-this edit replaces only R and G; the existing B and alpha values remain unchanged:
-
-```ts
-const partialColor = new SplatEditSdf({
-  color: { r: 1, g: 0.5 },
-});
-
-const edit = new SplatEdit({
-  rgbaBlendMode: SplatEditRgbaBlendMode.SET_RGBA,
-  sdfs: [partialColor],
-});
-```
-
-A `THREE.Color` assigns all three RGB channels. Omit `color` to preserve all RGB
-channels, and omit `opacity` to preserve alpha. Assign `undefined` to an existing
-channel later if it should become unassigned.
+Unassigned channels stay unchanged. For example, `color: { r: 1, g: 0.5 }` with `SET_RGBA` replaces only R and G. A `THREE.Color` assigns all RGB channels; `opacity` assigns alpha. Set a channel to `undefined` to unassign it.
 
 ## SplatEditSdf options
 
@@ -107,4 +75,6 @@ channel later if it should become unassigned.
 | `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | RGB values used by the edit; each unassigned channel is preserved |
 | `radius` | `number` | `0` | Radius used by sphere, cylinder, capsule, and related shapes |
 
-An SDF extends `THREE.Object3D`; its position, rotation, and scale define the edit region. Edits execute in creation order by default, and the order can be changed through `edit.ordering`.
+Shapes (`SplatEditSdfType`): `ALL`, `PLANE`, `SPHERE`, `BOX`, `ELLIPSOID`, `CYLINDER`, `CAPSULE`, `INFINITE_CONE`.
+
+An SDF is a `THREE.Object3D`; its transform defines the region. Edits run in creation order unless changed with `edit.ordering`.
