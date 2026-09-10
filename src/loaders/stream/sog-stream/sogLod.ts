@@ -10,9 +10,8 @@ export type SogLodRange = {
 
 export type SogLodLeaf = {
   id: number;
-  /** Non-dominated levels, ordered from cheapest to highest quality. */
+  /** Coarse to fine, with strictly increasing counts and decreasing levels. */
   lods: SogLodRange[];
-  upgradeRatios: number[];
 };
 
 export type SogLodNode = {
@@ -30,26 +29,32 @@ export type SogLodFile = {
 export type SogLodManifest = {
   tree: SogLodNode;
   leaves: SogLodLeaf[];
+  /** Flattened in leaf/LOD order; each leaf's first entry is unused. */
+  upgradeRatios: number[];
   files: SogLodFile[];
   environment?: string;
 };
 
-export const SOG_LOD_STRIDE = 5;
+export const SOG_LOD_STRIDE = 4;
+
+const DISTANCE_BAND_MULTIPLIER = 1.5;
 
 /** Packed worker index. Float64 preserves source bounds and safe-integer counts. */
 export type SogLodIndex = {
   /** Preorder nodes: min XYZ, max XYZ, next index after the subtree, leaf ID (-1 for interiors). */
   nodes: Float64Array;
   leafOffsets: Uint32Array;
-  /** Per level: level, file, offset, count, upgrade ratio. */
+  /** Per level: level, file, offset, count. */
   lods: Float64Array;
+  /** Best reachable distance-error reduction per added splat, in LOD order. */
+  upgradeRatios: Float32Array;
   urls: string[];
   counts: Float64Array;
   environment?: string;
 };
 
 /** Scheduler metadata; the complete spatial tree stays in the LOD worker. */
-export type SogLodMetadata = Omit<SogLodIndex, "nodes"> & {
+export type SogLodMetadata = Omit<SogLodIndex, "nodes" | "upgradeRatios"> & {
   /** Root min XYZ and max XYZ. */
   bounds: Float64Array;
 };
@@ -79,13 +84,7 @@ export function packSogLodIndex(manifest: SogLodManifest): SogLodIndex {
   for (const leaf of leaves) {
     leaf.lods.forEach((lod, index) => {
       lods.set(
-        [
-          lod.level,
-          lod.file,
-          lod.offset,
-          lod.count,
-          leaf.upgradeRatios[index] ?? 0,
-        ],
+        [lod.level, lod.file, lod.offset, lod.count],
         (leafOffsets[leaf.id] + index) * SOG_LOD_STRIDE,
       );
     });
@@ -94,6 +93,7 @@ export function packSogLodIndex(manifest: SogLodManifest): SogLodIndex {
     nodes,
     leafOffsets,
     lods,
+    upgradeRatios: Float32Array.from(manifest.upgradeRatios),
     urls: files.map((file) => file.url),
     counts: Float64Array.from(files, (file) => file.count),
     environment,
@@ -105,7 +105,7 @@ export function readSogLodLeaf(
   index: Pick<SogLodIndex, "leafOffsets" | "lods">,
   id: number,
 ): SogLodLeaf {
-  const leaf: SogLodLeaf = { id, lods: [], upgradeRatios: [] };
+  const leaf: SogLodLeaf = { id, lods: [] };
   const data = index.lods;
   for (let i = index.leafOffsets[id]; i < index.leafOffsets[id + 1]; i++) {
     const offset = i * SOG_LOD_STRIDE;
@@ -116,7 +116,6 @@ export function readSogLodLeaf(
       offset: data[offset + 2],
       count: data[offset + 3],
     });
-    leaf.upgradeRatios.push(data[offset + 4]);
   }
   return leaf;
 }
@@ -142,9 +141,6 @@ function resolve(value: unknown, baseUrl: string): string {
   return new URL(value, baseUrl).href;
 }
 
-type ParsedLodRange = SogLodRange & { error: number };
-type ParsedLodLeaf = Omit<SogLodLeaf, "lods"> & { lods: ParsedLodRange[] };
-
 /** Streamed SOG v1, including the earlier unversioned manifests. */
 export function parseSogLodManifest(
   value: unknown,
@@ -166,9 +162,8 @@ export function parseSogLodManifest(
     files.push({ url, count: 0, ranges: [] });
     return files.length - 1;
   });
-  const leaves: ParsedLodLeaf[] = [];
+  const leaves: SogLodLeaf[] = [];
   const counts = Array<number>(levels).fill(0);
-  let fileErrors = root.lodErrors === true;
   const parseNode = (value: unknown): SogLodNode => {
     const node = object(value);
     const bounds = object(node.bound);
@@ -197,13 +192,8 @@ export function parseSogLodManifest(
       for (const child of children) bound.union(child.bound);
       return { bound, children };
     }
-    const leaf: ParsedLodLeaf = {
-      id: leaves.length,
-      lods: [],
-      upgradeRatios: [],
-    };
+    const leaf: SogLodLeaf = { id: leaves.length, lods: [] };
     leaves.push(leaf);
-    const errors = root.lodErrors === true ? node.errors : undefined;
     for (const [key, value] of Object.entries(object(node.lods))) {
       const level = Number(key);
       if (
@@ -216,61 +206,64 @@ export function parseSogLodManifest(
       const entry = object(value);
       const fileIndex = integer(entry.file, "file index");
       if (fileIndex >= fileIndices.length) fail("file index is out of bounds");
-      const range: ParsedLodRange = {
+      const range: SogLodRange = {
         leaf: leaf.id,
         level,
         file: fileIndices[fileIndex],
         offset: integer(entry.offset, "splat offset"),
         count: integer(entry.count, "splat count"),
-        error: 0,
       };
       integer(range.offset + range.count, "range end");
       counts[level] += range.count;
       if (range.count > 0) {
         files[range.file].ranges.push(range);
-        const error = Array.isArray(errors) ? errors[level] : undefined;
-        if (typeof error !== "number" || !Number.isFinite(error) || error < 0)
-          fileErrors = false;
-        else range.error = error;
         leaf.lods.push(range);
       }
     }
     return { bound, leaf };
   };
   const tree = parseNode(root.tree);
+  const bandWeights = new Float64Array(levels);
+  for (let level = 1; level < levels; level++)
+    bandWeights[level] = DISTANCE_BAND_MULTIPLIER ** (2 * (level - 1));
+  const distanceErrors = new Float64Array(levels);
+  const upgradeRatios: number[] = [];
   for (const leaf of leaves) {
-    // Match PlayCanvas: validate only renderable entries, and derive errors for
-    // the whole asset if any are missing. Unused zero placeholders are valid.
-    if (!fileErrors) {
-      leaf.lods.sort((a, b) => a.level - b.level);
-      const finest = leaf.lods[0]?.count ?? 0;
-      let error = 0;
-      for (const lod of leaf.lods) {
-        error = Math.max(error, Math.log(finest / lod.count));
-        lod.error = error;
-      }
+    // Include every nonempty level before pruning, even with equal or inverted counts.
+    leaf.lods.sort((a, b) => b.level - a.level);
+    let error = 0;
+    for (let i = leaf.lods.length - 1; i >= 0; i--) {
+      const lod = leaf.lods[i];
+      const finer = leaf.lods[i + 1];
+      if (finer)
+        error += Math.max(finer.count - lod.count, 1) * bandWeights[lod.level];
+      distanceErrors[lod.level] = error;
     }
-    leaf.lods.sort((a, b) => a.count - b.count || a.error - b.error);
+    leaf.lods.sort(
+      (a, b) =>
+        a.count - b.count || distanceErrors[a.level] - distanceErrors[b.level],
+    );
     let bestError = Number.POSITIVE_INFINITY;
     leaf.lods = leaf.lods.filter((lod) => {
-      if (lod.error >= bestError) return false;
-      bestError = lod.error;
+      if (distanceErrors[lod.level] >= bestError) return false;
+      bestError = distanceErrors[lod.level];
       return true;
     });
-    // Each step buys the next level, valued by the best improvement reachable
-    // from its starting point. This keeps useful intermediate LODs available.
-    leaf.upgradeRatios = leaf.lods
-      .slice(0, -1)
-      .map((coarse, index) =>
-        Math.max(
-          ...leaf.lods
-            .slice(index + 1)
-            .map(
-              (fine) =>
-                (coarse.error - fine.error) / (fine.count - coarse.count),
-            ),
-        ),
-      );
+    // Include pruned levels' errors when finding the best reachable upgrade ratio.
+    if (leaf.lods.length) upgradeRatios.push(0);
+    for (let i = 1; i < leaf.lods.length; i++) {
+      const coarse = leaf.lods[i - 1];
+      let ratio = 0;
+      for (let j = i; j < leaf.lods.length; j++) {
+        const reach = leaf.lods[j];
+        ratio = Math.max(
+          ratio,
+          (distanceErrors[coarse.level] - distanceErrors[reach.level]) /
+            (reach.count - coarse.count),
+        );
+      }
+      upgradeRatios.push(ratio);
+    }
   }
   for (const file of files) {
     file.ranges.sort((a, b) => a.offset - b.offset || a.count - b.count);
@@ -295,12 +288,12 @@ export function parseSogLodManifest(
     root.environment == null ? undefined : resolve(root.environment, baseUrl);
   if (environment && files.some((file) => file.url === environment))
     fail("environment must be separate from LOD chunks");
-  return { tree, leaves, files, environment };
+  return { tree, leaves, upgradeRatios, files, environment };
 }
 
 export type SogVisibleLeaf = { leaf: SogLodLeaf; weight: number };
 
-/** Keep the best available LOD up to the target and load toward it in steps. */
+/** Reuse cached refinements up to the target, then split gaps of four or more. */
 export function resolveSogLod(
   leaf: SogLodLeaf,
   target: SogLodRange,
@@ -309,35 +302,38 @@ export function resolveSogLod(
 ): {
   range: SogLodRange | undefined;
   load?: SogLodRange;
-  /** Wait until range is attached before loading the finer level. */
+  /** Wait until range is attached before requesting the next LOD. */
   refinement?: boolean;
 } {
+  if (current === target || isLoaded(target)) return { range: target };
+
   const targetIndex = leaf.lods.indexOf(target);
-  let index = targetIndex;
-  while (
-    index >= 0 &&
-    current !== leaf.lods[index] &&
-    !isLoaded(leaf.lods[index])
-  )
-    index--;
-  if (index < 0) return { range: current, load: leaf.lods[0] };
+  const currentIndex = current ? leaf.lods.indexOf(current) : -1;
+  // Prefer the finest cached refinement without going beyond the target.
+  let index = targetIndex - 1;
+  while (index > currentIndex && !isLoaded(leaf.lods[index])) index--;
+  const range = index > currentIndex ? leaf.lods[index] : current;
+  if (!range) return { range, load: leaf.lods[0] };
 
-  const range = leaf.lods[index];
-  if (index === targetIndex) return { range };
-
-  const midpoint = Math.floor((range.level + target.level) / 2);
-  let nextIndex = index + 1;
-  // Missing or dominated levels advance to the finer side of the midpoint.
-  while (nextIndex < targetIndex && leaf.lods[nextIndex].level > midpoint)
-    nextIndex++;
-  return { range, load: leaf.lods[nextIndex], refinement: true };
+  let load = target;
+  if (range.level - target.level >= 4) {
+    const midpoint = Math.floor((range.level + target.level) / 2);
+    let nextIndex = index + 1;
+    // Missing or dominated levels advance to the finer side of the midpoint.
+    while (nextIndex < targetIndex && leaf.lods[nextIndex].level > midpoint)
+      nextIndex++;
+    load = leaf.lods[nextIndex];
+  }
+  return { range, load, refinement: true };
 }
 
-/** PlayCanvas-style coverage × error removed / splats added, using a small heap. */
+/** Distance bands within a splat budget, using a small heap. */
 export function selectSogLods(
   visible: SogVisibleLeaf[],
   budget: number,
+  manifest: Pick<SogLodIndex, "leafOffsets" | "upgradeRatios">,
 ): Map<number, SogLodRange> {
+  const { leafOffsets, upgradeRatios } = manifest;
   let remaining = budget;
   type Upgrade = SogVisibleLeaf & { index: number; score: number };
   const selected = new Map<number, SogLodRange>();
@@ -379,12 +375,12 @@ export function selectSogLods(
     ceiling = Number.POSITIVE_INFINITY,
   ) => {
     if (index >= leaf.lods.length) return;
-    push({
-      leaf,
-      weight,
-      index,
-      score: Math.min(ceiling, weight * leaf.upgradeRatios[index - 1]),
-    });
+    // A later step can have a higher ratio; keep it at the priority that opened it.
+    const score = Math.min(
+      weight * upgradeRatios[leafOffsets[leaf.id] + index],
+      ceiling,
+    );
+    push({ leaf, weight, index, score });
   };
   for (const { leaf, weight } of visible) {
     const coarse = leaf.lods[0];

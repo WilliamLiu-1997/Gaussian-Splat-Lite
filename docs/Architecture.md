@@ -94,11 +94,11 @@ Loaders own transport and parsing; schedulers own selection, fades, publication 
 
 `SogStreamScheduler.update()` coordinates selection, region transitions, cache release, and loading. Region transitions run in order: advance fades, update visibility, attach ready regions, queue extractions, and finish immediate fades.
 
-- `sogLod.ts` owns manifest parsing, budget selection, and progressive LOD resolution.
-- `SogVisibility` retains the complete spatial tree, collects visible leaves and selects target LODs in the LOD worker. The scheduler receives only root bounds and packed LOD metadata; packed records retain upgrade ratios and omit the parser's intermediate errors. Resident-byte statistics account for each thread's retained arrays separately.
+- `sogLod.ts` owns manifest parsing, budget selection, and LOD fallback. Distance-mode scoring uses a level multiplier of 1.5. Errors accumulate before pruning, preserving equal and inverted counts. Upgrade priority uses the best reachable error reduction per added splat, cannot increase along a chain, and selection stops at the first unaffordable upgrade.
+- `SogVisibility` keeps the tree and float32 ratio table in the LOD worker. Perspective and orthographic cameras weight leaves by `1 / distance^1.5`, using world-space distance to leaf bounds. The scheduler receives root bounds and `(level, file, offset, count)` records; memory statistics include both threads' arrays.
 - `SogStreamLoader` owns a dedicated LOD worker, a bounded decoding pool and cached chunk sources.
 - `SogStreamBatch` owns occupied slots and mesh attachment based on region opacity. `SogRegionSplats` owns its indexed GPU data in `data/`.
-- `SogStreamScheduler` keeps the latest pending view and each leaf's target, current region, outgoing region and pending extraction together. It resolves worker targets against current caches and owns region fades, retirement, upload limits and retries.
+- `SogStreamScheduler` keeps the latest view and per-leaf targets, current/outgoing regions and pending extractions. It uses the finest cached refinement up to the target. Remaining gaps of at least four levels load a midpoint rounded toward a finer available level; smaller gaps and coarsening load the target directly. Missing coverage starts at the coarsest LOD. Each next request waits for the selected region to attach. The scheduler also owns fades, retirement, upload limits and retries.
 
 SOG images and RAD pages share the optional `resolveFile` input contract in `loadTypes.ts`. Ordinary loading bridges resolver requests to the main thread through the existing worker RPC; caller-owned buffers are copied before transfer. Packed SOG assets bypass the resolver.
 

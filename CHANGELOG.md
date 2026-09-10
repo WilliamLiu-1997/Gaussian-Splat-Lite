@@ -13,6 +13,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Changed streamed SOG LOD selection to distance-based priorities with a level multiplier of 1.5, using camera-to-bounds distance instead of region size or authored errors.
+- Changed streamed SOG refinement to use the finest cached LOD up to the target. Gaps of at least four levels load a midpoint; smaller gaps and coarsening load the target directly. Regions without usable coverage start at the coarsest LOD.
 - Reworked RAD LOD scoring to prepare camera position and projection bounds once per view, using camera pixel scale and inverse object-space center distance for perspective and orthographic cameras. Nodes inside the actual viewport receive full priority, accounting for zoom and view offsets; off-screen priority tapers toward 5%, with 5% retained behind the camera. Non-invertible transforms are rejected.
 - Changed RAD LOD radius estimates from the largest axis scale to the arithmetic mean of the three axis scales, lowered the base pixel threshold from `2` to `1`, and reduced hysteresis from 15% to 5%.
 - Reduced RAD traversal work by marking child ranges per page, skipping per-node work on leaf-only pages, and pruning refinements that cannot fit the remaining budget while preserving single-child refinements and stable source order.
@@ -22,7 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Simplified internal RAD selection clearing and removed unused duplicate-index fade handling, keeping prepared selection commits and shared fade groups.
 - Unified RAD/SOG load lifecycle handling in `StreamWorkerPool`, including worker leases, task IDs, cancellation, download accounting, and balanced `LoadingManager` notifications, while retaining separate pools and format-specific cache ownership.
 - Reduced SOG streaming transfers and pending-copy reservations with tightly packed region records that omit per-region texture padding and duplicate sort centers.
-- Kept the streamed SOG spatial tree in the LOD worker, transferred only root bounds to the scheduler, and omitted intermediate LOD errors from packed metadata. Resident-byte statistics now account for the different retained arrays on each thread.
+- Reduced streamed SOG metadata to four fields per LOD, keeping the spatial tree and a float32 upgrade-ratio table in the LOD worker. Memory statistics include both threads' retained arrays.
 - Shared ordering texture allocation, resizing and disposal between the WebGL backends while preserving their partial-upload paths; removed unused native WebGPU CPU-ordering members.
 - Optimized `postDecode` by combining single-use multiply/add and add/multiply expressions while preserving intermediate float32 rounding and operand order, caching decoded scale values on demand, and combining related packed-field and sort-center writes.
 - Compacted native WebGPU projection output into visible slots and repurposed the source-index buffer for stable coverage seeds, preserving the 32-byte projected record layout without an extra seed texture.

@@ -29,17 +29,19 @@ export function createSogStreamHandlers(
     const index = packSogLodIndex(
       parseSogLodManifest(JSON.parse(new TextDecoder().decode(bytes)), baseUrl),
     );
-    const { nodes, leafOffsets, lods, ...metadata } = index;
-    visibility = new SogVisibility({ nodes, leafOffsets, lods });
-    // Only ranges are shared with the scheduler; traversal owns the full tree.
-    // RPC transfers the reply buffers, so copy only the arrays still in use.
+    const { nodes, leafOffsets, lods, upgradeRatios, ...metadata } = index;
+    visibility = new SogVisibility({ nodes, leafOffsets, lods, upgradeRatios });
+    // Keep the tree and ratios here; copy shared arrays before RPC transfers them.
     return {
       ...metadata,
       bounds: nodes.slice(0, 6),
       leafOffsets: leafOffsets.slice(),
       lods: lods.slice(),
       retainedIndexBytes:
-        nodes.byteLength + leafOffsets.byteLength + lods.byteLength,
+        nodes.byteLength +
+        leafOffsets.byteLength +
+        lods.byteLength +
+        upgradeRatios.byteLength,
     };
   }
 

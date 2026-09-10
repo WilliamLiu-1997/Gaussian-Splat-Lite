@@ -44,7 +44,6 @@ export class SogVisibility {
   private readonly clip = new THREE.Matrix4();
   private readonly modelView = new THREE.Matrix4();
   private readonly frustum = new THREE.Frustum();
-  private readonly sphere = new THREE.Sphere();
   private readonly bound = new THREE.Box3();
   private readonly cameraPosition = new THREE.Vector3();
   private readonly closest = new THREE.Vector3();
@@ -53,7 +52,7 @@ export class SogVisibility {
   constructor(
     private readonly manifest: Pick<
       SogLodIndex,
-      "nodes" | "leafOffsets" | "lods"
+      "nodes" | "leafOffsets" | "lods" | "upgradeRatios"
     >,
   ) {}
 
@@ -72,9 +71,11 @@ export class SogVisibility {
     const nodes = this.manifest.nodes;
     const projection = view.projection;
     const fovScale =
-      1 /
-      (Math.max(Math.abs(projection[0]), Math.abs(projection[5])) *
-        Math.tan(Math.PI / 8));
+      projection[11] === 0
+        ? 1
+        : 1 /
+          (Math.max(Math.abs(projection[0]), Math.abs(projection[5])) *
+            Math.tan(Math.PI / 8));
     for (let index = 0; shown && index < nodes.length / 8; ) {
       const offset = index * 8;
       this.bound.min.fromArray(nodes, offset);
@@ -91,19 +92,14 @@ export class SogVisibility {
           leaf = readSogLodLeaf(this.manifest, id);
           this.leaves.set(id, leaf);
         }
-        this.bound.getBoundingSphere(this.sphere).applyMatrix4(this.modelView);
         this.bound
           .clampPoint(this.cameraPosition, this.closest)
           .applyMatrix4(this.modelView);
-        const radius = this.sphere.radius;
-        const projectedRadius =
-          projection[11] === 0
-            ? Math.min(radius * Math.abs(projection[5]), 1)
-            : radius /
-              Math.max(radius + this.closest.length() * fovScale, 1e-12);
+        // World-space distance to the box, without weighting by its radius.
+        const distance = Math.max(this.closest.length() * fovScale, 1e-6);
         visible.push({
           leaf,
-          weight: Math.max(1e-12, projectedRadius * projectedRadius),
+          weight: Math.max(1e-12, 1 / distance ** 1.5),
         });
       }
     }
@@ -113,7 +109,7 @@ export class SogVisibility {
   /** Transfer only [leaf ID, LOD ordinal] pairs in loading priority order. */
   select(view: SogView, budget: number): Uint32Array {
     const visible = this.collect(view);
-    const targets = selectSogLods(visible, budget);
+    const targets = selectSogLods(visible, budget, this.manifest);
     visible.sort((a, b) => b.weight - a.weight || a.leaf.id - b.leaf.id);
     const result = new Uint32Array(targets.size * 2);
     let offset = 0;

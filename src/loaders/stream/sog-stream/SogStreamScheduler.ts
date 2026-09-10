@@ -324,6 +324,7 @@ export class SogStreamScheduler {
   }
 
   private updateRequests(refinements: [LeafState, Chunk][], now: number) {
+    // Establish coverage before starting the next LOD request.
     for (const [leaf, chunk] of refinements) {
       if (leaf.current?.range === leaf.target) this.wanted.add(chunk);
     }
@@ -350,8 +351,6 @@ export class SogStreamScheduler {
       else if (this.environment.file.count !== 0)
         this.wanted.add(this.environment);
     }
-    // Shared files load once. Show the best loaded level no finer than the
-    // target, then halve the remaining LOD gap; keep the old LOD during a switch.
     const refinements: [LeafState, Chunk][] = [];
     for (
       let offset = 0;
