@@ -1,4 +1,5 @@
-import { abortable } from "../../runtime/abort";
+import type { LoadingManager } from "three";
+import { abortable, linkedAbortController } from "../../runtime/abort";
 import { positiveInteger } from "./streamOptions";
 
 type StreamWorker = {
@@ -12,12 +13,27 @@ type Slot<W> = {
   references: number;
 };
 
+type WorkerLease<W> = {
+  worker: W;
+  retain: () => () => void;
+  release: () => void;
+};
+
+type LoadTask<W> = WorkerLease<W> & {
+  id: number;
+  signal: AbortSignal;
+  start: (url: string) => void;
+  progress: (loaded: number) => void;
+};
+
 /** Bounded worker leases. Cache handles retain slots; cancellation never kills unrelated work. */
 export class StreamWorkerPool<W extends StreamWorker> {
   private readonly slots: Slot<W>[] = [];
   private readonly waiters = new Set<() => void>();
   private readonly controller = new AbortController();
   private peakBytes = 0;
+  private nextTaskId = 0;
+  downloadedBytes = 0;
 
   constructor(
     private readonly createWorker: () => W,
@@ -48,10 +64,63 @@ export class StreamWorkerPool<W extends StreamWorker> {
       slot.worker.dispose();
   }
 
-  async acquire(signal?: AbortSignal) {
+  /** Shared RAD/SOG task lifecycle; format RPCs and cache ownership stay local. */
+  async run<T>(
+    options: {
+      signal?: AbortSignal;
+      manager: LoadingManager;
+      cancel: (worker: W, id: number) => Promise<unknown>;
+    },
+    load: (task: LoadTask<W>) => Promise<T>,
+  ): Promise<T> {
+    const id = ++this.nextTaskId;
+    const request = linkedAbortController(
+      this.controller.signal,
+      options.signal,
+    );
+    let lease: WorkerLease<W> | undefined;
+    let cancel: (() => void) | undefined;
+    let url: string | undefined;
+    let loaded = 0;
+    try {
+      lease = await this.acquire(request.signal);
+      const { worker } = lease;
+      cancel = () => {
+        if (!worker.disposed) void options.cancel(worker, id).catch(() => {});
+      };
+      request.signal.addEventListener("abort", cancel, { once: true });
+      request.signal.throwIfAborted();
+      // Do not race load() against abort: synchronous decoding keeps its slot
+      // until the worker replies. The format also checks before publishing.
+      return await load({
+        ...lease,
+        id,
+        signal: request.signal,
+        start: (value) => {
+          url = value;
+          options.manager.itemStart(value);
+          request.signal.throwIfAborted();
+        },
+        progress: (next) => {
+          this.downloadedBytes += Math.max(0, next - loaded);
+          loaded = next;
+        },
+      });
+    } catch (error) {
+      cancel?.();
+      if (url !== undefined) options.manager.itemError(url);
+      throw error;
+    } finally {
+      if (cancel) request.signal.removeEventListener("abort", cancel);
+      request.cleanup();
+      lease?.release();
+      if (url !== undefined) options.manager.itemEnd(url);
+    }
+  }
+
+  private async acquire(signal: AbortSignal): Promise<WorkerLease<W>> {
     for (;;) {
-      signal?.throwIfAborted();
-      this.controller.signal.throwIfAborted();
+      signal.throwIfAborted();
       let slot = this.slots.find((candidate) => !candidate.busy);
       if (!slot && this.slots.length < this.concurrency) {
         slot = {

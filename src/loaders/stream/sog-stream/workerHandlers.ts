@@ -29,14 +29,17 @@ export function createSogStreamHandlers(
     const index = packSogLodIndex(
       parseSogLodManifest(JSON.parse(new TextDecoder().decode(bytes)), baseUrl),
     );
-    visibility = new SogVisibility(index);
-    // RPC transfers the return buffers; traversal retains its own index.
+    const { nodes, leafOffsets, lods, ...metadata } = index;
+    visibility = new SogVisibility({ nodes, leafOffsets, lods });
+    // Only ranges are shared with the scheduler; traversal owns the full tree.
+    // RPC transfers the reply buffers, so copy only the arrays still in use.
     return {
-      ...index,
-      nodes: index.nodes.slice(),
-      leafOffsets: index.leafOffsets.slice(),
-      lods: index.lods.slice(),
-      counts: index.counts.slice(),
+      ...metadata,
+      bounds: nodes.slice(0, 6),
+      leafOffsets: leafOffsets.slice(),
+      lods: lods.slice(),
+      retainedIndexBytes:
+        nodes.byteLength + leafOffsets.byteLength + lods.byteLength,
     };
   }
 
@@ -84,8 +87,9 @@ export function createSogStreamHandlers(
   }) {
     const source = sogChunks.get(id);
     if (!source) throw new Error("Streaming chunk is no longer cached");
+    // Fixed batch storage supplies alignment and reads centers from packed XYZ.
     return ranges.map(({ start, count }) =>
-      extractSplatRange(source, start, count),
+      extractSplatRange(source, start, count, true),
     );
   }
 

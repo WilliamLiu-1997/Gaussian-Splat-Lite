@@ -69,9 +69,10 @@ function store(texture: StorageArrayTexture, coord: TSLNode, value: TSLNode) {
 
 /** Native projected records: compact layout, paired codec and texture ownership. */
 export class ProjectionCache {
-  // 32 bytes per source slot and eye. RGB retains half precision; alpha,
+  // 32 bytes per compact slot and eye. RGB retains half precision; alpha,
   // support radius, kernel power and view depth retain their float32 bits.
   readonly textures = [makeTexture(), makeTexture()];
+  // Per-eye sorted slot and direct-slot seed; mono draws use storage buffers.
   readonly order = makeTexture(2);
   readonly size = new THREE.Vector4(1, 1, 1, 0);
   private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(

@@ -61,7 +61,7 @@ export class ProjectedSplats {
     1,
   );
   private readonly keys = buffer();
-  private readonly indices = buffer();
+  private readonly seeds = buffer();
   private readonly counts = buffer();
   private readonly sorter: WebGPURadixSort;
   private readonly slots: ComputeSlot[] = [];
@@ -104,18 +104,18 @@ export class ProjectedSplats {
     const multiView = uniformBinding(this.state, "multiView", "bool");
     const stochastic = uniformBinding(uniforms, "stochastic", "bool");
     // Mono draws read the buffers directly. ArrayCamera draws need every eye's
-    // order at once; the finish node or the final sort scatter writes it.
+    // order and seeds at once; the finish node or final sort scatter writes them.
     // Texture arrays avoid dividing the storage-binding capacity by eye count.
     const count = N.storage(this.visibleCount, "uint").toReadOnly().element(0);
-    const compact = bindBuffer(this.indices, true);
+    const seeds = bindBuffer(this.seeds, true);
     this.sorter = new WebGPURadixSort(1, this.keys, {
       count,
-      valueGenerator: (index) => compact.element(index),
       storeOrder: (index, value) => {
         N.If(multiView, () => {
+          // Sorted color uses x; stochastic/depth draws use direct slots and y.
           this.cache.storeOrder(
             viewBase.add(index),
-            N.uvec4(value, compact.element(index), 0, 0),
+            N.uvec4(value, seeds.element(index), 0, 0),
           );
         });
       },
@@ -154,12 +154,11 @@ export class ProjectedSplats {
         draw.element(1).assign(draw.element(1).max(instances));
       });
       // Only stochastic ArrayCamera draws need this per-eye copy;
-      // mono reads indices directly.
+      // mono reads seeds directly.
       N.If(multiView.and(stochastic).and(index.lessThan(count)), () => {
-        const original = compact.element(index);
         this.cache.storeOrder(
           viewBase.add(index),
-          N.uvec4(original, original, 0, 0),
+          N.uvec4(index, seeds.element(index), 0, 0),
         );
       });
     })()
@@ -198,7 +197,6 @@ export class ProjectedSplats {
       renderSize: u("renderSize", "vec2"),
     });
     const viewBase = u("viewBase", "uint");
-    const targetBase = u("targetBase", "uint");
     const direction = u("sortDirection", "vec3");
     const sortOffset = u("sortOffset", "vec3");
     const radial = u("sortRadial", "bool");
@@ -208,7 +206,7 @@ export class ProjectedSplats {
       .mul(u("focalAdjustment", "float"))
       .mul(0.5);
     const keys = bindBuffer(this.keys);
-    const compact = bindBuffer(this.indices);
+    const seeds = bindBuffer(this.seeds);
     const counter = N.storage(this.visibleCount, "uint").toAtomic();
     const node = N.Fn(() => {
       const index = N.uint(N.instanceIndex);
@@ -221,18 +219,16 @@ export class ProjectedSplats {
       const onscreen = N.all(ndc.abs().lessThanEqual(extent.add(1)));
       N.If(projection.valid.and(onscreen), () => {
         projection.rgba.rgb.assign(generated.resolveRgb());
-        const original = targetBase.add(index).toVar();
+        // Compact survivors and their stable seeds into the same slots.
+        const slot = N.atomicAdd(counter.element(0), N.uint(1)).toVar();
         this.cache.write(
-          viewBase.add(original),
+          viewBase.add(slot),
           projection,
           ndc,
           pixelScale,
           centerRange,
         );
-        // Append only survivors. The payload remains the original cache entry;
-        // equal keys retain atomic arrival order, not source-index order.
-        const slot = N.atomicAdd(counter.element(0), N.uint(1)).toVar();
-        compact.element(slot).assign(original);
+        seeds.element(slot).assign(generated.stochasticSeed);
         N.If(stochastic.not(), () => {
           // Signed float keys preserve back-to-front order across negative view depths.
           const center = generated.center.add(sortOffset);
@@ -269,7 +265,8 @@ export class ProjectedSplats {
     const multiView = array.isArrayCamera === true && array.cameras.length > 0;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
-    const base = eye.mul(stride);
+    // Both coverage branches need the eye offset before any order lookup.
+    const base = eye.mul(stride).toVar();
     const i = N.uint(N.instanceIndex)
       .mul(WEBGPU_SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z));
@@ -277,7 +274,8 @@ export class ProjectedSplats {
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     const rgba = N.vec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
-    const splatIndex = N.uint(0).toVar();
+    const stochasticSeed = N.uint(0).toVar();
+    const stochastic = uniformBinding(this.uniforms, "stochastic", "bool");
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
@@ -295,31 +293,30 @@ export class ProjectedSplats {
     // Indirect draws round up to whole quad groups; trim each eye before any
     // index or cache load, including the unused tail of the final instance.
     N.If(i.lessThan(counts.element(eye)), () => {
-      if (multiView) {
-        const indices = this.cache.readOrder(base.add(i));
-        splatIndex.assign(depthOnly ? indices.y : indices.x);
+      const cacheIndex = i.toVar();
+      const assignSeed = () => {
+        stochasticSeed.assign(
+          multiView
+            ? this.cache.readOrder(base.add(i)).y
+            : bindBuffer(this.seeds, true).element(i),
+        );
+      };
+      if (depthOnly) {
+        assignSeed();
       } else {
-        const compact = bindBuffer(this.indices, true);
-        if (depthOnly) {
-          splatIndex.assign(compact.element(i));
-        } else {
-          const ordering = N.storage(this.sorter.ordering, "uint")
-            .onObjectUpdate(() => this.sorter.ordering)
-            .toReadOnly();
-          const stochastic = uniformBinding(
-            this.uniforms,
-            "stochastic",
-            "bool",
+        N.If(stochastic, assignSeed).Else(() => {
+          cacheIndex.assign(
+            multiView
+              ? this.cache.readOrder(base.add(i)).x
+              : N.storage(this.sorter.ordering, "uint")
+                  .onObjectUpdate(() => this.sorter.ordering)
+                  .toReadOnly()
+                  .element(i),
           );
-          N.If(stochastic, () => {
-            splatIndex.assign(compact.element(i));
-          }).Else(() => {
-            splatIndex.assign(ordering.element(i));
-          });
-        }
+        });
       }
       const projected = this.cache.read(
-        base.add(splatIndex),
+        base.add(cacheIndex),
         pixelScale,
         centerRange,
       );
@@ -333,7 +330,7 @@ export class ProjectedSplats {
       clipPosition,
       rgba,
       splatUv,
-      splatIndex,
+      stochasticSeed,
       supportRadiusSquared,
       kernelPower,
       viewportOrigin: view.viewportOrigin,
@@ -386,7 +383,7 @@ export class ProjectedSplats {
     const size = getProjectionCacheSize(capacity * viewCapacity, this.limits);
     this.resizeBuffer(this.keys, capacity);
     this.sorter.resize(capacity, shrink);
-    this.resizeBuffer(this.indices, capacity);
+    this.resizeBuffer(this.seeds, capacity);
     this.resizeBuffer(this.counts, viewCapacity);
     this.cache.resize(size);
     this.capacity = capacity;
@@ -449,7 +446,7 @@ export class ProjectedSplats {
       const pending: TSLNode[] = eye === 0 ? [this.resetDraw] : [];
       pending.push(this.resetCount);
       let slotCount = 0;
-      for (const { node, base, count } of accumulator.mapping) {
+      for (const { node, count } of accumulator.mapping) {
         if (!view.layers.test(node.layers)) continue;
         // A slot's uniforms can only be changed after its preceding batch has
         // been submitted. Keep the last batch open for draw arguments and sorting.
@@ -460,7 +457,6 @@ export class ProjectedSplats {
         }
         const slot = this.slots[slotCount++];
         accumulator.prepareUniforms(node, slot.uniforms);
-        slot.uniforms.targetBase.value = base;
         slot.uniforms.targetCount.value = count;
         slot.node.count = count;
         pending.push(slot.node);
@@ -487,7 +483,7 @@ export class ProjectedSplats {
     this.cache.dispose();
     this.visibleCount.dispose();
     this.keys.value.dispose();
-    this.indices.value.dispose();
+    this.seeds.value.dispose();
     this.counts.value.dispose();
     this.indirect.dispose();
   }

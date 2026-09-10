@@ -1,7 +1,7 @@
 //! Resident RAD tree traversal. Source indices and projection arithmetic retain
 //! the same ordering and f64 precision as the streaming scheduler.
 
-use std::{cmp::Ordering, collections::BinaryHeap};
+use std::{cmp::Ordering, collections::BinaryHeap, ops::Range};
 
 use anyhow::{ensure, Context, Result};
 use gaussian_splat_lib::rad::RadMeta;
@@ -17,6 +17,7 @@ struct Tree {
     centers: Vec<f32>,
     radii: Vec<f32>,
     child_start: Vec<u32>,
+    // Trailing leaf counts are omitted; an empty vector means a leaf-only page.
     child_count: Vec<u16>,
 }
 
@@ -39,6 +40,23 @@ fn contains(bits: &[u64], index: usize) -> bool {
 
 fn insert(bits: &mut [u64], index: usize) {
     bits[index / 64] |= 1_u64 << (index % 64);
+}
+
+fn visit_range(bits: &mut [u64], range: Range<usize>) -> Result<()> {
+    let mut start = range.start;
+    while start < range.end {
+        let offset = start % 64;
+        let count = (range.end - start).min(64 - offset);
+        let mask = (u64::MAX >> (64 - count)) << offset;
+        let word = &mut bits[start / 64];
+        ensure!(
+            *word & mask == 0,
+            "RAD tree contains a cycle or shared child"
+        );
+        *word |= mask;
+        start += count;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -67,10 +85,14 @@ impl Ord for Candidate {
     }
 }
 
+// Model-view matrix, pixel scale, projection type, and X/Y projection rows.
+const VIEW_VALUES: usize = 26;
+
 struct View {
-    matrix: [f64; 16],
+    origin: [f64; 3],
+    depth: [f64; 3],
+    clip_rows: [[f64; 4]; 2],
     pixel_scale: f64,
-    radius_scale: f64,
     orthographic: bool,
 }
 
@@ -82,21 +104,61 @@ impl View {
                 && (values[17] == 0.0 || values[17] == 1.0),
             "Invalid RAD LOD view"
         );
-        let mut matrix = [0.0; 16];
-        matrix.copy_from_slice(&values[..16]);
-        let m = &matrix;
-        // sqrt(||A||_1 ||A||_inf) also bounds nonuniform scale and shear.
-        let columns = (m[0].abs() + m[1].abs() + m[2].abs())
-            .max(m[4].abs() + m[5].abs() + m[6].abs())
-            .max(m[8].abs() + m[9].abs() + m[10].abs());
-        let rows = (m[0].abs() + m[4].abs() + m[8].abs())
-            .max(m[1].abs() + m[5].abs() + m[9].abs())
-            .max(m[2].abs() + m[6].abs() + m[10].abs());
+        let m = values;
+        let orthographic = values[17] == 1.0;
+        let axes = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
+        let max_entry = axes.into_iter().flatten().map(f64::abs).fold(0.0, f64::max);
+        // Normalize before forming the inverse.
+        let divisor = if max_entry > 0.0 { max_entry } else { 1.0 };
+        let axes = axes.map(|axis| axis.map(|value| value / divisor));
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let cross = |a: [f64; 3], b: [f64; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let inverse_rows = [
+            cross(axes[1], axes[2]),
+            cross(axes[2], axes[0]),
+            cross(axes[0], axes[1]),
+        ];
+        let determinant = dot(axes[0], inverse_rows[0]);
+        ensure!(
+            determinant != 0.0,
+            "RAD LOD view transform is not invertible"
+        );
+        let t = [m[12] / divisor, m[13] / divisor, m[14] / divisor];
+        let origin = inverse_rows.map(|row| -dot(row, t) / determinant);
+        let projection = &values[18..];
+        // Project camera-relative object positions. Folding the camera basis
+        // into these rows once per view preserves zoom and off-center bounds.
+        let clip_rows = [0, 4].map(|start| {
+            let row = &projection[start..];
+            std::array::from_fn(|axis| {
+                if axis == 3 {
+                    row[3]
+                } else {
+                    row[0] * m[axis * 4] + row[1] * m[axis * 4 + 1] + row[2] * m[axis * 4 + 2]
+                }
+            })
+        });
+        ensure!(
+            origin
+                .iter()
+                .chain(clip_rows.iter().flatten())
+                .all(|value| value.is_finite()),
+            "Invalid RAD LOD camera projection"
+        );
         Ok(Self {
-            matrix,
+            origin,
+            depth: [-m[2], -m[6], -m[10]],
+            clip_rows,
+            // Both projections use the camera's pixel scale without an extra
+            // model-scale multiplier.
             pixel_scale: values[16],
-            radius_scale: (columns * rows).sqrt(),
-            orthographic: values[17] == 1.0,
+            orthographic,
         })
     }
 }
@@ -129,36 +191,29 @@ fn hypot3(x: f64, y: f64, z: f64) -> f64 {
 fn projected_size(tree: &Tree, local: usize, views: &[View]) -> f64 {
     let center = &tree.centers[local * 3..local * 3 + 3];
     let [x, y, z] = [center[0] as f64, center[1] as f64, center[2] as f64];
+    let radius = tree.radii[local] as f64;
     let mut size = 0.0_f64;
     for view in views {
-        let m = &view.matrix;
-        let vx = m[0] * x + m[4] * y + m[8] * z + m[12];
-        let vy = m[1] * x + m[5] * y + m[9] * z + m[13];
-        let vz = m[2] * x + m[6] * y + m[10] * z + m[14];
-        let radius = tree.radii[local] as f64 * view.radius_scale;
-        let distance = hypot3(vx, vy, vz);
+        let [dx, dy, dz] = [x - view.origin[0], y - view.origin[1], z - view.origin[2]];
+        let distance = hypot3(dx, dy, dz).max(1e-6);
+        let depth = dx * view.depth[0] + dy * view.depth[1] + dz * view.depth[2];
         // A merged Gaussian does not enclose its subtree: keep coarse coverage
         // behind the camera rather than pruning its descendants.
-        let facing = if distance > 0.0 {
-            (-vz / distance).max(0.0)
-        } else {
-            1.0
-        };
-        let weight = if view.orthographic {
-            if vz <= 0.0 {
-                1.0
-            } else {
-                0.05
+        let mut weight = 0.05;
+        if depth >= 0.0 {
+            let [clip_x, clip_y] = view
+                .clip_rows
+                .map(|row| dx * row[0] + dy * row[1] + dz * row[2] + row[3]);
+            let clip_w = if view.orthographic { 1.0 } else { depth };
+            let extent = clip_w.max(clip_x.abs()).max(clip_y.abs());
+            if extent > 0.0 {
+                // Full weight inside the actual visible rectangle. Beyond its
+                // edges, taper by squared inverse extent toward the 5% floor.
+                let coverage = clip_w / extent;
+                weight += 0.95 * coverage * coverage;
             }
-        } else {
-            0.05 + 0.95 * facing * facing
-        };
-        let divisor = if view.orthographic {
-            1.0
-        } else {
-            (distance - radius).max(1e-6)
-        };
-        size = size.max(2.0 * radius * view.pixel_scale * weight / divisor);
+        }
+        size = size.max(2.0 * radius * view.pixel_scale * weight / distance);
     }
     size
 }
@@ -251,12 +306,19 @@ impl RadLodTree {
         page.seen.resize(words, 0);
         page.refined.resize(words, 0);
         page.next_refined.resize(words, 0);
+        let mut child_count = child_count.to_vec();
+        child_count.truncate(
+            child_count
+                .iter()
+                .rposition(|&count| count != 0)
+                .map_or(0, |index| index + 1),
+        );
         page.tree = Some(Tree {
             generation,
             centers,
             radii,
             child_start: child_start.to_vec(),
-            child_count: child_count.to_vec(),
+            child_count,
         });
         Ok(())
     }
@@ -294,12 +356,12 @@ impl RadLodTree {
             || !hysteresis.is_finite()
             || !(0.0..1.0).contains(&hysteresis)
             || views.is_empty()
-            || views.len() % 18 != 0
+            || views.len() % VIEW_VALUES != 0
         {
             return Err(js_error("Invalid RAD LOD request"));
         }
         let views = views
-            .chunks_exact(18)
+            .chunks_exact(VIEW_VALUES)
             .map(View::prepare)
             .collect::<Result<Vec<_>>>()
             .map_err(js_error)?;
@@ -350,49 +412,48 @@ impl RadLodTree {
         }
     }
 
-    fn enqueue(
+    fn enqueue_range(
         &mut self,
-        index: u32,
+        indices: Range<u32>,
         page_index: usize,
+        max_children: u32,
         views: &[View],
         threshold: f64,
         hysteresis: f64,
     ) -> Result<()> {
         let page = &mut self.pages[page_index];
-        let local = (index - page.base) as usize;
-        ensure!(
-            !contains(&page.seen, local),
-            "RAD tree contains a cycle or shared child"
-        );
-        insert(&mut page.seen, local);
+        let start = (indices.start - page.base) as usize;
+        let end = (indices.end - page.base) as usize;
+        visit_range(&mut page.seen, start..end)?;
         let tree = page
             .tree
             .as_ref()
             .context("RAD selection references an unavailable page")?;
-        let count = tree.child_count.get(local).copied().unwrap_or(0);
-        // Terminal nodes never change the cut budget or request pages. Their
-        // page was already touched by the parent, so heap insertion is redundant.
-        if count == 0 {
-            return Ok(());
+        for (local, &count) in tree.child_count.iter().enumerate().take(end).skip(start) {
+            // The remaining budget only shrinks. Keep these nodes in the cut without
+            // scoring or queueing refinements that cannot fit; unary nodes still fit.
+            if count == 0 || u32::from(count) > max_children {
+                continue;
+            }
+            let threshold = threshold
+                * if contains(&page.refined, local) {
+                    1.0 - hysteresis
+                } else {
+                    1.0 + hysteresis
+                };
+            let score = projected_size(tree, local, views) / threshold;
+            if score <= 1.0 {
+                continue;
+            }
+            // Cache f64::total_cmp's exact key once instead of at every heap comparison.
+            let bits = score.to_bits() as i64;
+            let key = bits ^ (((bits >> 63) as u64 >> 1) as i64);
+            self.heap.push(Candidate {
+                index: page.base + local as u32,
+                page: page_index,
+                key,
+            });
         }
-        let threshold = threshold
-            * if contains(&page.refined, local) {
-                1.0 - hysteresis
-            } else {
-                1.0 + hysteresis
-            };
-        let score = projected_size(tree, local, views) / threshold;
-        if score <= 1.0 {
-            return Ok(());
-        }
-        // Cache f64::total_cmp's exact key once instead of at every heap comparison.
-        let bits = score.to_bits() as i64;
-        let key = bits ^ (((bits >> 63) as u64 >> 1) as i64);
-        self.heap.push(Candidate {
-            index,
-            page: page_index,
-            key,
-        });
         Ok(())
     }
 
@@ -428,14 +489,25 @@ impl RadLodTree {
             return Ok(());
         }
         self.touch(0);
-        self.enqueue(0, 0, views, threshold, hysteresis)?;
-        let mut cut_count = 1_u64;
+        self.enqueue_range(0..1, 0, budget, views, threshold, hysteresis)?;
+        let mut remaining = budget - 1;
+        let mut budget_pruned = false;
         while let Some(candidate) = self.heap.pop() {
             let page = &self.pages[candidate.page];
             let local = (candidate.index - page.base) as usize;
             let tree = page.tree.as_ref().unwrap();
             let count = tree.child_count[local] as u32;
-            if cut_count - 1 + count as u64 > budget as u64 {
+            if count > remaining + 1 {
+                if !budget_pruned {
+                    // Discard permanently blocked candidates in one pass rather
+                    // than draining the heap. Limit this scan to once per cut.
+                    self.heap.retain(|candidate| {
+                        let page = &self.pages[candidate.page];
+                        let local = (candidate.index - page.base) as usize;
+                        u32::from(page.tree.as_ref().unwrap().child_count[local]) <= remaining + 1
+                    });
+                    budget_pruned = true;
+                }
                 continue;
             }
             let start = *tree
@@ -462,19 +534,24 @@ impl RadLodTree {
             if !ready {
                 continue;
             }
-            let mut child_page = first;
-            for child in start..end as u32 {
-                while child - self.pages[child_page].base >= self.pages[child_page].count {
-                    child_page += 1;
-                }
-                self.enqueue(child, child_page, views, threshold, hysteresis)?;
+            remaining -= count - 1;
+            for child_page in first..=last {
+                let page = &self.pages[child_page];
+                let children = start.max(page.base)..(end as u32).min(page.base + page.count);
+                self.enqueue_range(
+                    children,
+                    child_page,
+                    remaining + 1,
+                    views,
+                    threshold,
+                    hysteresis,
+                )?;
             }
-            cut_count += count as u64 - 1;
             insert(&mut self.pages[candidate.page].next_refined, local);
         }
         // Every seen node remains in the cut unless it was successfully refined.
         // Ordered pages and set bits produce stable source order without sorting.
-        self.indices.reserve(cut_count as usize);
+        self.indices.reserve((budget - remaining) as usize);
         for page in &self.pages {
             for (word, (&seen, &refined)) in page.seen.iter().zip(&page.next_refined).enumerate() {
                 let mut selected = seen & !refined;

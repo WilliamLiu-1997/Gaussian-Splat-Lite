@@ -562,7 +562,7 @@ async function initializeModel(
         if (loadId !== activeLoad || !ui.isLoading) return;
         const detail = error instanceof Error ? error.message : String(error);
         ui.setLoadingDetail(`${chunkUrl}: ${detail}`);
-        ui.setStatus("Waiting for a RAD page · retry pending", "error");
+        ui.setStatus("Waiting for a RAD page · retry pending");
       },
     });
     try {
@@ -622,7 +622,7 @@ async function loadFile(
     button.disabled = true;
   }
   ui.showLoading(file);
-  ui.setStatus(`Loading ${file.name}`, "loading");
+  ui.setStatus(`Loading ${file.name}`);
 
   try {
     await initializeModel(model, file, { url, resolveFile, manager }, loadId);
@@ -662,7 +662,7 @@ async function loadFile(
     if (loadId !== activeLoad) return;
 
     ui.clearLoading();
-    ui.setStatus(`Could not load ${file.name}`, "error");
+    ui.setStatus(`Could not load ${file.name}`);
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`Failed to load ${file.name}`, error);
     ui.showToast(`Could not load ${file.name}: ${detail}`);
@@ -717,7 +717,7 @@ urlForm.addEventListener("submit", (event) => {
     ui.showToast(
       "Enter an HTTP(S) model URL (.ply, .spz, .sog, .rad, or a scene index).",
     );
-    ui.setStatus("Enter a valid model URL", "error");
+    ui.setStatus("Enter a valid model URL");
     modelUrlInput.focus();
     return;
   }
@@ -801,12 +801,12 @@ window.addEventListener("drop", async (event) => {
       ui.showToast(
         "Drop a model or a SOG folder containing lod-meta.json and its chunks.",
       );
-      ui.setStatus("PLY, SPZ, SOG, and RAD files are supported", "error");
+      ui.setStatus("PLY, SPZ, SOG, and RAD files are supported");
     }
   } catch (error) {
     if (loadId !== activeLoad) return;
     ui.showToast(`Could not read dropped files: ${error.message}`);
-    ui.setStatus("Could not read dropped files", "error");
+    ui.setStatus("Could not read dropped files");
   }
 });
 

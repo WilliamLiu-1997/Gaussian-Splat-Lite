@@ -64,6 +64,7 @@ export function makeSplatUniforms() {
     // Gsplat collection to render
     splats: { type: "t", value: emptySplats },
     splats2: { type: "t", value: emptySplats },
+    stochasticSeeds: { type: "t", value: emptySplats },
     // Time in seconds for time-based effects
     time: { value: 0 },
     // Delta time in seconds since last frame
@@ -85,6 +86,8 @@ export function makeGenerateUniforms(): Uniforms {
     targetLayer: { value: 0 },
     targetBase: { value: 0 },
     targetCount: { value: 0 },
+    // Stable mesh identity, independent of accumulator layout and visibility.
+    stochasticSeedBase: { value: 0 },
     sourceSplats: { value: emptySplatTexture },
     sourceSplats2: { value: emptySplatTexture },
     sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },

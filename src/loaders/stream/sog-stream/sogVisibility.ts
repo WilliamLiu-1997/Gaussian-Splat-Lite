@@ -50,7 +50,12 @@ export class SogVisibility {
   private readonly closest = new THREE.Vector3();
   private readonly inverseModelView = new THREE.Matrix4();
 
-  constructor(private readonly manifest: SogLodIndex) {}
+  constructor(
+    private readonly manifest: Pick<
+      SogLodIndex,
+      "nodes" | "leafOffsets" | "lods"
+    >,
+  ) {}
 
   private collect(view: SogView) {
     this.modelView.fromArray(view.modelView);

@@ -21,7 +21,6 @@ export function createViewerUI({
   const loadingProgress = document.querySelector("#loading-progress");
   const loadingProgressFill = document.querySelector("#loading-progress-fill");
   const loadingDetail = document.querySelector("#loading-detail");
-  const statusDot = document.querySelector("#status-dot");
   const statusText = document.querySelector("#status-text");
   const fileMeta = document.querySelector("#file-meta");
   const fileName = document.querySelector("#file-name");
@@ -39,7 +38,6 @@ export function createViewerUI({
   const performanceStats = document.querySelector("#performance-stats");
   const performanceFps = document.querySelector("#performance-fps");
   const performanceHeap = document.querySelector("#performance-heap");
-  const performanceHeapStat = performanceHeap.closest(".performance-stat");
 
   let hasModel = false;
   let toastFrame;
@@ -72,15 +70,13 @@ export function createViewerUI({
   function updateHeapStat(memory) {
     if (!memory || !Number.isFinite(memory.usedJSHeapSize)) {
       performanceHeap.value = "N/A";
-      performanceHeapStat.dataset.tooltip =
+      performanceStats.dataset.tooltip =
         "JS heap reporting is not available in this browser.";
       return;
     }
 
     performanceHeap.value = formatHeapSize(memory.usedJSHeapSize);
-    performanceHeapStat.dataset.tooltip = Number.isFinite(
-      memory.jsHeapSizeLimit,
-    )
+    performanceStats.dataset.tooltip = Number.isFinite(memory.jsHeapSizeLimit)
       ? `${formatHeapSize(memory.usedJSHeapSize)} used of ${formatHeapSize(memory.jsHeapSizeLimit)}`
       : `${formatHeapSize(memory.usedJSHeapSize)} used`;
   }
@@ -135,9 +131,8 @@ export function createViewerUI({
     sourcePanelToggle.focus();
   }
 
-  function setStatus(message, state = "ready") {
+  function setStatus(message) {
     statusText.textContent = message;
-    statusDot.dataset.state = state;
   }
 
   function clearToastTimers() {
@@ -220,10 +215,7 @@ export function createViewerUI({
     modelCreditPrefix.hidden = !credit;
     modelCredit.hidden = !credit;
     modelCreditSeparator.hidden = !credit;
-    setStatus(
-      streamed ? "Streaming visible regions" : "Loaded and ready",
-      "success",
-    );
+    setStatus(streamed ? "Streaming visible regions" : "Loaded and ready");
   }
 
   function clearModelInfo() {

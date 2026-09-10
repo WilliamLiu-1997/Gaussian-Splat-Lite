@@ -44,15 +44,12 @@ Transform `streaming.group` to position, rotate or scale the scene. Streamed mes
 
 The Splat budget is a target: fallback LODs, fades and the environment can exceed it. Pending copies have a separate byte limit; resident caches have no byte cap.
 
-Chunks retain fixed source slots, while a compact index maps only regions with nonzero opacity into rendering, sorting and raycasting. Hidden slots and region padding do not contribute to the rendered count. The index is reused during fades and rebuilt when region visibility changes; chunk source storage remains cached independently.
-
-A custom `loadChunk` must return initialized, independently owned data in its original count and order, and should honor the abort signal. Its arrays are consumed and transferred; do not reuse the returned `Splats`.
-
 ## Common properties and methods
 
 | API | Description |
 | --- | --- |
 | `group` | Parent group for scene transforms |
+| `splatBudget` | Read/write positive safe integer, including the environment; changing it requests new LOD targets |
 | `initialized` | Resolves after index parsing; rejects on index errors |
 | `firstRenderable` | Resolves when a region has nonzero opacity, or the dataset is empty; requires continued `update()` calls |
 | `update(camera)` | Updates camera selection, loads, fades and cache retirement |
@@ -60,8 +57,4 @@ A custom `loadChunk` must return initialized, independently owned data in its or
 | `stats` | Visible/resident counts, resident and pending bytes, active loads, cumulative downloaded bytes and worker WASM peak memory |
 | `dispose()` | Cancels requests, terminates streaming workers and releases owned meshes |
 
-For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so fades and cache retirement advance. Pending LOD requests coalesce to the latest view while one traversal runs. `cooldownTicks` counts updates, not seconds.
-
-`pendingBytes` includes queued copies and reservations; `residentBytes` excludes them and WASM memory. Download totals include the index and chunks.
-
-Index errors reject both readiness promises; chunk failures call `onError` and retry with backoff. There is no all-data-loaded promise for a camera-driven scene.
+For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so fades and cache retirement advance.

@@ -22,7 +22,7 @@ export function createWebGLFallbackAccumulatorTarget(
   return createWebGLAccumulatorTarget(width, height, Math.max(2, depth));
 }
 
-/** Rasterizes the shared generation program into two integer array textures. */
+/** Rasterizes Splat records and stable sampling seeds into integer arrays. */
 export class WebGLFallbackAccumulatorGenerator {
   readonly uniforms = makeGenerateUniforms();
   private readonly material = new NodeMaterial();
@@ -33,6 +33,7 @@ export class WebGLFallbackAccumulatorGenerator {
     const targetLayer = uniformBinding(this.uniforms, "targetLayer", "uint");
     const generate = createGenerateProgram({ uniforms: this.uniforms });
     const second = N.property("uvec4", "gslAccumulatorB");
+    const seed = N.property("uint", "gslAccumulatorSeed");
     const first = N.Fn(() => {
       // TSL texture loads and scissor rectangles use the same top-left origin.
       const pixel = N.uvec2(N.screenCoordinate.xy);
@@ -41,11 +42,12 @@ export class WebGLFallbackAccumulatorGenerator {
         .add(pixel.y.mul(SPLAT_TEX_WIDTH))
         .add(pixel.x)
         .sub(targetBase);
-      const { accumulatorA, accumulatorB } = generate(index);
+      const { accumulatorA, accumulatorB, stochasticSeed } = generate(index);
       second.assign(accumulatorB);
+      seed.assign(stochasticSeed);
       return accumulatorA;
     })();
-    this.material.fragmentNode = N.outputStruct(first, second);
+    this.material.fragmentNode = N.outputStruct(first, second, seed);
     this.material.depthTest = false;
     this.material.depthWrite = false;
     this.material.blending = THREE.NoBlending;

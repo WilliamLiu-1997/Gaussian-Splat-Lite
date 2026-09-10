@@ -1,3 +1,4 @@
+import { fuseArithmetic } from "./optimizer";
 import {
   ATTRIBUTE_FORMAT_BYTES,
   type AttributeBinding,
@@ -444,6 +445,13 @@ function compileConditionFlow(
 }
 
 export function compileProgram(
+  builder: PostDecodeSource,
+  sourceOutputs: SplatPostDecodeOutputs,
+): CompiledProgram {
+  return compileSource(fuseArithmetic(builder, sourceOutputs), sourceOutputs);
+}
+
+function compileSource(
   builder: PostDecodeSource,
   sourceOutputs: SplatPostDecodeOutputs,
 ): CompiledProgram {

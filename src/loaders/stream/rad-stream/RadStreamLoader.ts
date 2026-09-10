@@ -3,8 +3,9 @@ import { abortable } from "../../../runtime/abort";
 import { RadSource, type RadSourceOptions } from "../../rad/RadSource";
 import type { RadChunkData, RadHeader } from "../../rad/radFormat";
 import { StreamWorkerPool } from "../StreamWorkerPool";
+import type { RadSelectionRequest } from "./RadSelectionState";
 import { RadStreamWorker } from "./RadStreamWorker";
-import type { RadLodRequest } from "./radLod";
+import type { RadStreamSelection } from "./radFade";
 
 export type RadStreamLoaderOptions = Pick<
   RadSourceOptions,
@@ -33,8 +34,8 @@ export class RadStreamLoader {
     number,
     { task: Promise<RadChunkData>; signal?: AbortSignal }
   >();
-  private nextDecodeGeneration = 0;
   private estimatedCodebookBytes = 0;
+  private selectionBytes = 0;
 
   constructor(
     private readonly options: RadStreamLoaderOptions,
@@ -54,13 +55,16 @@ export class RadStreamLoader {
 
   get stats() {
     return {
-      ...this.source.stats,
+      cachedBytes: this.source.stats.cachedBytes,
+      downloadedBytes:
+        this.source.stats.downloadedBytes + this.pool.downloadedBytes,
       peakWasmMemoryBytes:
         this.pool.peakWasmMemoryBytes + this.lodWorker.peakWasmMemoryBytes,
       estimatedCodebookBytes:
         this.estimatedCodebookBytes *
         this.pool.workers.filter((worker) => !worker.disposed).length,
       bootstrapBytes: this.rootBytes?.byteLength ?? 0,
+      selectionBytes: this.selectionBytes,
     };
   }
 
@@ -152,64 +156,75 @@ export class RadStreamLoader {
     onDecoded?: () => void,
   ) {
     this.assertActive();
-    const generation = ++this.nextDecodeGeneration;
-    const lease = await this.pool.acquire(signal);
-    const worker = lease.worker;
-    let retained = false;
-    try {
-      this.assertActive();
-      let ready = this.decoderReady.get(worker);
-      if (!ready) {
-        ready = worker
-          .call("initializeRadDecoder", {
-            header,
-            rootBytes: this.rootBytes?.slice(),
-          })
-          .catch((error) => {
-            worker.dispose(error);
-            throw error;
-          });
-        this.decoderReady.set(worker, ready);
-      }
-      // Fetch and decoder setup can overlap, but each slot decodes one page.
-      const [bytes] = await Promise.all([
-        this.source.readChunk(header, index, signal),
-        ready,
-      ]);
-      signal?.throwIfAborted();
-      this.assertActive();
-      const rootBytes =
-        index === 0 && this.estimatedCodebookBytes ? bytes.slice() : undefined;
-      // Keep decoder codebooks warm when a page is cancelled. Root bytes also
-      // seed replacement decoders after a worker failure, even at concurrency 1.
-      const result = await worker.call("decodeRadChunk", {
-        index,
-        bytes,
-      });
-      this.assertActive();
-      signal?.throwIfAborted();
-      const registration = this.lodWorker.call("retainRadChunk", {
-        index,
-        generation,
-        tree: result.tree,
-      });
-      // Tree registration owns no decoder state. Its page stays reserved while
-      // the decoder starts another job within the scheduler's pending budget.
-      lease.release();
-      onDecoded?.();
-      await registration;
-      retained = true;
-      // Publish only after the complete tree is available to LOD traversal.
-      this.assertActive();
-      signal?.throwIfAborted();
-      if (rootBytes) this.rootBytes = rootBytes;
-      return result.data;
-    } catch (error) {
-      if (retained) this.releaseChunk(index, generation);
-      throw error;
-    } finally {
-      lease.release();
-    }
+    return this.pool.run(
+      {
+        signal,
+        manager: this.options.manager ?? DefaultLoadingManager,
+        cancel: (worker, generation) =>
+          worker.call("cancelRadLoad", { generation }),
+      },
+      async ({ worker, id: generation, signal, release, start, progress }) => {
+        this.assertActive();
+        let ready = this.decoderReady.get(worker);
+        if (!ready) {
+          ready = worker
+            .call("initializeRadDecoder", {
+              header,
+              rootBytes: this.rootBytes?.slice(),
+            })
+            .catch((error) => {
+              worker.dispose(error);
+              throw error;
+            });
+          this.decoderReady.set(worker, ready);
+        }
+        // Resolve application callbacks here; page bodies stay inside the worker.
+        const [request] = await Promise.all([
+          this.source.prepareChunk(header, index, signal),
+          ready,
+        ]);
+        signal.throwIfAborted();
+        this.assertActive();
+        if (typeof request.input === "string") start(request.input);
+        const result = await worker.call(
+          "loadRadChunk",
+          { index, generation, request },
+          {
+            onStatus: (status) =>
+              progress((status as { loaded: number }).loaded),
+          },
+        );
+        this.assertActive();
+        signal.throwIfAborted();
+        try {
+          this.source.acceptChunkResponse(request, result.state);
+        } catch (error) {
+          // A response rejected against another worker must not seed future jobs.
+          worker.dispose(error);
+          throw error;
+        }
+        const registration = this.lodWorker.call("retainRadChunk", {
+          index,
+          generation,
+          tree: result.tree,
+        });
+        // Registration owns no decoder state; release the slot before awaiting it.
+        release();
+        try {
+          onDecoded?.();
+          await registration;
+          this.assertActive();
+          signal.throwIfAborted();
+          if (result.rootBytes) this.rootBytes = result.rootBytes;
+          return result.data;
+        } catch (error) {
+          // A throwing callback must still observe registration before rollback.
+          await registration.catch(() => {});
+          this.releaseChunk(index, generation);
+          throw error;
+        }
+      },
+    );
   }
 
   getChunkUrl(index: number) {
@@ -219,19 +234,15 @@ export class RadStreamLoader {
     return root ?? (this.options.file as File | undefined)?.name ?? "RAD";
   }
 
-  async selectLod(
-    request: RadLodRequest,
-    previous?: Uint32Array,
-    fade = false,
-  ) {
+  async selectLod(request: RadSelectionRequest): Promise<RadStreamSelection> {
     this.assertActive();
-    // Keep the live cut on the main thread; transfer a snapshot for comparison
-    // and fade merging so large LOD changes do not block the next frame.
-    return this.lodWorker.call("selectRadLod", {
-      ...request,
-      previous: previous?.slice(),
-      fade,
-    });
+    const { retainedBytes, ...selection } = await this.lodWorker.call(
+      "selectRadLod",
+      request,
+    );
+    this.assertActive();
+    this.selectionBytes = retainedBytes;
+    return selection;
   }
 
   releaseChunk(index: number, generation?: number) {
@@ -254,6 +265,7 @@ export class RadStreamLoader {
     this.initialRoot = undefined;
     this.rootBytes = undefined;
     this.estimatedCodebookBytes = 0;
+    this.selectionBytes = 0;
     this.header = undefined;
   }
 }

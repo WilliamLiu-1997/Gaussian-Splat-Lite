@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import type * as THREE from "three";
 import { textureLoad } from "three/tsl";
 import type { WebGPURenderer } from "three/webgpu";
 import type {
@@ -8,12 +8,8 @@ import type {
 } from "../backend";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
 import type { SplatNodeMaterial } from "../tsl/SplatMaterial";
-import {
-  ORDERING_TEXTURE_WIDTH,
-  SPLATS_PER_ORDERING_ROW,
-  type Uniforms,
-  emptyOrdering,
-} from "../uniforms";
+import { type Uniforms, emptyOrdering } from "../uniforms";
+import { OrderingTexture } from "../webgl/OrderingTexture";
 
 type TextureUploadBackend = {
   updateTexture(
@@ -29,7 +25,7 @@ type TextureUploadBackend = {
 /** TSL drawing with CPU-sorted indices stored in an integer texture. */
 export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   readonly kind = "webgl-fallback";
-  private ordering: THREE.DataTexture | null = null;
+  private readonly ordering = new OrderingTexture();
 
   constructor(
     renderer: WebGPURenderer,
@@ -40,66 +36,38 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   }
 
   getOrderingCapacity(count: number) {
-    return (
-      Math.max(1, Math.ceil(count / SPLATS_PER_ORDERING_ROW)) *
-      SPLATS_PER_ORDERING_ROW
-    );
+    return this.ordering.getCapacity(count);
   }
 
   get cpuOrdering(): Uint32Array | null {
-    return (this.ordering?.image.data as Uint32Array | null) ?? null;
+    return this.ordering.data;
   }
 
-  setCPUOrdering({
-    ordering,
-    activeSplats,
-    requiredCapacity,
-    shrink,
-  }: CPUOrderingUpdate) {
-    const rows = requiredCapacity / SPLATS_PER_ORDERING_ROW;
-    if (
-      this.ordering &&
-      (rows > this.ordering.image.height ||
-        (shrink && rows !== this.ordering.image.height))
-    ) {
-      this.ordering.dispose();
-      this.ordering = null;
-    }
-    if (!this.ordering) {
-      this.ordering = new THREE.DataTexture(
-        ordering,
-        ORDERING_TEXTURE_WIDTH,
-        rows,
-        THREE.RGBAIntegerFormat,
-        THREE.UnsignedIntType,
-      );
-      this.ordering.needsUpdate = true;
-    } else {
-      this.ordering.image.data = ordering;
-      if (activeSplats > 0) {
+  setCPUOrdering(update: CPUOrderingUpdate) {
+    this.material.orderingNode.value = this.ordering.update(
+      update,
+      (texture, rows) => {
         // Finish any pending allocation before uploading only active rows.
-        this.renderer.initTexture(this.ordering);
+        this.renderer.initTexture(texture);
         // The r186 fallback's copyTextureToTexture allocates a GPU source;
         // update the destination directly to avoid that staging texture.
         const backend = this.renderer
           .backend as unknown as TextureUploadBackend;
-        backend.updateTexture(this.ordering, {
-          width: ORDERING_TEXTURE_WIDTH,
-          height: Math.ceil(activeSplats / SPLATS_PER_ORDERING_ROW),
-          image: this.ordering.image,
+        backend.updateTexture(texture, {
+          width: texture.image.width,
+          height: rows,
+          image: texture.image,
         });
-      }
-    }
-    this.material.orderingNode.value = this.ordering;
+      },
+    );
   }
 
   dispose() {
-    this.ordering?.dispose();
-    this.ordering = null;
+    this.ordering.dispose();
   }
 
   bindOrdering(material: SplatMaterial, _uniforms: Uniforms) {
     (material as SplatNodeMaterial).orderingNode.value =
-      this.ordering ?? emptyOrdering;
+      this.ordering.texture ?? emptyOrdering;
   }
 }

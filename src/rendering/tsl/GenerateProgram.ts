@@ -116,6 +116,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     textureBinding(uniforms, name, array);
 
   const targetCount = bindUniform("targetCount", "uint");
+  const stochasticSeedBase = bindUniform("stochasticSeedBase", "uint");
   const sourceSplats = bindTexture("sourceSplats", true);
   const sourceSplats2 = bindTexture("sourceSplats2", true);
   const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
@@ -270,6 +271,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     const quaternion = N.vec4(0, 0, 0, 1).toVar();
     const rgba = N.vec4(0).toVar();
     const shapeAmount = N.float(0).toVar();
+    const stochasticSeed = N.uint(0).toVar();
 
     N.If(index.lessThan(targetCount), () => {
       const sourceIndex = N.uint(index).toVar();
@@ -280,6 +282,8 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
         );
         sourceIndex.assign(indices.element(index.bitAnd(3)));
       });
+      // Use the source record, not its position in the visible-index list.
+      stochasticSeed.assign(sourceIndex.bitXor(stochasticSeedBase));
       const blockOpacity = N.float(1).toVar();
       N.If(sourceBlockBits.lessThan(N.uint(32)), () => {
         const blockMask = N.uint(1)
@@ -609,6 +613,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       quaternion,
       rgba,
       shapeAmount,
+      stochasticSeed,
       deferredColor,
     };
   };
@@ -636,7 +641,11 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       );
     });
 
-    return { accumulatorA, accumulatorB };
+    return {
+      accumulatorA,
+      accumulatorB,
+      stochasticSeed: generated.stochasticSeed,
+    };
   };
 
   const generateAccumulator = (index: TSLNode) =>

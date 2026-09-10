@@ -12,6 +12,7 @@ import {
   type StreamStats,
   notifyStreamChange,
   notifyStreamError,
+  positiveInteger,
   retryDelay,
   streamPendingLimit,
   streamSettings,
@@ -21,8 +22,8 @@ import {
   RadStreamLoader,
   type RadStreamLoaderOptions,
 } from "./RadStreamLoader";
-import type { RadStreamSelection } from "./radFade";
-import { type RadLodSelection, type RadLodView, radChunkIndex } from "./radLod";
+import type { RadStreamSelection, RadVersionedSelection } from "./radFade";
+import { type RadLodView, radChunkIndex } from "./radLod";
 
 export type RadStreamSchedulerOptions = RadStreamLoaderOptions &
   StreamSchedulerOptions;
@@ -58,11 +59,11 @@ export class RadStreamScheduler {
   readonly group: THREE.Group;
   readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
-  readonly splatBudget: number;
   readonly cooldownTicks: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
   readonly maxUploadBytesPerUpdate: number;
+  private _splatBudget: number;
   private readonly loader: RadStreamLoader;
   private readonly abort = new AbortController();
   private readonly pages = new Map<number, Page>();
@@ -79,7 +80,7 @@ export class RadStreamScheduler {
   private tick = 0;
   private disposed = false;
   private shown = true;
-  private selection?: RadLodSelection;
+  private selection?: RadVersionedSelection;
   private readySelection?: RadStreamSelection;
   private reselectAfterReady = false;
   private transition?: {
@@ -101,7 +102,7 @@ export class RadStreamScheduler {
   constructor(private readonly options: RadStreamSchedulerOptions) {
     this.group = options.group ?? new THREE.Group();
     const settings = streamSettings(options);
-    this.splatBudget = settings.splatBudget;
+    this._splatBudget = settings.splatBudget;
     this.cooldownTicks = settings.cooldownTicks;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
@@ -118,6 +119,21 @@ export class RadStreamScheduler {
     });
     void this.initialized.catch(() => {});
     void this.firstRenderable.catch(() => {});
+  }
+
+  /** Selected-node budget. Assigning a new value requests LOD selection. */
+  get splatBudget(): number {
+    return this._splatBudget;
+  }
+
+  set splatBudget(value: number) {
+    if (value === this._splatBudget) return;
+    this._splatBudget = positiveInteger(value, "splatBudget");
+    this.revision++;
+    this.readySelection = undefined;
+    this.readyPages = undefined;
+    this.reselectAfterReady = false;
+    void this.requestSelection();
   }
 
   get stats(): RadStreamStats {
@@ -149,6 +165,7 @@ export class RadStreamScheduler {
         loader.estimatedCodebookBytes +
         loader.bootstrapBytes +
         loader.cachedBytes +
+        loader.selectionBytes +
         (this.selection?.indices.byteLength ?? 0),
       pendingBytes,
       loadingChunks,
@@ -270,13 +287,12 @@ export class RadStreamScheduler {
       ).viewport;
       const width = eyeViewport?.z ?? viewport.width;
       const height = eyeViewport?.w ?? viewport.height;
+      const p = eye.projectionMatrix.elements;
       return {
         viewFromObject: this.matrix.elements.slice(),
+        projectionRows: [p[0], p[4], p[8], p[12], p[1], p[5], p[9], p[13]],
         pixelScale:
-          Math.max(
-            Math.abs(eye.projectionMatrix.elements[0]) * width,
-            Math.abs(eye.projectionMatrix.elements[5]) * height,
-          ) / 2,
+          Math.max(Math.abs(p[0]) * width, Math.abs(p[5]) * height) / 2,
         orthographic:
           (eye as THREE.OrthographicCamera).isOrthographicCamera === true,
       };
@@ -284,7 +300,7 @@ export class RadStreamScheduler {
     const key = this.views
       .map(
         (view) =>
-          `${view.viewFromObject.join(",")}/${view.pixelScale}/${view.orthographic}`,
+          `${view.viewFromObject.join(",")}/${view.projectionRows.join(",")}/${view.pixelScale}/${view.orthographic}`,
       )
       .join(";");
     if (key !== this.lastViewKey) {
@@ -339,20 +355,20 @@ export class RadStreamScheduler {
     this.inFlightPages = new Set(residentChunks);
     this.lastRequestedRevision = this.revision;
     const previous = this.selection;
+    const splatBudget = this.splatBudget;
     const started = performance.now();
     try {
-      const selection = await this.loader.selectLod(
-        {
-          views: this.views,
-          splatBudget: this.splatBudget,
-          pixelThreshold: 2,
-          residentChunks,
-          hysteresis: 0.15,
-        },
-        previous?.indices,
-        this.fadeDurationMs > 0,
-      );
-      if (this.disposed || !this.shown) return;
+      const selection = await this.loader.selectLod({
+        views: this.views,
+        splatBudget,
+        pixelThreshold: 1,
+        residentChunks,
+        previousId: previous?.selectionId,
+        readyId: this.readySelection?.selectionId,
+        fade: this.fadeDurationMs > 0,
+      });
+      if (this.disposed || !this.shown || splatBudget !== this.splatBudget)
+        return;
       this.lodTimeMs = performance.now() - started;
       // Keep the selected tree path while its reserved pages await writing.
       this.wanted = new Set(selection.wantedChunks);

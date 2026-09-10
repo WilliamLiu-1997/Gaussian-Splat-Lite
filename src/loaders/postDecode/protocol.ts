@@ -44,6 +44,9 @@ export enum Opcode {
   Select = 60,
   Clamp = 61,
   Mix = 62,
+  // Preserve float32 rounding between the two operations (not hardware FMA).
+  MultiplyAdd = 63,
+  AddMultiply = 64,
   Vec2 = 70,
   Vec3 = 71,
   Vec4 = 72,

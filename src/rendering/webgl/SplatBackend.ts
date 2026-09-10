@@ -5,12 +5,8 @@ import type {
   SplatMaterialOptions,
 } from "../backend";
 import { isXRRenderTarget } from "../rendererUtils";
-import {
-  ORDERING_TEXTURE_WIDTH,
-  SPLATS_PER_ORDERING_ROW,
-  type Uniforms,
-  emptyOrdering,
-} from "../uniforms";
+import { type Uniforms, emptyOrdering } from "../uniforms";
+import { OrderingTexture } from "./OrderingTexture";
 import { getShaders } from "./shaders";
 import { uploadU32DataTextureRows } from "./textureUtils";
 
@@ -63,7 +59,7 @@ function createMaterial(uniforms: Uniforms, options: SplatMaterialOptions) {
 export class WebGLSplatBackend {
   readonly kind = "webgl";
   readonly material: THREE.ShaderMaterial;
-  private orderingTexture: THREE.DataTexture | null = null;
+  private readonly ordering = new OrderingTexture();
 
   constructor(
     readonly renderer: THREE.WebGLRenderer,
@@ -87,55 +83,27 @@ export class WebGLSplatBackend {
   }
 
   getOrderingCapacity(count: number) {
-    return (
-      Math.max(1, Math.ceil(count / SPLATS_PER_ORDERING_ROW)) *
-      SPLATS_PER_ORDERING_ROW
-    );
+    return this.ordering.getCapacity(count);
   }
 
   get cpuOrdering(): Uint32Array | null {
-    return (this.orderingTexture?.image.data as Uint32Array | null) ?? null;
+    return this.ordering.data;
   }
 
-  setCPUOrdering({
-    ordering,
-    activeSplats,
-    requiredCapacity,
-    shrink,
-  }: CPUOrderingUpdate) {
-    const rows = requiredCapacity / SPLATS_PER_ORDERING_ROW;
-    const activeRows = Math.ceil(activeSplats / SPLATS_PER_ORDERING_ROW);
-    if (
-      this.orderingTexture &&
-      (rows > this.orderingTexture.image.height ||
-        (shrink && rows !== this.orderingTexture.image.height))
-    ) {
-      this.orderingTexture.dispose();
-      this.orderingTexture = null;
-    }
-    if (!this.orderingTexture) {
-      this.orderingTexture = new THREE.DataTexture(
-        ordering,
-        ORDERING_TEXTURE_WIDTH,
-        rows,
-        THREE.RGBAIntegerFormat,
-        THREE.UnsignedIntType,
-      );
-      this.orderingTexture.needsUpdate = true;
-    } else {
-      this.orderingTexture.image.data = ordering;
+  setCPUOrdering(update: CPUOrderingUpdate) {
+    this.ordering.update(update, (texture, rows) => {
       uploadU32DataTextureRows(
         this.renderer,
-        this.orderingTexture,
-        ORDERING_TEXTURE_WIDTH,
-        activeRows,
-        ordering,
+        texture,
+        texture.image.width,
+        rows,
+        update.ordering,
       );
-    }
+    });
   }
 
   bindOrdering(_material: SplatMaterial, uniforms: Uniforms) {
-    uniforms.ordering.value = this.orderingTexture ?? emptyOrdering;
+    uniforms.ordering.value = this.ordering.texture ?? emptyOrdering;
   }
 
   async readPixels(
@@ -159,7 +127,6 @@ export class WebGLSplatBackend {
   }
 
   dispose() {
-    this.orderingTexture?.dispose();
-    this.orderingTexture = null;
+    this.ordering.dispose();
   }
 }

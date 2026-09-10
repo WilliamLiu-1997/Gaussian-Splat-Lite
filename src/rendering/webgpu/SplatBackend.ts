@@ -1,9 +1,5 @@
 import type { WebGPURenderer } from "three/webgpu";
-import type {
-  CPUOrderingUpdate,
-  SplatMaterial,
-  SplatMaterialOptions,
-} from "../backend";
+import type { SplatMaterial, SplatMaterialOptions } from "../backend";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
 import { createSplatNodeMaterial } from "../tsl/SplatMaterial";
 import type { Uniforms } from "../uniforms";
@@ -38,9 +34,6 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
   get sortError() {
     return this.projection.error;
   }
-  get cpuOrdering(): Uint32Array | null {
-    return null;
-  }
   getOrderingCapacity(count: number) {
     return Math.max(1, count);
   }
@@ -54,10 +47,6 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
       depthTest: true,
       depthWrite: true,
     });
-  }
-
-  setCPUOrdering(_update: CPUOrderingUpdate) {
-    throw new Error("Native WebGPU rendering only supports GPU ordering");
   }
 
   bindOrdering(_material: SplatMaterial, _uniforms: Uniforms) {}

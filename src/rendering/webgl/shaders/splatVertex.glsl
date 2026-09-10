@@ -7,7 +7,7 @@ precision highp usampler2DArray;
 
 out vec4 vRgba;
 out vec2 vSplatUv;
-flat out uint vSplatIndex;
+flat out uint vStochasticSeed;
 flat out float vSupportRadiusSquared;
 flat out float vKernelPower;
 
@@ -36,6 +36,7 @@ uniform bool depthOnly;
 uniform usampler2D ordering;
 uniform usampler2DArray splats;
 uniform usampler2DArray splats2;
+uniform usampler2DArray stochasticSeeds;
 
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
@@ -141,9 +142,6 @@ void main() {
 
     vRgba = vec4(rgba.rgb, alpha);
 
-    // Record the splat index for entropy
-    vSplatIndex = splatIndex;
-
     // Compute view space quaternion of splat
     vec4 viewQuaternion = quatQuat(renderToViewQuat, quaternion);
 
@@ -232,6 +230,13 @@ void main() {
     }
     scale1 *= supportScale;
     scale2 *= supportScale;
+
+    // Fetch stable coverage seeds only after all projection cutoffs pass.
+    // Sorted color draws do not sample the seed texture.
+    vStochasticSeed = splatIndex;
+    if (stochastic || depthOnly) {
+        vStochasticSeed = texelFetch(stochasticSeeds, texCoord, 0).r;
+    }
 
     // RGB is constant across the quad, so convert before rasterization.
     #ifdef GSL_COLOR_IN_VERTEX

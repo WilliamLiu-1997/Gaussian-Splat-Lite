@@ -7,6 +7,7 @@ export type StreamRequestOptions = SplatRequestOptions & {
 
 export type StreamSchedulerOptions = {
   group?: Group;
+  /** Initial Splat budget; update scheduler.splatBudget to change it at runtime. */
   splatBudget?: number;
   cooldownTicks?: number;
   fadeDurationMs?: number;

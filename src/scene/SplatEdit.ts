@@ -112,24 +112,20 @@ export class SplatEdits {
   maxSdfs: number;
   numSdfs = 0;
   sdfData: Uint32Array;
-  sdfFloatData: Float32Array;
   sdfTexture: THREE.DataTexture;
 
   maxEdits: number;
   numEdits = 0;
   editData: Uint32Array;
-  editFloatData: Float32Array;
   editTexture: THREE.DataTexture;
 
   constructor({ maxSdfs = 0, maxEdits = 0 } = {}) {
     this.maxSdfs = Math.max(MIN_CAPACITY, maxSdfs);
     this.sdfData = new Uint32Array(this.maxSdfs * SDF_TEXELS * 4);
-    this.sdfFloatData = new Float32Array(this.sdfData.buffer);
     this.sdfTexture = makeUintTexture(this.sdfData, SDF_TEXELS, this.maxSdfs);
 
     this.maxEdits = Math.max(MIN_CAPACITY, maxEdits);
     this.editData = new Uint32Array(this.maxEdits * 4);
-    this.editFloatData = new Float32Array(this.editData.buffer);
     this.editTexture = makeUintTexture(this.editData, 1, this.maxEdits);
   }
 
@@ -213,7 +209,6 @@ export class SplatEdits {
       this.maxSdfs = Math.max(sdfs, this.maxSdfs * 2);
       this.sdfTexture.dispose();
       this.sdfData = new Uint32Array(this.maxSdfs * SDF_TEXELS * 4);
-      this.sdfFloatData = new Float32Array(this.sdfData.buffer);
       this.sdfTexture = makeUintTexture(this.sdfData, SDF_TEXELS, this.maxSdfs);
       updated = true;
     }
@@ -221,7 +216,6 @@ export class SplatEdits {
       this.maxEdits = Math.max(edits, this.maxEdits * 2);
       this.editTexture.dispose();
       this.editData = new Uint32Array(this.maxEdits * 4);
-      this.editFloatData = new Float32Array(this.editData.buffer);
       this.editTexture = makeUintTexture(this.editData, 1, this.maxEdits);
       updated = true;
     }

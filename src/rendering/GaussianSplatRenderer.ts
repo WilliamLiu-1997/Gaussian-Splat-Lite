@@ -807,6 +807,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       const splatTextures = display.getTextures();
       this.uniforms.splats.value = splatTextures[0];
       this.uniforms.splats2.value = splatTextures[1];
+      this.uniforms.stochasticSeeds.value = display.getStochasticSeeds();
     }
 
     gaussianSplatRenderer.dirty = false;

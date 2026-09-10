@@ -20,6 +20,23 @@ import {
 } from "./protocol";
 import { instructionWidth } from "./registers";
 
+// Packed log-scales have only 65536 possible inputs. Populate on demand so
+// small pages do not pay for a full table, and reuse it across worker loads.
+let scaleValues: Float32Array | undefined;
+let scaleValuesReady: Uint8Array | undefined;
+
+function decodeScale(word: number) {
+  scaleValues ??= new Float32Array(0x1_0000);
+  scaleValuesReady ??= new Uint8Array(0x1_0000);
+  const values = scaleValues;
+  const ready = scaleValuesReady;
+  if (!ready[word]) {
+    values[word] = Math.exp(fromHalf(word));
+    ready[word] = 1;
+  }
+  return values[word];
+}
+
 function rustMin(left: number, right: number) {
   if (Number.isNaN(left)) return right;
   if (Number.isNaN(right)) return left;
@@ -129,12 +146,10 @@ function evaluateInputFieldBlock(
         const wordBase = (blockStart + sourceIndex) * 4;
         const word1 = data.splat1[wordBase + 1];
         const word2 = data.splat1[wordBase + 2];
-        registers[outputBase + index] = Math.exp(fromHalf(word1 >>> 16));
-        registers[outputBase + blockSize + index] = Math.exp(
-          fromHalf(word2 & 0xffff),
-        );
-        registers[outputBase + blockSize * 2 + index] = Math.exp(
-          fromHalf(word2 >>> 16),
+        registers[outputBase + index] = decodeScale(word1 >>> 16);
+        registers[outputBase + blockSize + index] = decodeScale(word2 & 0xffff);
+        registers[outputBase + blockSize * 2 + index] = decodeScale(
+          word2 >>> 16,
         );
       }
       break;
@@ -548,6 +563,36 @@ export function executeRange(
           blockSize,
           blockCount,
         );
+        break;
+      case Opcode.MultiplyAdd:
+      case Opcode.AddMultiply:
+        for (let component = 0; component < width; component += 1) {
+          const output = outputBase + component * blockSize;
+          const left = arg0 + (arg0Width === 1 ? 0 : component * blockSize);
+          const right = arg1 + (arg1Width === 1 ? 0 : component * blockSize);
+          const last = arg2 + (arg2Width === 1 ? 0 : component * blockSize);
+          if (opcode === Opcode.MultiplyAdd) {
+            for (let lane = 0; lane < blockCount; lane += 1) {
+              const intermediate = Math.fround(
+                registers[left + lane] * registers[right + lane],
+              );
+              registers[output + lane] =
+                immediate === 0
+                  ? intermediate + registers[last + lane]
+                  : registers[last + lane] + intermediate;
+            }
+          } else {
+            for (let lane = 0; lane < blockCount; lane += 1) {
+              const intermediate = Math.fround(
+                registers[left + lane] + registers[right + lane],
+              );
+              registers[output + lane] =
+                immediate === 0
+                  ? intermediate * registers[last + lane]
+                  : registers[last + lane] * intermediate;
+            }
+          }
+        }
         break;
       case Opcode.Dot:
         for (let lane = 0; lane < blockCount; lane += 1) {

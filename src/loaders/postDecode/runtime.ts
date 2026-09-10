@@ -532,18 +532,29 @@ function writeOutputBlock(
 ) {
   const { outputBases } = plan;
   const positionBase = outputBases[OUTPUT_POSITION];
-  if (positionBase !== MISSING_OUTPUT_BASE) {
+  const scaleBase = outputBases[OUTPUT_SCALE];
+  const colorBase = outputBases[OUTPUT_COLOR];
+  if (scaleBase !== MISSING_OUTPUT_BASE && colorBase !== MISSING_OUTPUT_BASE) {
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       const wordBase = outputWordBases[blockIndex];
-      const registerBase = positionBase + blockIndex;
-      splat0Float[wordBase] = registers[registerBase];
-      splat0Float[wordBase + 1] = registers[registerBase + blockSize];
-      splat0Float[wordBase + 2] = registers[registerBase + blockSize * 2];
+      const scale = scaleBase + blockIndex;
+      const color = colorBase + blockIndex;
+      // Blue and X log-scale share a word. Write it once without either
+      // read/modify/write cycle when both fields are being updated.
+      data.splat1[wordBase] =
+        (toHalf(registers[color]) |
+          (toHalf(registers[color + blockSize]) << 16)) >>>
+        0;
+      data.splat1[wordBase + 1] =
+        (toHalf(registers[color + blockSize * 2]) |
+          (toHalf(Math.log(registers[scale])) << 16)) >>>
+        0;
+      data.splat1[wordBase + 2] =
+        (toHalf(Math.log(registers[scale + blockSize])) |
+          (toHalf(Math.log(registers[scale + blockSize * 2])) << 16)) >>>
+        0;
     }
-  }
-
-  const scaleBase = outputBases[OUTPUT_SCALE];
-  if (scaleBase !== MISSING_OUTPUT_BASE) {
+  } else if (scaleBase !== MISSING_OUTPUT_BASE) {
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       const wordBase = outputWordBases[blockIndex];
       const registerBase = scaleBase + blockIndex;
@@ -591,8 +602,7 @@ function writeOutputBlock(
     }
   }
 
-  const colorBase = outputBases[OUTPUT_COLOR];
-  if (colorBase !== MISSING_OUTPUT_BASE) {
+  if (colorBase !== MISSING_OUTPUT_BASE && scaleBase === MISSING_OUTPUT_BASE) {
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       const wordBase = outputWordBases[blockIndex];
       const registerBase = colorBase + blockIndex;
@@ -624,6 +634,12 @@ function writeOutputBlock(
   if (plan.updatesSortCenter) {
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       const wordBase = outputWordBases[blockIndex];
+      if (positionBase !== MISSING_OUTPUT_BASE) {
+        const registerBase = positionBase + blockIndex;
+        splat0Float[wordBase] = registers[registerBase];
+        splat0Float[wordBase + 1] = registers[registerBase + blockSize];
+        splat0Float[wordBase + 2] = registers[registerBase + blockSize * 2];
+      }
       const disabled =
         data.splat1[wordBase + 1] >>> 16 === 0xfc00 &&
         (data.splat1[wordBase + 2] & 0xffff) === 0xfc00 &&

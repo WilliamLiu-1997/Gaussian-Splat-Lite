@@ -7,6 +7,33 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added runtime `splatBudget` updates to `RadStreamScheduler` and `SogStreamScheduler`. Assigning a positive safe integer requests a new LOD selection even for stationary views, discards results computed for an older budget, and preserves displayed coverage through loading and fades.
+
+### Changed
+
+- Reworked RAD LOD scoring to prepare camera position and projection bounds once per view, using camera pixel scale and inverse object-space center distance for perspective and orthographic cameras. Nodes inside the actual viewport receive full priority, accounting for zoom and view offsets; off-screen priority tapers toward 5%, with 5% retained behind the camera. Non-invertible transforms are rejected.
+- Changed RAD LOD radius estimates from the largest axis scale to the arithmetic mean of the three axis scales, lowered the base pixel threshold from `2` to `1`, and reduced hysteresis from 15% to 5%.
+- Reduced RAD traversal work by marking child ranges per page, skipping per-node work on leaf-only pages, and pruning refinements that cannot fit the remaining budget while preserving single-child refinements and stable source order.
+- Kept RAD selection baselines in the LOD worker and referenced them by ID, avoiding per-request copies of the displayed cut. Combined changed-page detection and fade preparation into one pass, skipped fade-buffer allocation for unchanged cuts, and included retained worker selections in resident-byte statistics.
+- Moved streamed RAD page downloads and local page reads into decoding workers, keeping application URL and file resolution on the calling thread. Preserved Range validation and checked resource versions and lengths across parallel responses before publication; local inputs send only the requested page.
+- Unified RAD/SOG load lifecycle handling in `StreamWorkerPool`, including worker leases, task IDs, cancellation, download accounting, and balanced `LoadingManager` notifications, while retaining separate pools and format-specific cache ownership.
+- Reduced SOG streaming transfers and pending-copy reservations with tightly packed region records that omit per-region texture padding and duplicate sort centers.
+- Kept the streamed SOG spatial tree in the LOD worker, transferred only root bounds to the scheduler, and omitted intermediate LOD errors from packed metadata. Resident-byte statistics now account for the different retained arrays on each thread.
+- Shared ordering texture allocation, resizing and disposal between the WebGL backends while preserving their partial-upload paths; removed unused native WebGPU CPU-ordering members.
+- Optimized `postDecode` by combining single-use multiply/add and add/multiply expressions while preserving intermediate float32 rounding and operand order, caching decoded scale values on demand, and combining related packed-field and sort-center writes.
+- Compacted native WebGPU projection output into visible slots and repurposed the source-index buffer for stable coverage seeds, preserving the 32-byte projected record layout without an extra seed texture.
+
+### Removed
+
+- Removed unused `SplatEdits.sdfFloatData` and `editFloatData` fields. Float views can be created from the current `sdfData.buffer` and `editData.buffer` when needed.
+
+### Fixed
+
+- Stabilized stochastic color and depth coverage when streamed LOD selections or combined mesh ranges are remapped. All three rendering backends now derive sampling seeds from mesh identity and physical source records, preventing unchanged Splats from receiving new noise patterns after remapping.
+- Removed camera-rotation-dependent scale inflation from RAD LOD scoring.
+
 ## [1.0.0] - 2026-09-09
 
 ### Added

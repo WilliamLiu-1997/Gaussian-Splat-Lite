@@ -12,6 +12,8 @@ export type RadLodChunk = {
 export type RadLodView = {
   /** Object-to-camera transform; doubles preserve large scene translations. */
   viewFromObject: number[];
+  /** Camera projection's X/Y rows (8 values), including zoom and view offsets. */
+  projectionRows: number[];
   /** Pixels per camera-space unit at depth 1, including projection zoom. */
   pixelScale: number;
   orthographic: boolean;

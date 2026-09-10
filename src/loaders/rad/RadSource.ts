@@ -38,10 +38,45 @@ type Remote = {
   full?: Blob;
 };
 
+/** Small response snapshot shared across a dataset's download workers. */
+export type RadResourceState = Pick<
+  Remote,
+  "responseUrl" | "total" | "validator" | "validatorHeader"
+>;
+
+/** Resolved page input. Local inputs contain only the requested Blob slice. */
+export type RadReadRequest = {
+  input: string | Blob;
+  offset: number;
+  length: number;
+  wholeFile: boolean;
+  resourceUrl?: string;
+  state?: RadResourceState;
+  requestHeader?: Record<string, string>;
+  withCredentials?: boolean;
+};
+
 const MAX_CHUNK_BYTES = 256 * 1024 * 1024;
 
 function baseUrl() {
   return typeof document === "undefined" ? undefined : document.baseURI;
+}
+
+/** Slice without copying; callers choose how to take ownership of page bytes. */
+function sliceLocalInput(
+  input: Exclude<SplatFileInput, string>,
+  offset: number,
+  length: number,
+) {
+  if (input instanceof Blob) {
+    checkRange(offset, length, input.size);
+    return input.slice(offset, offset + length);
+  }
+  const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
+  if (!(bytes instanceof Uint8Array))
+    throw new Error("RAD: chunk resolver returned an unsupported input");
+  checkRange(offset, length, bytes.length);
+  return bytes.subarray(offset, offset + length);
 }
 
 /** Validated byte reads shared by ordinary RAD loading and paged loading. */
@@ -82,6 +117,19 @@ export class RadSource {
   }
 
   async readChunk(header: RadHeader, index: number, signal?: AbortSignal) {
+    const { input, offset, length, wholeFile } = await this.chunkRead(
+      header,
+      index,
+      signal,
+    );
+    return this.read(input, offset, length, signal, wholeFile);
+  }
+
+  private async chunkRead(
+    header: RadHeader,
+    index: number,
+    signal?: AbortSignal,
+  ) {
     signal?.throwIfAborted();
     this.controller.signal.throwIfAborted();
     const chunk = header.meta.chunks[index];
@@ -116,13 +164,132 @@ export class RadSource {
           getAssetBaseUrl(this.url) ?? this.options.baseUrl ?? baseUrl(),
         ).href;
     }
-    return this.read(
+    return {
       input,
       offset,
-      chunk.bytes,
-      signal,
-      chunk.filename !== undefined && offset === 0,
-    );
+      length: chunk.bytes,
+      wholeFile: chunk.filename !== undefined && offset === 0,
+    };
+  }
+
+  /** Resolve callbacks on their owning thread; workers read and validate bodies. */
+  async prepareChunk(
+    header: RadHeader,
+    index: number,
+    signal?: AbortSignal,
+  ): Promise<RadReadRequest> {
+    const read = await this.chunkRead(header, index, signal);
+    signal?.throwIfAborted();
+    this.controller.signal.throwIfAborted();
+    const { input, offset, length } = read;
+    checkRange(offset, length);
+    if (length > MAX_CHUNK_BYTES)
+      throw new Error("RAD: encoded chunk exceeds 256 MiB");
+    if (typeof input === "string") {
+      const remote = this.remote(input);
+      const controller = this.requestController(signal);
+      try {
+        const url = await this.resolveRemote(remote, controller.signal);
+        controller.signal.throwIfAborted();
+        checkRange(offset, length, remote.total);
+        const options = requestOptions(this.options, url, this.origin);
+        const requestHeader: Record<string, string> = {};
+        options.headers.forEach((value, name) => {
+          requestHeader[name] = value;
+        });
+        return {
+          ...read,
+          input: url,
+          resourceUrl: input,
+          state: this.resourceState(remote),
+          requestHeader,
+          withCredentials: options.credentials === "include",
+        };
+      } finally {
+        controller.cleanup();
+      }
+    }
+    const slice = sliceLocalInput(input, offset, length);
+    // Snapshot only this page, never copy/detach the full file per worker.
+    const file = slice instanceof Blob ? slice : new Blob([slice as BlobPart]);
+    return { input: file, offset: 0, length, wholeFile: true };
+  }
+
+  /** Worker transport reuses all ordinary Range, size and encoding validation. */
+  static async readPreparedChunk(
+    request: RadReadRequest,
+    signal: AbortSignal,
+    onProgress?: (downloadedBytes: number) => void,
+  ) {
+    const { input, offset, length, wholeFile } = request;
+    const source = new RadSource({
+      ...(typeof input === "string" ? { url: input } : { file: input }),
+      requestHeader: request.requestHeader,
+      withCredentials: request.withCredentials,
+      onProgress,
+    });
+    try {
+      if (typeof input === "string")
+        Object.assign(source.remote(input), request.state, { resolved: input });
+      const bytes = await source.read(input, offset, length, signal, wholeFile);
+      const state =
+        typeof input === "string"
+          ? source.resourceState(source.remote(input))
+          : undefined;
+      return { bytes, state };
+    } finally {
+      source.dispose();
+    }
+  }
+
+  /** Reconcile parallel responses before publishing a decoded page. */
+  acceptChunkResponse(request: RadReadRequest, state?: RadResourceState) {
+    this.controller.signal.throwIfAborted();
+    if (request.resourceUrl === undefined) return;
+    if (!state) throw new Error("RAD: missing worker response metadata");
+    const remote = this.remote(request.resourceUrl);
+    if (
+      remote.validator &&
+      (state.validator !== remote.validator ||
+        state.validatorHeader !== remote.validatorHeader)
+    )
+      throw new Error("RAD: resource version changed during loading");
+    if (
+      remote.total !== undefined &&
+      state.total !== undefined &&
+      remote.total !== state.total
+    )
+      throw new Error("RAD: resource length changed during loading");
+    remote.responseUrl = state.responseUrl ?? remote.responseUrl;
+    remote.total ??= state.total;
+    if (!remote.validator && state.validator) {
+      remote.validator = state.validator;
+      remote.validatorHeader = state.validatorHeader;
+    }
+  }
+
+  private resourceState(remote: Remote): RadResourceState {
+    const { responseUrl, total, validator, validatorHeader } = remote;
+    return { responseUrl, total, validator, validatorHeader };
+  }
+
+  private remote(url: string) {
+    let remote = this.remotes.get(url);
+    if (!remote) {
+      remote = { url };
+      this.remotes.set(url, remote);
+    }
+    return remote;
+  }
+
+  private async resolveRemote(remote: Remote, signal: AbortSignal) {
+    remote.resolved ??= new URL(
+      this.options.resolveAsset
+        ? await abortable(this.options.resolveAsset(remote.url), signal)
+        : (this.options.manager?.resolveURL(remote.url) ?? remote.url),
+      this.options.baseUrl ?? baseUrl(),
+    ).href;
+    return remote.resolved;
   }
 
   private requestController(signal?: AbortSignal) {
@@ -142,28 +309,20 @@ export class RadSource {
     if (length > MAX_CHUNK_BYTES)
       throw new Error("RAD: encoded chunk exceeds 256 MiB");
     if (typeof input === "string") {
-      let remote = this.remotes.get(input);
-      if (!remote) {
-        remote = { url: input };
-        this.remotes.set(input, remote);
-      }
-      return this.readRemote(remote, offset, length, signal, wholeFile);
-    }
-    if (input instanceof Blob) {
-      checkRange(offset, length, input.size);
-      return new Uint8Array(
-        await abortable(
-          input.slice(offset, offset + length).arrayBuffer(),
-          signal,
-        ),
+      return this.readRemote(
+        this.remote(input),
+        offset,
+        length,
+        signal,
+        wholeFile,
       );
     }
-    const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
-    if (!(bytes instanceof Uint8Array))
-      throw new Error("RAD: chunk resolver returned an unsupported input");
-    checkRange(offset, length, bytes.length);
+    const slice = sliceLocalInput(input, offset, length);
+    if (slice instanceof Blob) {
+      return new Uint8Array(await abortable(slice.arrayBuffer(), signal));
+    }
     // Workers transfer buffers; never detach the caller's source bytes.
-    return new Uint8Array(bytes.subarray(offset, offset + length));
+    return new Uint8Array(slice);
   }
 
   private async readRemote(
@@ -187,31 +346,19 @@ export class RadSource {
     let started = false;
     let response: Response | undefined;
     try {
-      remote.resolved ??= new URL(
-        this.options.resolveAsset
-          ? await abortable(
-              this.options.resolveAsset(remote.url),
-              controller.signal,
-            )
-          : (manager?.resolveURL(remote.url) ?? remote.url),
-        this.options.baseUrl ?? baseUrl(),
-      ).href;
+      const resolved = await this.resolveRemote(remote, controller.signal);
       controller.signal.throwIfAborted();
-      const options = requestOptions(
-        this.options,
-        remote.resolved,
-        this.origin,
-      );
+      const options = requestOptions(this.options, resolved, this.origin);
       const { headers } = options;
       if (!wholeFile)
         headers.set("Range", `bytes=${offset}-${offset + length - 1}`);
       // A single byte range can be fetched without a CORS preflight. Adding
       // If-Range would require server opt-in even when Range itself works.
       // Compare response validators below to detect resource changes instead.
-      manager?.itemStart(remote.resolved);
+      manager?.itemStart(resolved);
       started = true;
       this.stats.activeRequests++;
-      response = await fetch(remote.resolved, {
+      response = await fetch(resolved, {
         headers,
         credentials: options.credentials,
         signal: controller.signal,

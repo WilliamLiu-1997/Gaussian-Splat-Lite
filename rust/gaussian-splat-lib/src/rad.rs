@@ -803,7 +803,8 @@ impl RadDecoder {
                 } else {
                     1.0 + 2.8 * (opacity - 1.0)
                 };
-                let radius = expansion * scales[0].max(scales[1]).max(scales[2]);
+                let avg_scale = (scales[0] + scales[1] + scales[2]) / 3.0;
+                let radius = expansion * avg_scale;
                 ensure!(radius.is_finite(), "RAD LOD radius overflow");
                 radii.push(radius);
             }

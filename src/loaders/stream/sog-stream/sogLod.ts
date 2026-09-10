@@ -6,7 +6,6 @@ export type SogLodRange = {
   file: number;
   offset: number;
   count: number;
-  error: number;
 };
 
 export type SogLodLeaf = {
@@ -35,16 +34,24 @@ export type SogLodManifest = {
   environment?: string;
 };
 
-/** Transferable index. Float64 preserves source bounds and safe-integer counts. */
+export const SOG_LOD_STRIDE = 5;
+
+/** Packed worker index. Float64 preserves source bounds and safe-integer counts. */
 export type SogLodIndex = {
   /** Preorder nodes: min XYZ, max XYZ, next index after the subtree, leaf ID (-1 for interiors). */
   nodes: Float64Array;
   leafOffsets: Uint32Array;
-  /** Per level: level, file, offset, count, error, upgrade ratio. */
+  /** Per level: level, file, offset, count, upgrade ratio. */
   lods: Float64Array;
   urls: string[];
   counts: Float64Array;
   environment?: string;
+};
+
+/** Scheduler metadata; the complete spatial tree stays in the LOD worker. */
+export type SogLodMetadata = Omit<SogLodIndex, "nodes"> & {
+  /** Root min XYZ and max XYZ. */
+  bounds: Float64Array;
 };
 
 /** Flatten the tree and ranges into transferable typed arrays. */
@@ -68,7 +75,7 @@ export function packSogLodIndex(manifest: SogLodManifest): SogLodIndex {
     count += leaf.lods.length;
   }
   leafOffsets[leaves.length] = count;
-  const lods = new Float64Array(count * 6);
+  const lods = new Float64Array(count * SOG_LOD_STRIDE);
   for (const leaf of leaves) {
     leaf.lods.forEach((lod, index) => {
       lods.set(
@@ -77,10 +84,9 @@ export function packSogLodIndex(manifest: SogLodManifest): SogLodIndex {
           lod.file,
           lod.offset,
           lod.count,
-          lod.error,
           leaf.upgradeRatios[index] ?? 0,
         ],
-        (leafOffsets[leaf.id] + index) * 6,
+        (leafOffsets[leaf.id] + index) * SOG_LOD_STRIDE,
       );
     });
   }
@@ -95,20 +101,22 @@ export function packSogLodIndex(manifest: SogLodManifest): SogLodIndex {
 }
 
 /** Materialize only leaves visited by the camera, preserving stable range identities. */
-export function readSogLodLeaf(index: SogLodIndex, id: number): SogLodLeaf {
+export function readSogLodLeaf(
+  index: Pick<SogLodIndex, "leafOffsets" | "lods">,
+  id: number,
+): SogLodLeaf {
   const leaf: SogLodLeaf = { id, lods: [], upgradeRatios: [] };
   const data = index.lods;
   for (let i = index.leafOffsets[id]; i < index.leafOffsets[id + 1]; i++) {
-    const offset = i * 6;
+    const offset = i * SOG_LOD_STRIDE;
     leaf.lods.push({
       leaf: id,
       level: data[offset],
       file: data[offset + 1],
       offset: data[offset + 2],
       count: data[offset + 3],
-      error: data[offset + 4],
     });
-    leaf.upgradeRatios.push(data[offset + 5]);
+    leaf.upgradeRatios.push(data[offset + 4]);
   }
   return leaf;
 }
@@ -134,6 +142,9 @@ function resolve(value: unknown, baseUrl: string): string {
   return new URL(value, baseUrl).href;
 }
 
+type ParsedLodRange = SogLodRange & { error: number };
+type ParsedLodLeaf = Omit<SogLodLeaf, "lods"> & { lods: ParsedLodRange[] };
+
 /** Streamed SOG v1, including the earlier unversioned manifests. */
 export function parseSogLodManifest(
   value: unknown,
@@ -155,7 +166,7 @@ export function parseSogLodManifest(
     files.push({ url, count: 0, ranges: [] });
     return files.length - 1;
   });
-  const leaves: SogLodLeaf[] = [];
+  const leaves: ParsedLodLeaf[] = [];
   const counts = Array<number>(levels).fill(0);
   let fileErrors = root.lodErrors === true;
   const parseNode = (value: unknown): SogLodNode => {
@@ -186,7 +197,7 @@ export function parseSogLodManifest(
       for (const child of children) bound.union(child.bound);
       return { bound, children };
     }
-    const leaf: SogLodLeaf = {
+    const leaf: ParsedLodLeaf = {
       id: leaves.length,
       lods: [],
       upgradeRatios: [],
@@ -202,12 +213,10 @@ export function parseSogLodManifest(
         level >= levels
       )
         fail(`invalid LOD level ${key}`);
-      if (leaf.lods.some((lod) => lod.level === level))
-        fail("duplicate LOD level");
       const entry = object(value);
       const fileIndex = integer(entry.file, "file index");
       if (fileIndex >= fileIndices.length) fail("file index is out of bounds");
-      const range: SogLodRange = {
+      const range: ParsedLodRange = {
         leaf: leaf.id,
         level,
         file: fileIndices[fileIndex],

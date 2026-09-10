@@ -18,7 +18,7 @@ export type ProjectedVertexData = {
   /** Source color space; this material applies encodeLinear. */
   rgba: TSLNode;
   splatUv: TSLNode;
-  splatIndex: TSLNode;
+  stochasticSeed: TSLNode;
   supportRadiusSquared: TSLNode;
   kernelPower: TSLNode;
   viewportOrigin: TSLNode;
@@ -62,7 +62,7 @@ function createSplatFragment({
 }) {
   const vRgba = N.varyingProperty("vec4", "gslRgba");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
-  const vSplatIndex = N.varyingProperty("uint", "gslSplatIndex");
+  const vStochasticSeed = N.varyingProperty("uint", "gslStochasticSeed");
   const vSupportRadiusSquared = N.varyingProperty(
     "float",
     "gslSupportRadiusSquared",
@@ -89,7 +89,7 @@ function createSplatFragment({
         quad.x
           .mul(N.uint(1973))
           .bitXor(quad.y.mul(N.uint(9277)))
-          .bitXor(vSplatIndex.add(1).mul(N.uint(26699))),
+          .bitXor(vStochasticSeed.add(1).mul(N.uint(26699))),
       );
       const stratum = pixel.y
         .bitAnd(1)
@@ -117,7 +117,7 @@ function createSplatFragment({
   return {
     vRgba,
     vSplatUv,
-    vSplatIndex,
+    vStochasticSeed,
     vSupportRadiusSquared,
     vKernelPower,
     vViewportOrigin,
@@ -145,6 +145,7 @@ export function createSplatNodeMaterial({
   const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
   const splats2 = textureBinding(uniforms, "splats2", true);
+  const stochasticSeeds = textureBinding(uniforms, "stochasticSeeds", true);
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
   const premultipliedAlphaNode = uniformBinding(
@@ -162,7 +163,7 @@ export function createSplatNodeMaterial({
   const {
     vRgba,
     vSplatUv,
-    vSplatIndex,
+    vStochasticSeed,
     vSupportRadiusSquared,
     vKernelPower,
     vViewportOrigin,
@@ -179,7 +180,7 @@ export function createSplatNodeMaterial({
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
     vSplatUv.assign(N.vec2(0));
-    vSplatIndex.assign(N.uint(0));
+    vStochasticSeed.assign(N.uint(0));
     vSupportRadiusSquared.assign(0);
     vKernelPower.assign(0);
 
@@ -193,7 +194,7 @@ export function createSplatNodeMaterial({
       clipPosition.assign(data.clipPosition);
       vRgba.assign(rgba);
       vSplatUv.assign(data.splatUv);
-      vSplatIndex.assign(data.splatIndex);
+      vStochasticSeed.assign(data.stochasticSeed);
       vSupportRadiusSquared.assign(data.supportRadiusSquared);
       vKernelPower.assign(data.kernelPower);
       vViewportOrigin.assign(data.viewportOrigin);
@@ -232,6 +233,10 @@ export function createSplatNodeMaterial({
           second: loadArray(splats2, texCoord),
         });
         N.If(projected.valid, () => {
+          const stochasticSeed = N.uint(0).toVar();
+          N.If(stochastic.or(depthOnly), () => {
+            stochasticSeed.assign(loadArray(stochasticSeeds, texCoord).r);
+          });
           const ndcOffset = projected.axis1
             .mul(N.positionGeometry.x)
             .add(projected.axis2.mul(N.positionGeometry.y));
@@ -245,7 +250,7 @@ export function createSplatNodeMaterial({
             ),
             rgba: projected.rgba,
             splatUv: N.positionGeometry.xy.mul(projected.supportRadius),
-            splatIndex,
+            stochasticSeed,
             supportRadiusSquared: projected.supportRadius.mul(
               projected.supportRadius,
             ),

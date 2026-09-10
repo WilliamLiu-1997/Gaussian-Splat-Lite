@@ -21,7 +21,7 @@ out vec4 fragColor;
 
 in vec4 vRgba;
 in vec2 vSplatUv;
-flat in uint vSplatIndex;
+flat in uint vStochasticSeed;
 flat in float vSupportRadiusSquared;
 flat in float vKernelPower;
 
@@ -65,7 +65,7 @@ void main() {
         uint hash = hashU32(
             (quad.x * 1973u) ^
             (quad.y * 9277u) ^
-            ((vSplatIndex + 1u) * 26699u)
+            ((vStochasticSeed + 1u) * 26699u)
         );
         uint stratum = (((pixel.y & 1u) * 2u) + (pixel.x & 1u)) ^ (hash & 3u);
         float randomValue = (

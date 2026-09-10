@@ -44,6 +44,8 @@
           <div
             id="performance-stats"
             class="performance-stats"
+            role="group"
+            tabindex="0"
             aria-label="Performance metrics"
           >
             <span class="performance-stat">
@@ -230,10 +232,7 @@
       </section>
 
       <footer class="statusbar">
-        <div class="status-message" aria-live="polite">
-          <span id="status-dot" class="status-dot"></span>
-          <span id="status-text">Ready for a file or URL</span>
-        </div>
+        <span id="status-text" class="visually-hidden" aria-live="polite">Ready for a file or URL</span>
         <div id="file-meta" class="file-meta" hidden>
           <span id="file-name"></span>
           <span class="meta-separator" aria-hidden="true"></span>

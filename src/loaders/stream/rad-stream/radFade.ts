@@ -7,62 +7,76 @@ export type RadFade = {
   fades: Uint8Array;
 };
 
-export type RadStreamSelection = RadLodSelection & {
+export type RadVersionedSelection = RadLodSelection & { selectionId: number };
+
+export type RadStreamSelection = RadVersionedSelection & {
   changedChunks: Uint32Array;
   fade?: RadFade;
 };
 
-export function equalRadIndices(previous: Uint32Array, next: Uint32Array) {
-  if (previous === next) return true;
-  if (previous.length !== next.length) return false;
-  for (let index = 0; index < previous.length; index++)
-    if (previous[index] !== next[index]) return false;
-  return true;
-}
-
-/** Merge sorted tree cuts without drawing shared nodes twice. CPU transition
- * kinds: 0 stays opaque, 1 fades in, and 2 fades out. */
-export function mergeRadFade(
+/** Compare sorted cuts and build their optional fade union in one pass. Allocate
+ * the union only after a difference, so unchanged decisions allocate no fade. */
+export function prepareRadFade(
+  meta: RadMeta,
   previous: Uint32Array,
   next: Uint32Array,
-): RadFade | undefined {
-  if (equalRadIndices(previous, next)) return undefined;
-  if (!previous.length)
-    return {
-      indices: next,
-      fades: new Uint8Array(next.length).fill(1),
-    };
+  enableFade: boolean,
+): Pick<RadStreamSelection, "changedChunks" | "fade"> {
+  if (!enableFade)
+    return { changedChunks: changedRadChunks(meta, previous, next) };
+  let prefix = 0;
+  const sharedLength = Math.min(previous.length, next.length);
+  while (prefix < sharedLength && previous[prefix] === next[prefix]) prefix++;
+  if (prefix === previous.length && prefix === next.length)
+    return { changedChunks: new Uint32Array(0) };
 
-  const indices = new Uint32Array(previous.length + next.length);
+  // The shared prefix occurs only once in the union. Copy it in bulk and keep
+  // allocation checks outside the per-node loop.
+  const indices = new Uint32Array(previous.length + next.length - prefix);
   const fades = new Uint8Array(indices.length);
-  let oldOffset = 0;
-  let newOffset = 0;
-  let count = 0;
+  indices.set(next.subarray(0, prefix));
+  const chunks: number[] = [];
+  let oldOffset = prefix;
+  let newOffset = prefix;
+  let count = prefix;
+  let pageEnd = 0;
   while (oldOffset < previous.length || newOffset < next.length) {
     const oldIndex = previous[oldOffset] ?? Number.POSITIVE_INFINITY;
     const newIndex = next[newOffset] ?? Number.POSITIVE_INFINITY;
     if (oldIndex === newIndex) {
-      indices[count] = oldIndex;
+      indices[count++] = oldIndex;
       oldOffset++;
       newOffset++;
-    } else if (oldIndex < newIndex) {
-      indices[count] = oldIndex;
+      continue;
+    }
+    let index: number;
+    if (oldIndex < newIndex) {
+      index = oldIndex;
       fades[count] = 2;
       oldOffset++;
     } else {
-      indices[count] = newIndex;
+      index = newIndex;
       fades[count] = 1;
       newOffset++;
     }
-    count++;
+    indices[count++] = index;
+    if (index < pageEnd) continue;
+    const chunk = radChunkIndex(meta, index);
+    const range = getRadChunkSpan(meta, chunk);
+    pageEnd = range.base + range.count;
+    chunks.push(chunk);
   }
   return {
-    indices: indices.subarray(0, count),
-    fades: fades.subarray(0, count),
+    changedChunks: Uint32Array.from(chunks),
+    fade: {
+      indices: indices.subarray(0, count),
+      fades: fades.subarray(0, count),
+    },
   };
 }
-/** Only pools containing changed nodes need new index/opacity maps. */
-export function changedRadChunks(
+
+/** Diff-only path does not pay for union construction when fades are disabled. */
+function changedRadChunks(
   meta: RadMeta,
   previous: Uint32Array,
   next: Uint32Array,

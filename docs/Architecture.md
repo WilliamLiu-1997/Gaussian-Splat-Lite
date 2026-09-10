@@ -53,6 +53,8 @@ Shared TSL shaders live in `tsl/`: `GenerateProgram.ts` and `ProjectionProgram.t
 
 In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting; `ProjectionCache.ts` owns projected textures and encoding; `RadixSort.ts` owns the sort passes.
 
+`webgl/OrderingTexture.ts` shares CPU ordering texture capacity, allocation, buffer replacement and disposal between both WebGL backends. Each backend retains its own partial-upload and material-binding implementation.
+
 ## Decoder boundaries
 
 PLY, SPZ, SOG and RAD decode in `gaussian-splat-lib` and publish through `SplatReceiver`. The core library does not depend on JavaScript or WASM. `gaussian-splat-rs` adapts browser inputs and writes the receiver output into JS typed arrays through `SplatsData`.
@@ -81,7 +83,7 @@ Decode workers import the runtime and protocol directly, keeping expression cons
 
 Loaders own transport and parsing; schedulers own selection, fades, publication and retirement.
 
-- `StreamWorkerPool` manages bounded worker leases, cancellation and cache lifetime. Workers transfer owned `SplatResult` arrays to batch sources.
+- `StreamWorkerPool.run()` is the shared RAD/SOG loading entry point: it queues worker leases, assigns task IDs, links cancellation, counts downloaded bytes, balances LoadingManager notifications and releases slots on completion or failure. Each loader owns an independent pool. Format callbacks retain SOG chunk caches or release RAD decoder slots before tree registration; LOD, publication and retirement remain format-specific. Workers transfer owned `SplatResult` arrays to batch sources.
 - RAD keeps its page trees and LOD traversal in `gaussian-splat-rs/rad_lod.rs`; the worker returns stable source indices for scheduling and fades.
 - `IndexedSplats` shares textures, selected-index reads and upload accounting between `RadPagedSplats` and `SogRegionSplats`. Batches manage slots and scene attachment.
 - `streamOptions.ts` shares defaults, validation and statistics. `StreamByteBudget` limits pending copies and per-update uploads separately from active loads.
@@ -93,7 +95,7 @@ Loaders own transport and parsing; schedulers own selection, fades, publication 
 `SogStreamScheduler.update()` coordinates selection, region transitions, cache release, and loading. Region transitions run in order: advance fades, update visibility, attach ready regions, queue extractions, and finish immediate fades.
 
 - `sogLod.ts` owns manifest parsing, budget selection, and progressive LOD resolution.
-- `SogVisibility` collects visible leaves and selects target LODs in the LOD worker.
+- `SogVisibility` retains the complete spatial tree, collects visible leaves and selects target LODs in the LOD worker. The scheduler receives only root bounds and packed LOD metadata; packed records retain upgrade ratios and omit the parser's intermediate errors. Resident-byte statistics account for each thread's retained arrays separately.
 - `SogStreamLoader` owns a dedicated LOD worker, a bounded decoding pool and cached chunk sources.
 - `SogStreamBatch` owns occupied slots and mesh attachment based on region opacity. `SogRegionSplats` owns its indexed GPU data in `data/`.
 - `SogStreamScheduler` keeps the latest pending view and each leaf's target, current region, outgoing region and pending extraction together. It resolves worker targets against current caches and owns region fades, retirement, upload limits and retries.

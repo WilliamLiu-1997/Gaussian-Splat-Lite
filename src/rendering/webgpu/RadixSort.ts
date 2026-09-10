@@ -21,13 +21,10 @@ const PREFIX_LEVELS = 3;
 type MutableUniform = { value: number };
 
 type BufferRef = { value: StorageBufferAttribute };
-type ValueGenerator = (index: TSLNode) => TSLNode;
 
 export type WebGPURadixSortOptions = {
   /** GPU count of compact input records. Omit for the CPU-count interface. */
   count?: TSLNode;
-  /** Payload of each compact input record. Defaults to its input index. */
-  valueGenerator?: ValueGenerator;
   /** Optional final-pass write, compiled once with the persistent sort graph. */
   storeOrder?: (index: TSLNode, value: TSLNode) => void;
   maxComputeWorkgroupsPerDimension?: number;
@@ -266,7 +263,6 @@ function makeReorderTask({
   bitOffset,
   firstPass,
   lastPass,
-  valueGenerator,
   workgroupCount,
   storeOrder,
 }: {
@@ -279,7 +275,6 @@ function makeReorderTask({
   bitOffset: number;
   firstPass: boolean;
   lastPass: boolean;
-  valueGenerator?: ValueGenerator;
   workgroupCount: TSLNode;
   storeOrder?: (index: TSLNode, value: TSLNode) => void;
 }) {
@@ -346,7 +341,6 @@ function makeReorderTask({
           key.assign(inputKeys.element(index));
           digit.assign(key.shiftRight(bitOffsetNode).bitAnd(RADIX_BUCKETS - 1));
           if (!firstPass) value.assign(inputValues.element(index));
-          else if (valueGenerator) value.assign(valueGenerator(index));
           N.atomicOr(
             digitMasks.element(digit.mul(8).add(word)),
             N.uint(1).shiftLeft(bit),
@@ -503,7 +497,6 @@ export class WebGPURadixSort {
         bitOffset: pass * RADIX_BITS,
         firstPass,
         lastPass: pass === RADIX_PASSES - 1,
-        valueGenerator: options.valueGenerator,
         storeOrder: pass === RADIX_PASSES - 1 ? options.storeOrder : undefined,
       });
       histogram.dispatchSize = this.sortDispatch;

@@ -9,13 +9,13 @@ import {
   getSplatShDegree,
   getSplatTextureBytes,
 } from "../../../data/splatData";
-import { getTextureSize } from "../../../data/textureLayout";
 import { StreamByteBudget } from "../StreamByteBudget";
 import {
   type StreamSchedulerOptions,
   type StreamStats,
   notifyStreamChange,
   notifyStreamError,
+  positiveInteger,
   retryDelay,
   streamPendingLimit,
   streamSettings,
@@ -27,9 +27,10 @@ import {
   type SogStreamLoaderOptions,
 } from "./SogStreamLoader";
 import {
+  SOG_LOD_STRIDE,
   type SogLodFile,
-  type SogLodIndex,
   type SogLodLeaf,
+  type SogLodMetadata,
   type SogLodRange,
   readSogLodLeaf,
   resolveSogLod,
@@ -83,16 +84,16 @@ export class SogStreamScheduler {
   readonly group: THREE.Group;
   readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
-  readonly splatBudget: number;
   readonly cooldownTicks: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
   readonly maxUploadBytesPerUpdate: number;
 
+  private _splatBudget: number;
   private readonly options: SogStreamSchedulerOptions;
   private readonly loader: SogStreamLoader;
   private readonly abort = new AbortController();
-  private manifest?: SogLodIndex;
+  private manifest?: SogLodMetadata;
   private readonly lodLeaves = new Map<number, SogLodLeaf>();
   private view?: SogView;
   private lastRequestedKey = "";
@@ -116,7 +117,7 @@ export class SogStreamScheduler {
     this.options = { ...options };
     this.group = options.group ?? new THREE.Group();
     const settings = streamSettings(options);
-    this.splatBudget = settings.splatBudget;
+    this._splatBudget = settings.splatBudget;
     this.cooldownTicks = settings.cooldownTicks;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
@@ -141,6 +142,17 @@ export class SogStreamScheduler {
     void this.firstRenderable.catch(() => {});
   }
 
+  /** Visible-point target, including the environment. Reassign to reselect LODs. */
+  get splatBudget(): number {
+    return this._splatBudget;
+  }
+
+  set splatBudget(value: number) {
+    if (value === this._splatBudget) return;
+    this._splatBudget = positiveInteger(value, "splatBudget");
+    void this.requestSelection();
+  }
+
   get stats(): SogStreamStats {
     const { retainedIndexBytes, ...loaderStats } = this.loader.stats;
     const manifest = this.manifest;
@@ -153,7 +165,7 @@ export class SogStreamScheduler {
       residentBytes:
         retainedIndexBytes +
         (manifest
-          ? manifest.nodes.byteLength +
+          ? manifest.bounds.byteLength +
             manifest.leafOffsets.byteLength +
             manifest.lods.byteLength +
             manifest.counts.byteLength
@@ -192,8 +204,8 @@ export class SogStreamScheduler {
   getBoundingBox(): THREE.Box3 {
     const box = new THREE.Box3();
     if (this.manifest) {
-      box.min.fromArray(this.manifest.nodes, 0);
-      box.max.fromArray(this.manifest.nodes, 3);
+      box.min.fromArray(this.manifest.bounds, 0);
+      box.max.fromArray(this.manifest.bounds, 3);
     }
     return box;
   }
@@ -216,7 +228,11 @@ export class SogStreamScheduler {
       failures: 0,
       retryAt: 0,
     }));
-    for (let offset = 0; offset < manifest.lods.length; offset += 6) {
+    for (
+      let offset = 0;
+      offset < manifest.lods.length;
+      offset += SOG_LOD_STRIDE
+    ) {
       this.addBatchRange(
         this.chunks[manifest.lods[offset + 1]],
         manifest.lods[offset + 2],
@@ -274,17 +290,19 @@ export class SogStreamScheduler {
       !view
     )
       return;
+    const splatBudget = this.splatBudget;
     const budget = Math.max(
       0,
-      this.splatBudget - Math.max(0, this.environment?.file.count ?? 0),
+      splatBudget - Math.max(0, this.environment?.file.count ?? 0),
     );
-    const key = `${view.modelView.join(",")}/${view.projection.join(",")}/${view.coordinateSystem}/${view.reversedDepth}/${budget}`;
+    const key = `${view.modelView.join(",")}/${view.projection.join(",")}/${view.coordinateSystem}/${view.reversedDepth}/${splatBudget}/${budget}`;
     if (key === this.lastRequestedKey) return;
     this.lastRequestedKey = key;
     this.selecting = true;
     try {
       const selection = await this.loader.selectLod(view, budget);
-      if (this.disposed || !this.shown) return;
+      if (this.disposed || !this.shown || splatBudget !== this.splatBudget)
+        return;
       // Keep one completed result; accepting camera lag avoids starving motion.
       // Resolve it against current caches, never worker-time resource snapshots.
       this.selection = selection;
@@ -343,7 +361,7 @@ export class SogStreamScheduler {
       const id = this.selection[offset];
       let leaf = this.lodLeaves.get(id);
       if (!leaf) {
-        leaf = readSogLodLeaf(this.manifest as SogLodIndex, id);
+        leaf = readSogLodLeaf(this.manifest as SogLodMetadata, id);
         this.lodLeaves.set(id, leaf);
       }
       const target = leaf.lods[this.selection[offset + 1]];
@@ -459,7 +477,7 @@ export class SogStreamScheduler {
   }
 
   private queueExtractions(selected: LeafState[], now: number) {
-    // Bound both in-flight and ready copies by the same texture byte allowance.
+    // Bound both in-flight and ready copies by their compact packed byte size.
     // One indivisible oversized region may occupy the queue on its own.
     let pendingBytes = 0;
     for (const leaf of this.leaves.values())
@@ -474,12 +492,7 @@ export class SogStreamScheduler {
       if (!range || leaf.current?.range === range || leaf.pending) continue;
       const chunk = this.chunkFor(range);
       if (!chunk.data?.alive || now < chunk.retryAt) continue;
-      const bytes =
-        getSplatTextureBytes(
-          getTextureSize(range.count).maxSplats,
-          chunk.data.info.numSh,
-        ) +
-        range.count * 12;
+      const bytes = getSplatTextureBytes(range.count, chunk.data.info.numSh);
       if (!budget.reserve(bytes)) continue;
       const pending = { range, chunk, bytes };
       leaf.pending = pending;
@@ -644,7 +657,6 @@ export class SogStreamScheduler {
                 file: -1,
                 offset: 0,
                 count: chunk.file.count,
-                error: 0,
               },
             ]
           : [];

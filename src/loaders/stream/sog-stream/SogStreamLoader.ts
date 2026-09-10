@@ -1,13 +1,13 @@
 import { DefaultLoadingManager } from "three";
 import type { Splats } from "../../../data/Splats";
-import { abortable, linkedAbortController } from "../../../runtime/abort";
+import { abortable } from "../../../runtime/abort";
 import { getAssetBaseUrl } from "../../assetUrl";
 import type { SplatLoadStatus } from "../../loadTypes";
 import { joinBytes, readResponse, requestOptions } from "../../source";
 import { StreamWorkerPool } from "../StreamWorkerPool";
 import type { StreamRequestOptions } from "../streamOptions";
 import { SogStreamWorker } from "./SogStreamWorker";
-import type { SogLodIndex } from "./sogLod";
+import type { SogLodMetadata } from "./sogLod";
 import type { SogView } from "./sogVisibility";
 import type { SogChunkInfo } from "./workerHandlers";
 
@@ -50,8 +50,7 @@ export class SogStreamLoader {
   private readonly lodWorker: SogStreamWorker;
   private readonly pool: StreamWorkerPool<SogStreamWorker>;
   private readonly controller = new AbortController();
-  private initialization?: Promise<SogLodIndex>;
-  private nextId = 0;
+  private initialization?: Promise<SogLodMetadata>;
   private baseUrl = "";
   private downloadedBytes = 0;
   private retainedIndexBytes = 0;
@@ -70,7 +69,7 @@ export class SogStreamLoader {
 
   get stats() {
     return {
-      downloadedBytes: this.downloadedBytes,
+      downloadedBytes: this.downloadedBytes + this.pool.downloadedBytes,
       peakWasmMemoryBytes:
         this.pool.peakWasmMemoryBytes + this.lodWorker.peakWasmMemoryBytes,
       retainedIndexBytes: this.lodWorker.disposed ? 0 : this.retainedIndexBytes,
@@ -116,16 +115,15 @@ export class SogStreamLoader {
       );
       const bytes = new Uint8Array(joinBytes(chunks, size)).buffer;
       this.assertActive();
-      const index = await this.lodWorker.call("parseSogIndex", {
-        bytes,
-        baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
-      });
+      const { retainedIndexBytes, ...index } = await this.lodWorker.call(
+        "parseSogIndex",
+        {
+          bytes,
+          baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
+        },
+      );
       this.assertActive();
-      this.retainedIndexBytes =
-        index.nodes.byteLength +
-        index.leafOffsets.byteLength +
-        index.lods.byteLength +
-        index.counts.byteLength;
+      this.retainedIndexBytes = retainedIndexBytes;
       return index;
     } catch (error) {
       manager.itemError(url);
@@ -142,85 +140,68 @@ export class SogStreamLoader {
 
   async load(url: string, count: number, signal: AbortSignal) {
     this.assertActive();
-    const request = linkedAbortController(this.controller.signal, signal);
-    const activeSignal = request.signal;
-    const lease = await this.pool.acquire(activeSignal).catch((error) => {
-      request.cleanup();
-      throw error;
-    });
-    const { worker } = lease;
-    const id = ++this.nextId;
-    const release = () => {
-      if (!worker.disposed)
-        void worker.call("releaseSogChunk", { id }).catch(() => {});
-    };
-    activeSignal.addEventListener("abort", release, { once: true });
     const manager = this.options.manager ?? DefaultLoadingManager;
-    const resolveBase =
-      typeof document === "undefined" ? this.baseUrl : document.baseURI;
-    let resolved: string | undefined;
-    let custom: Splats | undefined;
-    let loaded = 0;
-    try {
-      activeSignal.throwIfAborted();
-      this.assertActive();
-      let info: SogChunkInfo;
-      if (this.options.loadChunk) {
-        custom = await this.options.loadChunk(url, activeSignal);
-        activeSignal.throwIfAborted();
-        info = await worker.call("cacheSogChunk", {
-          id,
-          data: custom.takeData(),
-        });
-      } else {
-        const resourceUrl = new URL(url, resolveBase).href;
-        resolved = new URL(manager.resolveURL(url), resolveBase).href;
-        manager.itemStart(resolved);
-        const sameOrigin =
-          new URL(getAssetBaseUrl(resolved) ?? resourceUrl).origin ===
-          new URL(this.baseUrl).origin;
-        info = await worker.call(
-          "loadSogChunk",
-          {
-            id,
-            url: resolved,
-            baseUrl: resourceUrl,
-            fileType: "sog",
-            requestHeader: sameOrigin ? this.options.requestHeader : undefined,
-            withCredentials: sameOrigin && this.options.withCredentials,
-            expectedSogCount: count < 0 ? undefined : count,
-          },
-          {
-            onStatus: (data) => {
-              const status = data as SplatLoadStatus;
-              if ("assetRequest" in status)
-                return worker.call("resolveAsset", {
-                  requestId: status.assetRequest,
-                  url: new URL(manager.resolveURL(status.url), resolveBase)
-                    .href,
-                });
-              if ("loaded" in status) {
-                this.downloadedBytes += Math.max(0, status.loaded - loaded);
-                loaded = status.loaded;
-              }
+    return this.pool.run(
+      {
+        signal,
+        manager,
+        cancel: (worker, id) => worker.call("releaseSogChunk", { id }),
+      },
+      async ({ worker, id, signal, retain, start, progress }) => {
+        this.assertActive();
+        let info: SogChunkInfo;
+        if (this.options.loadChunk) {
+          const custom = await this.options.loadChunk(url, signal);
+          try {
+            signal.throwIfAborted();
+            info = await worker.call("cacheSogChunk", {
+              id,
+              data: custom.takeData(),
+            });
+          } finally {
+            custom.dispose();
+          }
+        } else {
+          const resolveBase =
+            typeof document === "undefined" ? this.baseUrl : document.baseURI;
+          const resourceUrl = new URL(url, resolveBase).href;
+          const resolved = new URL(manager.resolveURL(url), resolveBase).href;
+          start(resolved);
+          const sameOrigin =
+            new URL(getAssetBaseUrl(resolved) ?? resourceUrl).origin ===
+            new URL(this.baseUrl).origin;
+          info = await worker.call(
+            "loadSogChunk",
+            {
+              id,
+              url: resolved,
+              baseUrl: resourceUrl,
+              fileType: "sog",
+              requestHeader: sameOrigin
+                ? this.options.requestHeader
+                : undefined,
+              withCredentials: sameOrigin && this.options.withCredentials,
+              expectedSogCount: count < 0 ? undefined : count,
             },
-          },
-        );
-      }
-      activeSignal.throwIfAborted();
-      this.assertActive();
-      return new SogChunkSource(worker, id, info, lease.retain());
-    } catch (error) {
-      release();
-      if (resolved) manager.itemError(resolved);
-      throw error;
-    } finally {
-      custom?.dispose();
-      activeSignal.removeEventListener("abort", release);
-      request.cleanup();
-      lease.release();
-      if (resolved) manager.itemEnd(resolved);
-    }
+            {
+              onStatus: (data) => {
+                const status = data as SplatLoadStatus;
+                if ("assetRequest" in status)
+                  return worker.call("resolveAsset", {
+                    requestId: status.assetRequest,
+                    url: new URL(manager.resolveURL(status.url), resolveBase)
+                      .href,
+                  });
+                if ("loaded" in status) progress(status.loaded);
+              },
+            },
+          );
+        }
+        signal.throwIfAborted();
+        this.assertActive();
+        return new SogChunkSource(worker, id, info, retain());
+      },
+    );
   }
 
   dispose() {
