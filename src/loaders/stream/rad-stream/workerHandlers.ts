@@ -1,9 +1,9 @@
 import { RadDecoder, RadLodTree, decode_rad_header } from "gaussian-splat-rs";
-import { fromHalf } from "../../../utils/numeric";
 import { type RadReadRequest, RadSource } from "../../rad/RadSource";
 import {
   type RadDecodedChunk,
   type RadHeader,
+  type RadStreamChunk,
   getRadChunkSpan,
   unpackRadChunk,
 } from "../../rad/radFormat";
@@ -81,49 +81,37 @@ export function createRadStreamHandlers() {
           },
         );
         controller.signal.throwIfAborted();
-        const data = unpackRadChunk(
+        const decoded = unpackRadChunk(
           decoder.decode_chunk(bytes) as RadDecodedChunk,
         );
         const span = getRadChunkSpan(header.meta, index);
-        if (data.base !== span.base || data.numSplats !== span.count)
+        if (decoded.base !== span.base || decoded.numSplats !== span.count)
           throw new Error(
             "RAD: decoded chunk does not match its directory entry",
           );
-        if (
-          index === 0 &&
-          header.meta.lodTree &&
-          header.meta.count > 1 &&
-          !data.childCount?.[0]
-        )
+        if (index === 0 && header.meta.count > 1 && !decoded.childCount?.[0])
           throw new Error(
             "RAD: streaming requires a root at index 0 with child nodes",
           );
-        const centers = new Float32Array(data.numSplats * 3);
+        const centers = new Float32Array(decoded.numSplats * 3);
         const positions = new Float32Array(
-          data.splatArrays[0].buffer,
-          data.splatArrays[0].byteOffset,
-          data.splatArrays[0].length,
+          decoded.splatArrays[0].buffer,
+          decoded.splatArrays[0].byteOffset,
+          decoded.splatArrays[0].length,
         );
-        for (let index = 0; index < data.numSplats; index++)
+        for (let index = 0; index < decoded.numSplats; index++)
           for (let axis = 0; axis < 3; axis++)
             centers[index * 3 + axis] = positions[index * 4 + axis];
-        if (header.meta.lodTree && data.lodRadii?.length !== data.numSplats)
+        const { lodRadii: radii, childStart, childCount } = decoded;
+        if (radii?.length !== decoded.numSplats)
           throw new Error("RAD: decoded radii are missing");
-        const radii =
-          data.lodRadii?.slice() ?? new Float32Array(data.numSplats);
-        if (!data.lodRadii) {
-          const scales = data.splatArrays[1];
-          for (let index = 0; index < data.numSplats; index++) {
-            const offset = index * 4;
-            radii[index] =
-              (Math.exp(fromHalf(scales[offset + 1] >>> 16)) +
-                Math.exp(fromHalf(scales[offset + 2] & 0xffff)) +
-                Math.exp(fromHalf(scales[offset + 2] >>> 16))) /
-              3;
-          }
-        }
-        const childStart = data.childStart?.slice();
-        const childCount = data.childCount?.slice();
+        // Only packed render records stay on the main thread after registration.
+        const data: RadStreamChunk = {
+          numSplats: decoded.numSplats,
+          splatArrays: decoded.splatArrays,
+          extra: decoded.extra,
+          rootRadius: index === 0 ? radii[0] : undefined,
+        };
         const tree = {
           centers,
           radii,

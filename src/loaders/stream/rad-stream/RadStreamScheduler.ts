@@ -3,9 +3,12 @@ import {
   type RadSelectionRange,
   radPageTextureLayout,
 } from "../../../data/RadPagedSplats";
-import { getSplatTextureBytes } from "../../../data/splatData";
-import type { RadChunkData, RadMeta } from "../../rad/radFormat";
-import { getRadChunkByteLength, getRadChunkSpan } from "../../rad/radFormat";
+import {
+  getSplatByteLength,
+  getSplatTextureBytes,
+} from "../../../data/splatData";
+import type { RadMeta, RadStreamChunk } from "../../rad/radFormat";
+import { getRadChunkSpan } from "../../rad/radFormat";
 import { StreamByteBudget } from "../StreamByteBudget";
 import {
   type StreamSchedulerOptions,
@@ -43,7 +46,7 @@ type Page = {
   /** Reserved before writing; data remains present until the slot is populated. */
   pool?: Pool;
   slot?: number;
-  data?: RadChunkData;
+  data?: RadStreamChunk;
   controller?: AbortController;
   decoded?: boolean;
   reservedBytes: number;
@@ -51,8 +54,6 @@ type Page = {
   retryAt: number;
   expiresAt?: number;
 };
-
-const EMPTY_INDICES = new Uint32Array(0);
 
 /** Camera-driven RAD tree cuts with crossfades, on-demand pages and cooldown. */
 export class RadStreamScheduler {
@@ -145,7 +146,7 @@ export class RadStreamScheduler {
       if (page.pool && !page.data) residentChunks++;
       if (page.controller && !page.decoded) loadingChunks++;
       pendingBytes += page.data
-        ? getRadChunkByteLength(page.data)
+        ? getSplatByteLength(page.data)
         : page.reservedBytes;
     }
     return {
@@ -219,9 +220,8 @@ export class RadStreamScheduler {
     const paddedCount = Math.ceil(this.pageSize / 2048) * 2048;
     this.maxPagePendingBytes =
       getSplatTextureBytes(paddedCount, this.numSh) +
-      paddedCount * 12 +
-      // Child metadata plus the separate tree copy awaiting worker registration.
-      this.pageSize * 32;
+      // Centers, radii and child arrays awaiting LOD worker registration.
+      this.pageSize * 22;
     this.pageBudget = meta.chunks.length;
     this.wanted.add(0);
     this.pump();
@@ -260,7 +260,7 @@ export class RadStreamScheduler {
       this.revision++;
       if (!shown) {
         for (const { batch } of this.pools)
-          changed = batch.setSelection(EMPTY_INDICES) || changed;
+          changed = batch.clearSelection() || changed;
         this.selection = undefined;
         this.readySelection = undefined;
         this.reselectAfterReady = false;
@@ -576,7 +576,7 @@ export class RadStreamScheduler {
     for (const page of this.pages.values()) {
       if (page.controller && !page.decoded) loading++;
       pendingBytes += page.data
-        ? getRadChunkByteLength(page.data)
+        ? getSplatByteLength(page.data)
         : page.reservedBytes;
     }
     const pending = new StreamByteBudget(
@@ -639,7 +639,7 @@ export class RadStreamScheduler {
     }
   }
 
-  private setInitialBounds(data: RadChunkData) {
+  private setInitialBounds(data: RadStreamChunk) {
     const positions = new Float32Array(
       data.splatArrays[0].buffer,
       data.splatArrays[0].byteOffset,
@@ -654,7 +654,7 @@ export class RadStreamScheduler {
       this.bounds.expandByPoint(this.point);
     }
     if (this.bounds.min.equals(this.bounds.max))
-      this.bounds.expandByScalar(Math.max(0.001, data.lodRadii?.[0] ?? 1));
+      this.bounds.expandByScalar(Math.max(0.001, data.rootRadius ?? 1));
   }
 
   private findSlot(): { pool: Pool; slot: number } | undefined {

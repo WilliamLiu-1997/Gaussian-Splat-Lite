@@ -8,4 +8,4 @@ export {
 } from "../rendering/webgl/textureUtils";
 export { getTransferable } from "../runtime/transferable";
 export { floatBitsToUint, fromHalf, toHalf, uintBitsToFloat } from "./numeric";
-export { resolveTimer, threeMrtArray, threeRevision } from "./three";
+export { resolveTimer, threeRevision } from "./three";

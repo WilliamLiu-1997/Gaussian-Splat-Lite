@@ -1,7 +1,7 @@
 import { DefaultLoadingManager } from "three";
 import { abortable } from "../../../runtime/abort";
 import { RadSource, type RadSourceOptions } from "../../rad/RadSource";
-import type { RadChunkData, RadHeader } from "../../rad/radFormat";
+import type { RadHeader, RadStreamChunk } from "../../rad/radFormat";
 import { StreamWorkerPool } from "../StreamWorkerPool";
 import type { RadSelectionRequest } from "./RadSelectionState";
 import { RadStreamWorker } from "./RadStreamWorker";
@@ -28,11 +28,11 @@ export class RadStreamLoader {
   private initialization?: Promise<RadHeader>;
   private header?: RadHeader;
   private rootReady?: Promise<void>;
-  private initialRoot?: RadChunkData;
+  private initialRoot?: RadStreamChunk;
   private rootBytes?: Uint8Array;
   private pending = new Map<
     number,
-    { task: Promise<RadChunkData>; signal?: AbortSignal }
+    { task: Promise<RadStreamChunk>; signal?: AbortSignal }
   >();
   private estimatedCodebookBytes = 0;
   private selectionBytes = 0;
@@ -96,7 +96,7 @@ export class RadStreamLoader {
     index: number,
     signal?: AbortSignal,
     onDecoded?: () => void,
-  ): Promise<RadChunkData> {
+  ): Promise<RadStreamChunk> {
     signal?.throwIfAborted();
     this.assertActive();
     let pending = this.pending.get(index);
@@ -117,7 +117,7 @@ export class RadStreamLoader {
     index: number,
     signal?: AbortSignal,
     onDecoded?: () => void,
-  ): Promise<RadChunkData> {
+  ): Promise<RadStreamChunk> {
     const header = await this.initialize(signal);
     if (
       !Number.isInteger(index) ||

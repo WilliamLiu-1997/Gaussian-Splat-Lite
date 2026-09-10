@@ -13,4 +13,3 @@ export function resolveTimer(timer?: THREE.Timer): {
 }
 
 export const threeRevision = Number.parseInt(THREE.REVISION);
-export const threeMrtArray = threeRevision >= 179;

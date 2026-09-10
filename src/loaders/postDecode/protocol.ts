@@ -202,7 +202,6 @@ export const SPLAT_POST_DECODE_FLOW_STAGE_STRIDE = 5;
 
 /** @internal */
 export type SerializedSplatPostDecodeCondition = {
-  mode: "flow";
   /** Packed start/instruction/register/onTrue/onFalse Uint16 records. */
   stages: Uint16Array;
 };

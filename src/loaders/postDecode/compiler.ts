@@ -439,7 +439,7 @@ function compileConditionFlow(
     instructions: serializer.instructions,
     constants: serializer.constants,
     outputs: remapOutputs(outputs, pathRegisters),
-    condition: { mode: "flow", stages },
+    condition: { stages },
     attributes: serializer.attributes,
   };
 }

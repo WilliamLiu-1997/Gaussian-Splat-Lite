@@ -785,8 +785,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
     this.uniforms.time.value = display.time;
     this.uniforms.deltaTime.value = display.deltaTime;
-    // Alternating debug flag that can aid in visual debugging
-    this.uniforms.debugFlag.value = (performance.now() / 1000.0) % 2.0 < 1.0;
 
     if (this.backend.kind === "webgpu") {
       if (this.backend.sortError) throw this.backend.sortError;

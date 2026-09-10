@@ -1,5 +1,4 @@
 import type { SplatResult } from "../../data/defines";
-import { getSplatByteLength } from "../../data/splatData";
 import type { PostDecodeSplatData } from "../postDecode/protocol";
 
 const HEADER_LIMIT = 16 * 1024 * 1024;
@@ -37,22 +36,18 @@ export type RadChunkData = SplatResult & {
   lodRadii?: Float32Array;
 };
 
+/** Render records for streaming; tree arrays are transferred to the LOD worker. */
+export type RadStreamChunk = Omit<SplatResult, "sortCenters"> & {
+  /** Root-page radius used when its initial bounds collapse to one point. */
+  rootRadius?: number;
+};
+
 export type RadDecodedChunk = PostDecodeSplatData & {
   base: number;
   childStart?: Uint32Array;
   childCount?: Uint16Array;
   lodRadii?: Float32Array;
 };
-
-/** Transferable page copies; retained worker tree arrays are accounted separately. */
-export function getRadChunkByteLength(data: RadChunkData) {
-  return (
-    getSplatByteLength(data) +
-    (data.childStart?.byteLength ?? 0) +
-    (data.childCount?.byteLength ?? 0) +
-    (data.lodRadii?.byteLength ?? 0)
-  );
-}
 
 export function unpackRadChunk(decoded: RadDecodedChunk): RadChunkData {
   return {

@@ -18,6 +18,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Reduced RAD traversal work by marking child ranges per page, skipping per-node work on leaf-only pages, and pruning refinements that cannot fit the remaining budget while preserving single-child refinements and stable source order.
 - Kept RAD selection baselines in the LOD worker and referenced them by ID, avoiding per-request copies of the displayed cut. Combined changed-page detection and fade preparation into one pass, skipped fade-buffer allocation for unchanged cuts, and included retained worker selections in resident-byte statistics.
 - Moved streamed RAD page downloads and local page reads into decoding workers, keeping application URL and file resolution on the calling thread. Preserved Range validation and checked resource versions and lengths across parallel responses before publication; local inputs send only the requested page.
+- Reduced RAD streaming replies to packed render records and a scalar root radius, transferring tree arrays to the LOD worker without duplicate copies or unused sort centers on the main thread. Updated pending-byte estimates and removed the unreachable non-LOD radius fallback.
+- Simplified internal RAD selection clearing and removed unused duplicate-index fade handling, keeping prepared selection commits and shared fade groups.
 - Unified RAD/SOG load lifecycle handling in `StreamWorkerPool`, including worker leases, task IDs, cancellation, download accounting, and balanced `LoadingManager` notifications, while retaining separate pools and format-specific cache ownership.
 - Reduced SOG streaming transfers and pending-copy reservations with tightly packed region records that omit per-region texture padding and duplicate sort centers.
 - Kept the streamed SOG spatial tree in the LOD worker, transferred only root bounds to the scheduler, and omitted intermediate LOD errors from packed metadata. Resident-byte statistics now account for the different retained arrays on each thread.
@@ -28,6 +30,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Removed
 
 - Removed unused `SplatEdits.sdfFloatData` and `editFloatData` fields. Float views can be created from the current `sdfData.buffer` and `editData.buffer` when needed.
+- Removed the unused `debugFlag` uniform and its automatic updates. Custom shaders that use it must now define and update their own uniform.
+- Removed `utils.threeMrtArray`; all supported Three.js versions provide array-based multiple render targets.
+- Removed the unused `mode` tag from the internal serialized `postDecode` condition format.
 
 ### Fixed
 

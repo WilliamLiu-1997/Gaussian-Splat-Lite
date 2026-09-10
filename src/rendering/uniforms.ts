@@ -69,8 +69,6 @@ export function makeSplatUniforms() {
     time: { value: 0 },
     // Delta time in seconds since last frame
     deltaTime: { value: 0 },
-    // Debug flag that alternates each frame
-    debugFlag: { value: false },
     // Sorting-free stochastic transparency for automatic or forced frames
     stochastic: { value: false },
     // Tags accepted samples for an attached StochasticResolvePass.

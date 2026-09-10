@@ -10,7 +10,6 @@ uniform float far;
 uniform bool encodeLinear;
 #endif
 uniform float time;
-uniform bool debugFlag;
 uniform float minAlpha;
 uniform bool stochastic;
 uniform bool stochasticResolve;

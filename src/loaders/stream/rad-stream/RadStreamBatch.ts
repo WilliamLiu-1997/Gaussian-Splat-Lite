@@ -17,11 +17,9 @@ export class RadStreamBatch extends SplatMesh {
     this.maxSh = source.numSh;
   }
 
-  setSelection(indices: Uint32Array, fades?: Uint8Array) {
-    if (!this.source.setSelection(indices, fades)) return false;
-    this.numSplats = this.source.getNumSplats();
-    // Count alone cannot detect replacing a parent with a single child or a
-    // same-sized cut: invalidate the mapping and sort/center versions together.
+  clearSelection() {
+    if (!this.source.clearSelection()) return false;
+    this.numSplats = 0;
     this.updateMappingVersion();
     return true;
   }

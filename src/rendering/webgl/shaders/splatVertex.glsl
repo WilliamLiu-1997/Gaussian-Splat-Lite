@@ -21,7 +21,6 @@ uniform float minPixelRadius;
 uniform float maxPixelRadius;
 uniform float time;
 uniform float deltaTime;
-uniform bool debugFlag;
 uniform float minAlpha;
 uniform float blurAmount;
 uniform float preBlurAmount;
