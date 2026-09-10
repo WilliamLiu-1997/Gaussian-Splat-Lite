@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Allowed native WebGPU rendering after shared kernels, the full sorter, and the first projection slot compile, warming the remaining slots asynchronously.
+- Used stable storage binding names to allow native WebGPU projection slots to share shader programs.
+- Removed the separate native WebGPU indirect-draw reset dispatch by initializing fixed arguments once and updating instance counts in the projection finish pass, preserving the maximum count across views.
+
 ## [1.0.1] - 2026-09-11
 
 ### Added

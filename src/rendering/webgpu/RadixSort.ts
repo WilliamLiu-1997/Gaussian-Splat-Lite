@@ -39,16 +39,10 @@ type PrefixLevel = {
   blockSums: BufferRef;
 };
 
-function storage(
-  buffer: BufferRef,
-  type: string,
-  name: string,
-  readOnly = false,
-) {
-  const getBuffer = () => buffer.value;
-  const node = N.storage(getBuffer(), type).onObjectUpdate(getBuffer);
-  node.name = name;
-  return readOnly ? node.toReadOnly() : node;
+function storage(buffer: BufferRef, name: string) {
+  return N.storage(buffer.value, "uint")
+    .setName(name)
+    .onObjectUpdate(() => buffer.value);
 }
 
 function mutableUniform(value: number, type: string) {
@@ -84,8 +78,8 @@ function makeHistogramTask({
   bitOffset: number;
   workgroupCount: TSLNode;
 }) {
-  const inputKeys = storage(input, "uint", "gslRadixInputKeys", true);
-  const sums = storage(blockSums, "uint", "gslRadixBlockSums");
+  const inputKeys = storage(input, "gslRadixInputKeys").toReadOnly();
+  const sums = storage(blockSums, "gslRadixBlockSums");
   const bit = N.uint(bitOffset);
   const histogram = N.workgroupArray("uint", RADIX_BUCKETS)
     .toAtomic()
@@ -136,8 +130,8 @@ function makePrefixScanTask(
   blockSumsBuffer: BufferRef,
   elementCount: TSLNode,
 ) {
-  const items = storage(itemsBuffer, "uint", "gslPrefixItems");
-  const blockSums = storage(blockSumsBuffer, "uint", "gslPrefixBlockSums");
+  const items = storage(itemsBuffer, "gslPrefixItems");
+  const blockSums = storage(blockSumsBuffer, "gslPrefixBlockSums");
   const temp = N.workgroupArray("uint", PREFIX_ITEMS_PER_WORKGROUP).setName(
     "gslPrefixTemp",
   );
@@ -225,13 +219,8 @@ function makePrefixAddTask(
   blockSumsBuffer: BufferRef,
   elementCount: TSLNode,
 ) {
-  const items = storage(itemsBuffer, "uint", "gslPrefixItems");
-  const blockSums = storage(
-    blockSumsBuffer,
-    "uint",
-    "gslPrefixBlockSums",
-    true,
-  );
+  const items = storage(itemsBuffer, "gslPrefixItems");
+  const blockSums = storage(blockSumsBuffer, "gslPrefixBlockSums").toReadOnly();
 
   const compute = N.Fn(() => {
     const workgroup = workgroupIndex();
@@ -280,25 +269,17 @@ function makeReorderTask({
 }) {
   const inputKeys = storage(
     inputKeysAttribute,
-    "uint",
     "gslRadixInputKeys",
-    true,
-  );
+  ).toReadOnly();
   const outputKeys = lastPass
     ? null
-    : storage(outputKeysAttribute, "uint", "gslRadixOutputKeys");
+    : storage(outputKeysAttribute, "gslRadixOutputKeys");
   const inputValues = storage(
     inputValuesAttribute,
-    "uint",
     "gslRadixInputValues",
-    true,
-  );
-  const outputValues = storage(
-    outputValuesAttribute,
-    "uint",
-    "gslRadixOutputValues",
-  );
-  const prefix = storage(prefixAttribute, "uint", "gslRadixPrefix", true);
+  ).toReadOnly();
+  const outputValues = storage(outputValuesAttribute, "gslRadixOutputValues");
+  const prefix = storage(prefixAttribute, "gslRadixPrefix").toReadOnly();
   const bitOffsetNode = N.uint(bitOffset);
   const digitMasks = N.workgroupArray("uint", RADIX_BUCKETS * 8)
     .toAtomic()
@@ -458,7 +439,7 @@ export class WebGPURadixSort {
       RADIX_BUCKETS *
       this.paddedWorkgroups(safeCapacity, ELEMENTS_PER_WORKGROUP);
     this.blockSums = makeBufferRef(histogramCount);
-    const counts = storage(this.counts, "uint", "gslRadixCounts", true);
+    const counts = storage(this.counts, "gslRadixCounts").toReadOnly();
     this.createPrefixLevels(histogramCount, counts);
     const setup = this.makeSetupTask(options.count);
     // Prebuild dispatch lists for every supported prefix depth. Choosing a
@@ -534,13 +515,11 @@ export class WebGPURadixSort {
   }
 
   private makeSetupTask(gpuCount?: TSLNode) {
-    const counts = storage(this.counts, "uint", "gslRadixCounts");
+    const counts = storage(this.counts, "gslRadixCounts");
     const dispatchBuffers = [
       this.sortDispatch,
       ...this.prefixLevels.map((level) => level.dispatch),
-    ].map((value, index) =>
-      storage({ value }, "uint", `gslRadixDispatch${index}`),
-    );
+    ].map((value, index) => storage({ value }, `gslRadixDispatch${index}`));
     const maxWorkgroups = N.uint(this.maxWorkgroups);
 
     return N.Fn(() => {

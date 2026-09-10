@@ -24,7 +24,7 @@ const N = TSL as Record<string, TSLNode>;
 const WORKGROUP_SIZE = 256;
 const PROJECT_SLOTS = 8;
 
-type BufferRef = { value: StorageBufferAttribute };
+type BufferRef = { value: StorageBufferAttribute; name: string };
 type ComputeSlot = { uniforms: Uniforms; node: TSLNode };
 type DeviceLimits = {
   maxStorageBufferBindingSize: number;
@@ -38,20 +38,26 @@ type ComputeRenderer = WebGPURenderer & {
   backend: { device: { limits: DeviceLimits } };
 };
 
-function buffer(count = 1): BufferRef {
-  return { value: new StorageBufferAttribute(new Uint32Array(count), 1) };
+function buffer(name: string): BufferRef {
+  return { value: new StorageBufferAttribute(new Uint32Array(1), 1), name };
 }
 
-function bindBuffer(ref: BufferRef, readOnly = false) {
-  const node = N.storage(ref.value, "uint").onObjectUpdate(() => ref.value);
-  return readOnly ? node.toReadOnly() : node;
+function bindBuffer(ref: BufferRef) {
+  // Stable binding names let projection slots share the same WGSL program.
+  return N.storage(ref.value, "uint")
+    .setName(ref.name)
+    .onObjectUpdate(() => ref.value);
 }
 
 /** Fixed compute graph. Source mappings and storage may change without rebuilding shaders. */
 export class ProjectedSplats {
-  readonly indirect = new IndirectStorageBufferAttribute(new Uint32Array(5), 1);
+  // Only the instance count changes; the other indirect draw arguments are fixed.
+  readonly indirect = new IndirectStorageBufferAttribute(
+    new Uint32Array([WEBGPU_SPLATS_PER_INSTANCE * 6, 0, 0, 0, 0]),
+    1,
+  );
+  /** Common kernels, the full sorter and the first slot are ready; remaining slots warm automatically. */
   readonly ready: Promise<void>;
-  pending = true;
   error: unknown = null;
 
   private readonly limits: DeviceLimits;
@@ -60,12 +66,13 @@ export class ProjectedSplats {
     new Uint32Array(1),
     1,
   );
-  private readonly keys = buffer();
-  private readonly seeds = buffer();
-  private readonly counts = buffer();
+  private readonly keys = buffer("gslProjectionKeys");
+  private readonly seeds = buffer("gslProjectionSeeds");
+  private readonly counts = buffer("gslProjectionCounts");
   private readonly sorter: WebGPURadixSort;
   private readonly slots: ComputeSlot[] = [];
-  private readonly resetDraw: TSLNode;
+  private readonly compilation: Promise<void>;
+  private compiledSlots = 0;
   private readonly resetCount: TSLNode;
   private readonly finish: TSLNode;
   private readonly state: Uniforms;
@@ -106,8 +113,11 @@ export class ProjectedSplats {
     // Mono draws read the buffers directly. ArrayCamera draws need every eye's
     // order and seeds at once; the finish node or final sort scatter writes them.
     // Texture arrays avoid dividing the storage-binding capacity by eye count.
-    const count = N.storage(this.visibleCount, "uint").toReadOnly().element(0);
-    const seeds = bindBuffer(this.seeds, true);
+    const count = N.storage(this.visibleCount, "uint")
+      .setName("gslVisibleCount")
+      .toReadOnly()
+      .element(0);
+    const seeds = bindBuffer(this.seeds).toReadOnly();
     this.sorter = new WebGPURadixSort(1, this.keys, {
       count,
       storeOrder: (index, value) => {
@@ -126,17 +136,12 @@ export class ProjectedSplats {
         this.limits.maxBufferSize,
       ),
     });
-    const draw = N.storage(this.indirect, "uint");
-    this.resetDraw = N.Fn(() => {
-      draw.element(0).assign(WEBGPU_SPLATS_PER_INSTANCE * 6);
-      draw.element(1).assign(0);
-      draw.element(2).assign(0);
-      draw.element(3).assign(0);
-      draw.element(4).assign(0);
-    })()
-      .compute(1)
-      .setName("Splat reset draw");
-    const counter = N.storage(this.visibleCount, "uint").toAtomic();
+    const drawCount = N.storage(this.indirect, "uint")
+      .setName("gslDrawIndirect")
+      .element(1);
+    const counter = N.storage(this.visibleCount, "uint")
+      .setName("gslVisibleCount")
+      .toAtomic();
     this.resetCount = N.Fn(() => {
       N.atomicStore(counter.element(0), N.uint(0));
     })()
@@ -151,7 +156,10 @@ export class ProjectedSplats {
         const instances = count
           .add(WEBGPU_SPLATS_PER_INSTANCE - 1)
           .div(N.uint(WEBGPU_SPLATS_PER_INSTANCE));
-        draw.element(1).assign(draw.element(1).max(instances));
+        // The first eye resets the count; later eyes extend it to their maximum.
+        drawCount.assign(
+          N.select(viewIndex.equal(0), instances, drawCount.max(instances)),
+        );
       });
       // Only stochastic ArrayCamera draws need this per-eye copy;
       // mono reads seeds directly.
@@ -167,19 +175,34 @@ export class ProjectedSplats {
     for (let i = 0; i < PROJECT_SLOTS; i++) this.slots.push(this.createSlot());
     this.ready = computeRenderer
       .compileComputeAsync([
-        this.resetDraw,
         this.resetCount,
         this.finish,
-        ...this.slots.map((slot) => slot.node),
         ...this.sorter.nodes,
+        this.slots[0].node,
       ])
+      .then(() => {
+        this.compiledSlots = 1;
+      })
       .catch((error: unknown) => {
         this.error = error;
-      })
-      .finally(() => {
-        this.pending = false;
-        if (this.disposed) this.disposeResources();
       });
+    this.compilation = this.ready.then(() => this.compileRemainingSlots());
+  }
+
+  private async compileRemainingSlots() {
+    if (this.disposed || this.compiledSlots === 0) return;
+    try {
+      // Yield to let readiness callbacks run before warming remaining slots.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      while (!this.disposed && this.compiledSlots < this.slots.length) {
+        await (this.renderer as ComputeRenderer).compileComputeAsync([
+          this.slots[this.compiledSlots].node,
+        ]);
+        this.compiledSlots++;
+      }
+    } catch (error) {
+      this.error = error;
+    }
   }
 
   private createSlot(): ComputeSlot {
@@ -207,7 +230,9 @@ export class ProjectedSplats {
       .mul(0.5);
     const keys = bindBuffer(this.keys);
     const seeds = bindBuffer(this.seeds);
-    const counter = N.storage(this.visibleCount, "uint").toAtomic();
+    const counter = N.storage(this.visibleCount, "uint")
+      .setName("gslVisibleCount")
+      .toAtomic();
     const node = N.Fn(() => {
       const index = N.uint(N.instanceIndex);
       const generated = generate.prepare(index);
@@ -270,7 +295,7 @@ export class ProjectedSplats {
     const i = N.uint(N.instanceIndex)
       .mul(WEBGPU_SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z));
-    const counts = bindBuffer(this.counts, true);
+    const counts = bindBuffer(this.counts).toReadOnly();
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     const rgba = N.vec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
@@ -298,7 +323,7 @@ export class ProjectedSplats {
         stochasticSeed.assign(
           multiView
             ? this.cache.readOrder(base.add(i)).y
-            : bindBuffer(this.seeds, true).element(i),
+            : bindBuffer(this.seeds).toReadOnly().element(i),
         );
       };
       if (depthOnly) {
@@ -399,7 +424,7 @@ export class ProjectedSplats {
     shrink = false,
   ) {
     if (this.error) throw this.error;
-    if (this.pending || this.disposed) {
+    if (this.compiledSlots === 0 || this.disposed) {
       geometry.instanceCount = 0;
       return;
     }
@@ -443,14 +468,13 @@ export class ProjectedSplats {
         );
       this.state.renderToViewScale.value =
         (this.scale.x + this.scale.y + this.scale.z) / 3;
-      const pending: TSLNode[] = eye === 0 ? [this.resetDraw] : [];
-      pending.push(this.resetCount);
+      const pending: TSLNode[] = [this.resetCount];
       let slotCount = 0;
       for (const { node, count } of accumulator.mapping) {
         if (!view.layers.test(node.layers)) continue;
         // A slot's uniforms can only be changed after its preceding batch has
         // been submitted. Keep the last batch open for draw arguments and sorting.
-        if (slotCount === PROJECT_SLOTS) {
+        if (slotCount === this.compiledSlots) {
           this.renderer.compute(pending);
           pending.length = 0;
           slotCount = 0;
@@ -472,13 +496,12 @@ export class ProjectedSplats {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    if (!this.pending) this.disposeResources();
+    void this.compilation.then(() => this.disposeResources());
   }
 
   private disposeResources() {
     for (const slot of this.slots) slot.node.dispose();
-    for (const node of [this.resetDraw, this.resetCount, this.finish])
-      node.dispose();
+    for (const node of [this.resetCount, this.finish]) node.dispose();
     this.sorter.dispose();
     this.cache.dispose();
     this.visibleCount.dispose();
