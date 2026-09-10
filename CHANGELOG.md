@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-11
+
 ### Added
 
 - Added runtime `splatBudget` updates to `RadStreamScheduler` and `SogStreamScheduler`. Assigning a positive safe integer requests a new LOD selection even for stationary views, discards results computed for an older budget, and preserves displayed coverage through loading and fades.
@@ -28,6 +30,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Shared ordering texture allocation, resizing and disposal between the WebGL backends while preserving their partial-upload paths; removed unused native WebGPU CPU-ordering members.
 - Optimized `postDecode` by combining single-use multiply/add and add/multiply expressions while preserving intermediate float32 rounding and operand order, caching decoded scale values on demand, and combining related packed-field and sort-center writes.
 - Compacted native WebGPU projection output into visible slots and repurposed the source-index buffer for stable coverage seeds, preserving the 32-byte projected record layout without an extra seed texture.
+- Kept RAD validation and assembly helpers and TSL texture-layout constants local to their modules by removing unused exports.
+- Set viewer camera damping to `0.1`.
 
 ### Removed
 
@@ -40,6 +44,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Stabilized stochastic color and depth coverage when streamed LOD selections or combined mesh ranges are remapped. All three rendering backends now derive sampling seeds from mesh identity and physical source records, preventing unchanged Splats from receiving new noise patterns after remapping.
 - Removed camera-rotation-dependent scale inflation from RAD LOD scoring.
+- Corrected viewer overlay stacking so the drop overlay and toast messages appear above other controls.
 
 ## [1.0.0] - 2026-09-09
 
@@ -265,7 +270,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.16...v1.0.0
 [0.1.16]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.14...v0.1.15
