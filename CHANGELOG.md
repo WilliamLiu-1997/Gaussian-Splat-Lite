@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-11
+
 ### Changed
 
 - Allowed native WebGPU rendering after shared kernels, the full sorter, and the first projection slot compile, warming the remaining slots asynchronously.
@@ -276,7 +278,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.16...v1.0.0
 [0.1.16]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v0.1.15...v0.1.16
