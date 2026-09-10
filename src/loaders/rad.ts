@@ -23,7 +23,7 @@ const MAX_FULL_LOAD_BYTES = RAD_FULL_LOAD_LIMIT;
 
 /** Bound ordinary loading's retained typed arrays before decoding any pages.
  * Paging can address much larger datasets because it never assembles this set. */
-export function validateRadFullLoadBudget(meta: RadMeta) {
+function validateRadFullLoadBudget(meta: RadMeta) {
   if (
     !Number.isSafeInteger(meta.count) ||
     meta.count < 0 ||
@@ -69,7 +69,7 @@ export function validateRadFullLoadBudget(meta: RadMeta) {
 }
 
 /** Check the complete directed forest, including references across RADC pages. */
-export function validateRadTree(start: Uint32Array, count: Uint16Array) {
+function validateRadTree(start: Uint32Array, count: Uint16Array) {
   if (start.length !== count.length)
     throw new Error("RAD: invalid tree arrays");
   const owners = new Uint8Array(start.length);
@@ -97,7 +97,7 @@ export function validateRadTree(start: Uint32Array, count: Uint16Array) {
 }
 
 /** Ordinary loading returns leaves in original file order, never parent/child duplicates. */
-export function assembleRadChunks(
+function assembleRadChunks(
   header: RadHeader,
   chunks: readonly RadChunkData[],
 ): PostDecodeSplatData {

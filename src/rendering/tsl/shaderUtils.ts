@@ -11,12 +11,11 @@ export type TSLNode = any;
 
 const N = TSL as Record<string, TSLNode>;
 
-export const SPLAT_TEX_LAYER_BITS =
-  SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
+const SPLAT_TEX_LAYER_BITS = SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
 
-export const SPLAT_TEX_WIDTH_MASK = (1 << SPLAT_TEX_WIDTH_BITS) - 1;
+const SPLAT_TEX_WIDTH_MASK = (1 << SPLAT_TEX_WIDTH_BITS) - 1;
 
-export const SPLAT_TEX_HEIGHT_MASK = (1 << SPLAT_TEX_HEIGHT_BITS) - 1;
+const SPLAT_TEX_HEIGHT_MASK = (1 << SPLAT_TEX_HEIGHT_BITS) - 1;
 
 export const E = Math.E;
 
