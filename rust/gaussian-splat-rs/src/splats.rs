@@ -371,13 +371,17 @@ impl SplatReceiver for SplatsData {
         }
     }
 
+    fn prefers_packed_sh(&self) -> bool {
+        true
+    }
+
     fn set_sh_palette(
         &mut self,
         base: usize,
         count: usize,
         degree: usize,
         palette: &[u32],
-        labels: &[u16],
+        labels: &[u32],
     ) {
         self.invalidate_buffers();
         self.ensure_buffer_a(count);

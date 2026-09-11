@@ -12,9 +12,18 @@ fn js_error(error: impl std::fmt::Display) -> JsValue {
 
 #[wasm_bindgen]
 pub fn decode_rad_header(bytes: Uint8Array) -> Result<JsValue, JsValue> {
-    let bytes = bytes
-        .subarray(0, (rad::MAX_HEADER_BYTES + 15) as u32)
-        .to_vec();
+    let prefix = bytes.subarray(0, 8).to_vec();
+    if prefix.len() < 8 || prefix[..4] != rad::RAD_MAGIC.to_le_bytes() {
+        rad::decode_rad_header(&prefix).map_err(js_error)?;
+        return Ok(JsValue::UNDEFINED);
+    }
+    let json_length = u64::from(u32::from_le_bytes(prefix[4..8].try_into().unwrap()));
+    let header_length = 8 + ((json_length + 7) & !7);
+    if header_length > u64::from(bytes.length()) {
+        return Ok(JsValue::UNDEFINED);
+    }
+    // Copy only the declared header, even when the caller supplies a full file.
+    let bytes = bytes.subarray(0, header_length as u32).to_vec();
     let Some((meta, chunks_start)) = rad::decode_rad_header(&bytes).map_err(js_error)? else {
         return Ok(JsValue::UNDEFINED);
     };
@@ -46,9 +55,6 @@ impl RadDecoder {
     }
 
     pub fn decode_chunk(&mut self, bytes: Uint8Array) -> Result<JsValue, JsValue> {
-        if bytes.length() as usize > rad::MAX_CHUNK_BYTES {
-            return Err(js_error("RADC encoded chunk exceeds memory limit"));
-        }
         let (splats, chunk) = self
             .decoder
             .decode_chunk(&bytes.to_vec(), SplatsData::new())

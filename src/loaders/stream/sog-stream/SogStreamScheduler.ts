@@ -100,6 +100,8 @@ export class SogStreamScheduler {
   private selecting = false;
   private selection: Uint32Array = EMPTY_SELECTION;
   private chunks: Chunk[] = [];
+  /** Chunks with a batch, cached source or in-flight load. */
+  private readonly activeChunks = new Set<Chunk>();
   private environment?: Chunk;
   private leaves = new Map<number, LeafState>();
   private wanted = new Set<Chunk>();
@@ -174,7 +176,7 @@ export class SogStreamScheduler {
       loadingChunks: 0,
       ...loaderStats,
     };
-    for (const { batch, data, controller } of this.chunks) {
+    for (const { batch, data, controller } of this.activeChunks) {
       if (batch) {
         stats.residentMeshes++;
         stats.residentBytes += batch.residentBytes;
@@ -251,8 +253,8 @@ export class SogStreamScheduler {
   update(camera: THREE.Camera): boolean {
     if (this.disposed || !this.manifest) return false;
     this.tick++;
-    for (const chunk of this.chunks) {
-      if (chunk.data && !chunk.data.alive) chunk.data = undefined;
+    for (const chunk of this.activeChunks) {
+      this.pruneChunk(chunk);
       chunk.batch?.beginUpdate();
     }
     this.view = captureSogView(camera, this.group);
@@ -328,7 +330,7 @@ export class SogStreamScheduler {
     for (const [leaf, chunk] of refinements) {
       if (leaf.current?.range === leaf.target) this.wanted.add(chunk);
     }
-    for (const chunk of this.chunks) {
+    for (const chunk of this.activeChunks) {
       if (chunk.controller && !this.wanted.has(chunk)) chunk.controller.abort();
     }
     this.pump(now);
@@ -456,11 +458,13 @@ export class SogStreamScheduler {
           this.group,
           () => {
             chunk.batch = undefined;
+            this.pruneChunk(chunk);
           },
         );
         batch.name =
           range.file < 0 ? "sog-environment" : `sog-chunk-${range.file}`;
         chunk.batch = batch;
+        this.activeChunks.add(chunk);
       }
       batch.writeRegion(start, data);
       leaf.pending = undefined;
@@ -602,15 +606,14 @@ export class SogStreamScheduler {
       if (!leaf.target && !leaf.current && !leaf.outgoing && !leaf.pending)
         this.leaves.delete(id);
     }
-    for (const chunk of this.chunks) {
+    for (const chunk of this.activeChunks) {
       if (referenced.has(chunk) || chunk.controller || !chunk.data) {
         chunk.expiresAt = undefined;
       } else {
         chunk.expiresAt ??= this.tick + this.cooldownTicks;
         if (this.tick >= chunk.expiresAt) {
           chunk.data.dispose();
-          chunk.data = undefined;
-          chunk.expiresAt = undefined;
+          this.pruneChunk(chunk);
         }
       }
     }
@@ -619,14 +622,15 @@ export class SogStreamScheduler {
   private pump(now: number) {
     if (this.disposed) return;
     let loading = 0;
-    for (const chunk of this.chunks) {
-      if (chunk.data && !chunk.data.alive) chunk.data = undefined;
+    for (const chunk of this.activeChunks) {
+      this.pruneChunk(chunk);
       if (chunk.controller) loading++;
     }
     for (const chunk of this.wanted) {
       if (loading >= this.maxConcurrentLoads) break;
       if (chunk.data || chunk.controller || now < chunk.retryAt) continue;
       chunk.controller = new AbortController();
+      this.activeChunks.add(chunk);
       loading++;
       void this.load(chunk, chunk.controller);
     }
@@ -683,6 +687,7 @@ export class SogStreamScheduler {
     } finally {
       decoded?.dispose();
       chunk.controller = undefined;
+      this.pruneChunk(chunk);
       // Refill without waiting for update(); defer to avoid recursive failures
       // when a custom loader throws synchronously.
       if (!this.disposed)
@@ -693,6 +698,13 @@ export class SogStreamScheduler {
           this.changed();
         });
     }
+  }
+
+  private pruneChunk(chunk: Chunk) {
+    if (chunk.data && !chunk.data.alive) chunk.data = undefined;
+    if (!chunk.data) chunk.expiresAt = undefined;
+    if (!chunk.batch && !chunk.data && !chunk.controller)
+      this.activeChunks.delete(chunk);
   }
 
   private releaseRegion(region: Region) {
@@ -717,7 +729,7 @@ export class SogStreamScheduler {
     this.abort.abort();
     this.rejectFirst(this.abort.signal.reason);
     this.loader.dispose();
-    for (const chunk of this.chunks) {
+    for (const chunk of this.activeChunks) {
       chunk.controller?.abort();
       chunk.data?.dispose();
       chunk.data = undefined;
@@ -730,6 +742,7 @@ export class SogStreamScheduler {
     this.fades.clear();
     this.wanted.clear();
     this.chunks = [];
+    this.activeChunks.clear();
     this.environment = undefined;
     this.manifest = undefined;
     this.lodLeaves.clear();

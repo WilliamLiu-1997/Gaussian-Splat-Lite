@@ -18,8 +18,9 @@ use crate::{
 pub trait ChunkReceiver: Any {
     /// Supplies the exact encoded input length when the caller knows it before
     /// decoding starts. Container decoders can use this to validate metadata
-    /// before allocating output storage.
-    fn set_expected_input_size(&mut self, _size: usize) -> anyhow::Result<()> {
+    /// before allocating output storage. File lengths use u64 independently of
+    /// the address space used for individual input buffers.
+    fn set_expected_input_size(&mut self, _size: u64) -> anyhow::Result<()> {
         Ok(())
     }
     fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()>;
@@ -90,6 +91,11 @@ pub trait SplatReceiver: 'static {
     fn set_sh2(&mut self, base: usize, count: usize, sh2: &[f32]) {}
     fn set_sh3(&mut self, base: usize, count: usize, sh3: &[f32]) {}
 
+    /// Allows decoders to quantize float codebooks once instead of per splat.
+    fn prefers_packed_sh(&self) -> bool {
+        false
+    }
+
     /// Expands a packed shared SH palette through the normal band setters.
     /// Encoded receivers can override this to copy palette words directly.
     fn set_sh_palette(
@@ -98,7 +104,7 @@ pub trait SplatReceiver: 'static {
         count: usize,
         degree: usize,
         palette: &[u32],
-        labels: &[u16],
+        labels: &[u32],
     ) {
         let stride = [0, 4, 8, 16][degree];
         let mut values = Vec::new();
@@ -171,7 +177,7 @@ pub struct MultiDecoder<T: SplatReceiver> {
     buffer: Vec<u8>,
     buffer_gz: Option<Vec<u8>>,
     inner: Option<Box<dyn ChunkReceiver>>,
-    expected_input_size: Option<usize>,
+    expected_input_size: Option<u64>,
 }
 
 impl<T: SplatReceiver> MultiDecoder<T> {
@@ -232,7 +238,7 @@ impl<T: SplatReceiver> ChunkReceiver for MultiDecoder<T> {
         self
     }
 
-    fn set_expected_input_size(&mut self, size: usize) -> anyhow::Result<()> {
+    fn set_expected_input_size(&mut self, size: u64) -> anyhow::Result<()> {
         if let Some(inner) = self.inner.as_mut() {
             inner.set_expected_input_size(size)?;
         }

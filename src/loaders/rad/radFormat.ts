@@ -1,9 +1,6 @@
 import type { SplatResult } from "../../data/defines";
 import type { PostDecodeSplatData } from "../postDecode/protocol";
 
-const HEADER_LIMIT = 16 * 1024 * 1024;
-export const RAD_FULL_LOAD_LIMIT = 2 * 1024 * 1024 * 1024;
-
 export type RadChunkRange = {
   offset: number;
   bytes: number;
@@ -94,11 +91,10 @@ export function getRadHeaderSize(prefix: Uint8Array) {
     prefix.byteOffset,
     prefix.byteLength,
   ).getUint32(4, true);
-  if (jsonLength > HEADER_LIMIT) throw new Error("RAD: header exceeds 16 MiB");
   return { jsonLength, headerLength: 8 + Math.ceil(jsonLength / 8) * 8 };
 }
 
-/** Validate the bounded header as soon as a full-response fallback supplies it. */
+/** Validate the header as soon as a full-response fallback supplies it. */
 export function collectRadHeader(complete: (bytes: Uint8Array) => void) {
   let header = new Uint8Array(8);
   let received = 0;

@@ -326,7 +326,7 @@ pub struct SogDecoder<T: SplatReceiver> {
     palette: Vec<u32>,
     positions: Vec<f32>,
     floats: Vec<f32>,
-    labels: Vec<u16>,
+    labels: Vec<u32>,
 }
 
 impl<T: SplatReceiver> SogDecoder<T> {
@@ -543,8 +543,8 @@ impl<T: SplatReceiver> SogDecoder<T> {
             "labels" => {
                 self.labels.resize(count, 0);
                 for (i, label) in self.labels.iter_mut().enumerate() {
-                    *label = image.channel(self.base + i, 0) as u16
-                        | ((image.channel(self.base + i, 1) as u16) << 8);
+                    *label = image.channel(self.base + i, 0) as u32
+                        | ((image.channel(self.base + i, 1) as u32) << 8);
                     ensure!(
                         (*label as usize) < self.meta.palette_count,
                         "SH label exceeds palette at splat {}",

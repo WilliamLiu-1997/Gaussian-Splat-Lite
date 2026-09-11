@@ -1,72 +1,21 @@
 import { RadDecoder, decode_rad_header } from "gaussian-splat-rs";
-import { SH_KEYS, getSplatTextureBytes } from "../data/splatData";
+import { SH_KEYS } from "../data/splatData";
 import { getTextureSize } from "../data/textureLayout";
 import { linkedAbortController } from "../runtime/abort";
 import type { SplatSourceArgs as LoadRadArgs } from "./loadTypes";
 import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { RadSource } from "./rad/RadSource";
 import {
-  RAD_FULL_LOAD_LIMIT,
-  type RadChunkData,
   type RadDecodedChunk,
   type RadHeader,
-  type RadMeta,
   collectRadHeader,
   getRadChunkSpan,
-  unpackRadChunk,
 } from "./rad/radFormat";
 export { isRadPrefix } from "./rad/radFormat";
 
 import { collectBytes, prefetchOrdered } from "./source";
 
-const MAX_FULL_LOAD_BYTES = RAD_FULL_LOAD_LIMIT;
-
-/** Bound ordinary loading's retained typed arrays before decoding any pages.
- * Paging can address much larger datasets because it never assembles this set. */
-function validateRadFullLoadBudget(meta: RadMeta) {
-  if (
-    !Number.isSafeInteger(meta.count) ||
-    meta.count < 0 ||
-    meta.count > 0xffff_ffff
-  )
-    throw new Error("RAD: invalid global splat count");
-  const degree = meta.maxSh ?? 0;
-  const capacity = meta.count ? getTextureSize(meta.count).maxSplats : 0;
-  let workingBytes = getSplatTextureBytes(capacity, degree) + meta.count * 12;
-  // Global child arrays plus ownership and traversal arrays used for validation.
-  if (meta.lodTree) workingBytes += meta.count * 11;
-  const check = () => {
-    if (
-      !Number.isSafeInteger(workingBytes) ||
-      workingBytes > MAX_FULL_LOAD_BYTES
-    )
-      throw new Error(
-        "RAD: ordinary loading exceeds the 2 GiB decoded working-set limit; use RadStreamScheduler for this dataset",
-      );
-  };
-  check();
-  let expectedBase = 0;
-  for (let index = 0; index < meta.chunks.length; index++) {
-    const { base, count } = getRadChunkSpan(meta, index);
-    if (
-      !Number.isSafeInteger(base) ||
-      !Number.isSafeInteger(count) ||
-      base !== expectedBase ||
-      count <= 0 ||
-      base + count > meta.count
-    )
-      throw new Error("RAD: invalid chunk coverage");
-    const chunkCapacity = getTextureSize(count).maxSplats;
-    workingBytes +=
-      getSplatTextureBytes(chunkCapacity, degree) + chunkCapacity * 12;
-    if (meta.lodTree) workingBytes += count * 10;
-    check();
-    expectedBase += count;
-  }
-  if (expectedBase !== meta.count)
-    throw new Error("RAD: incomplete chunk coverage");
-  return workingBytes;
-}
+const TEXTURE_KEYS = ["splat0", "splat1", ...SH_KEYS] as const;
 
 /** Check the complete directed forest, including references across RADC pages. */
 function validateRadTree(start: Uint32Array, count: Uint16Array) {
@@ -96,74 +45,76 @@ function validateRadTree(start: Uint32Array, count: Uint16Array) {
   if (end !== start.length) throw new Error("RAD: tree contains a cycle");
 }
 
-/** Ordinary loading returns leaves in original file order, never parent/child duplicates. */
-function assembleRadChunks(
-  header: RadHeader,
-  chunks: readonly RadChunkData[],
-): PostDecodeSplatData {
-  const { meta } = header;
-  if (chunks.length !== meta.chunks.length)
-    throw new Error("RAD: incomplete chunk set");
-  validateRadFullLoadBudget(meta);
-  let leafCount = 0;
-  const childStart = meta.lodTree ? new Uint32Array(meta.count) : undefined;
-  const childCount = meta.lodTree ? new Uint16Array(meta.count) : undefined;
-  for (let index = 0; index < chunks.length; index++) {
-    const chunk = chunks[index];
-    const expected = getRadChunkSpan(meta, index);
-    if (chunk.base !== expected.base || chunk.numSplats !== expected.count)
-      throw new Error("RAD: decoded chunk does not match its directory entry");
-    if (meta.lodTree) {
-      if (
-        chunk.childStart?.length !== chunk.numSplats ||
-        chunk.childCount?.length !== chunk.numSplats
-      )
-        throw new Error("RAD: LOD chunk is missing child arrays");
-      childStart?.set(chunk.childStart, chunk.base);
-      childCount?.set(chunk.childCount, chunk.base);
-      for (const count of chunk.childCount) if (!count) leafCount++;
-    } else leafCount += chunk.numSplats;
-  }
-  if (childStart && childCount) validateRadTree(childStart, childCount);
-  const capacity = leafCount ? getTextureSize(leafCount).maxSplats : 0;
-  const result: PostDecodeSplatData = {
-    numSplats: leafCount,
+function createRadOutput(numSplats: number): PostDecodeSplatData {
+  const capacity = numSplats ? getTextureSize(numSplats).maxSplats : 0;
+  return {
+    numSplats,
     splat0: new Uint32Array(capacity * 4),
     splat1: new Uint32Array(capacity * 4),
-    sortCenters: new Float32Array(leafCount * 3),
+    sortCenters: new Float32Array(numSplats * 3),
   };
-  for (const key of SH_KEYS) {
-    if (chunks.some((chunk) => chunk.extra[key]?.length))
-      result[key] = new Uint32Array(capacity * 4);
-  }
-  let output = 0;
-  for (const chunk of chunks) {
-    for (let index = 0; index < chunk.numSplats; index++) {
-      if (meta.lodTree && chunk.childCount?.[index]) continue;
-      for (let word = 0; word < 4; word++) {
-        result.splat0[output * 4 + word] =
-          chunk.splatArrays[0][index * 4 + word];
-        result.splat1[output * 4 + word] =
-          chunk.splatArrays[1][index * 4 + word];
-        for (const key of SH_KEYS) {
-          const target = result[key];
-          if (target)
-            target[output * 4 + word] =
-              chunk.extra[key]?.[index * 4 + word] ?? 0;
-        }
-      }
-      const centers = chunk.sortCenters;
-      if (!centers) throw new Error("RAD: decoded centers are missing");
-      for (let axis = 0; axis < 3; axis++)
-        result.sortCenters[output * 3 + axis] = centers[index * 3 + axis];
-      output++;
+}
+
+/** Copy one chunk without retaining its arrays across reads. */
+function copyRadChunk(
+  result: PostDecodeSplatData,
+  chunk: RadDecodedChunk,
+  offset: number,
+) {
+  let output = offset;
+  const { sortCenters: centers, childCount } = chunk;
+  if (!centers) throw new Error("RAD: decoded centers are missing");
+  for (const key of TEXTURE_KEYS) {
+    const source = chunk[key];
+    if (!source?.length) continue;
+    result[key] ??= new Uint32Array(result.splat0.length);
+    const target = result[key];
+    if (!childCount) {
+      target.set(source.subarray(0, chunk.numSplats * 4), output * 4);
+      continue;
+    }
+    let out = output;
+    for (let i = 0; i < chunk.numSplats; i++) {
+      if (childCount[i]) continue;
+      target[out * 4] = source[i * 4];
+      target[out * 4 + 1] = source[i * 4 + 1];
+      target[out * 4 + 2] = source[i * 4 + 2];
+      target[out * 4 + 3] = source[i * 4 + 3];
+      out++;
     }
   }
+  if (!childCount) {
+    result.sortCenters.set(
+      centers.subarray(0, chunk.numSplats * 3),
+      output * 3,
+    );
+    return output + chunk.numSplats;
+  }
+  for (let i = 0; i < chunk.numSplats; i++) {
+    if (childCount[i]) continue;
+    result.sortCenters[output * 3] = centers[i * 3];
+    result.sortCenters[output * 3 + 1] = centers[i * 3 + 1];
+    result.sortCenters[output * 3 + 2] = centers[i * 3 + 2];
+    output++;
+  }
+  return output;
+}
+
+/** Replace oversized buffers; subarray views would retain the full allocation. */
+function trimRadOutput(result: PostDecodeSplatData, numSplats: number) {
+  const capacity = numSplats ? getTextureSize(numSplats).maxSplats : 0;
+  result.numSplats = numSplats;
+  for (const key of TEXTURE_KEYS) {
+    const array = result[key];
+    if (array && array.length !== capacity * 4)
+      result[key] = array.slice(0, capacity * 4);
+  }
+  if (result.sortCenters.length !== numSplats * 3)
+    result.sortCenters = result.sortCenters.slice(0, numSplats * 3);
   return result;
 }
 
-/** Complete-file RAD decode with 2 GiB limits for encoded input and estimated
- * retained typed arrays. Larger datasets use the paged loading path. */
+/** Complete-file RAD decode with validated chunk coverage and LOD trees. */
 export async function loadRad(args: LoadRadArgs) {
   const request = linkedAbortController(args.signal);
   const { signal } = request;
@@ -173,7 +124,6 @@ export async function loadRad(args: LoadRadArgs) {
   const validateHeader = (bytes: Uint8Array) => {
     const header = decode_rad_header(bytes) as RadHeader | undefined;
     if (!header) throw new Error("RAD: truncated header");
-    validateRadFullLoadBudget(header.meta);
     parsedHeader = header;
   };
   let { file, fileBytes } = args;
@@ -186,14 +136,10 @@ export async function loadRad(args: LoadRadArgs) {
     });
   try {
     signal.throwIfAborted();
-    if (total > MAX_FULL_LOAD_BYTES)
-      throw new Error(
-        "RAD: ordinary encoded input exceeds 2 GiB; use RadStreamScheduler",
-      );
     if (args.readChunk) {
       const buffered = await collectBytes(
         args.readChunk,
-        MAX_FULL_LOAD_BYTES,
+        Number.POSITIVE_INFINITY,
         (bytes) => {
           loaded += bytes;
           report(0);
@@ -234,7 +180,15 @@ export async function loadRad(args: LoadRadArgs) {
       JSON.stringify(header.meta),
       header.meta.maxSh ?? 0,
     );
-    const chunks: RadChunkData[] = [];
+    const tree = header.meta.lodTree
+      ? {
+          start: new Uint32Array(header.meta.count),
+          count: new Uint16Array(header.meta.count),
+        }
+      : undefined;
+    const result = createRadOutput(header.meta.count);
+    let outputCount = 0;
+    let chunkIndex = 0;
     const input = source;
     // Decode in file order to seed SH codebooks from page zero. Bounded reads of
     // later pages overlap decoding, for both random-access and buffered inputs.
@@ -245,15 +199,29 @@ export async function loadRad(args: LoadRadArgs) {
       signal,
     )) {
       signal.throwIfAborted();
-      chunks.push(
-        unpackRadChunk(decoder.decode_chunk(bytes) as RadDecodedChunk),
-      );
+      const chunk = decoder.decode_chunk(bytes) as RadDecodedChunk;
+      const expected = getRadChunkSpan(header.meta, chunkIndex++);
+      if (chunk.base !== expected.base || chunk.numSplats !== expected.count)
+        throw new Error(
+          "RAD: decoded chunk does not match its directory entry",
+        );
+      if (tree) {
+        if (
+          chunk.childStart?.length !== chunk.numSplats ||
+          chunk.childCount?.length !== chunk.numSplats
+        )
+          throw new Error("RAD: LOD chunk is missing child arrays");
+        tree.start.set(chunk.childStart, chunk.base);
+        tree.count.set(chunk.childCount, chunk.base);
+      }
+      outputCount = copyRadChunk(result, chunk, outputCount);
     }
     args.sendStatus({
       loaded: loaded + source.stats.downloadedBytes,
       total: loaded + source.stats.downloadedBytes,
     });
-    return assembleRadChunks(header, chunks);
+    if (tree) validateRadTree(tree.start, tree.count);
+    return trimRadOutput(result, outputCount);
   } finally {
     request.controller.abort();
     source?.dispose();

@@ -34,11 +34,12 @@ impl ChunkDecoder {
 impl ChunkDecoder {
     #[wasm_bindgen]
     pub fn set_expected_input_size(&mut self, size: f64) -> Result<(), JsValue> {
-        if !size.is_finite() || size <= 0.0 || size.fract() != 0.0 || size > usize::MAX as f64 {
+        if !size.is_finite() || size <= 0.0 || size.fract() != 0.0 || size > 9_007_199_254_740_991.0
+        {
             return Err(JsValue::from_str("Invalid expected input size"));
         }
         self.receiver
-            .set_expected_input_size(size as usize)
+            .set_expected_input_size(size as u64)
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 

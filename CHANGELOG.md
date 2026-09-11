@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Cached packed RAD SH codebooks across chunks to avoid per-splat float expansion and encoding, including the caches in streaming memory estimates.
+- Accepted SPZ degree-4 SH input while retaining only SH0–SH3 for rendering.
+- Decoded ordinary RAD chunks into preallocated output, extracting LOD leaves as they decode and trimming output arrays after tree validation.
+- Removed fixed size caps for RAD loading and decoding, SPZ packed models, and SOG ZIP directories.
+- Removed the 4 GiB PLY/SPZ input-length restriction using 64-bit lengths and SPZ v4 byte counters, preserving incremental decoding and length validation.
+- Reduced SOG streaming update and statistics overhead by tracking only active chunks.
+
 ## [1.0.2] - 2026-09-11
 
 ### Changed

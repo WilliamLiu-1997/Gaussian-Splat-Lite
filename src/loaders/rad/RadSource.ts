@@ -8,7 +8,6 @@ import type {
 } from "../loadTypes";
 import { checkRange, joinBytes, readResponse, requestOptions } from "../source";
 import {
-  RAD_FULL_LOAD_LIMIT,
   type RadHeader,
   collectRadHeader,
   getRadHeaderSize,
@@ -24,7 +23,7 @@ export type RadSourceOptions = SplatRequestOptions & {
   /** Internal bridge for LoadingManager URL modifiers in a decode worker. */
   resolveAsset?: (url: string) => Promise<string>;
   onProgress?: (downloadedBytes: number) => void;
-  /** Ordinary decoding validates its working set before buffering a full response. */
+  /** Validate ordinary metadata as soon as the full-response header arrives. */
   validateHeader?: (bytes: Uint8Array) => void;
 };
 
@@ -55,8 +54,6 @@ export type RadReadRequest = {
   requestHeader?: Record<string, string>;
   withCredentials?: boolean;
 };
-
-const MAX_CHUNK_BYTES = 256 * 1024 * 1024;
 
 function baseUrl() {
   return typeof document === "undefined" ? undefined : document.baseURI;
@@ -183,8 +180,6 @@ export class RadSource {
     this.controller.signal.throwIfAborted();
     const { input, offset, length } = read;
     checkRange(offset, length);
-    if (length > MAX_CHUNK_BYTES)
-      throw new Error("RAD: encoded chunk exceeds 256 MiB");
     if (typeof input === "string") {
       const remote = this.remote(input);
       const controller = this.requestController(signal);
@@ -306,8 +301,6 @@ export class RadSource {
     signal?.throwIfAborted();
     this.controller.signal.throwIfAborted();
     checkRange(offset, length);
-    if (length > MAX_CHUNK_BYTES)
-      throw new Error("RAD: encoded chunk exceeds 256 MiB");
     if (typeof input === "string") {
       return this.readRemote(
         this.remote(input),
@@ -436,7 +429,7 @@ export class RadSource {
       ) {
         const { chunks, size } = await readResponse(
           response,
-          RAD_FULL_LOAD_LIMIT,
+          Number.POSITIVE_INFINITY,
           (bytes) => this.progress(bytes),
           controller.signal,
           collectRadHeader((bytes) => this.options.validateHeader?.(bytes)),
@@ -450,7 +443,7 @@ export class RadSource {
       const limit = wholeFile
         ? length
         : this.allowFullDownload
-          ? MAX_CHUNK_BYTES
+          ? Number.POSITIVE_INFINITY
           : 0;
       if (!limit && offset === 0 && length === 8) {
         // A split dataset's .rad contains only its bounded header. Allow that

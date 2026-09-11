@@ -13,18 +13,14 @@ use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::decoder::{SplatInit, SplatProps, SplatReceiver};
+use crate::{
+    decoder::{SplatInit, SplatProps, SplatReceiver},
+    splat_encode::encode_splat_sh_rgb,
+};
 
 pub const RAD_MAGIC: u32 = 0x30444152;
 pub const RAD_CHUNK_MAGIC: u32 = 0x43444152;
-pub const MAX_HEADER_BYTES: usize = 16 * 1024 * 1024;
-pub const MAX_CHUNK_BYTES: usize = 512 * 1024 * 1024;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-// These limits bound a single decode's temporary memory even for malicious
-// metadata/compression. They are far above Spark's usual 65,536-record pages.
-const MAX_PROPERTY_BYTES: usize = 256 * 1024 * 1024;
-const MAX_CHUNK_SPLATS: usize = 2 * 1024 * 1024;
-const MAX_CODE_COUNT: u32 = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RadChunkRange {
@@ -63,7 +59,6 @@ pub struct RadMeta {
 
 impl RadMeta {
     pub fn from_json(json: &str) -> Result<Self> {
-        ensure!(json.len() <= MAX_HEADER_BYTES, "RAD metadata is too large");
         let meta: Self = serde_json::from_str(json).context("Invalid RAD metadata JSON")?;
         meta.validate()?;
         Ok(meta)
@@ -103,10 +98,6 @@ impl RadMeta {
             "RAD splat count exceeds u32 index limit"
         );
         ensure!(self.max_sh.unwrap_or(0) <= 3, "Unsupported RAD SH degree");
-        ensure!(
-            self.sh_code_count.unwrap_or(0) <= MAX_CODE_COUNT,
-            "RAD SH codebook exceeds decode limit"
-        );
         safe_integer(self.all_chunk_bytes, "allChunkBytes")?;
         if self.count == 0 {
             ensure!(
@@ -136,10 +127,6 @@ impl RadMeta {
                 "RAD chunk is shorter than its container header"
             );
             ensure!(
-                chunk.bytes <= MAX_CHUNK_BYTES as u64,
-                "RAD encoded chunk exceeds memory limit"
-            );
-            ensure!(
                 chunk.offset % 8 == 0 && chunk.bytes % 8 == 0,
                 "RAD chunk range is not 8-byte aligned"
             );
@@ -147,11 +134,6 @@ impl RadMeta {
             ensure!(
                 u64::from(base) == next_base && count > 0,
                 "RAD chunk ranges must cover splats once in order"
-            );
-            ensure!(
-                count as usize <= MAX_CHUNK_SPLATS,
-                "RAD chunk exceeds {}-splat decode limit",
-                MAX_CHUNK_SPLATS
             );
             next_base += u64::from(count);
             total_bytes = total_bytes
@@ -207,8 +189,9 @@ pub fn decode_rad_header(bytes: &[u8]) -> Result<Option<(RadMeta, u64)>> {
         return Ok(None);
     }
     let length = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    ensure!(length <= MAX_HEADER_BYTES, "RAD metadata is too large");
-    let chunks_start = 8 + align8(length)?;
+    let chunks_start = align8(length)?
+        .checked_add(8)
+        .context("RAD header size overflow")?;
     if bytes.len() < chunks_start {
         return Ok(None);
     }
@@ -383,15 +366,10 @@ impl Property {
             F16 | F16LeBytes | LnF16 | U16 => 2,
             _ => 1,
         };
-        let expected = count
+        count
             .checked_mul(self.property.dimensions())
             .and_then(|n| n.checked_mul(bytes_per_component))
-            .context("RAD decoded property size overflow")?;
-        ensure!(
-            expected <= MAX_PROPERTY_BYTES,
-            "RAD decoded property exceeds memory limit"
-        );
-        Ok(expected)
+            .context("RAD decoded property size overflow")
     }
 }
 
@@ -407,6 +385,7 @@ struct DecodedChunk {
     pub scales: Vec<f32>,
     pub quaternions: Vec<f32>,
     pub sh: [Vec<f32>; 3],
+    pub sh_labels: Option<(usize, Vec<u32>)>,
     pub child_start: Option<Vec<u32>>,
     pub child_count: Option<Vec<u16>>,
     /// Conservative projected-size radius, not a subtree spatial bounding box.
@@ -426,6 +405,8 @@ pub struct RadDecoder {
     pub meta: RadMeta,
     max_sh: usize,
     codebooks: [Option<Vec<f32>>; 3],
+    // Separate degrees keep omitted bands zero when chunks use different maxSh.
+    palettes: [Option<Vec<u32>>; 3],
     chunk_bounds: Vec<(u32, u32)>,
 }
 
@@ -440,6 +421,7 @@ impl RadDecoder {
             meta,
             max_sh,
             codebooks: array::from_fn(|_| None),
+            palettes: array::from_fn(|_| None),
             chunk_bounds,
         })
     }
@@ -450,7 +432,7 @@ impl RadDecoder {
         bytes: &[u8],
         mut splats: T,
     ) -> Result<(T, RadChunk)> {
-        let mut chunk = self.decode_chunk_data(bytes)?;
+        let mut chunk = self.decode_chunk_data(bytes, splats.prefers_packed_sh())?;
         // Spark stores LOD-encoded alpha in RAD. Restore raw opacity for the
         // shared receiver, after computing LOD radii from the file values.
         for opacity in &mut chunk.opacity {
@@ -477,6 +459,9 @@ impl RadDecoder {
                 sh3: &chunk.sh[2],
             },
         );
+        if let Some((degree, labels)) = chunk.sh_labels {
+            splats.set_sh_palette(0, chunk.count, degree, self.sh_palette(degree), &labels);
+        }
         splats.finish()?;
         Ok((
             splats,
@@ -489,22 +474,36 @@ impl RadDecoder {
         ))
     }
 
-    fn decode_chunk_data(&mut self, bytes: &[u8]) -> Result<DecodedChunk> {
-        ensure!(
-            bytes.len() <= MAX_CHUNK_BYTES,
-            "RADC encoded chunk exceeds memory limit"
-        );
+    /// Quantize validated codebooks once for each requested degree.
+    fn sh_palette(&mut self, degree: usize) -> &[u32] {
+        self.palettes[degree - 1].get_or_insert_with(|| {
+            let stride = [0, 4, 8, 16][degree];
+            let mut palette = vec![0; self.meta.sh_code_count.unwrap() as usize * stride];
+            let mut offset = 0;
+            for (band, coefficients) in [3, 5, 7].into_iter().enumerate().take(degree) {
+                let codebook = self.codebooks[band].as_ref().unwrap();
+                for (label, entry) in codebook.chunks_exact(coefficients * 3).enumerate() {
+                    for (i, rgb) in entry.chunks_exact(3).enumerate() {
+                        palette[label * stride + offset + i] =
+                            encode_splat_sh_rgb(rgb.try_into().unwrap());
+                    }
+                }
+                offset += coefficients;
+            }
+            palette
+        })
+    }
+
+    fn decode_chunk_data(&mut self, bytes: &[u8], packed_sh: bool) -> Result<DecodedChunk> {
         ensure!(bytes.len() >= 8, "Incomplete RADC header");
         ensure!(
             bytes[..4] == RAD_CHUNK_MAGIC.to_le_bytes(),
             "Invalid RADC magic"
         );
         let json_length = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-        ensure!(
-            json_length <= MAX_HEADER_BYTES,
-            "RADC metadata is too large"
-        );
-        let payload_start = 16 + align8(json_length)?;
+        let payload_start = align8(json_length)?
+            .checked_add(16)
+            .context("RADC header size overflow")?;
         ensure!(bytes.len() >= payload_start, "Incomplete RADC metadata");
         let chunk: RadChunkMeta = serde_json::from_slice(&bytes[8..8 + json_length])
             .context("Invalid or unsupported RADC metadata")?;
@@ -512,10 +511,6 @@ impl RadDecoder {
             chunk.version == 1,
             "Unsupported RADC version: {}",
             chunk.version
-        );
-        ensure!(
-            chunk.count <= MAX_CHUNK_SPLATS as u64,
-            "RADC count exceeds decode limit"
         );
         ensure!(
             chunk
@@ -577,7 +572,7 @@ impl RadDecoder {
         let mut names = HashSet::new();
         let mut ranges = Vec::new();
         // Validate every property, including bands that maxSh will omit, before
-        // allocating large output buffers. The length cap also bounds inflation.
+        // allocating large output buffers. Expected lengths also bound inflation.
         for prop in &chunk.properties {
             ensure!(
                 names.insert(prop.property),
@@ -672,6 +667,7 @@ impl RadDecoder {
             scales: Vec::new(),
             quaternions: Vec::new(),
             sh: array::from_fn(|_| Vec::new()),
+            sh_labels: None,
             child_start: None,
             child_count: None,
             lod_radii: None,
@@ -755,7 +751,7 @@ impl RadDecoder {
             }
         }
         if labels_present && decode_sh > 0 {
-            let labels = labels.as_ref().context("Missing decoded RAD SH labels")?;
+            let labels = labels.context("Missing decoded RAD SH labels")?;
             let code_count =
                 self.meta
                     .sh_code_count
@@ -765,29 +761,31 @@ impl RadDecoder {
                 "RAD SH label exceeds codebook"
             );
             for band in 0..decode_sh {
-                ensure!(
-                    result.sh[band].is_empty(),
-                    "RAD cannot mix SH labels and direct coefficients"
-                );
                 let codebook = pending_codes[band]
                     .as_ref()
                     .or(self.codebooks[band].as_ref())
                     .context("RAD SH codebook unavailable; decode chunk 0 first")?;
-                let dimensions = [9, 15, 21][band];
-                let mut coefficients = Vec::with_capacity(count * dimensions);
-                for &label in labels {
-                    let start = label as usize * dimensions;
-                    coefficients.extend_from_slice(&codebook[start..start + dimensions]);
+                if !packed_sh {
+                    let dimensions = [9, 15, 21][band];
+                    let mut coefficients = Vec::with_capacity(count * dimensions);
+                    for &label in &labels {
+                        let start = label as usize * dimensions;
+                        coefficients.extend_from_slice(&codebook[start..start + dimensions]);
+                    }
+                    result.sh[band] = coefficients;
                 }
-                result.sh[band] = coefficients;
             }
-        }
-        for band in 0..decode_sh {
-            ensure!(
-                result.sh[band].len() == count * [9, 15, 21][band],
-                "Missing RAD SH{} coefficients",
-                band + 1
-            );
+            if packed_sh {
+                result.sh_labels = Some((decode_sh, labels));
+            }
+        } else {
+            for band in 0..decode_sh {
+                ensure!(
+                    result.sh[band].len() == count * [9, 15, 21][band],
+                    "Missing RAD SH{} coefficients",
+                    band + 1
+                );
+            }
         }
         if lod_tree {
             validate_local_tree(
@@ -811,6 +809,9 @@ impl RadDecoder {
             result.lod_radii = Some(radii);
         }
         // Commit only after the chunk, labels, and tree have all passed checks.
+        if pending_codes.iter().any(Option::is_some) {
+            self.palettes.fill(None);
+        }
         for (cached, pending) in self.codebooks.iter_mut().zip(pending_codes) {
             if pending.is_some() {
                 *cached = pending;

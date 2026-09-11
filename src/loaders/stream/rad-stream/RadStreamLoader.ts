@@ -85,8 +85,9 @@ export class RadStreamLoader {
         this.assertActive();
         this.header = header;
         const degree = header.meta.maxSh ?? 0;
+        // Float codebooks plus packed caches for every degree up to maxSh.
         this.estimatedCodebookBytes =
-          (header.meta.shCodeCount ?? 0) * [0, 36, 96, 180][degree];
+          (header.meta.shCodeCount ?? 0) * [0, 52, 144, 292][degree];
         return header;
       });
     return abortable(this.initialization, signal);

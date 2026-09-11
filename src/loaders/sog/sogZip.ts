@@ -12,7 +12,6 @@ type Entry = {
 };
 
 const MiB = 1024 * 1024;
-const DIRECTORY_LIMIT = 16 * MiB;
 const READ_CHUNK = 16 * MiB;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 // ZIP's original filename encoding, used when the UTF-8 flag is absent.
@@ -86,8 +85,7 @@ export async function readZip(source: Source) {
     (end >= 20 && view.getUint32(end - 20, true) === 0x07064b50)
   )
     fail("ZIP64 archives are unsupported");
-  if (size > DIRECTORY_LIMIT || offset + size !== tailOffset + end)
-    fail("invalid or oversized ZIP directory");
+  if (offset + size !== tailOffset + end) fail("invalid ZIP directory");
   const bytes = await source.read(offset, size, true);
   const directory = dataView(bytes);
   const entries = new Map<string, Entry>();
