@@ -12,6 +12,7 @@ import {
   type RadSelectionRequest,
   RadSelectionState,
 } from "./RadSelectionState";
+import { prepareRadSelection } from "./prepareRadSelection";
 import type { RadLodChunk, RadLodSelection } from "./radLod";
 
 /** Workers initialize either the dataset LOD tree or a page decoder. */
@@ -30,6 +31,7 @@ export function createRadStreamHandlers() {
     selections = new RadSelectionState();
   }
   return {
+    prepareRadSelection,
     initializeRad({ bytes }: { bytes: Uint8Array }) {
       const value = decode_rad_header(bytes) as RadHeader | undefined;
       if (!value) throw new Error("RAD: truncated header");

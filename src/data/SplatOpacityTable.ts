@@ -143,15 +143,24 @@ export class SplatOpacityTable {
     return true;
   }
 
-  /** Validated physical indices for stable, incoming and outgoing RAD groups. */
-  setIndexed(indices: Uint32Array, values?: Uint8Array) {
-    for (let index = 0; index < indices.length; index++) {
-      const source = indices[index];
-      const group = (values?.[index] ?? 0) + 1;
-      if (this.blocks[source] === group) continue;
-      this.releaseBlock(this.blocks[source]);
-      this.blocks[source] = group;
-      this.dirtyLayers[Math.floor(source / this.blocksPerLayer)] = 1;
+  copyBlocks() {
+    return this.blocks.slice();
+  }
+
+  /** Adopt a prepared RAD table, retaining any uploads still pending. */
+  commitBlocks(blocks: Uint32Array, dirtyLayers: Uint8Array) {
+    if (
+      this.blockSize !== 1 ||
+      this.ranges.size ||
+      blocks.length !== this.blocks.length ||
+      dirtyLayers.length !== this.dirtyLayers.length
+    )
+      throw new Error("Invalid RAD opacity table");
+    this.blocks = blocks;
+    this.blockTexture.image.data = blocks;
+    for (let layer = 0; layer < dirtyLayers.length; layer++) {
+      if (!dirtyLayers[layer]) continue;
+      this.dirtyLayers[layer] = 1;
       this.dirty = true;
     }
   }

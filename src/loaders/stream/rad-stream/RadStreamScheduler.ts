@@ -25,6 +25,7 @@ import {
   RadStreamLoader,
   type RadStreamLoaderOptions,
 } from "./RadStreamLoader";
+import type { RadSelectionPreparation } from "./prepareRadSelection";
 import type { RadStreamSelection, RadVersionedSelection } from "./radFade";
 import { type RadLodView, radChunkIndex } from "./radLod";
 
@@ -55,6 +56,15 @@ type Page = {
   expiresAt?: number;
 };
 
+type Preparation = {
+  /** Same order as the worker's pool snapshots and results. */
+  pools: Pool[];
+  pages: Set<number>;
+  cancelled: boolean;
+  bytes: number;
+  result?: RadSelectionPreparation;
+};
+
 /** Camera-driven RAD tree cuts with crossfades, on-demand pages and cooldown. */
 export class RadStreamScheduler {
   readonly group: THREE.Group;
@@ -83,10 +93,11 @@ export class RadStreamScheduler {
   private shown = true;
   private selection?: RadVersionedSelection;
   private readySelection?: RadStreamSelection;
+  private preparation?: Preparation;
   private reselectAfterReady = false;
   private transition?: {
     startedAt: number;
-    pools: Set<Pool>;
+    pools: Pool[];
   };
   private wanted = new Set<number>();
   private protectedPages = new Set<number>();
@@ -130,6 +141,7 @@ export class RadStreamScheduler {
   set splatBudget(value: number) {
     if (value === this._splatBudget) return;
     this._splatBudget = positiveInteger(value, "splatBudget");
+    if (this.preparation) this.preparation.cancelled = true;
     this.revision++;
     this.readySelection = undefined;
     this.readyPages = undefined;
@@ -168,7 +180,7 @@ export class RadStreamScheduler {
         loader.cachedBytes +
         loader.selectionBytes +
         (this.selection?.indices.byteLength ?? 0),
-      pendingBytes,
+      pendingBytes: pendingBytes + (this.preparation?.bytes ?? 0),
       loadingChunks,
       downloadedBytes: loader.downloadedBytes,
       peakWasmMemoryBytes: loader.peakWasmMemoryBytes,
@@ -259,6 +271,7 @@ export class RadStreamScheduler {
       this.shown = shown;
       this.revision++;
       if (!shown) {
+        if (this.preparation) this.preparation.cancelled = true;
         for (const { batch } of this.pools)
           changed = batch.clearSelection() || changed;
         this.selection = undefined;
@@ -314,16 +327,34 @@ export class RadStreamScheduler {
       this.reservePages();
       changed = this.uploadPages() || changed;
     }
-    // Traversal can use reserved slots; drawing waits for their data and fades.
+    const preparation = this.preparation;
+    if (preparation?.result && !this.transition) {
+      this.preparation = undefined;
+      if (!preparation.cancelled && shown)
+        changed =
+          this.applySelection(preparation.result, preparation.pools, now) ||
+          changed;
+      // Apply the latest view after publishing or discarding this snapshot.
+      this.revision++;
+    }
+    // Keep drawing the old cut until its replacement is prepared.
     if (
       this.readySelection &&
+      !this.preparation &&
       !this.transition &&
       this.selectionPagesReady(this.readySelection)
     ) {
       const selected = this.readySelection;
       this.readySelection = undefined;
       this.readyPages = undefined;
-      changed = this.applySelection(selected, now) || changed;
+      if (selected.changedChunks.length) void this.prepareSelection(selected);
+      else
+        changed =
+          this.applySelection(
+            { selection: selected, fade: false, pools: [] },
+            [],
+            now,
+          ) || changed;
       if (this.reselectAfterReady) {
         this.reselectAfterReady = false;
         this.revision++;
@@ -343,6 +374,7 @@ export class RadStreamScheduler {
       this.disposed ||
       !this.shown ||
       this.inFlightPages ||
+      this.preparation ||
       !this.meta?.count ||
       !this.views.length ||
       this.lastRequestedRevision === this.revision ||
@@ -377,7 +409,7 @@ export class RadStreamScheduler {
       this.pump();
       // A completed cut may be applied or hidden during traversal. Recompute
       // against its new fade baseline, but accept camera lag to avoid starvation.
-      if (this.selection !== previous) {
+      if (this.selection !== previous || this.preparation) {
         this.lastRequestedRevision = -1;
         this.changed();
         return;
@@ -428,74 +460,103 @@ export class RadStreamScheduler {
     });
   }
 
-  private renderSelection(
-    indices: Uint32Array,
-    fades: Uint8Array | undefined,
-    affected: Set<Pool>,
-  ) {
-    const meta = this.meta as RadMeta;
-    const selections = new Map<Pool, RadSelectionRange[]>();
-    // Cuts and fade unions are sorted by file index. Resolve each page once,
-    // rather than looking up pages and pools for every selected node twice.
-    for (let start = 0; start < indices.length; ) {
-      const page = this.pages.get(radChunkIndex(meta, indices[start]));
-      if (!page?.pool || page.slot === undefined)
-        throw new Error("RAD cut references a retired page");
-      const pageEnd = page.base + page.count;
-      let end = start + 1;
-      let high = indices.length;
-      while (end < high) {
-        const middle = Math.floor((end + high) / 2);
-        if (indices[middle] < pageEnd) end = middle + 1;
-        else high = middle;
+  private async prepareSelection(selection: RadStreamSelection) {
+    let preparation: Preparation | undefined;
+    try {
+      const rangesByPool = new Map<Pool, RadSelectionRange[]>();
+      for (const index of selection.changedChunks) {
+        const pool = this.pages.get(index)?.pool;
+        if (!pool) throw new Error("RAD transition references a retired page");
+        if (!rangesByPool.has(pool)) rangesByPool.set(pool, []);
       }
-      const pool = page.pool;
-      if (!affected.has(pool)) {
+      const indices = selection.fade?.indices ?? selection.indices;
+      const meta = this.meta as RadMeta;
+      let selectedCount = 0;
+      // Sorted file indices let us resolve each page once, without a per-node
+      // scan on the main thread. Only changed pools need replacement data.
+      for (let start = 0; start < indices.length; ) {
+        const page = this.pages.get(radChunkIndex(meta, indices[start]));
+        if (!page?.pool || page.slot === undefined)
+          throw new Error("RAD cut references a retired page");
+        const pageEnd = page.base + page.count;
+        let end = start + 1;
+        let high = indices.length;
+        while (end < high) {
+          const middle = Math.floor((end + high) / 2);
+          if (indices[middle] < pageEnd) end = middle + 1;
+          else high = middle;
+        }
+        const ranges = rangesByPool.get(page.pool);
+        if (ranges) {
+          ranges.push({
+            start,
+            end,
+            slot: page.slot,
+            sourceOffset:
+              page.pool.batch.source.pageStart(page.slot) - page.base,
+          });
+          selectedCount += end - start;
+        }
         start = end;
-        continue;
       }
-      const ranges = selections.get(pool) ?? [];
-      ranges.push({
-        start,
-        end,
-        slot: page.slot,
-        sourceOffset: pool.batch.source.pageStart(page.slot) - page.base,
-      });
-      selections.set(pool, ranges);
-      start = end;
+      const pools = Array.from(rangesByPool, ([pool, ranges]) =>
+        pool.batch.source.snapshotSelection(ranges),
+      );
+      // Pin physical slots until the reply, even when cancelled or hidden.
+      const pages = new Set<number>();
+      for (const page of this.pages.values())
+        if (page.pool) pages.add(page.index);
+      preparation = {
+        pools: Array.from(rangesByPool.keys()),
+        pages,
+        cancelled: false,
+        bytes:
+          selection.indices.byteLength +
+          (selection.fade?.indices.byteLength ?? 0) +
+          (selection.fade?.fades.byteLength ?? 0) +
+          selection.changedChunks.byteLength +
+          selection.touchedChunks.byteLength +
+          selection.wantedChunks.byteLength +
+          selectedCount * 8 + // Render indices and post-fade indices.
+          // Opacity tables plus room for page occupancy, counts and dirty flags.
+          pools.reduce(
+            (bytes, pool) =>
+              bytes +
+              pool.opacityBlocks.byteLength +
+              pool.pageOccupancy.byteLength * 4,
+            0,
+          ),
+      };
+      this.preparation = preparation;
+      const result = await this.loader.prepareSelection({ selection, pools });
+      if (this.preparation !== preparation) return;
+      preparation.result = result;
+    } catch (error) {
+      if (this.disposed || this.preparation !== preparation) return;
+      this.preparation = undefined;
+      this.lastRequestedRevision = -1;
+      if (!preparation?.cancelled) {
+        this.rejectFirst(error);
+        this.failed(error, -1);
+      }
     }
-    // Validate and prepare every affected pool before changing the live cut.
-    const prepared = Array.from(affected, (pool) => ({
-      pool,
-      selection: pool.batch.source.prepareSelection(
-        indices,
-        fades,
-        selections.get(pool) ?? [],
-      ),
-    }));
-    for (const { pool, selection } of prepared) {
-      pool.batch.commitSelection(selection);
+    this.changed();
+  }
+
+  private applySelection(
+    prepared: RadSelectionPreparation,
+    affected: Pool[],
+    now: number,
+  ) {
+    const { selection, fade } = prepared;
+    const changed = affected.length > 0;
+    let index = 0;
+    for (const pool of affected) {
+      pool.batch.commitSelection(prepared.pools[index++]);
       if (pool.batch.numSplats > 0 && pool.batch.parent !== this.group)
         this.group.add(pool.batch);
       else if (pool.batch.numSplats === 0) pool.batch.removeFromParent();
     }
-  }
-
-  private applySelection(prepared: RadStreamSelection, now: number) {
-    const { fade, changedChunks, ...selection } = prepared;
-    const affected = new Set<Pool>();
-    for (const index of changedChunks) {
-      const pool = this.pages.get(index)?.pool;
-      if (!pool) throw new Error("RAD transition references a retired page");
-      affected.add(pool);
-    }
-    const changed = affected.size > 0;
-    if (changed)
-      this.renderSelection(
-        fade?.indices ?? selection.indices,
-        fade?.fades,
-        affected,
-      );
     if (fade) {
       this.transition = {
         startedAt: now,
@@ -503,7 +564,7 @@ export class RadStreamScheduler {
       };
     }
     // Unchanged nodes keep the fade baseline valid for an in-flight decision.
-    if (this.selection && !changedChunks.length) {
+    if (this.selection && !selection.changedChunks.length) {
       this.selection.touchedChunks = selection.touchedChunks;
       this.selection.wantedChunks = selection.wantedChunks;
     } else this.selection = selection;
@@ -519,6 +580,7 @@ export class RadStreamScheduler {
         !this.wanted.has(page.index) &&
         !this.inFlightPages?.has(page.index) &&
         !this.readyPages?.has(page.index) &&
+        !this.preparation?.pages.has(page.index) &&
         page.index !== 0
       ) {
         page.controller?.abort();
@@ -755,7 +817,8 @@ export class RadStreamScheduler {
       if (
         this.tick < page.expiresAt ||
         this.inFlightPages?.has(page.index) ||
-        this.readyPages?.has(page.index)
+        this.readyPages?.has(page.index) ||
+        this.preparation?.pages.has(page.index)
       )
         continue;
       this.releasePage(page);
@@ -800,6 +863,7 @@ export class RadStreamScheduler {
     this.rejectFirst(reason);
     for (const page of this.pages.values()) page.controller?.abort(reason);
     this.loader.dispose();
+    this.preparation = undefined;
     for (const { batch } of this.pools) batch.dispose();
     this.pools.length = 0;
     this.pages.clear();

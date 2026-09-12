@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Prepared RAD render indices, opacity tables and post-fade cuts in the existing LOD worker, reducing main-thread selection work without adding workers.
 - Initialized additional RAD streaming decoders from shared SH codebooks without decoding root geometry again.
 - Accelerated RAD decoding with lookup tables and direct packing.
 - Directly packed RAD `f32` SH and reused `f16` RGB and `ln_f16` scale bit patterns, preserving scale validation and LOD radii while reducing intermediate buffers and conversions.

@@ -5,6 +5,7 @@ import type { RadHeader, RadStreamChunk } from "../../rad/radFormat";
 import { StreamWorkerPool } from "../StreamWorkerPool";
 import type { RadSelectionRequest } from "./RadSelectionState";
 import { RadStreamWorker } from "./RadStreamWorker";
+import type { prepareRadSelection } from "./prepareRadSelection";
 import type { RadStreamSelection } from "./radFade";
 
 export type RadStreamLoaderOptions = Pick<
@@ -244,6 +245,13 @@ export class RadStreamLoader {
     this.assertActive();
     this.selectionBytes = retainedBytes;
     return selection;
+  }
+
+  async prepareSelection(request: Parameters<typeof prepareRadSelection>[0]) {
+    this.assertActive();
+    const result = await this.lodWorker.call("prepareRadSelection", request);
+    this.assertActive();
+    return result;
   }
 
   releaseChunk(index: number, generation?: number) {
