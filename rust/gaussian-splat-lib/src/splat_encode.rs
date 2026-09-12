@@ -1,6 +1,33 @@
-use std::array;
+use std::{array, sync::LazyLock};
 
 use half::f16;
+
+pub(crate) static F16_LOOKUP: LazyLock<Box<[f32; 65536]>> =
+    LazyLock::new(|| f16_table(|bits| f16::from_bits(bits).to_f32()));
+pub(crate) static F16_SH_LOOKUP: LazyLock<F16ShLookup> =
+    LazyLock::new(|| F16ShLookup::from_values(F16_LOOKUP.as_ref()));
+pub(crate) static LOD_OPACITY_LOOKUP: LazyLock<Box<[u32; 65536]>> = LazyLock::new(|| {
+    // The only nontrivial interval is [1, 2]: its shape has 1025 possible values.
+    let shape: [u16; 1025] = array::from_fn(|i| f16::from_f32(i as f32 / 1024.0).to_bits());
+    f16_table(|bits| {
+        if bits == 0x8000 {
+            return u32::from(bits); // Preserve negative zero.
+        }
+        u32::from(bits.min(0x3c00))
+            | (u32::from(shape[bits.saturating_sub(0x3c00).min(1024) as usize]) << 16)
+    })
+});
+
+/// Builds a fixed-size table on the heap without a large temporary stack array.
+pub(crate) fn f16_table<T>(value: impl Fn(u16) -> T) -> Box<[T; 65536]> {
+    (0..=u16::MAX)
+        .map(value)
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+        .try_into()
+        .ok()
+        .unwrap()
+}
 
 pub const SPLAT_TEX_WIDTH_BITS: usize = 11;
 pub const SPLAT_TEX_HEIGHT_BITS: usize = 11;
@@ -222,6 +249,75 @@ pub fn encode_splat_sh_rgb(rgb: [f32; 3]) -> u32 {
     u_rgb[0] | (u_rgb[1] << 8) | (u_rgb[2] << 16) | (exp_signs << 24)
 }
 
+/// Exact SH packing for a shared 8-bit component alphabet.
+pub struct ShLookup {
+    exponents: [u8; 256],
+    signs: [u8; 256],
+    mantissas: [[u8; 256]; 32],
+}
+
+impl ShLookup {
+    pub fn new(values: [f32; 256]) -> Self {
+        Self {
+            exponents: values.map(|v| (encode_splat_sh_rgb([v, 0.0, 0.0]) >> 27) as u8),
+            signs: values.map(|v| u8::from(v < 0.0)),
+            mantissas: array::from_fn(|exponent| {
+                let divisor = f32::from_bits(((exponent as u32) + 112) << 23) / 255.0;
+                values.map(|v| (v.abs() / divisor).clamp(0.0, 255.0).round() as u8)
+            }),
+        }
+    }
+
+    pub fn encode(&self, rgb: [u8; 3]) -> u32 {
+        let [r, g, b] = rgb.map(usize::from);
+        let exponent = self.exponents[r]
+            .max(self.exponents[g])
+            .max(self.exponents[b]);
+        let row = &self.mantissas[exponent as usize];
+        let signs = self.signs[r] | (self.signs[g] << 1) | (self.signs[b] << 2);
+        u32::from(row[r])
+            | (u32::from(row[g]) << 8)
+            | (u32::from(row[b]) << 16)
+            | ((u32::from(exponent) * 8 + u32::from(signs)) << 24)
+    }
+}
+
+/// Exact SH packing for the RAD f16 component alphabet.
+pub(crate) struct F16ShLookup {
+    // Exponents, signs, then one mantissa row per exponent, in one allocation.
+    rows: Box<[[u8; 65536]; 34]>,
+}
+
+impl F16ShLookup {
+    fn from_values(values: &[f32; 65536]) -> Self {
+        let mut rows = Vec::with_capacity(34);
+        rows.push(array::from_fn(|i| {
+            (encode_splat_sh_rgb([values[i], 0.0, 0.0]) >> 27) as u8
+        }));
+        rows.push(array::from_fn(|i| u8::from(values[i] < 0.0)));
+        for exponent in 0..32 {
+            let divisor = f32::from_bits((exponent + 112) << 23) / 255.0;
+            rows.push(array::from_fn(|i| {
+                (values[i].abs() / divisor).clamp(0.0, 255.0).round() as u8
+            }));
+        }
+        Self {
+            rows: rows.into_boxed_slice().try_into().ok().unwrap(),
+        }
+    }
+
+    pub(crate) fn encode_indices(&self, [r, g, b]: [usize; 3]) -> u32 {
+        let [exponents, signs, mantissas @ ..] = &*self.rows;
+        let exponent = exponents[r].max(exponents[g]).max(exponents[b]);
+        let row = &mantissas[exponent as usize];
+        let signs = signs[r] | (signs[g] << 1) | (signs[b] << 2);
+        u32::from(row[r])
+            | (u32::from(row[g]) << 8)
+            | (u32::from(row[b]) << 16)
+            | ((u32::from(exponent) * 8 + u32::from(signs)) << 24)
+    }
+}
+
 /// Decodes a shared-exponent RGB SH coefficient written by encode_splat_sh_rgb.
 pub fn decode_splat_sh_rgb(word: u32) -> [f32; 3] {
     let exponent_and_signs = word >> 24;
@@ -234,4 +330,23 @@ pub fn decode_splat_sh_rgb(word: u32) -> [f32; 3] {
             magnitude
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f16_sh_lookup_preserves_mixed_exponents_and_signs() {
+        for code in 0..65536 {
+            let indices = [code, (code + 32768) % 65536, (code * 173 + 255) % 65536];
+            let rgb = indices.map(|index| F16_LOOKUP[index]);
+            if rgb.iter().all(|value| value.is_finite()) {
+                assert_eq!(
+                    F16_SH_LOOKUP.encode_indices(indices),
+                    encode_splat_sh_rgb(rgb)
+                );
+            }
+        }
+    }
 }

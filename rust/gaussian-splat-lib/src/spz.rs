@@ -3,12 +3,28 @@ use miniz_oxide::inflate::core::inflate_flags::{
 };
 use miniz_oxide::inflate::core::{decompress, DecompressorOxide};
 use miniz_oxide::inflate::TINFLStatus;
-use std::io::Read;
+use std::{array, io::Read, sync::LazyLock};
 
-use crate::decoder::{parse_gzip_header, ChunkReceiver, SplatInit, SplatReceiver};
+use crate::{
+    decoder::{
+        parse_gzip_header, ChunkReceiver, QuantizedProperty, ScalarLookup, SplatInit, SplatReceiver,
+    },
+    splat_encode::ShLookup,
+};
 
 pub const SPZ_MAGIC: u32 = 0x5053474e; // "NGSP"
 const SH_C0: f32 = 0.28209479177387814;
+static ALPHA_LOOKUP: LazyLock<ScalarLookup> =
+    LazyLock::new(|| QuantizedProperty::Opacity.lookup(array::from_fn(|b| b as f32 / 255.0)));
+static RGB_LOOKUP: LazyLock<ScalarLookup> = LazyLock::new(|| {
+    QuantizedProperty::Rgb.lookup(array::from_fn(|b| {
+        (b as f32 / 255.0 - 0.5) * (SH_C0 / 0.15) + 0.5
+    }))
+});
+static SCALE_LOOKUP: LazyLock<ScalarLookup> =
+    LazyLock::new(|| QuantizedProperty::LnScale.lookup(array::from_fn(|b| b as f32 / 16.0 - 10.0)));
+static SH_LOOKUP: LazyLock<ShLookup> =
+    LazyLock::new(|| ShLookup::new(array::from_fn(|b| (b as f32 - 128.0) / 128.0)));
 const MAX_SPLAT_CHUNK: usize = 65536;
 const NGSP_HEADER_SIZE: usize = 32;
 const TOC_ENTRY_SIZE: usize = 16;
@@ -529,7 +545,11 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 return;
             };
             let input = &input[..chunk * bytes_per_item];
-            state.output.resize(chunk * components, 0.0);
+            if matches!(state.stage, Centers | Quats)
+                || (state.stage == Sh && !self.splats.prefers_packed_sh())
+            {
+                state.output.resize(chunk * components, 0.0);
+            }
             let output = &mut state.output;
             let base = state.next_splat;
 
@@ -548,20 +568,19 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                     self.splats.set_center(base, chunk, output);
                 }
                 Alphas | Rgb | Scales => {
-                    for (out, byte) in output.iter_mut().zip(input) {
-                        *out = match state.stage {
-                            Alphas => *byte as f32 / 255.0,
-                            Rgb => (*byte as f32 / 255.0 - 0.5) * (SH_C0 / 0.15) + 0.5,
-                            Scales => *byte as f32 / 16.0 - 10.0,
-                            _ => unreachable!(),
-                        };
-                    }
-                    match state.stage {
-                        Alphas => self.splats.set_opacity(base, chunk, output),
-                        Rgb => self.splats.set_rgb(base, chunk, output),
-                        Scales => self.splats.set_ln_scale(base, chunk, output),
+                    let (property, lookup) = match state.stage {
+                        Alphas => (QuantizedProperty::Opacity, &*ALPHA_LOOKUP),
+                        Rgb => (QuantizedProperty::Rgb, &*RGB_LOOKUP),
+                        Scales => (QuantizedProperty::LnScale, &*SCALE_LOOKUP),
                         _ => unreachable!(),
-                    }
+                    };
+                    self.splats.set_quantized(
+                        base,
+                        chunk,
+                        property,
+                        std::slice::from_ref(lookup),
+                        |i, d| input[i * components + d],
+                    );
                 }
                 Quats => {
                     for (out, bytes) in output
@@ -597,6 +616,19 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         }
                     }
                     self.splats.set_quat(base, chunk, output);
+                }
+                Sh if self.splats.prefers_packed_sh() => {
+                    let lookup = &*SH_LOOKUP;
+                    let mut offset = 0;
+                    for (band, coefficients) in
+                        [3, 5, 7].into_iter().enumerate().take(state.sh_degree)
+                    {
+                        self.splats.set_sh_packed(base, chunk, band + 1, |i, k| {
+                            let start = i * sh_components + offset + k * 3;
+                            lookup.encode(input[start..start + 3].try_into().unwrap())
+                        });
+                        offset += coefficients * 3;
+                    }
                 }
                 Sh => {
                     // Input is point-major; receivers take a separate slice per SH band.

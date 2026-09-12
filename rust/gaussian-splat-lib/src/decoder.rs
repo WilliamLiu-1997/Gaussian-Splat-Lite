@@ -11,7 +11,7 @@ use miniz_oxide::inflate::{
 
 use crate::{
     ply::{PlyDecoder, PLY_MAGIC},
-    splat_encode::decode_splat_sh_rgb,
+    splat_encode::{decode_splat_sh_rgb, encode_splat_opacity},
     spz::{SpzDecoder, SPZ_MAGIC},
 };
 
@@ -39,11 +39,39 @@ pub struct SplatProps<'a> {
     pub center: &'a [f32],
     pub opacity: &'a [f32],
     pub rgb: &'a [f32],
+    /// Optional prepacked RAD opacity, supplied only to receivers that opt in.
+    pub opacity_packed: &'a [u32],
     pub scale: &'a [f32],
     pub quat: &'a [f32],
     pub sh1: &'a [f32],
     pub sh2: &'a [f32],
     pub sh3: &'a [f32],
+}
+
+#[derive(Clone, Copy)]
+pub enum QuantizedProperty {
+    Opacity,
+    Rgb,
+    LnScale,
+}
+
+pub struct ScalarLookup {
+    pub values: [f32; 256],
+    pub packed: [u32; 256],
+}
+
+impl QuantizedProperty {
+    pub fn lookup(self, values: [f32; 256]) -> ScalarLookup {
+        let packed = values.map(|value| match self {
+            Self::Opacity => {
+                let mut words = [0; 4];
+                encode_splat_opacity(&mut words, value);
+                words[3]
+            }
+            _ => half::f16::from_f32(value).to_bits() as u32,
+        });
+        ScalarLookup { values, packed }
+    }
 }
 
 #[allow(unused)]
@@ -55,6 +83,10 @@ pub trait SplatReceiver: 'static {
         Ok(())
     }
     fn set_batch(&mut self, base: usize, count: usize, batch: &SplatProps);
+    /// Accepts prepacked RAD opacity; float receivers keep the default.
+    fn accepts_packed_opacity(&self) -> bool {
+        false
+    }
     /// Accepts the same batch with scale supplied in natural-log space.
     /// Receivers that store log scale should override this to avoid exp/log
     /// conversion; the default preserves the public linear-scale contract.
@@ -86,14 +118,69 @@ pub trait SplatReceiver: 'static {
     }
     fn set_quat(&mut self, base: usize, count: usize, quat: &[f32]);
 
+    /// Reads quantized components without requiring an intermediate float batch.
+    /// `lookup` contains one shared table or one per component; `code` receives
+    /// the splat and component indices. The default passes decoded floats on.
+    fn set_quantized<F: Fn(usize, usize) -> u8>(
+        &mut self,
+        base: usize,
+        count: usize,
+        property: QuantizedProperty,
+        lookup: &[ScalarLookup],
+        code: F,
+    ) where
+        Self: Sized,
+    {
+        let dimensions = if matches!(property, QuantizedProperty::Opacity) {
+            1
+        } else {
+            3
+        };
+        let mut values = Vec::with_capacity(count * dimensions);
+        for i in 0..count {
+            for d in 0..dimensions {
+                values.push(lookup[d % lookup.len()].values[code(i, d) as usize]);
+            }
+        }
+        match property {
+            QuantizedProperty::Opacity => self.set_opacity(base, count, &values),
+            QuantizedProperty::Rgb => self.set_rgb(base, count, &values),
+            QuantizedProperty::LnScale => self.set_ln_scale(base, count, &values),
+        }
+    }
+
     fn set_sh(&mut self, base: usize, count: usize, sh1: &[f32], sh2: &[f32], sh3: &[f32]) {}
     fn set_sh1(&mut self, base: usize, count: usize, sh1: &[f32]) {}
     fn set_sh2(&mut self, base: usize, count: usize, sh2: &[f32]) {}
     fn set_sh3(&mut self, base: usize, count: usize, sh3: &[f32]) {}
 
-    /// Allows decoders to quantize float codebooks once instead of per splat.
+    /// Allows decoders to supply prepacked SH instead of expanding float batches.
     fn prefers_packed_sh(&self) -> bool {
         false
+    }
+
+    /// Writes one SH band (1–3); `word` receives the splat and RGB coefficient indices.
+    fn set_sh_packed<F: Fn(usize, usize) -> u32>(
+        &mut self,
+        base: usize,
+        count: usize,
+        band: usize,
+        word: F,
+    ) where
+        Self: Sized,
+    {
+        let coefficients = [3, 5, 7][band - 1];
+        let mut values = Vec::with_capacity(count * coefficients * 3);
+        for i in 0..count {
+            for k in 0..coefficients {
+                values.extend(decode_splat_sh_rgb(word(i, k)));
+            }
+        }
+        match band {
+            1 => self.set_sh1(base, count, &values),
+            2 => self.set_sh2(base, count, &values),
+            _ => self.set_sh3(base, count, &values),
+        }
     }
 
     /// Expands a packed shared SH palette through the normal band setters.

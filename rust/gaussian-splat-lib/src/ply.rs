@@ -1,15 +1,21 @@
 use std::array;
 use std::collections::HashMap;
 use std::f32::consts::SQRT_2;
+use std::sync::LazyLock;
 
 use anyhow::anyhow;
 
 use crate::decoder::{ChunkReceiver, SplatInit, SplatProps, SplatReceiver};
+use crate::splat_encode::ShLookup;
 
 pub const PLY_MAGIC: u32 = 0x00796c70; // "ply"
 const MAX_SPLAT_CHUNK: usize = 65536;
 const SH_C0: f32 = 0.28209479177387814;
 const SUPER_CHUNK_SIZE: usize = 256;
+static COMPRESSED_SH_LOOKUP: LazyLock<ShLookup> =
+    LazyLock::new(|| ShLookup::new(array::from_fn(|b| b as f32 * 8.0 / 255.0 - 4.0)));
+static STANDARD_SH_LOOKUP: LazyLock<ShLookup> =
+    LazyLock::new(|| ShLookup::new(array::from_fn(|b| b as f32 / 255.0)));
 const POINT_CLOUD_PROPERTIES: [&str; 6] = ["x", "y", "z", "red", "green", "blue"];
 const DEFAULT_POINT_SCALE: f32 = 0.001;
 
@@ -129,7 +135,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 break;
             }
 
-            state.output.ensure(count, 0);
+            state.output.ensure(count, [false; 3]);
 
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
@@ -154,7 +160,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 count,
                 &SplatProps {
                     scale: &state.output.scale[..count * 3],
-                    ..state.output.props(count, 0)
+                    ..state.output.props(count, [false; 3])
                 },
             );
 
@@ -170,6 +176,20 @@ impl<T: SplatReceiver> PlyDecoder<T> {
         let Some(PlyState::Standard(state)) = self.state.as_mut() else {
             unreachable!()
         };
+        let sh_props: [Option<&[PlyProperty]>; 3] = [
+            state.sh1.as_ref().map(|p| p.as_slice()),
+            state.sh2.as_ref().map(|p| p.as_slice()),
+            state.sh3.as_ref().map(|p| p.as_slice()),
+        ];
+        let prefers_packed_sh = self.splats.prefers_packed_sh();
+        let packed_sh = sh_props.map(|props| {
+            prefers_packed_sh
+                && props.is_some_and(|p| p.iter().all(|p| matches!(p.ty, PlyPropertyType::Uchar)))
+        });
+        let float_sh = array::from_fn(|band| sh_props[band].is_some() && !packed_sh[band]);
+        let sh1 = state.sh1.filter(|_| !packed_sh[0]);
+        let sh2 = state.sh2.filter(|_| !packed_sh[1]);
+        let sh3 = state.sh3.filter(|_| !packed_sh[2]);
         let mut offset = 0;
         loop {
             let available = (self.buffer.len() - offset) / state.record_size;
@@ -179,7 +199,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 break;
             }
 
-            state.output.ensure(count, state.max_sh_degree);
+            state.output.ensure(count, float_sh);
 
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
@@ -203,19 +223,19 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     state.output.quat[i4 + d] = quat[d] / quat_magnitude;
                 }
 
-                if let Some(sh1) = state.sh1 {
+                if let Some(sh1) = sh1 {
                     let i9 = i * 9;
                     for d in 0..9 {
                         state.output.sh1[i9 + d] = sh1[d].get_f32(&self.buffer, base);
                     }
                 }
-                if let Some(sh2) = state.sh2 {
+                if let Some(sh2) = sh2 {
                     let i15 = i * 15;
                     for d in 0..15 {
                         state.output.sh2[i15 + d] = sh2[d].get_f32(&self.buffer, base);
                     }
                 }
-                if let Some(sh3) = state.sh3 {
+                if let Some(sh3) = sh3 {
                     let i21 = i * 21;
                     for d in 0..21 {
                         state.output.sh3[i21 + d] = sh3[d].get_f32(&self.buffer, base);
@@ -226,9 +246,22 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             self.splats.set_batch_ln_scale(
                 state.next_splat,
                 count,
-                &state.output.props(count, state.max_sh_degree),
+                &state.output.props(count, float_sh),
                 &state.output.scale[..count * 3],
             );
+            for (band, props) in sh_props.iter().enumerate() {
+                if packed_sh[band] {
+                    let props = props.unwrap();
+                    let lookup = &*STANDARD_SH_LOOKUP;
+                    self.splats
+                        .set_sh_packed(state.next_splat, count, band + 1, |i, k| {
+                            let record = offset + i * state.record_size;
+                            lookup.encode(array::from_fn(|d| {
+                                self.buffer[record + props[k * 3 + d].offset]
+                            }))
+                        });
+                }
+            }
 
             state.next_splat += count;
             offset += count * state.record_size;
@@ -281,12 +314,36 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     self.splats.set_batch_ln_scale(
                         elem_read,
                         chunk,
-                        &state.output.props(chunk, 0),
+                        &state.output.props(chunk, [false; 3]),
                         &state.output.scale[..chunk * 3],
                     );
                 }
-                PlyElementKind::Sh => {
-                    if state.sh_props.is_some() {
+                PlyElementKind::Sh => match state.sh_props.as_ref() {
+                    Some(props)
+                        if self.splats.prefers_packed_sh()
+                            && props
+                                .f_rest
+                                .iter()
+                                .all(|p| matches!(p.ty, PlyPropertyType::Uchar)) =>
+                    {
+                        let lookup = &*COMPRESSED_SH_LOOKUP;
+                        for (band, indices) in
+                            [&props.sh1_props, &props.sh2_props, &props.sh3_props]
+                                .into_iter()
+                                .enumerate()
+                                .take(state.max_sh_degree)
+                        {
+                            self.splats
+                                .set_sh_packed(elem_read, chunk, band + 1, |i, k| {
+                                    let record = offset + i * elem_record_size;
+                                    lookup.encode(array::from_fn(|d| {
+                                        self.buffer
+                                            [record + props.f_rest[indices[k * 3 + d]].offset]
+                                    }))
+                                });
+                        }
+                    }
+                    Some(_) => {
                         state.decode_sh(chunk, elem_read, offset, elem_record_size, &self.buffer);
                         self.splats.set_sh(
                             elem_read,
@@ -304,7 +361,8 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                             },
                         );
                     }
-                }
+                    None => {}
+                },
                 PlyElementKind::Other => {
                     // Skip unknown element
                 }
@@ -640,16 +698,16 @@ struct PlyOutput {
 }
 
 impl PlyOutput {
-    fn ensure(&mut self, count: usize, sh_degree: usize) {
+    fn ensure(&mut self, count: usize, float_sh: [bool; 3]) {
         for (output, width) in [
             (&mut self.center, 3),
             (&mut self.opacity, 1),
             (&mut self.rgb, 3),
             (&mut self.scale, 3),
             (&mut self.quat, 4),
-            (&mut self.sh1, if sh_degree >= 1 { 9 } else { 0 }),
-            (&mut self.sh2, if sh_degree >= 2 { 15 } else { 0 }),
-            (&mut self.sh3, if sh_degree >= 3 { 21 } else { 0 }),
+            (&mut self.sh1, if float_sh[0] { 9 } else { 0 }),
+            (&mut self.sh2, if float_sh[1] { 15 } else { 0 }),
+            (&mut self.sh3, if float_sh[2] { 21 } else { 0 }),
         ] {
             if output.len() < count * width {
                 output.resize(count * width, 0.0);
@@ -659,15 +717,15 @@ impl PlyOutput {
 
     // Scale is supplied separately: point clouds use linear scale, while
     // standard and SuperSplat PLY records provide natural-log scale.
-    fn props(&self, count: usize, sh_degree: usize) -> SplatProps<'_> {
+    fn props(&self, count: usize, float_sh: [bool; 3]) -> SplatProps<'_> {
         SplatProps {
             center: &self.center[..count * 3],
             opacity: &self.opacity[..count],
             rgb: &self.rgb[..count * 3],
             quat: &self.quat[..count * 4],
-            sh1: &self.sh1[..if sh_degree >= 1 { count * 9 } else { 0 }],
-            sh2: &self.sh2[..if sh_degree >= 2 { count * 15 } else { 0 }],
-            sh3: &self.sh3[..if sh_degree >= 3 { count * 21 } else { 0 }],
+            sh1: &self.sh1[..if float_sh[0] { count * 9 } else { 0 }],
+            sh2: &self.sh2[..if float_sh[1] { count * 15 } else { 0 }],
+            sh3: &self.sh3[..if float_sh[2] { count * 21 } else { 0 }],
             ..Default::default()
         }
     }
@@ -871,7 +929,7 @@ impl SuperSplatState {
         record_size: usize,
         data: &[u8],
     ) -> anyhow::Result<()> {
-        self.output.ensure(count, self.max_sh_degree);
+        self.output.ensure(count, [false; 3]);
 
         for i in 0..count {
             let splat_index = base_index + i;
@@ -969,7 +1027,8 @@ impl SuperSplatState {
         if self.temp_rest.len() < num_f_rest {
             self.temp_rest.resize(num_f_rest, 0.0);
         }
-        self.output.ensure(count, self.max_sh_degree);
+        self.output
+            .ensure(count, array::from_fn(|band| band < self.max_sh_degree));
         let Some(sh_props) = self.sh_props.as_ref() else {
             return;
         };

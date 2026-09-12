@@ -1,7 +1,7 @@
 use std::array;
 
 use gaussian_splat_lib::{
-    decoder::{SplatInit, SplatProps, SplatReceiver},
+    decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatProps, SplatReceiver},
     splat_encode::{
         encode_splat, encode_splat_center, encode_splat_ln_scale, encode_splat_opacity,
         encode_splat_quat, encode_splat_rgb, encode_splat_scale, encode_splat_sh_rgb,
@@ -184,9 +184,23 @@ impl SplatsData {
         batch: &SplatProps,
         ln_scale: Option<&[f32]>,
     ) {
+        if batch.opacity_packed.is_empty() {
+            self.write_batch::<false>(base, count, batch, ln_scale);
+        } else {
+            self.write_batch::<true>(base, count, batch, ln_scale);
+        }
+    }
+
+    fn write_batch<const PACKED_OPACITY: bool>(
+        &mut self,
+        base: usize,
+        count: usize,
+        batch: &SplatProps,
+        ln_scale: Option<&[f32]>,
+    ) {
         let scale = ln_scale.unwrap_or(batch.scale);
         if !batch.center.is_empty()
-            && !batch.opacity.is_empty()
+            && (PACKED_OPACITY || !batch.opacity.is_empty())
             && !batch.rgb.is_empty()
             && !scale.is_empty()
             && !batch.quat.is_empty()
@@ -197,6 +211,11 @@ impl SplatsData {
             } else {
                 encode_splat
             };
+            let encode_scale = if ln_scale.is_some() {
+                encode_splat_ln_scale
+            } else {
+                encode_splat_scale
+            };
             self.prepare_buffer(base, count, 0, true);
             self.prepare_buffer(base, count, 1, true);
             for i in 0..count {
@@ -205,22 +224,29 @@ impl SplatsData {
                 let rgb = array::from_fn(|d| batch.rgb[i3 + d]);
                 let scale = array::from_fn(|d| scale[i3 + d]);
                 let quat = array::from_fn(|d| batch.quat[i4 + d]);
-                encode(
-                    &mut self.buffer_a[i4..i4 + 4],
-                    &mut self.buffer_b[i4..i4 + 4],
-                    center,
-                    batch.opacity[i],
-                    rgb,
-                    scale,
-                    quat,
-                );
+                let a = &mut self.buffer_a[i4..i4 + 4];
+                let b = &mut self.buffer_b[i4..i4 + 4];
+                if PACKED_OPACITY {
+                    encode_splat_center(a, center);
+                    a[3] = batch.opacity_packed[i];
+                    encode_splat_rgb(b, rgb);
+                    encode_scale(b, scale);
+                    encode_splat_quat(b, quat);
+                } else {
+                    encode(a, b, center, batch.opacity[i], rgb, scale, quat);
+                }
             }
             self.invalidate_zero_scale_sort_centers(base, count, scale, ln_scale.is_some());
         } else {
             if !batch.center.is_empty() {
                 self.set_center(base, count, batch.center);
             }
-            if !batch.opacity.is_empty() {
+            if PACKED_OPACITY {
+                self.prepare_buffer(base, count, 0, false);
+                for i in 0..count {
+                    self.buffer_a[i * 4 + 3] = batch.opacity_packed[i];
+                }
+            } else if !batch.opacity.is_empty() {
                 self.set_opacity(base, count, batch.opacity);
             }
             if !batch.rgb.is_empty() {
@@ -242,7 +268,16 @@ impl SplatsData {
 }
 
 impl SplatReceiver for SplatsData {
+    fn accepts_packed_opacity(&self) -> bool {
+        true
+    }
+
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
+        // Reject impossible counts before texture padding can wrap usize on WASM32.
+        anyhow::ensure!(
+            init.num_splats as u64 <= u64::from(u32::MAX) / 4,
+            "packed output exceeds the typed-array length range"
+        );
         let (_, _, _, max_splats) = get_splat_tex_size(init.num_splats);
         anyhow::ensure!(
             max_splats as u64 * 4 <= u32::MAX as u64,
@@ -373,6 +408,90 @@ impl SplatReceiver for SplatsData {
 
     fn prefers_packed_sh(&self) -> bool {
         true
+    }
+
+    fn set_quantized<F: Fn(usize, usize) -> u8>(
+        &mut self,
+        base: usize,
+        count: usize,
+        property: QuantizedProperty,
+        lookup: &[ScalarLookup],
+        code: F,
+    ) {
+        let opacity = matches!(property, QuantizedProperty::Opacity);
+        self.prepare_buffer(base, count, usize::from(!opacity), false);
+        let buffer = if opacity {
+            &mut self.buffer_a
+        } else {
+            &mut self.buffer_b
+        };
+        for i in 0..count {
+            let words = &mut buffer[i * 4..i * 4 + 4];
+            if opacity {
+                words[3] = lookup[0].packed[code(i, 0) as usize];
+                continue;
+            }
+            let codes: [usize; 3] = array::from_fn(|d| code(i, d) as usize);
+            let packed: [u32; 3] = array::from_fn(|d| lookup[d % lookup.len()].packed[codes[d]]);
+            match property {
+                QuantizedProperty::Rgb => {
+                    words[0] = packed[0] | (packed[1] << 16);
+                    words[1] = (words[1] & 0xffff0000) | packed[2];
+                }
+                QuantizedProperty::LnScale => {
+                    words[1] = (words[1] & 0xffff) | (packed[0] << 16);
+                    words[2] = packed[1] | (packed[2] << 16);
+                    if (0..3)
+                        .all(|d| lookup[d % lookup.len()].values[codes[d]] == f32::NEG_INFINITY)
+                    {
+                        for d in 0..3 {
+                            self.sort_centers
+                                .set_index(((base + i) * 3 + d) as u32, f32::NAN);
+                        }
+                    }
+                }
+                QuantizedProperty::Opacity => unreachable!(),
+            }
+        }
+    }
+
+    fn set_sh_packed<F: Fn(usize, usize) -> u32>(
+        &mut self,
+        base: usize,
+        count: usize,
+        band: usize,
+        word: F,
+    ) {
+        if band > self.max_sh_degree {
+            return;
+        }
+        self.invalidate_buffers();
+        self.ensure_buffer_a(count);
+        // SH1 and SH2 share the first four-word block; SH3 uses two more blocks.
+        let offsets = [0, 3, 8, 15];
+        let (start, end) = (offsets[band - 1], offsets[band]);
+        let outputs = [&self.sh1, &self.sh2, &self.sh3a, &self.sh3b];
+        for block in start / 4..=(end - 1) / 4 {
+            let Some(output) = outputs[block] else {
+                continue;
+            };
+            let first = start.max(block * 4);
+            let last = end.min(block * 4 + 4);
+            let target = output.subarray((base * 4) as u32, ((base + count) * 4) as u32);
+            if last - first < 4 {
+                if block == 0 && self.sh2.is_some() {
+                    target.copy_to(&mut self.buffer_a);
+                } else {
+                    self.buffer_a.fill(0);
+                }
+            }
+            for i in 0..count {
+                for k in first..last {
+                    self.buffer_a[i * 4 + k % 4] = word(i, k - start);
+                }
+            }
+            target.copy_from(&self.buffer_a);
+        }
     }
 
     fn set_sh_palette(

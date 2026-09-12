@@ -5,7 +5,7 @@
 //! This implementation validates the complete chunk before publishing output or
 //! changing its codebook cache. `gz` denotes **raw DEFLATE**, not a gzip wrapper.
 
-use std::{array, borrow::Cow, collections::HashSet};
+use std::{array, borrow::Cow, collections::HashSet, sync::LazyLock};
 
 use anyhow::{bail, ensure, Context, Result};
 use half::f16;
@@ -14,13 +14,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    decoder::{SplatInit, SplatProps, SplatReceiver},
-    splat_encode::encode_splat_sh_rgb,
+    decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatProps, SplatReceiver},
+    splat_encode::{
+        encode_splat_sh_rgb, f16_table, ShLookup, F16_LOOKUP, F16_SH_LOOKUP, LOD_OPACITY_LOOKUP,
+    },
 };
 
 pub const RAD_MAGIC: u32 = 0x30444152;
 pub const RAD_CHUNK_MAGIC: u32 = 0x43444152;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+static LN_F16_LINEAR: LazyLock<Box<[f32; 65536]>> =
+    LazyLock::new(|| f16_table(|bits| f16::from_bits(bits).to_f32().exp()));
+static OCT_ANGLES: LazyLock<[[f32; 2]; 256]> = LazyLock::new(|| {
+    array::from_fn(|r| {
+        let half_theta = r as f32 / 255.0 * 0.5 * std::f32::consts::PI;
+        let (s, w) = half_theta.sin_cos();
+        [s, w]
+    })
+});
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RadChunkRange {
@@ -373,23 +384,202 @@ impl Property {
     }
 }
 
-/// Unpacked, validated physical values. Tree pointers retain file-global indices.
-#[derive(Debug)]
+/// Validated values and quantized properties. Tree pointers retain file-global indices.
+#[derive(Default)]
 struct DecodedChunk {
     pub base: u32,
     pub count: usize,
     pub max_sh: usize,
     pub centers: Vec<f32>,
     pub opacity: Vec<f32>,
+    pub opacity_packed: Vec<u32>,
     pub rgb: Vec<f32>,
+    pub quantized: Vec<(QuantizedProperty, ScalarLookup, Vec<u8>)>,
     pub scales: Vec<f32>,
+    pub scales_are_log: bool,
     pub quaternions: Vec<f32>,
     pub sh: [Vec<f32>; 3],
+    pub packed_sh: [Vec<u32>; 3],
     pub sh_labels: Option<(usize, Vec<u32>)>,
     pub child_start: Option<Vec<u32>>,
     pub child_count: Option<Vec<u16>>,
     /// Conservative projected-size radius, not a subtree spatial bounding box.
     pub lod_radii: Option<Vec<f32>>,
+}
+
+impl DecodedChunk {
+    fn decode_quantized(&mut self, prop: &Property, mut data: Cow<'_, [u8]>) -> Result<()> {
+        let count = self.count;
+        if matches!(prop.encoding, Encoding::R8Delta | Encoding::S8Delta) {
+            for plane in data.to_mut().chunks_exact_mut(count) {
+                let mut last = 0u8;
+                for code in plane {
+                    last = last.wrapping_add(*code);
+                    *code = last;
+                }
+            }
+        }
+        let values = array::from_fn(|b| {
+            if matches!(prop.encoding, Encoding::S8 | Encoding::S8Delta) {
+                (b as u8 as i8 as f32 / 127.0) * prop.max.unwrap()
+            } else {
+                (b as f32 / 255.0) * (prop.max.unwrap() - prop.min.unwrap()) + prop.min.unwrap()
+            }
+        });
+        ensure!(
+            data.iter().all(|&b| values[b as usize].is_finite()),
+            "Non-finite RAD {:?} value",
+            prop.property
+        );
+        match prop.property {
+            PropertyName::Alpha => {
+                ensure!(
+                    data.iter().all(|&b| values[b as usize] >= 0.0),
+                    "Negative RAD opacity"
+                );
+                // Keep file alpha for LOD radii; the lookup supplies raw opacity.
+                if self.lod_radii.is_some() {
+                    self.opacity = data.iter().map(|&b| values[b as usize]).collect();
+                }
+                let property = QuantizedProperty::Opacity;
+                self.quantized.push((
+                    property,
+                    property.lookup(values.map(decode_opacity)),
+                    data.into_owned(),
+                ));
+            }
+            PropertyName::Rgb => {
+                let property = QuantizedProperty::Rgb;
+                self.quantized
+                    .push((property, property.lookup(values), data.into_owned()));
+            }
+            _ => {
+                let lookup = ShLookup::new(values);
+                let coefficients = prop.property.dimensions() / 3;
+                let words = &mut self.packed_sh[prop.property.sh_degree() - 1];
+                words.reserve(count * coefficients);
+                for i in 0..count {
+                    for k in 0..coefficients {
+                        words
+                            .push(lookup.encode(array::from_fn(|d| data[(k * 3 + d) * count + i])));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates f16 component planes and packs point-major RGB coefficients.
+    fn decode_f16_sh(&mut self, property: PropertyName, data: &[u8]) -> Result<()> {
+        let values = &*F16_LOOKUP;
+        ensure!(
+            data.chunks_exact(2)
+                .all(|b| values[u16::from_le_bytes([b[0], b[1]]) as usize].is_finite()),
+            "Non-finite RAD {:?} value",
+            property
+        );
+        let lookup = &*F16_SH_LOOKUP;
+        let coefficients = property.dimensions() / 3;
+        let words = &mut self.packed_sh[property.sh_degree() - 1];
+        words.reserve(self.count * coefficients);
+        for i in 0..self.count {
+            for k in 0..coefficients {
+                words.push(lookup.encode_indices(array::from_fn(|d| {
+                    let offset = ((k * 3 + d) * self.count + i) * 2;
+                    u16::from_le_bytes([data[offset], data[offset + 1]]) as usize
+                })));
+            }
+        }
+        Ok(())
+    }
+
+    fn decode_scales(
+        &mut self,
+        prop: &Property,
+        data: Cow<'_, [u8]>,
+        packed_output: bool,
+    ) -> Result<()> {
+        self.scales_are_log = packed_output && prop.encoding == Encoding::LnF16;
+        match prop.encoding {
+            Encoding::Ln0R8 => {
+                let min = prop.min.unwrap();
+                let step = (prop.max.unwrap() - min) / 254.0;
+                let mut values: [f32; 256] = array::from_fn(|code| {
+                    if code == 0 {
+                        f32::NEG_INFINITY
+                    } else {
+                        min + (code - 1) as f32 * step
+                    }
+                });
+                let linear = values.map(f32::exp);
+                self.decode_scale_values(!packed_output, |index| {
+                    let scale = linear[data[index] as usize];
+                    (scale, scale)
+                })?;
+                if packed_output {
+                    // Underflow retains the zero-scale disabling semantics.
+                    for (value, scale) in values.iter_mut().zip(linear) {
+                        if scale == 0.0 {
+                            *value = f32::NEG_INFINITY;
+                        }
+                    }
+                    let property = QuantizedProperty::LnScale;
+                    self.quantized
+                        .push((property, property.lookup(values), data.into_owned()));
+                }
+                Ok(())
+            }
+            Encoding::LnF16 => {
+                let linear = &*LN_F16_LINEAR;
+                let logs = &*F16_LOOKUP;
+                self.decode_scale_values(true, |index| {
+                    let bits =
+                        u16::from_le_bytes(data[index * 2..index * 2 + 2].try_into().unwrap());
+                    (logs[bits as usize], linear[bits as usize])
+                })
+            }
+            Encoding::F32 => self.decode_scale_values(true, |index| {
+                let value = f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
+                (value, value)
+            }),
+            _ => unreachable!("validated RAD scale encoding"),
+        }
+    }
+
+    /// Reads (source, linear) values from component planes; quantized output skips float storage.
+    fn decode_scale_values(
+        &mut self,
+        store_values: bool,
+        read: impl Fn(usize) -> (f32, f32),
+    ) -> Result<()> {
+        if store_values {
+            self.scales.reserve(self.count * 3);
+        }
+        for i in 0..self.count {
+            let components: [(f32, f32); 3] = array::from_fn(|d| read(d * self.count + i));
+            let linear = components.map(|(_, scale)| scale);
+            ensure!(
+                linear.iter().all(|v| v.is_finite()),
+                "Non-finite RAD Scales value"
+            );
+            ensure!(linear.iter().all(|v| *v >= 0.0), "Negative RAD scale");
+            if store_values {
+                self.scales.extend(components.map(|(value, scale)| {
+                    if !self.scales_are_log {
+                        scale
+                    } else if scale == 0.0 {
+                        f32::NEG_INFINITY
+                    } else {
+                        value
+                    }
+                }));
+            }
+            if let Some(radii) = &mut self.lod_radii {
+                radii.push((linear[0] + linear[1] + linear[2]) / 3.0);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Page metadata kept alongside the decoded SplatReceiver output.
@@ -405,6 +595,7 @@ pub struct RadDecoder {
     pub meta: RadMeta,
     max_sh: usize,
     codebooks: [Option<Vec<f32>>; 3],
+    codebooks_f16: [bool; 3],
     // Separate degrees keep omitted bands zero when chunks use different maxSh.
     palettes: [Option<Vec<u32>>; 3],
     chunk_bounds: Vec<(u32, u32)>,
@@ -421,6 +612,7 @@ impl RadDecoder {
             meta,
             max_sh,
             codebooks: array::from_fn(|_| None),
+            codebooks_f16: [false; 3],
             palettes: array::from_fn(|_| None),
             chunk_bounds,
         })
@@ -432,35 +624,48 @@ impl RadDecoder {
         bytes: &[u8],
         mut splats: T,
     ) -> Result<(T, RadChunk)> {
-        let mut chunk = self.decode_chunk_data(bytes, splats.prefers_packed_sh())?;
-        // Spark stores LOD-encoded alpha in RAD. Restore raw opacity for the
-        // shared receiver, after computing LOD radii from the file values.
-        for opacity in &mut chunk.opacity {
-            if *opacity > 1.0 {
-                let shape = opacity.min(2.0).mul_add(4.0, -3.0);
-                *opacity = ((shape * shape - 1.0) / std::f32::consts::E).exp();
-            }
-        }
+        let chunk = self.decode_chunk_data(
+            bytes,
+            splats.prefers_packed_sh(),
+            splats.accepts_packed_opacity(),
+        )?;
         splats.init_splats(&SplatInit {
             num_splats: chunk.count,
             max_sh_degree: chunk.max_sh,
         })?;
-        splats.set_batch(
-            0,
-            chunk.count,
-            &SplatProps {
-                center: &chunk.centers,
-                opacity: &chunk.opacity,
-                rgb: &chunk.rgb,
-                scale: &chunk.scales,
-                quat: &chunk.quaternions,
-                sh1: &chunk.sh[0],
-                sh2: &chunk.sh[1],
-                sh3: &chunk.sh[2],
-            },
-        );
+        let batch = SplatProps {
+            center: &chunk.centers,
+            opacity: &chunk.opacity,
+            opacity_packed: &chunk.opacity_packed,
+            rgb: &chunk.rgb,
+            scale: &chunk.scales,
+            quat: &chunk.quaternions,
+            sh1: &chunk.sh[0],
+            sh2: &chunk.sh[1],
+            sh3: &chunk.sh[2],
+        };
+        if chunk.scales_are_log {
+            splats.set_batch_ln_scale(0, chunk.count, &batch, &chunk.scales);
+        } else {
+            splats.set_batch(0, chunk.count, &batch);
+        }
+        for (property, lookup, codes) in &chunk.quantized {
+            splats.set_quantized(
+                0,
+                chunk.count,
+                *property,
+                std::slice::from_ref(lookup),
+                |i, d| codes[d * chunk.count + i],
+            );
+        }
         if let Some((degree, labels)) = chunk.sh_labels {
             splats.set_sh_palette(0, chunk.count, degree, self.sh_palette(degree), &labels);
+        }
+        for (band, words) in chunk.packed_sh.iter().enumerate() {
+            if !words.is_empty() {
+                let coefficients = [3, 5, 7][band];
+                splats.set_sh_packed(0, chunk.count, band + 1, |i, k| words[i * coefficients + k]);
+            }
         }
         splats.finish()?;
         Ok((
@@ -482,10 +687,16 @@ impl RadDecoder {
             let mut offset = 0;
             for (band, coefficients) in [3, 5, 7].into_iter().enumerate().take(degree) {
                 let codebook = self.codebooks[band].as_ref().unwrap();
+                let half_lookup = self.codebooks_f16[band].then(|| &*F16_SH_LOOKUP);
                 for (label, entry) in codebook.chunks_exact(coefficients * 3).enumerate() {
                     for (i, rgb) in entry.chunks_exact(3).enumerate() {
-                        palette[label * stride + offset + i] =
-                            encode_splat_sh_rgb(rgb.try_into().unwrap());
+                        palette[label * stride + offset + i] = if let Some(lookup) = half_lookup {
+                            lookup.encode_indices(array::from_fn(|d| {
+                                f16::from_f32(rgb[d]).to_bits() as usize
+                            }))
+                        } else {
+                            encode_splat_sh_rgb(rgb.try_into().unwrap())
+                        };
                     }
                 }
                 offset += coefficients;
@@ -494,7 +705,12 @@ impl RadDecoder {
         })
     }
 
-    fn decode_chunk_data(&mut self, bytes: &[u8], packed_sh: bool) -> Result<DecodedChunk> {
+    fn decode_chunk_data(
+        &mut self,
+        bytes: &[u8],
+        packed_output: bool,
+        packed_opacity: bool,
+    ) -> Result<DecodedChunk> {
         ensure!(bytes.len() >= 8, "Incomplete RADC header");
         ensure!(
             bytes[..4] == RAD_CHUNK_MAGIC.to_le_bytes(),
@@ -657,20 +873,13 @@ impl RadDecoder {
             );
         }
         let mut pending_codes: [Option<Vec<f32>>; 3] = array::from_fn(|_| None);
+        let mut pending_f16 = [false; 3];
         let mut result = DecodedChunk {
             base: chunk.base as u32,
             count,
             max_sh,
-            centers: Vec::new(),
-            opacity: Vec::new(),
-            rgb: Vec::new(),
-            scales: Vec::new(),
-            quaternions: Vec::new(),
-            sh: array::from_fn(|_| Vec::new()),
-            sh_labels: None,
-            child_start: None,
-            child_count: None,
-            lod_radii: None,
+            lod_radii: lod_tree.then(|| Vec::with_capacity(count)),
+            ..DecodedChunk::default()
         };
         let mut labels: Option<Vec<u32>> = None;
         for prop in &chunk.properties {
@@ -707,6 +916,30 @@ impl RadDecoder {
                 data.len()
             );
             match prop.property {
+                name if packed_output
+                    && name.sh_degree() > 0
+                    && !name.is_code()
+                    && prop.encoding == Encoding::F16 =>
+                {
+                    result.decode_f16_sh(name, &data)?;
+                }
+                name if packed_output
+                    && matches!(
+                        name,
+                        PropertyName::Alpha
+                            | PropertyName::Rgb
+                            | PropertyName::Sh1
+                            | PropertyName::Sh2
+                            | PropertyName::Sh3
+                    )
+                    && matches!(
+                        prop.encoding,
+                        Encoding::R8 | Encoding::R8Delta | Encoding::S8 | Encoding::S8Delta
+                    ) =>
+                {
+                    result.decode_quantized(prop, data)?
+                }
+                PropertyName::Scales => result.decode_scales(prop, data, packed_output)?,
                 PropertyName::ChildStart => result.child_start = Some(decode_u32(&data, 1, count)),
                 PropertyName::ChildCount => result.child_count = Some(decode_u16(&data, 1, count)),
                 PropertyName::ShLabel => {
@@ -734,17 +967,20 @@ impl RadDecoder {
                                 "Negative RAD opacity"
                             );
                             result.opacity = values;
+                            if packed_opacity && prop.encoding == Encoding::F16 {
+                                let lookup = &*LOD_OPACITY_LOOKUP;
+                                result.opacity_packed = data
+                                    .chunks_exact(2)
+                                    .map(|b| lookup[u16::from_le_bytes([b[0], b[1]]) as usize])
+                                    .collect();
+                            }
                         }
                         PropertyName::Rgb => result.rgb = values,
-                        PropertyName::Scales => {
-                            ensure!(
-                                values.iter().all(|value| *value >= 0.0),
-                                "Negative RAD scale"
-                            );
-                            result.scales = values;
-                        }
                         PropertyName::Orientation => result.quaternions = values,
-                        _ if name.is_code() => pending_codes[name.sh_degree() - 1] = Some(values),
+                        _ if name.is_code() => {
+                            pending_f16[name.sh_degree() - 1] = prop.encoding == Encoding::F16;
+                            pending_codes[name.sh_degree() - 1] = Some(values);
+                        }
                         _ => result.sh[name.sh_degree() - 1] = values,
                     }
                 }
@@ -765,7 +1001,7 @@ impl RadDecoder {
                     .as_ref()
                     .or(self.codebooks[band].as_ref())
                     .context("RAD SH codebook unavailable; decode chunk 0 first")?;
-                if !packed_sh {
+                if !packed_output {
                     let dimensions = [9, 15, 21][band];
                     let mut coefficients = Vec::with_capacity(count * dimensions);
                     for &label in &labels {
@@ -775,13 +1011,14 @@ impl RadDecoder {
                     result.sh[band] = coefficients;
                 }
             }
-            if packed_sh {
+            if packed_output {
                 result.sh_labels = Some((decode_sh, labels));
             }
         } else {
             for band in 0..decode_sh {
                 ensure!(
-                    result.sh[band].len() == count * [9, 15, 21][band],
+                    result.sh[band].len() == count * [9, 15, 21][band]
+                        || result.packed_sh[band].len() == count * [3, 5, 7][band],
                     "Missing RAD SH{} coefficients",
                     band + 1
                 );
@@ -794,27 +1031,44 @@ impl RadDecoder {
                 result.child_start.as_ref().unwrap(),
                 result.child_count.as_ref().unwrap(),
             )?;
-            let mut radii = Vec::with_capacity(count);
-            for (scales, &opacity) in result.scales.chunks_exact(3).zip(&result.opacity) {
+            // Scale decoding supplied the means; alpha can appear later in the file.
+            for (radius, &opacity) in result
+                .lod_radii
+                .as_mut()
+                .unwrap()
+                .iter_mut()
+                .zip(&result.opacity)
+            {
                 let expansion = if opacity <= 1.0 {
                     1.0
                 } else {
                     1.0 + 2.8 * (opacity - 1.0)
                 };
-                let avg_scale = (scales[0] + scales[1] + scales[2]) / 3.0;
-                let radius = expansion * avg_scale;
+                *radius *= expansion;
                 ensure!(radius.is_finite(), "RAD LOD radius overflow");
-                radii.push(radius);
             }
-            result.lod_radii = Some(radii);
+        }
+        // LOD radii use file alpha; receivers get raw or prepacked opacity.
+        if !result.opacity_packed.is_empty()
+            || result
+                .quantized
+                .iter()
+                .any(|(property, _, _)| matches!(property, QuantizedProperty::Opacity))
+        {
+            result.opacity.clear();
+        } else {
+            for opacity in &mut result.opacity {
+                *opacity = decode_opacity(*opacity);
+            }
         }
         // Commit only after the chunk, labels, and tree have all passed checks.
         if pending_codes.iter().any(Option::is_some) {
             self.palettes.fill(None);
         }
-        for (cached, pending) in self.codebooks.iter_mut().zip(pending_codes) {
+        for (band, (cached, pending)) in self.codebooks.iter_mut().zip(pending_codes).enumerate() {
             if pending.is_some() {
                 *cached = pending;
+                self.codebooks_f16[band] = pending_f16[band];
             }
         }
         Ok(result)
@@ -876,6 +1130,15 @@ fn validate_local_tree(base: u32, total: u32, starts: &[u32], counts: &[u16]) ->
     Ok(())
 }
 
+fn decode_opacity(opacity: f32) -> f32 {
+    if opacity > 1.0 {
+        let shape = opacity.min(2.0).mul_add(4.0, -3.0);
+        ((shape * shape - 1.0) / std::f32::consts::E).exp()
+    } else {
+        opacity
+    }
+}
+
 fn decode_float_property(prop: &Property, data: &[u8], count: usize) -> Result<Vec<f32>> {
     use Encoding::*;
     let dims = prop.property.dimensions();
@@ -888,13 +1151,8 @@ fn decode_float_property(prop: &Property, data: &[u8], count: usize) -> Result<V
         R8Delta => decode_r8_delta(data, dims, count, prop.min.unwrap(), prop.max.unwrap()),
         S8 => decode_s8(data, dims, count, prop.max.unwrap()),
         S8Delta => decode_s8_delta(data, dims, count, prop.max.unwrap()),
-        Ln0R8 => decode_ln_0r8(data, dims, count, prop.min.unwrap(), prop.max.unwrap()),
-        LnF16 => decode_f16(data, dims, count)
-            .into_iter()
-            .map(f32::exp)
-            .collect(),
         Oct88R8 => return Ok(decode_quat_oct88r8(data, count)),
-        U16 | U32 => bail!("Integer encoding for floating RAD property"),
+        Ln0R8 | LnF16 | U16 | U32 => bail!("Unexpected encoding for floating RAD property"),
     };
     if prop.property == PropertyName::Orientation {
         ensure!(
@@ -1020,27 +1278,14 @@ fn decode_s8_delta(data: &[u8], dims: usize, count: usize, max: f32) -> Vec<f32>
     result
 }
 
-fn decode_ln_0r8(data: &[u8], dims: usize, count: usize, min: f32, max: f32) -> Vec<f32> {
-    let mut result = Vec::with_capacity(dims * count);
-    for i in 0..count {
-        let mut index = i;
-        for _ in 0..dims {
-            result.push(decode_scale8(data[index], min, max));
-            index += count;
-        }
-    }
-    result
-}
-
 fn decode_quat_oct88r8(data: &[u8], count: usize) -> Vec<f32> {
     let mut result = Vec::with_capacity(4 * count);
+    let angles = &*OCT_ANGLES;
     for i in 0..count {
         let index = i * 3;
-        result.extend(decode_quat_oct888([
-            data[index],
-            data[index + 1],
-            data[index + 2],
-        ]));
+        let axis = decode_oct_axis([data[index], data[index + 1]]);
+        let [s, w] = angles[data[index + 2] as usize];
+        result.extend([axis[0] * s, axis[1] * s, axis[2] * s, w]);
     }
     result
 }
@@ -1074,24 +1319,11 @@ fn decode_u32(data: &[u8], dims: usize, count: usize) -> Vec<u32> {
     result
 }
 
-fn decode_quat_oct888([u, v, r]: [u8; 3]) -> [f32; 4] {
+fn decode_oct_axis([u, v]: [u8; 2]) -> [f32; 3] {
     let [x, y] = [u, v].map(|x| x as f32 / 255.0 * 2.0 - 1.0);
     let z = 1.0 - x.abs() - y.abs();
     let t = (-z).max(0.0);
     let [x, y] = [x, y].map(|x| if x >= 0.0 { x - t } else { x + t });
     let length = (x * x + y * y + z * z).sqrt();
-    let axis = [x / length, y / length, z / length];
-
-    let half_theta = r as f32 / 255.0 * 0.5 * std::f32::consts::PI;
-    let (s, w) = half_theta.sin_cos();
-    [axis[0] * s, axis[1] * s, axis[2] * s, w]
-}
-
-fn decode_scale8(scale: u8, ln_scale_min: f32, ln_scale_max: f32) -> f32 {
-    if scale == 0 {
-        0.0
-    } else {
-        let ln_scale_scale = (ln_scale_max - ln_scale_min) / 254.0;
-        (ln_scale_min + (scale - 1) as f32 * ln_scale_scale).exp()
-    }
+    [x / length, y / length, z / length]
 }

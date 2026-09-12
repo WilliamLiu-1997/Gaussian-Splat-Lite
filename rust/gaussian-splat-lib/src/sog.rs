@@ -6,8 +6,8 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_json::Value;
 
 use crate::{
-    decoder::{SplatInit, SplatReceiver},
-    splat_encode::encode_splat_sh_rgb,
+    decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatReceiver},
+    splat_encode::ShLookup,
 };
 
 const BATCH: usize = 65536;
@@ -78,8 +78,8 @@ fn lookup<const N: usize>(section: &Value, version: usize, name: &str) -> Result
 struct Metadata {
     count: usize,
     means: ([f32; 3], [f32; 3]),
-    scales: [[f32; 256]; 3],
-    colors: [[f32; 256]; 4],
+    scales: [ScalarLookup; 3],
+    colors: [ScalarLookup; 4],
     sh: [f32; 256],
     degree: usize,
     palette_count: usize,
@@ -195,8 +195,15 @@ impl Metadata {
         Ok(Self {
             count,
             means,
-            scales,
-            colors,
+            scales: scales.map(|values| QuantizedProperty::LnScale.lookup(values)),
+            colors: array::from_fn(|d| {
+                let property = if d == 3 {
+                    QuantizedProperty::Opacity
+                } else {
+                    QuantizedProperty::Rgb
+                };
+                property.lookup(colors[d])
+            }),
             sh,
             degree,
             palette_count,
@@ -444,13 +451,13 @@ impl<T: SplatReceiver> SogDecoder<T> {
             "invalid centroid count or height"
         );
         let words = SH_WORDS[self.meta.degree];
+        let lookup = ShLookup::new(self.meta.sh);
         self.palette.resize(self.meta.palette_count * words, 0);
         for label in 0..self.meta.palette_count {
             let pixel = (label / 64) * image.width + (label % 64) * SH_COEFFS[degree];
             for coeff in 0..SH_COEFFS[self.meta.degree] {
-                let rgb =
-                    array::from_fn(|d| self.meta.sh[image.channel(pixel + coeff, d) as usize]);
-                self.palette[label * words + coeff] = encode_splat_sh_rgb(rgb);
+                self.palette[label * words + coeff] =
+                    lookup.encode(array::from_fn(|d| image.channel(pixel + coeff, d)));
             }
         }
         self.init_splats()
@@ -499,14 +506,10 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 splats.set_center(self.base, count, &self.floats);
             }
             "scales" => {
-                self.floats.resize(count * 7, 0.0);
-                let (scales, quats) = self.floats.split_at_mut(count * 3);
+                self.floats.resize(count * 4, 0.0);
+                let quats = &mut self.floats;
                 let quat_image = &self.images[1];
                 for i in 0..count {
-                    for d in 0..3 {
-                        scales[i * 3 + d] =
-                            self.meta.scales[d][image.channel(self.base + i, d) as usize];
-                    }
                     let [a, b, c] = array::from_fn(|d| {
                         (quat_image.channel(self.base + i, d) as f32 / 255.0 - 0.5)
                             * std::f32::consts::SQRT_2
@@ -524,21 +527,30 @@ impl<T: SplatReceiver> SogDecoder<T> {
                         quats[i * 4 + d] = quat[d] / norm;
                     }
                 }
-                splats.set_ln_scale(self.base, count, scales);
+                splats.set_quantized(
+                    self.base,
+                    count,
+                    QuantizedProperty::LnScale,
+                    &self.meta.scales,
+                    |i, d| image.channel(self.base + i, d),
+                );
                 splats.set_quat(self.base, count, quats);
             }
             "sh0" => {
-                self.floats.resize(count * 4, 0.0);
-                let (rgb, opacity) = self.floats.split_at_mut(count * 3);
-                for i in 0..count {
-                    for d in 0..3 {
-                        rgb[i * 3 + d] =
-                            self.meta.colors[d][image.channel(self.base + i, d) as usize];
-                    }
-                    opacity[i] = self.meta.colors[3][image.channel(self.base + i, 3) as usize];
-                }
-                splats.set_rgb(self.base, count, rgb);
-                splats.set_opacity(self.base, count, opacity);
+                splats.set_quantized(
+                    self.base,
+                    count,
+                    QuantizedProperty::Rgb,
+                    &self.meta.colors[..3],
+                    |i, d| image.channel(self.base + i, d),
+                );
+                splats.set_quantized(
+                    self.base,
+                    count,
+                    QuantizedProperty::Opacity,
+                    &self.meta.colors[3..],
+                    |i, _| image.channel(self.base + i, 3),
+                );
             }
             "labels" => {
                 self.labels.resize(count, 0);
