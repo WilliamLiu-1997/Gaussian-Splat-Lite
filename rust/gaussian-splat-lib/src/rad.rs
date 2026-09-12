@@ -2,8 +2,10 @@
 //!
 //! Property codecs are adapted from Spark's MIT-licensed `rad.rs`.
 //! Copyright 2025 WORLD LABS TECHNOLOGIES, INC. See THIRD_PARTY_LICENSES.md.
-//! This implementation validates the complete chunk before publishing output or
-//! changing its codebook cache. `gz` denotes **raw DEFLATE**, not a gzip wrapper.
+//! Full decoding validates the complete chunk before publishing output or
+//! changing its codebook cache. Codebook initialization validates the container
+//! and codebooks only, for a root already decoded by another worker.
+//! `gz` denotes **raw DEFLATE**, not a gzip wrapper.
 
 use std::{array, borrow::Cow, collections::HashSet, sync::LazyLock};
 
@@ -644,7 +646,7 @@ impl RadDecoder {
         bytes: &[u8],
         mut splats: T,
     ) -> Result<(T, RadChunk)> {
-        let chunk = self.decode_chunk_data(bytes)?;
+        let chunk = self.decode_chunk_data(bytes, false)?;
         splats.init_splats(&SplatInit {
             num_splats: chunk.count,
             max_sh_degree: chunk.max_sh,
@@ -695,6 +697,12 @@ impl RadDecoder {
         ))
     }
 
+    /// Seed codebooks from an already validated root; checks metadata and codebook
+    /// payloads without decoding geometry, labels, or tree payloads again.
+    pub fn initialize_codebooks(&mut self, bytes: &[u8]) -> Result<()> {
+        self.decode_chunk_data(bytes, true).map(|_| ())
+    }
+
     /// Quantize validated codebooks once for each requested degree.
     fn sh_palette(&mut self, degree: usize) -> &[u32] {
         self.palettes[degree - 1].get_or_insert_with(|| {
@@ -721,7 +729,7 @@ impl RadDecoder {
         })
     }
 
-    fn decode_chunk_data(&mut self, bytes: &[u8]) -> Result<DecodedChunk> {
+    fn decode_chunk_data(&mut self, bytes: &[u8], codebooks_only: bool) -> Result<DecodedChunk> {
         ensure!(bytes.len() >= 8, "Incomplete RADC header");
         ensure!(
             bytes[..4] == RAD_CHUNK_MAGIC.to_le_bytes(),
@@ -734,6 +742,12 @@ impl RadDecoder {
         ensure!(bytes.len() >= payload_start, "Incomplete RADC metadata");
         let chunk: RadChunkMeta = serde_json::from_slice(&bytes[8..8 + json_length])
             .context("Invalid or unsupported RADC metadata")?;
+        if codebooks_only {
+            ensure!(
+                chunk.base == 0,
+                "RAD codebook initialization requires chunk 0"
+            );
+        }
         ensure!(
             chunk.version == 1,
             "Unsupported RADC version: {}",
@@ -889,12 +903,13 @@ impl RadDecoder {
             base: chunk.base as u32,
             count,
             max_sh,
-            lod_radii: lod_tree.then(|| Vec::with_capacity(count)),
+            lod_radii: (lod_tree && !codebooks_only).then(|| Vec::with_capacity(count)),
             ..DecodedChunk::default()
         };
         let mut labels: Option<Vec<u32>> = None;
         for prop in &chunk.properties {
-            if prop.property.sh_degree() > decode_sh
+            if (codebooks_only && !prop.property.is_code())
+                || prop.property.sh_degree() > decode_sh
                 || (prop.property == PropertyName::ShLabel && decode_sh == 0)
             {
                 continue;
@@ -1008,22 +1023,25 @@ impl RadDecoder {
                 }
             }
         }
-        if labels_present && decode_sh > 0 {
-            let labels = labels.context("Missing decoded RAD SH labels")?;
-            let code_count =
-                self.meta
-                    .sh_code_count
-                    .context("RAD SH labels require shCodeCount")? as usize;
-            ensure!(
-                labels.iter().all(|label| (*label as usize) < code_count),
-                "RAD SH label exceeds codebook"
-            );
+        if labels_present {
             for band in 0..decode_sh {
                 pending_codes[band]
                     .as_ref()
                     .or(self.codebooks[band].as_ref())
                     .context("RAD SH codebook unavailable; decode chunk 0 first")?;
             }
+        }
+        if codebooks_only {
+            self.cache_codebooks(pending_codes, pending_f16);
+            return Ok(result);
+        }
+        if labels_present && decode_sh > 0 {
+            let labels = labels.context("Missing decoded RAD SH labels")?;
+            let code_count = self.meta.sh_code_count.unwrap() as usize;
+            ensure!(
+                labels.iter().all(|label| (*label as usize) < code_count),
+                "RAD SH label exceeds codebook"
+            );
             result.sh_labels = Some((decode_sh, labels));
         } else {
             for band in 0..decode_sh {
@@ -1072,6 +1090,11 @@ impl RadDecoder {
             }
         }
         // Commit only after the chunk, labels, and tree have all passed checks.
+        self.cache_codebooks(pending_codes, pending_f16);
+        Ok(result)
+    }
+
+    fn cache_codebooks(&mut self, pending_codes: [Option<Vec<f32>>; 3], pending_f16: [bool; 3]) {
         if pending_codes.iter().any(Option::is_some) {
             self.palettes.fill(None);
         }
@@ -1081,7 +1104,6 @@ impl RadDecoder {
                 self.codebooks_f16[band] = pending_f16[band];
             }
         }
-        Ok(result)
     }
 }
 
@@ -1336,4 +1358,130 @@ fn decode_oct_axis([u, v]: [u8; 2]) -> [f32; 3] {
     let [x, y] = [x, y].map(|x| if x >= 0.0 { x - t } else { x + t });
     let length = (x * x + y * y + z * z).sqrt();
     [x / length, y / length, z / length]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miniz_oxide::deflate::compress_to_vec;
+    use serde_json::json;
+
+    fn chunk(base: u32, half: bool, bad_geometry: bool, last_code: f32) -> Vec<u8> {
+        let mut payload = Vec::new();
+        let mut properties = Vec::new();
+        let mut add = |name: &str, encoding: &str, bytes: Vec<u8>| {
+            let compressed = compress_to_vec(&bytes, 6);
+            properties.push(json!({"property": name, "encoding": encoding,
+                "offset": payload.len(), "bytes": compressed.len(), "compression": "gz"}));
+            payload.extend(compressed);
+            payload.resize((payload.len() + 7) & !7, 0);
+        };
+        for (name, dimensions, value) in [
+            ("center", 3, if bad_geometry { f32::NAN } else { 1.0 }),
+            ("alpha", 1, 1.0),
+            ("rgb", 3, 0.5),
+            ("scales", 3, 1.0),
+            ("orientation", 3, 0.0),
+        ] {
+            add(name, "f32", value.to_le_bytes().repeat(dimensions * 2));
+        }
+        add("sh_label", "u16", vec![0, 0, 1, 0]);
+        if base == 0 {
+            for (name, dimensions) in [("sh1_code", 9), ("sh2_code", 15), ("sh3_code", 21)] {
+                let values = (0..dimensions * 2).map(|i| {
+                    if name == "sh3_code" && i == dimensions * 2 - 1 {
+                        last_code
+                    } else {
+                        (i as f32 - 10.0) / 32.0
+                    }
+                });
+                let bytes = if half {
+                    values
+                        .flat_map(|v| f16::from_f32(v).to_bits().to_le_bytes())
+                        .collect()
+                } else {
+                    values.flat_map(f32::to_le_bytes).collect()
+                };
+                add(name, if half { "f16" } else { "f32" }, bytes);
+            }
+        }
+        let metadata = serde_json::to_vec(&json!({"version": 1, "base": base,
+            "count": 2, "maxSh": 3, "payloadBytes": payload.len(), "properties": properties}))
+        .unwrap();
+        let mut bytes = RAD_CHUNK_MAGIC.to_le_bytes().to_vec();
+        bytes.extend((metadata.len() as u32).to_le_bytes());
+        bytes.extend(&metadata);
+        bytes.resize(8 + ((metadata.len() + 7) & !7), 0);
+        bytes.extend((payload.len() as u64).to_le_bytes());
+        bytes.extend(payload);
+        bytes
+    }
+
+    fn fixture(half: bool, bad_geometry: bool, degree: usize) -> (RadDecoder, Vec<u8>, Vec<u8>) {
+        let root = chunk(0, half, bad_geometry, 0.25);
+        let next = chunk(2, half, false, 0.25);
+        let meta = RadMeta::from_json(
+            &json!({"version": 1, "type": "gsplat",
+            "count": 4, "maxSh": 3, "shCodeCount": 2, "chunkSize": 2,
+            "allChunkBytes": root.len() + next.len(), "chunks": [
+                {"offset": 0, "bytes": root.len()},
+                {"offset": root.len(), "bytes": next.len()}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        (RadDecoder::new(meta, degree).unwrap(), root, next)
+    }
+
+    #[test]
+    fn codebook_initialization_matches_full_root_for_later_chunks() {
+        for half in [false, true] {
+            for degree in 0..=3 {
+                let (mut seeded, root, next) = fixture(half, false, degree);
+                let mut full = RadDecoder::new(seeded.meta.clone(), degree).unwrap();
+                full.decode_chunk_data(&root, false).unwrap();
+                seeded.initialize_codebooks(&root).unwrap();
+                assert_eq!(full.codebooks, seeded.codebooks);
+                assert_eq!(full.codebooks_f16, seeded.codebooks_f16);
+                let expected = full.decode_chunk_data(&next, false).unwrap();
+                let actual = seeded.decode_chunk_data(&next, false).unwrap();
+                assert_eq!(actual.sh_labels, expected.sh_labels);
+                if degree > 0 {
+                    assert_eq!(full.sh_palette(degree), seeded.sh_palette(degree));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codebook_initialization_skips_geometry_but_checks_container() {
+        let (mut decoder, root, next) = fixture(true, true, 3);
+        assert!(decoder.decode_chunk_data(&root, false).is_err());
+        decoder.initialize_codebooks(&root).unwrap();
+        assert!(decoder.decode_chunk_data(&next, false).is_ok());
+        assert!(decoder.initialize_codebooks(&next).is_err());
+        assert!(decoder
+            .initialize_codebooks(&root[..root.len() - 1])
+            .is_err());
+    }
+
+    #[test]
+    fn failed_codebook_initialization_preserves_cache_and_palette() {
+        for half in [false, true] {
+            let (mut decoder, root, _) = fixture(half, false, 3);
+            let bad = chunk(0, half, false, f32::INFINITY);
+            decoder.initialize_codebooks(&root).unwrap();
+            let palette = decoder.sh_palette(3).to_vec();
+            let codes = decoder.codebooks.clone();
+            // Keep the directory consistent so the failure tests the payload.
+            decoder.meta.chunks[0].bytes = bad.len() as u64;
+            assert!(decoder
+                .initialize_codebooks(&bad)
+                .unwrap_err()
+                .to_string()
+                .contains("Non-finite"));
+            assert_eq!(decoder.codebooks, codes);
+            assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
+        }
+    }
 }

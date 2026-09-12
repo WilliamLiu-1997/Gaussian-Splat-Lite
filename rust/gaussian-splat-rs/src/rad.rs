@@ -54,6 +54,13 @@ impl RadDecoder {
         Ok(Self { decoder })
     }
 
+    /// Initialize from the root already validated by the first decode worker.
+    pub fn initialize_codebooks(&mut self, bytes: Uint8Array) -> Result<(), JsValue> {
+        self.decoder
+            .initialize_codebooks(&bytes.to_vec())
+            .map_err(js_error)
+    }
+
     pub fn decode_chunk(&mut self, bytes: Uint8Array) -> Result<JsValue, JsValue> {
         let (splats, chunk) = self
             .decoder

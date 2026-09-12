@@ -46,8 +46,8 @@ export function createRadStreamHandlers() {
         JSON.stringify(header.meta),
         header.meta.maxSh ?? 0,
       );
-      // Seed shared SH codebooks once per decoder, discarding root geometry.
-      if (rootBytes) decoder.decode_chunk(rootBytes);
+      // The first worker validated the root; other workers only need its codebooks.
+      if (rootBytes) decoder.initialize_codebooks(rootBytes);
     },
     async loadRadChunk(
       {
