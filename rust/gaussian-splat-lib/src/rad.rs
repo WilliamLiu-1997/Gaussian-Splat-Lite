@@ -493,13 +493,8 @@ impl DecodedChunk {
         Ok(())
     }
 
-    fn decode_scales(
-        &mut self,
-        prop: &Property,
-        data: Cow<'_, [u8]>,
-        packed_output: bool,
-    ) -> Result<()> {
-        self.scales_are_log = packed_output && prop.encoding == Encoding::LnF16;
+    fn decode_scales(&mut self, prop: &Property, data: Cow<'_, [u8]>) -> Result<()> {
+        self.scales_are_log = prop.encoding == Encoding::LnF16;
         match prop.encoding {
             Encoding::Ln0R8 => {
                 let min = prop.min.unwrap();
@@ -512,21 +507,19 @@ impl DecodedChunk {
                     }
                 });
                 let linear = values.map(f32::exp);
-                self.decode_scale_values(!packed_output, |index| {
+                self.decode_scale_values(false, |index| {
                     let scale = linear[data[index] as usize];
                     (scale, scale)
                 })?;
-                if packed_output {
-                    // Underflow retains the zero-scale disabling semantics.
-                    for (value, scale) in values.iter_mut().zip(linear) {
-                        if scale == 0.0 {
-                            *value = f32::NEG_INFINITY;
-                        }
+                // Underflow retains the zero-scale disabling semantics.
+                for (value, scale) in values.iter_mut().zip(linear) {
+                    if scale == 0.0 {
+                        *value = f32::NEG_INFINITY;
                     }
-                    let property = QuantizedProperty::LnScale;
-                    self.quantized
-                        .push((property, property.lookup(values), data.into_owned()));
                 }
+                let property = QuantizedProperty::LnScale;
+                self.quantized
+                    .push((property, property.lookup(values), data.into_owned()));
                 Ok(())
             }
             Encoding::LnF16 => {
@@ -624,11 +617,7 @@ impl RadDecoder {
         bytes: &[u8],
         mut splats: T,
     ) -> Result<(T, RadChunk)> {
-        let chunk = self.decode_chunk_data(
-            bytes,
-            splats.prefers_packed_sh(),
-            splats.accepts_packed_opacity(),
-        )?;
+        let chunk = self.decode_chunk_data(bytes)?;
         splats.init_splats(&SplatInit {
             num_splats: chunk.count,
             max_sh_degree: chunk.max_sh,
@@ -705,12 +694,7 @@ impl RadDecoder {
         })
     }
 
-    fn decode_chunk_data(
-        &mut self,
-        bytes: &[u8],
-        packed_output: bool,
-        packed_opacity: bool,
-    ) -> Result<DecodedChunk> {
+    fn decode_chunk_data(&mut self, bytes: &[u8]) -> Result<DecodedChunk> {
         ensure!(bytes.len() >= 8, "Incomplete RADC header");
         ensure!(
             bytes[..4] == RAD_CHUNK_MAGIC.to_le_bytes(),
@@ -916,30 +900,27 @@ impl RadDecoder {
                 data.len()
             );
             match prop.property {
-                name if packed_output
-                    && name.sh_degree() > 0
+                name if name.sh_degree() > 0
                     && !name.is_code()
                     && prop.encoding == Encoding::F16 =>
                 {
                     result.decode_f16_sh(name, &data)?;
                 }
-                name if packed_output
-                    && matches!(
-                        name,
-                        PropertyName::Alpha
-                            | PropertyName::Rgb
-                            | PropertyName::Sh1
-                            | PropertyName::Sh2
-                            | PropertyName::Sh3
-                    )
-                    && matches!(
-                        prop.encoding,
-                        Encoding::R8 | Encoding::R8Delta | Encoding::S8 | Encoding::S8Delta
-                    ) =>
+                name if matches!(
+                    name,
+                    PropertyName::Alpha
+                        | PropertyName::Rgb
+                        | PropertyName::Sh1
+                        | PropertyName::Sh2
+                        | PropertyName::Sh3
+                ) && matches!(
+                    prop.encoding,
+                    Encoding::R8 | Encoding::R8Delta | Encoding::S8 | Encoding::S8Delta
+                ) =>
                 {
                     result.decode_quantized(prop, data)?
                 }
-                PropertyName::Scales => result.decode_scales(prop, data, packed_output)?,
+                PropertyName::Scales => result.decode_scales(prop, data)?,
                 PropertyName::ChildStart => result.child_start = Some(decode_u32(&data, 1, count)),
                 PropertyName::ChildCount => result.child_count = Some(decode_u16(&data, 1, count)),
                 PropertyName::ShLabel => {
@@ -967,7 +948,7 @@ impl RadDecoder {
                                 "Negative RAD opacity"
                             );
                             result.opacity = values;
-                            if packed_opacity && prop.encoding == Encoding::F16 {
+                            if prop.encoding == Encoding::F16 {
                                 let lookup = &*LOD_OPACITY_LOOKUP;
                                 result.opacity_packed = data
                                     .chunks_exact(2)
@@ -997,23 +978,12 @@ impl RadDecoder {
                 "RAD SH label exceeds codebook"
             );
             for band in 0..decode_sh {
-                let codebook = pending_codes[band]
+                pending_codes[band]
                     .as_ref()
                     .or(self.codebooks[band].as_ref())
                     .context("RAD SH codebook unavailable; decode chunk 0 first")?;
-                if !packed_output {
-                    let dimensions = [9, 15, 21][band];
-                    let mut coefficients = Vec::with_capacity(count * dimensions);
-                    for &label in &labels {
-                        let start = label as usize * dimensions;
-                        coefficients.extend_from_slice(&codebook[start..start + dimensions]);
-                    }
-                    result.sh[band] = coefficients;
-                }
             }
-            if packed_output {
-                result.sh_labels = Some((decode_sh, labels));
-            }
+            result.sh_labels = Some((decode_sh, labels));
         } else {
             for band in 0..decode_sh {
                 ensure!(

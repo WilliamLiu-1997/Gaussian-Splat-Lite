@@ -545,9 +545,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 return;
             };
             let input = &input[..chunk * bytes_per_item];
-            if matches!(state.stage, Centers | Quats)
-                || (state.stage == Sh && !self.splats.prefers_packed_sh())
-            {
+            if matches!(state.stage, Centers | Quats) {
                 state.output.resize(chunk * components, 0.0);
             }
             let output = &mut state.output;
@@ -617,7 +615,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                     }
                     self.splats.set_quat(base, chunk, output);
                 }
-                Sh if self.splats.prefers_packed_sh() => {
+                Sh => {
                     let lookup = &*SH_LOOKUP;
                     let mut offset = 0;
                     for (band, coefficients) in
@@ -629,38 +627,6 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         });
                         offset += coefficients * 3;
                     }
-                }
-                Sh => {
-                    // Input is point-major; receivers take a separate slice per SH band.
-                    // Keep the full input stride, but skip degree-4 coefficients.
-                    let mut band_offset = 0;
-                    for width in [9, 15, 21].into_iter().take(state.sh_degree) {
-                        for (i, point) in input.chunks_exact(sh_components).enumerate() {
-                            let start = band_offset * chunk + i * width;
-                            for (out, byte) in output[start..start + width]
-                                .iter_mut()
-                                .zip(&point[band_offset..band_offset + width])
-                            {
-                                *out = (*byte as f32 - 128.0) / 128.0;
-                            }
-                        }
-                        band_offset += width;
-                    }
-                    self.splats.set_sh(
-                        base,
-                        chunk,
-                        &output[..9 * chunk],
-                        if state.sh_degree >= 2 {
-                            &output[9 * chunk..24 * chunk]
-                        } else {
-                            &[]
-                        },
-                        if state.sh_degree >= 3 {
-                            &output[24 * chunk..]
-                        } else {
-                            &[]
-                        },
-                    );
                 }
                 Done => unreachable!(),
             }
@@ -1094,7 +1060,10 @@ mod tests {
     use miniz_oxide::deflate::compress_to_vec;
 
     use super::*;
-    use crate::decoder::{MultiDecoder, SplatFileType, SplatProps};
+    use crate::{
+        decoder::{MultiDecoder, SplatFileType, SplatProps},
+        splat_encode::{decode_splat_sh_rgb, encode_splat_sh_rgb},
+    };
 
     #[derive(Default, Debug, PartialEq)]
     struct TestSplats {
@@ -1145,14 +1114,16 @@ mod tests {
             copy_splat_values(&mut self.quats, base, count, 4, quat);
         }
 
-        fn set_sh(&mut self, base: usize, count: usize, sh1: &[f32], sh2: &[f32], sh3: &[f32]) {
+        fn set_sh1(&mut self, base: usize, count: usize, sh1: &[f32]) {
             copy_splat_values(&mut self.sh1, base, count, 9, sh1);
-            if !sh2.is_empty() {
-                copy_splat_values(&mut self.sh2, base, count, 15, sh2);
-            }
-            if !sh3.is_empty() {
-                copy_splat_values(&mut self.sh3, base, count, 21, sh3);
-            }
+        }
+
+        fn set_sh2(&mut self, base: usize, count: usize, sh2: &[f32]) {
+            copy_splat_values(&mut self.sh2, base, count, 15, sh2);
+        }
+
+        fn set_sh3(&mut self, base: usize, count: usize, sh3: &[f32]) {
+            copy_splat_values(&mut self.sh3, base, count, 21, sh3);
         }
     }
 
@@ -1577,14 +1548,19 @@ mod tests {
         assert_eq!(splats.sh1.len(), 9);
         assert_eq!(splats.sh2.len(), 15);
         assert_eq!(splats.sh3.len(), 21);
-        for (index, value) in splats
+        let actual: Vec<_> = splats
             .sh1
             .iter()
             .chain(&splats.sh2)
             .chain(&splats.sh3)
-            .enumerate()
-        {
-            assert!((*value - index as f32 / 128.0).abs() < 1e-6);
+            .copied()
+            .collect();
+        for (index, coefficient) in actual.chunks_exact(3).enumerate() {
+            let values = array::from_fn(|d| (index * 3 + d) as f32 / 128.0);
+            assert_eq!(
+                coefficient,
+                decode_splat_sh_rgb(encode_splat_sh_rgb(values))
+            );
         }
     }
 
@@ -1734,11 +1710,17 @@ mod tests {
                     {
                         assert_eq!(band.len(), count * width);
                         for point in 0..count {
-                            for component in 0..width {
-                                let byte = attributes[5][point * widths[5] + offset + component];
-                                assert_eq!(
-                                    band[point * width + component],
+                            for component in (0..width).step_by(3) {
+                                let values = array::from_fn(|d| {
+                                    let byte =
+                                        attributes[5][point * widths[5] + offset + component + d];
                                     (byte as f32 - 128.0) / 128.0
+                                });
+                                // Compare lookup output against the scalar renderer encoder,
+                                // including its shared-exponent quantization, without a tolerance.
+                                assert_eq!(
+                                    &band[point * width + component..point * width + component + 3],
+                                    &decode_splat_sh_rgb(encode_splat_sh_rgb(values))
                                 );
                             }
                         }

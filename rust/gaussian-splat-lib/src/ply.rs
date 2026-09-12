@@ -181,10 +181,8 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             state.sh2.as_ref().map(|p| p.as_slice()),
             state.sh3.as_ref().map(|p| p.as_slice()),
         ];
-        let prefers_packed_sh = self.splats.prefers_packed_sh();
         let packed_sh = sh_props.map(|props| {
-            prefers_packed_sh
-                && props.is_some_and(|p| p.iter().all(|p| matches!(p.ty, PlyPropertyType::Uchar)))
+            props.is_some_and(|p| p.iter().all(|p| matches!(p.ty, PlyPropertyType::Uchar)))
         });
         let float_sh = array::from_fn(|band| sh_props[band].is_some() && !packed_sh[band]);
         let sh1 = state.sh1.filter(|_| !packed_sh[0]);
@@ -320,11 +318,10 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 }
                 PlyElementKind::Sh => match state.sh_props.as_ref() {
                     Some(props)
-                        if self.splats.prefers_packed_sh()
-                            && props
-                                .f_rest
-                                .iter()
-                                .all(|p| matches!(p.ty, PlyPropertyType::Uchar)) =>
+                        if props
+                            .f_rest
+                            .iter()
+                            .all(|p| matches!(p.ty, PlyPropertyType::Uchar)) =>
                     {
                         let lookup = &*COMPRESSED_SH_LOOKUP;
                         for (band, indices) in

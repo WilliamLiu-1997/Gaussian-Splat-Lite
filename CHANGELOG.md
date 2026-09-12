@@ -9,10 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Accelerated RAD opacity, byte-encoded RGB, log scales, `oct88r8` rotation angles, and byte/`f16` SH with lookup tables and direct packing. Preserved scale validation and LOD radii while avoiding redundant log-scale conversions.
-- Packed SPZ RGB, opacity, scales and SH, and SOG color, opacity, scale and SH codebooks through lookup tables, reducing intermediate float buffers.
-- Accelerated `uchar` SH packing in standard and SuperSplat compressed PLY. Standard PLY selects the lookup per band; compressed PLY requires all SH properties to be `uchar`, with separate tables for their different value ranges.
-- Added optional packed opacity to Rust `SplatProps`; downstream struct literals must supply `opacity_packed: &[]` or use `..Default::default()`.
+- Accelerated RAD decoding with lookup tables and direct packing.
+- Accelerated SPZ and SOG decoding with lookup tables, reducing intermediate buffers.
+- Accelerated byte-encoded SH packing in standard and SuperSplat compressed PLY.
 - Cached packed RAD SH codebooks across chunks to avoid per-splat float expansion and encoding, including the caches in streaming memory estimates.
 - Accepted SPZ degree-4 SH input while retaining only SH0–SH3 for rendering.
 - Decoded ordinary RAD chunks into preallocated output, extracting LOD leaves as they decode and trimming output arrays after tree validation.

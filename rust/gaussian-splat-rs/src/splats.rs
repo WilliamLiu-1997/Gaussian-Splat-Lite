@@ -268,10 +268,6 @@ impl SplatsData {
 }
 
 impl SplatReceiver for SplatsData {
-    fn accepts_packed_opacity(&self) -> bool {
-        true
-    }
-
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
         // Reject impossible counts before texture padding can wrap usize on WASM32.
         anyhow::ensure!(
@@ -404,10 +400,6 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| quat[i4 + d]),
             );
         }
-    }
-
-    fn prefers_packed_sh(&self) -> bool {
-        true
     }
 
     fn set_quantized<F: Fn(usize, usize) -> u8>(

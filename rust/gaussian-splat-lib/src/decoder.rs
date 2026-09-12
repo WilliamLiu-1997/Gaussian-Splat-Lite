@@ -39,7 +39,7 @@ pub struct SplatProps<'a> {
     pub center: &'a [f32],
     pub opacity: &'a [f32],
     pub rgb: &'a [f32],
-    /// Optional prepacked RAD opacity, supplied only to receivers that opt in.
+    /// Prepacked RAD opacity; empty when opacity is supplied as floats.
     pub opacity_packed: &'a [u32],
     pub scale: &'a [f32],
     pub quat: &'a [f32],
@@ -83,13 +83,9 @@ pub trait SplatReceiver: 'static {
         Ok(())
     }
     fn set_batch(&mut self, base: usize, count: usize, batch: &SplatProps);
-    /// Accepts prepacked RAD opacity; float receivers keep the default.
-    fn accepts_packed_opacity(&self) -> bool {
-        false
-    }
     /// Accepts the same batch with scale supplied in natural-log space.
     /// Receivers that store log scale should override this to avoid exp/log
-    /// conversion; the default preserves the public linear-scale contract.
+    /// conversion; the default converts back to linear scale.
     fn set_batch_ln_scale(
         &mut self,
         base: usize,
@@ -153,11 +149,6 @@ pub trait SplatReceiver: 'static {
     fn set_sh1(&mut self, base: usize, count: usize, sh1: &[f32]) {}
     fn set_sh2(&mut self, base: usize, count: usize, sh2: &[f32]) {}
     fn set_sh3(&mut self, base: usize, count: usize, sh3: &[f32]) {}
-
-    /// Allows decoders to supply prepacked SH instead of expanding float batches.
-    fn prefers_packed_sh(&self) -> bool {
-        false
-    }
 
     /// Writes one SH band (1–3); `word` receives the splat and RGB coefficient indices.
     fn set_sh_packed<F: Fn(usize, usize) -> u32>(
