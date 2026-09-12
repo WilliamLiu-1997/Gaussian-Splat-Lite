@@ -17,9 +17,7 @@ use serde_json::Value;
 
 use crate::{
     decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatProps, SplatReceiver},
-    splat_encode::{
-        encode_splat_sh_rgb, f16_table, ShLookup, F16_LOOKUP, F16_SH_LOOKUP, LOD_OPACITY_LOOKUP,
-    },
+    splat_encode::{encode_splat_sh_rgb, f16_table, ShLookup, F16_SH_LOOKUP, LOD_OPACITY_LOOKUP},
 };
 
 pub const RAD_MAGIC: u32 = 0x30444152;
@@ -457,15 +455,9 @@ impl DecodedChunk {
             }
             _ => {
                 let lookup = ShLookup::new(values);
-                let coefficients = prop.property.dimensions() / 3;
-                let words = &mut self.packed_sh[prop.property.sh_degree() - 1];
-                words.reserve(count * coefficients);
-                for i in 0..count {
-                    for k in 0..coefficients {
-                        words
-                            .push(lookup.encode(array::from_fn(|d| data[(k * 3 + d) * count + i])));
-                    }
-                }
+                self.pack_sh(prop.property, |i, k| {
+                    lookup.encode(array::from_fn(|d| data[(k * 3 + d) * count + i]))
+                });
             }
         }
         Ok(())
@@ -473,25 +465,20 @@ impl DecodedChunk {
 
     /// Validates f16 component planes and packs point-major RGB coefficients.
     fn decode_f16_sh(&mut self, property: PropertyName, data: &[u8]) -> Result<()> {
-        let values = &*F16_LOOKUP;
         ensure!(
             data.chunks_exact(2)
-                .all(|b| values[u16::from_le_bytes([b[0], b[1]]) as usize].is_finite()),
+                .all(|b| u16::from_le_bytes([b[0], b[1]]) & 0x7c00 != 0x7c00),
             "Non-finite RAD {:?} value",
             property
         );
         let lookup = &*F16_SH_LOOKUP;
-        let coefficients = property.dimensions() / 3;
-        let words = &mut self.packed_sh[property.sh_degree() - 1];
-        words.reserve(self.count * coefficients);
-        for i in 0..self.count {
-            for k in 0..coefficients {
-                words.push(lookup.encode_indices(array::from_fn(|d| {
-                    let offset = ((k * 3 + d) * self.count + i) * 2;
-                    u16::from_le_bytes([data[offset], data[offset + 1]]) as usize
-                })));
-            }
-        }
+        let count = self.count;
+        self.pack_sh(property, |i, k| {
+            lookup.encode_indices(array::from_fn(|d| {
+                let offset = ((k * 3 + d) * count + i) * 2;
+                u16::from_le_bytes([data[offset], data[offset + 1]]) as usize
+            }))
+        });
         Ok(())
     }
 
@@ -504,18 +491,27 @@ impl DecodedChunk {
             property
         );
         let count = self.count;
+        self.pack_sh(property, |i, k| {
+            encode_splat_sh_rgb(array::from_fn(|d| {
+                let offset = ((k * 3 + d) * count + i) * 4;
+                f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+            }))
+        });
+        Ok(())
+    }
+
+    /// Keep point-major output allocation and traversal shared across SH codecs.
+    #[inline]
+    fn pack_sh(&mut self, property: PropertyName, word: impl Fn(usize, usize) -> u32) {
+        let count = self.count;
         let coefficients = property.dimensions() / 3;
         let words = &mut self.packed_sh[property.sh_degree() - 1];
         words.reserve(count * coefficients);
         for i in 0..count {
             for k in 0..coefficients {
-                words.push(encode_splat_sh_rgb(array::from_fn(|d| {
-                    let offset = ((k * 3 + d) * count + i) * 4;
-                    f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
-                })));
+                words.push(word(i, k));
             }
         }
-        Ok(())
     }
 
     fn decode_scales(&mut self, prop: &Property, data: Cow<'_, [u8]>) -> Result<()> {

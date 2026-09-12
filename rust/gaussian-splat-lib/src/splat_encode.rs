@@ -269,16 +269,12 @@ impl ShLookup {
     }
 
     pub fn encode(&self, rgb: [u8; 3]) -> u32 {
-        let [r, g, b] = rgb.map(usize::from);
-        let exponent = self.exponents[r]
-            .max(self.exponents[g])
-            .max(self.exponents[b]);
-        let row = &self.mantissas[exponent as usize];
-        let signs = self.signs[r] | (self.signs[g] << 1) | (self.signs[b] << 2);
-        u32::from(row[r])
-            | (u32::from(row[g]) << 8)
-            | (u32::from(row[b]) << 16)
-            | ((u32::from(exponent) * 8 + u32::from(signs)) << 24)
+        encode_sh_lookup(
+            rgb.map(usize::from),
+            &self.exponents,
+            &self.signs,
+            &self.mantissas,
+        )
     }
 }
 
@@ -306,16 +302,26 @@ impl F16ShLookup {
         }
     }
 
-    pub(crate) fn encode_indices(&self, [r, g, b]: [usize; 3]) -> u32 {
+    pub(crate) fn encode_indices(&self, rgb: [usize; 3]) -> u32 {
         let [exponents, signs, mantissas @ ..] = &*self.rows;
-        let exponent = exponents[r].max(exponents[g]).max(exponents[b]);
-        let row = &mantissas[exponent as usize];
-        let signs = signs[r] | (signs[g] << 1) | (signs[b] << 2);
-        u32::from(row[r])
-            | (u32::from(row[g]) << 8)
-            | (u32::from(row[b]) << 16)
-            | ((u32::from(exponent) * 8 + u32::from(signs)) << 24)
+        encode_sh_lookup(rgb, exponents, signs, mantissas)
     }
+}
+
+#[inline]
+fn encode_sh_lookup<const N: usize>(
+    [r, g, b]: [usize; 3],
+    exponents: &[u8; N],
+    signs: &[u8; N],
+    mantissas: &[[u8; N]; 32],
+) -> u32 {
+    let exponent = exponents[r].max(exponents[g]).max(exponents[b]);
+    let row = &mantissas[exponent as usize];
+    let signs = signs[r] | (signs[g] << 1) | (signs[b] << 2);
+    u32::from(row[r])
+        | (u32::from(row[g]) << 8)
+        | (u32::from(row[b]) << 16)
+        | ((u32::from(exponent) * 8 + u32::from(signs)) << 24)
 }
 
 /// Decodes a shared-exponent RGB SH coefficient written by encode_splat_sh_rgb.
