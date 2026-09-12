@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Corrected sRGB decoding in WebGL stochastic resolve and Splat materials across all three backends, preserving shadow colors during resolve and linear/offscreen rendering.
 - Precomputed source texture masks on the CPU to avoid incorrect nonzero-layer coordinates in RAD and streamed SOG generation on Windows WebGL/ANGLE D3D11.
 
 ### Changed

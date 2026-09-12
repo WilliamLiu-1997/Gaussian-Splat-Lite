@@ -28,16 +28,13 @@ vec4 loadSource(ivec2 coord) {
         sourceRect.xy + clamp(coord, ivec2(0), sourceRect.zw - 1), 0);
 }
 
-vec3 perceptualToLinear(vec3 color) {
-    return pow(max(color, vec3(0.0)), vec3(2.2));
-}
-
 vec4 physicalSource(vec4 texel) {
     float alpha = clamp(texel.a, 0.0, 1.0);
     vec3 color = texel.rgb;
     if (sourceEncoded) {
         vec3 straight = alpha > 0.0 ? color / alpha : vec3(0.0);
-        color = perceptualToLinear(straight) * alpha;
+        // Match Three's sRGB output transfer, including its linear shadow range.
+        color = sRGBTransferEOTF(vec4(max(straight, vec3(0.0)), 1.0)).rgb * alpha;
     }
     return vec4(color, alpha);
 }

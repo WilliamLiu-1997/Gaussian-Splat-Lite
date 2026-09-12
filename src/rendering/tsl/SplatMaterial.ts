@@ -189,7 +189,7 @@ export function createSplatNodeMaterial({
       // RGB is constant across the quad; decode its color space once
       // per vertex rather than for every covered fragment.
       N.If(encodeLinear.and(depthOnly.not()), () => {
-        rgba.rgb.assign(rgba.rgb.pow(2.2));
+        rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));
       });
       clipPosition.assign(data.clipPosition);
       vRgba.assign(rgba);

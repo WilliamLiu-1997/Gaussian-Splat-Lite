@@ -11,7 +11,10 @@ const uint SPLAT_TEX_HEIGHT_MASK = SPLAT_TEX_HEIGHT - 1u;
 const float PI = 3.1415926535897932384626433832795;
 
 vec3 srgbToLinear(vec3 rgb) {
-    return pow(rgb, vec3(2.2));
+    // Shared by vertex and fragment shaders; match Three's sRGB transfer.
+    return mix(
+        pow(rgb * 0.9478672986 + vec3(0.0521327014), vec3(2.4)),
+        rgb * 0.0773993808, lessThanEqual(rgb, vec3(0.04045)));
 }
 
 uint encodeQuatOctXy1010R12(vec4 q) {
