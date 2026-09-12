@@ -402,6 +402,34 @@ impl SplatReceiver for SplatsData {
         }
     }
 
+    fn set_rgb_f16(&mut self, base: usize, count: usize, rgb: &[u16]) {
+        self.prepare_buffer(base, count, 1, false);
+        for i in 0..count {
+            let [i3, i4] = [i * 3, i * 4];
+            self.buffer_b[i4] = u32::from(rgb[i3]) | (u32::from(rgb[i3 + 1]) << 16);
+            self.buffer_b[i4 + 1] = (self.buffer_b[i4 + 1] & 0xffff0000) | u32::from(rgb[i3 + 2]);
+        }
+    }
+
+    fn set_ln_scale_f16(&mut self, base: usize, count: usize, scales: &[u16]) {
+        self.prepare_buffer(base, count, 1, false);
+        for i in 0..count {
+            let [i3, i4] = [i * 3, i * 4];
+            self.buffer_b[i4 + 1] =
+                (self.buffer_b[i4 + 1] & 0xffff) | (u32::from(scales[i3]) << 16);
+            self.buffer_b[i4 + 2] = u32::from(scales[i3 + 1]) | (u32::from(scales[i3 + 2]) << 16);
+            if scales[i3..i3 + 3]
+                .iter()
+                .all(|&bits| bits == half::f16::NEG_INFINITY.to_bits())
+            {
+                for d in 0..3 {
+                    self.sort_centers
+                        .set_index(((base + i) * 3 + d) as u32, f32::NAN);
+                }
+            }
+        }
+    }
+
     fn set_quantized<F: Fn(usize, usize) -> u8>(
         &mut self,
         base: usize,

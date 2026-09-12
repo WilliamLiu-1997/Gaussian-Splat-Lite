@@ -107,10 +107,26 @@ pub trait SplatReceiver: 'static {
     fn set_center(&mut self, base: usize, count: usize, center: &[f32]);
     fn set_opacity(&mut self, base: usize, count: usize, opacity: &[f32]);
     fn set_rgb(&mut self, base: usize, count: usize, rgb: &[f32]);
+    /// Reads point-major RGB half bits, allowing packed receivers to copy them directly.
+    fn set_rgb_f16(&mut self, base: usize, count: usize, rgb: &[u16]) {
+        let values: Vec<f32> = rgb
+            .iter()
+            .map(|&bits| half::f16::from_bits(bits).to_f32())
+            .collect();
+        self.set_rgb(base, count, &values);
+    }
     fn set_scale(&mut self, base: usize, count: usize, scale: &[f32]);
     fn set_ln_scale(&mut self, base: usize, count: usize, ln_scale: &[f32]) {
         let scale: Vec<f32> = ln_scale.iter().map(|value| value.exp()).collect();
         self.set_scale(base, count, &scale);
+    }
+    /// Reads point-major log-scale half bits; zero linear scales use negative infinity.
+    fn set_ln_scale_f16(&mut self, base: usize, count: usize, scales: &[u16]) {
+        let values: Vec<f32> = scales
+            .iter()
+            .map(|&bits| half::f16::from_bits(bits).to_f32())
+            .collect();
+        self.set_ln_scale(base, count, &values);
     }
     fn set_quat(&mut self, base: usize, count: usize, quat: &[f32]);
 

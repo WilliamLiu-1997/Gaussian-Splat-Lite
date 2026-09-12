@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Accelerated RAD decoding with lookup tables and direct packing.
+- Directly packed RAD `f32` SH and reused `f16` RGB and `ln_f16` scale bit patterns, preserving scale validation and LOD radii while reducing intermediate buffers and conversions.
 - Accelerated SPZ and SOG decoding with lookup tables, reducing intermediate buffers.
 - Accelerated byte-encoded SH packing in standard and SuperSplat compressed PLY.
 - Cached packed RAD SH codebooks across chunks to avoid per-splat float expansion and encoding, including the caches in streaming memory estimates.

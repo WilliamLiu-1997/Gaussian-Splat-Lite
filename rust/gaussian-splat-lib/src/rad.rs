@@ -394,11 +394,11 @@ struct DecodedChunk {
     pub opacity: Vec<f32>,
     pub opacity_packed: Vec<u32>,
     pub rgb: Vec<f32>,
+    pub rgb_f16: Vec<u16>,
     pub quantized: Vec<(QuantizedProperty, ScalarLookup, Vec<u8>)>,
     pub scales: Vec<f32>,
-    pub scales_are_log: bool,
+    pub scales_f16: Vec<u16>,
     pub quaternions: Vec<f32>,
-    pub sh: [Vec<f32>; 3],
     pub packed_sh: [Vec<u32>; 3],
     pub sh_labels: Option<(usize, Vec<u32>)>,
     pub child_start: Option<Vec<u32>>,
@@ -493,8 +493,30 @@ impl DecodedChunk {
         Ok(())
     }
 
+    /// Packs f32 component planes without an intermediate float batch.
+    fn decode_f32_sh(&mut self, property: PropertyName, data: &[u8]) -> Result<()> {
+        ensure!(
+            data.chunks_exact(4)
+                .all(|b| f32::from_le_bytes(b.try_into().unwrap()).is_finite()),
+            "Non-finite RAD {:?} value",
+            property
+        );
+        let count = self.count;
+        let coefficients = property.dimensions() / 3;
+        let words = &mut self.packed_sh[property.sh_degree() - 1];
+        words.reserve(count * coefficients);
+        for i in 0..count {
+            for k in 0..coefficients {
+                words.push(encode_splat_sh_rgb(array::from_fn(|d| {
+                    let offset = ((k * 3 + d) * count + i) * 4;
+                    f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+                })));
+            }
+        }
+        Ok(())
+    }
+
     fn decode_scales(&mut self, prop: &Property, data: Cow<'_, [u8]>) -> Result<()> {
-        self.scales_are_log = prop.encoding == Encoding::LnF16;
         match prop.encoding {
             Encoding::Ln0R8 => {
                 let min = prop.min.unwrap();
@@ -507,10 +529,7 @@ impl DecodedChunk {
                     }
                 });
                 let linear = values.map(f32::exp);
-                self.decode_scale_values(false, |index| {
-                    let scale = linear[data[index] as usize];
-                    (scale, scale)
-                })?;
+                self.decode_scale_values(false, |index| linear[data[index] as usize])?;
                 // Underflow retains the zero-scale disabling semantics.
                 for (value, scale) in values.iter_mut().zip(linear) {
                     if scale == 0.0 {
@@ -523,49 +542,57 @@ impl DecodedChunk {
                 Ok(())
             }
             Encoding::LnF16 => {
-                let linear = &*LN_F16_LINEAR;
-                let logs = &*F16_LOOKUP;
-                self.decode_scale_values(true, |index| {
-                    let bits =
-                        u16::from_le_bytes(data[index * 2..index * 2 + 2].try_into().unwrap());
-                    (logs[bits as usize], linear[bits as usize])
-                })
+                let lookup = &*LN_F16_LINEAR;
+                self.scales_f16.reserve(self.count * 3);
+                for i in 0..self.count {
+                    let bits: [u16; 3] = array::from_fn(|d| {
+                        let offset = (d * self.count + i) * 2;
+                        u16::from_le_bytes([data[offset], data[offset + 1]])
+                    });
+                    let linear = bits.map(|bits| lookup[bits as usize]);
+                    ensure!(
+                        linear.iter().all(|v| v.is_finite()),
+                        "Non-finite RAD Scales value"
+                    );
+                    ensure!(linear.iter().all(|v| *v >= 0.0), "Negative RAD scale");
+                    self.scales_f16.extend((0..3).map(|d| {
+                        if linear[d] == 0.0 {
+                            f16::NEG_INFINITY.to_bits()
+                        } else {
+                            bits[d]
+                        }
+                    }));
+                    if let Some(radii) = &mut self.lod_radii {
+                        radii.push((linear[0] + linear[1] + linear[2]) / 3.0);
+                    }
+                }
+                Ok(())
             }
             Encoding::F32 => self.decode_scale_values(true, |index| {
-                let value = f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap());
-                (value, value)
+                f32::from_le_bytes(data[index * 4..index * 4 + 4].try_into().unwrap())
             }),
             _ => unreachable!("validated RAD scale encoding"),
         }
     }
 
-    /// Reads (source, linear) values from component planes; quantized output skips float storage.
+    /// Reads linear scales from component planes; quantized output skips float storage.
     fn decode_scale_values(
         &mut self,
         store_values: bool,
-        read: impl Fn(usize) -> (f32, f32),
+        read: impl Fn(usize) -> f32,
     ) -> Result<()> {
         if store_values {
             self.scales.reserve(self.count * 3);
         }
         for i in 0..self.count {
-            let components: [(f32, f32); 3] = array::from_fn(|d| read(d * self.count + i));
-            let linear = components.map(|(_, scale)| scale);
+            let linear: [f32; 3] = array::from_fn(|d| read(d * self.count + i));
             ensure!(
                 linear.iter().all(|v| v.is_finite()),
                 "Non-finite RAD Scales value"
             );
             ensure!(linear.iter().all(|v| *v >= 0.0), "Negative RAD scale");
             if store_values {
-                self.scales.extend(components.map(|(value, scale)| {
-                    if !self.scales_are_log {
-                        scale
-                    } else if scale == 0.0 {
-                        f32::NEG_INFINITY
-                    } else {
-                        value
-                    }
-                }));
+                self.scales.extend(linear);
             }
             if let Some(radii) = &mut self.lod_radii {
                 radii.push((linear[0] + linear[1] + linear[2]) / 3.0);
@@ -629,14 +656,14 @@ impl RadDecoder {
             rgb: &chunk.rgb,
             scale: &chunk.scales,
             quat: &chunk.quaternions,
-            sh1: &chunk.sh[0],
-            sh2: &chunk.sh[1],
-            sh3: &chunk.sh[2],
+            ..Default::default()
         };
-        if chunk.scales_are_log {
-            splats.set_batch_ln_scale(0, chunk.count, &batch, &chunk.scales);
-        } else {
-            splats.set_batch(0, chunk.count, &batch);
+        splats.set_batch(0, chunk.count, &batch);
+        if !chunk.rgb_f16.is_empty() {
+            splats.set_rgb_f16(0, chunk.count, &chunk.rgb_f16);
+        }
+        if !chunk.scales_f16.is_empty() {
+            splats.set_ln_scale_f16(0, chunk.count, &chunk.scales_f16);
         }
         for (property, lookup, codes) in &chunk.quantized {
             splats.set_quantized(
@@ -900,11 +927,25 @@ impl RadDecoder {
                 data.len()
             );
             match prop.property {
+                PropertyName::Rgb if prop.encoding == Encoding::F16 => {
+                    ensure!(
+                        data.chunks_exact(2)
+                            .all(|b| u16::from_le_bytes([b[0], b[1]]) & 0x7c00 != 0x7c00),
+                        "Non-finite RAD Rgb value"
+                    );
+                    result.rgb_f16 = decode_u16(&data, 3, count);
+                }
                 name if name.sh_degree() > 0
                     && !name.is_code()
                     && prop.encoding == Encoding::F16 =>
                 {
                     result.decode_f16_sh(name, &data)?;
+                }
+                name if name.sh_degree() > 0
+                    && !name.is_code()
+                    && prop.encoding == Encoding::F32 =>
+                {
+                    result.decode_f32_sh(name, &data)?;
                 }
                 name if matches!(
                     name,
@@ -962,7 +1003,7 @@ impl RadDecoder {
                             pending_f16[name.sh_degree() - 1] = prop.encoding == Encoding::F16;
                             pending_codes[name.sh_degree() - 1] = Some(values);
                         }
-                        _ => result.sh[name.sh_degree() - 1] = values,
+                        _ => unreachable!("property handled by a specialized decoder"),
                     }
                 }
             }
@@ -987,8 +1028,7 @@ impl RadDecoder {
         } else {
             for band in 0..decode_sh {
                 ensure!(
-                    result.sh[band].len() == count * [9, 15, 21][band]
-                        || result.packed_sh[band].len() == count * [3, 5, 7][band],
+                    result.packed_sh[band].len() == count * [3, 5, 7][band],
                     "Missing RAD SH{} coefficients",
                     band + 1
                 );
