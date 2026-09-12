@@ -89,6 +89,11 @@ export function makeGenerateUniforms(): Uniforms {
     sourceSplats: { value: emptySplatTexture },
     sourceSplats2: { value: emptySplatTexture },
     sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },
+    // Precompute masks on the CPU: ANGLE/D3D11 can miscompile dynamic shifts
+    // used to construct a mask, leaving layer bits in the texture Y coordinate.
+    sourceLayerMask: {
+      value: (1 << (SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS)) - 1,
+    },
     sourceBlockBits: { value: SPLAT_BLOCKS_DISABLED },
     sourceBlocks: { value: emptySplatTexture },
     sourceOpacities: { value: emptySplatTexture },

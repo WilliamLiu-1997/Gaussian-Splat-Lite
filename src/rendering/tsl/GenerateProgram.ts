@@ -120,6 +120,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const sourceSplats = bindTexture("sourceSplats", true);
   const sourceSplats2 = bindTexture("sourceSplats2", true);
   const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
+  const sourceLayerMask = bindUniform("sourceLayerMask", "uint");
   const sourceBlockBits = bindUniform("sourceBlockBits", "uint");
   const sourceBlocks = bindTexture("sourceBlocks", true);
   const sourceOpacities = bindTexture("sourceOpacities", true);
@@ -286,9 +287,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       stochasticSeed.assign(sourceIndex.bitXor(stochasticSeedBase));
       const blockOpacity = N.float(1).toVar();
       N.If(sourceBlockBits.lessThan(N.uint(32)), () => {
-        const blockMask = N.uint(1)
-          .shiftLeft(sourceLayerBits.sub(sourceBlockBits))
-          .sub(N.uint(1));
+        const blockMask = sourceLayerMask.shiftRight(sourceBlockBits);
         const block = sourceIndex.shiftRight(sourceBlockBits);
         const group = loadArray(
           sourceBlocks,
@@ -302,10 +301,11 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
           N.uintBitsToFloat(loadArray(sourceOpacities, splatTexCoord(group)).r),
         );
       });
-      const layerMask = N.uint(1).shiftLeft(sourceLayerBits).sub(N.uint(1));
       const coord = N.ivec3(
         N.int(sourceIndex.bitAnd(SPLAT_TEX_WIDTH - 1)),
-        N.int(sourceIndex.bitAnd(layerMask).shiftRight(SPLAT_TEX_WIDTH_BITS)),
+        N.int(
+          sourceIndex.bitAnd(sourceLayerMask).shiftRight(SPLAT_TEX_WIDTH_BITS),
+        ),
         N.int(sourceIndex.shiftRight(sourceLayerBits)),
       );
       const sourceA = loadArray(sourceSplats, coord);

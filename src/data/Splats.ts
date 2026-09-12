@@ -656,6 +656,8 @@ export class Splats {
     const sh = this.getShTextures();
     uniforms.sourceLayerBits.value =
       SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
+    uniforms.sourceLayerMask.value =
+      (1 << (SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS)) - 1;
     uniforms.sourceBlockBits.value = SPLAT_BLOCKS_DISABLED;
     uniforms.sourceBlocks.value = Splats.emptyTexture;
     uniforms.sourceOpacities.value = Splats.emptyTexture;

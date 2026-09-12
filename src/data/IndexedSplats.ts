@@ -410,6 +410,7 @@ export abstract class IndexedSplats extends Splats {
     uniforms.sh3TextureA.value = this.sourceTextures[4] ?? Splats.emptyTexture;
     uniforms.sh3TextureB.value = this.sourceTextures[5] ?? Splats.emptyTexture;
     uniforms.sourceLayerBits.value = Math.log2(this.layerSize);
+    uniforms.sourceLayerMask.value = this.layerSize - 1;
     uniforms.sourceBlockBits.value = this.blockBits;
     uniforms.sourceBlocks.value = this.opacities.texture;
     uniforms.sourceOpacities.value = this.opacities.opacityTexture;

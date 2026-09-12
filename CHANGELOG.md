@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Precomputed source texture masks on the CPU to avoid incorrect nonzero-layer coordinates in RAD and streamed SOG generation on Windows WebGL/ANGLE D3D11.
+
 ### Changed
 
 - Prepared RAD render indices, opacity tables and post-fade cuts in the existing LOD worker, reducing main-thread selection work without adding workers.

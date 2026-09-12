@@ -13,6 +13,7 @@ uniform uint stochasticSeedBase;
 uniform usampler2DArray sourceSplats;
 uniform usampler2DArray sourceSplats2;
 uniform uint sourceLayerBits;
+uniform uint sourceLayerMask;
 uniform uint sourceBlockBits;
 uniform usampler2DArray sourceBlocks;
 uniform usampler2DArray sourceOpacities;
@@ -299,7 +300,7 @@ void produceSplat(int index) {
     float blockOpacity = 1.0;
     if (sourceBlockBits < 32u) {
         // Group layers follow the source layers, at one texel per block.
-        uint blockMask = (1u << (sourceLayerBits - sourceBlockBits)) - 1u;
+        uint blockMask = sourceLayerMask >> sourceBlockBits;
         uint block = sourceIndex >> sourceBlockBits;
         uint group = texelFetch(sourceBlocks, ivec3(
             block & min(blockMask, SPLAT_TEX_WIDTH_MASK),
@@ -309,10 +310,9 @@ void produceSplat(int index) {
         blockOpacity = uintBitsToFloat(texelFetch(sourceOpacities, splatTexCoord(int(group)), 0).r);
     }
     if (blockOpacity <= 0.0) return;
-    uint layerMask = (1u << sourceLayerBits) - 1u;
     ivec3 coord = ivec3(
         sourceIndex & SPLAT_TEX_WIDTH_MASK,
-        (sourceIndex & layerMask) >> SPLAT_TEX_WIDTH_BITS,
+        (sourceIndex & sourceLayerMask) >> SPLAT_TEX_WIDTH_BITS,
         sourceIndex >> sourceLayerBits
     );
     uvec4 sourceSplat2 = texelFetch(sourceSplats2, coord, 0);
