@@ -59,9 +59,8 @@ impl ChunkDecoder {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
                 base += chunk;
             }
-            Ok::<(), JsValue>(())
-        })?;
-        Ok(())
+            Ok(())
+        })
     }
 
     #[wasm_bindgen]

@@ -67,7 +67,6 @@ export function unpackRadChunk(decoded: RadDecodedChunk): RadChunkData {
 /** Without chunkSize, Spark treats the dataset as one chunk. */
 export function getRadChunkSpan(meta: RadMeta, index: number) {
   const chunk = meta.chunks[index];
-  if (!chunk) throw new Error(`RAD: missing chunk ${index}`);
   const base = chunk.base ?? index * (meta.chunkSize ?? meta.count);
   const count =
     chunk.count ?? Math.min(meta.chunkSize ?? meta.count, meta.count - base);
@@ -76,7 +75,6 @@ export function getRadChunkSpan(meta: RadMeta, index: number) {
 
 export function isRadPrefix(bytes: Uint8Array) {
   return (
-    bytes.length >= 4 &&
     bytes[0] === 0x52 &&
     bytes[1] === 0x41 &&
     bytes[2] === 0x44 &&

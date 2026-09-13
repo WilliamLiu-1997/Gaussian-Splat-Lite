@@ -59,15 +59,12 @@ function getWorkerReuseIndex(
 
 class SplatWorkerPool {
   private heavyJobs: Promise<void> = Promise.resolve();
-  maxWorkers;
   numWorkers = 0;
   freelist: SplatWorker[] = [];
   idleWorkerTimeouts = new Map<SplatWorker, ReturnType<typeof setTimeout>>();
   queue: ((worker: SplatWorker) => void)[] = [];
 
-  constructor(maxWorkers = 4) {
-    this.maxWorkers = maxWorkers;
-  }
+  constructor(private readonly maxWorkers = 4) {}
 
   async withWorker<T>(
     callback: (worker: SplatWorker) => Promise<T>,
@@ -111,11 +108,8 @@ class SplatWorkerPool {
     const workerIndex = getWorkerReuseIndex(this.freelist);
     if (workerIndex !== -1) {
       const worker = this.freelist.splice(workerIndex, 1)[0];
-      const timeout = this.idleWorkerTimeouts.get(worker);
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-        this.idleWorkerTimeouts.delete(worker);
-      }
+      clearTimeout(this.idleWorkerTimeouts.get(worker));
+      this.idleWorkerTimeouts.delete(worker);
       return worker;
     }
 
@@ -140,13 +134,6 @@ class SplatWorkerPool {
       }
       return;
     }
-    if (this.numWorkers > this.maxWorkers) {
-      // Worker no longer needed
-      worker.dispose();
-      this.numWorkers -= 1;
-      return;
-    }
-
     const waiter = this.queue.shift();
     if (waiter) {
       waiter(worker);
@@ -156,10 +143,8 @@ class SplatWorkerPool {
     this.freelist.push(worker);
     const timeout = setTimeout(() => {
       this.idleWorkerTimeouts.delete(worker);
-      const index = this.freelist.indexOf(worker);
-      if (index === -1) return;
-
-      this.freelist.splice(index, 1);
+      // Removing an idle worker elsewhere cancels this timer.
+      this.freelist.splice(this.freelist.indexOf(worker), 1);
       worker.dispose();
       this.numWorkers -= 1;
     }, getWorkerIdleTimeoutMs(worker.peakWasmMemoryBytes));

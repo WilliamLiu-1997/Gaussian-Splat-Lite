@@ -313,16 +313,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   superXY = 1;
 
   constructor(options: GaussianSplatRendererOptions) {
-    if (!options) {
-      throw new Error("GaussianSplatRenderer options are required");
-    }
-    if (!options.renderer) {
+    if (!options?.renderer) {
       throw new Error("renderer is required in GaussianSplatRenderer options");
     }
     assertSupportedRenderer(options.renderer);
 
     const uniforms = GaussianSplatRenderer.makeUniforms();
-    Object.assign(uniforms, options.extraUniforms ?? {});
+    Object.assign(uniforms, options.extraUniforms);
 
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
     uniforms.premultipliedAlpha.value = premultipliedAlpha;
@@ -427,7 +424,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     clearTimeout(this.updateTimeoutId);
     this.updateTimeoutId = -1;
 
-    // @ts-expect-error @types/three 0.185.x does not declare Object3D.dispose().
     super.dispose();
 
     this.capture.dispose();
@@ -951,10 +947,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         this.queuedUpdate = null;
         await this.performUpdate(request);
       }
-    } catch (error) {
-      this.queuedUpdate = null;
-      throw error;
     } finally {
+      this.queuedUpdate = null;
       this.updateRunning = false;
     }
   }
@@ -987,12 +981,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.sortRadial !== this.sortedRadial;
 
     const previousVersion = this.current.version;
-    if (next === this.current) {
-      // Should never happen
-      throw new Error(
-        "Next accumulator is the same as the current accumulator",
-      );
-    }
     let preparation: ReturnType<SplatAccumulator["prepareGenerate"]>;
     try {
       preparation = next.prepareGenerate({
@@ -1029,14 +1017,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       }
 
       if (skipSort) {
-        if (this.display !== next) this.releaseAccumulator(this.display);
-        if (this.current !== next && this.current !== this.display) {
+        this.releaseAccumulator(this.display);
+        if (this.current !== this.display) {
           this.releaseAccumulator(this.current);
         }
         // The stochastic shader reads identity indices, so the latest generated
         // accumulator is immediately displayable without a matching ordering.
         this.display = next;
-        this.current = next;
       } else if (
         this.display.mappingVersion === next.mappingVersion &&
         !needsSort
@@ -1094,14 +1081,9 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   private async driveSort(shrinkOrdering = false, forceSort = false) {
-    if (
-      this.disposed ||
-      this.backend.kind === "webgpu" ||
-      this.sorting ||
-      !this.sortDirty
-    ) {
+    // WebGL updates await each sort before draining the next queued update.
+    if (this.disposed || this.backend.kind === "webgpu" || !this.sortDirty)
       return;
-    }
 
     const now = performance.now();
     const nextSortTime = this.lastSortTime
@@ -1121,9 +1103,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     try {
       const sortRadial = this.sortRadial;
       if (shrinkOrdering || this.sortWorker?.disposed) this.resetSortWorker();
-      if (this.sortWorker && this.sortedRadial !== sortRadial) {
-        this.resetSortWorker();
-      }
       this.sortWorker ??= new SplatWorker();
       const sortWorker = this.sortWorker;
 
@@ -1175,15 +1154,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       // Keep the displayed texture's CPU source attached while transferring
       // the other buffer to the worker for the next sort.
       this.orderingBuffer =
-        previousOrdering instanceof Uint32Array &&
-        previousOrdering.length === this.maxSplats
+        previousOrdering?.length === this.maxSplats
           ? previousOrdering
           : new Uint32Array(this.maxSplats);
 
       this.sortedCenter.copy(current.viewOrigin);
       this.sortedDir.copy(current.viewDirection);
       this.sortedRadial = sortRadial;
-      if (this.current === current && this.display !== current) {
+      if (this.display !== current) {
         this.releaseAccumulator(this.display);
         this.display = current;
       }
@@ -1191,11 +1169,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     } catch (error) {
       if (this.disposed) return;
       this.sortDirty = true;
-      if (
-        this.current === current &&
-        current !== this.display &&
-        this.accumulators.length === 0
-      ) {
+      if (current !== this.display && this.accumulators.length === 0) {
         // A candidate waiting on a new ordering cannot be displayed. Roll back
         // to the still-valid display accumulator and free the failed one.
         this.current = this.display;
@@ -1403,10 +1377,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
   }
 
   [stochasticResolveMarker](enabled: boolean) {
-    this.stochasticResolveMarkerUsers = Math.max(
-      0,
-      this.stochasticResolveMarkerUsers + (enabled ? 1 : -1),
-    );
+    this.stochasticResolveMarkerUsers += enabled ? 1 : -1;
     this.uniforms.stochasticResolve.value =
       this.stochasticResolveMarkerUsers > 0;
   }

@@ -74,14 +74,11 @@ export function streamPendingLimit(
   uploadBytes: number,
   unitBytes = 0,
 ) {
-  return Math.min(
-    Number.MAX_SAFE_INTEGER,
-    concurrency * Math.max(uploadBytes, unitBytes),
-  );
+  return concurrency * Math.max(uploadBytes, unitBytes);
 }
 
 export function retryDelay(failures: number) {
-  return Math.min(30_000, 1000 * 2 ** Math.min(failures, 5));
+  return Math.min(30_000, 1000 * 2 ** failures);
 }
 
 export function notifyStreamChange(options: StreamSchedulerOptions) {

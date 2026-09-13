@@ -33,12 +33,6 @@ export class WorkerRpc<
 
   onMessage(event: MessageEvent) {
     const { id, result, error, status, wasmMemoryBytes } = event.data;
-    if (Number.isSafeInteger(wasmMemoryBytes) && wasmMemoryBytes >= 0) {
-      this.peakWasmMemoryBytes = Math.max(
-        this.peakWasmMemoryBytes,
-        wasmMemoryBytes,
-      );
-    }
     const promise = this.messages[id];
     if (!promise) return;
 
@@ -52,13 +46,14 @@ export class WorkerRpc<
       return;
     }
 
+    this.peakWasmMemoryBytes = Math.max(
+      this.peakWasmMemoryBytes,
+      wasmMemoryBytes,
+    );
     void promise.statusQueue
       .then(() => {
         if (error !== undefined) throw error;
         return result;
-      })
-      .finally(() => {
-        delete this.messages[id];
       })
       .then(promise.resolve, promise.reject);
   }
@@ -92,13 +87,9 @@ export class WorkerRpc<
         { id, name, args },
         { transfer: getTransferable(args) },
       );
-    } catch (error) {
-      this.messages[id].reject(error);
-      delete this.messages[id];
-    }
-    try {
       return await promise;
     } finally {
+      delete this.messages[id];
       options.signal?.removeEventListener("abort", abort);
     }
   }

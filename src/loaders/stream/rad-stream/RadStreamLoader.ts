@@ -121,12 +121,6 @@ export class RadStreamLoader {
     onDecoded?: () => void,
   ): Promise<RadStreamChunk> {
     const header = await this.initialize(signal);
-    if (
-      !Number.isInteger(index) ||
-      index < 0 ||
-      index >= header.meta.chunks.length
-    )
-      throw new Error(`RAD: missing chunk ${index}`);
     // Codebooks live in chunk zero. Its initial geometry is held only until the
     // caller requests that page, avoiding a duplicate fetch during races.
     this.rootReady ??= this.decode(

@@ -9,7 +9,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   }
 
   function getValue(property) {
-    return entries.get(property)?.getValue();
+    return entries.get(property).getValue();
   }
 
   function setValue(property, value, { emit = false } = {}) {
@@ -19,8 +19,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   }
 
   function setHidden(property, hidden) {
-    const entry = entries.get(property);
-    if (entry) entry.row.hidden = hidden;
+    entries.get(property).row.hidden = hidden;
   }
 
   function syncDependencies(changedProperty, emit = false) {

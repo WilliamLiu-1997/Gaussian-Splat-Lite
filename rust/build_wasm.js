@@ -101,6 +101,4 @@ try {
 } catch (error) {
   console.error("Failed to build Rust WASM:", error.message);
   process.exitCode = 1;
-} finally {
-  cleanup();
 }

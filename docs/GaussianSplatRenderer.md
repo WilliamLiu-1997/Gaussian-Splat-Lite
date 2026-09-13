@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Generates, sorts, and renders all visible `SplatMesh` objects in a scene.
+Renders all visible `SplatMesh` objects in a scene. One instance can display multiple models.
 
 ```ts
 new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
@@ -12,30 +12,28 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | WebGLRenderer or initialized WebGPURenderer, including `forceWebGL` and automatic WebGL2 fallback |
-| `onDirty` | `() => void` | `undefined` | Called when loading, generation, or sorting requires another render |
-| `premultipliedAlpha` | `boolean` | `true` | Uses premultiplied alpha while accumulating Splat RGB |
-| `timer` | `THREE.Timer` | New internal timer | Caller owns and updates a supplied timer |
-| `autoUpdate` | `boolean` | `true` | Checks the Splat collection once per render call |
-| `preUpdate` | `boolean` | `true` | WebGL update scheduling; WebGL XR updates follow the render pass. Ignored by native WebGPU |
+| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | Three.js renderer; call `await renderer.init()` first when using WebGPURenderer |
+| `onDirty` | `() => void` | `undefined` | Called when the image needs a redraw |
+| `premultipliedAlpha` | `boolean` | `true` | Use premultiplied alpha for blending |
+| `timer` | `THREE.Timer` | New internal timer | Optional shared timer; update it yourself when supplied |
+| `autoUpdate` | `boolean` | `true` | Update visible Splats when rendering |
+| `preUpdate` | `boolean` | `true` | Update before rendering on WebGL; XR updates follow the render pass. Unused on native WebGPU |
 
 ## Rendering options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `autoStochastic` | `boolean` | `false` | Uses stochastic rendering during motion until a fresh sort is ready; enables companion depth on sorted frames |
-| `stochastic` | `boolean` | `false` | Forces sorting-free stochastic rendering |
-| `renderDepth` | `boolean` | `false` | Adds companion depth on non-stochastic frames when `depthWrite` is false |
+| `autoStochastic` | `boolean` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
+| `stochastic` | `boolean` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
+| `renderDepth` | `boolean` | `false` | Let Splats occlude later geometry on sorted frames when `depthWrite` is off |
 
-All three options require built-in shaders. Automatic switching also requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; capture methods stay sorted.
+These options require the built-in materials. Stochastic rendering can look noisy while active. Automatic switching requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; captures use sorted rendering.
 
-With default depth settings, the draw order is opaque meshes, sorted Splat color, companion depth, then later geometry. Stochastic frames write depth directly. Companion depth uses unsorted Splat indices and samples alpha coverage; transparent edges may show noise.
-
-Occlusion depends on draw order and depth testing in later materials. Depth clears or target changes can affect it. `renderDepth` writes scene depth, not a depth image or array.
+`renderDepth` lets Splats occlude geometry drawn later. Draw order and depth testing in other materials still matter; transparent edges may show noise. It does not return a depth image.
 
 ### Stochastic resolve
 
-For WebGL or WebGPU, compose the scene with spatial noise reduction:
+Reduce stochastic noise on WebGL or WebGPU:
 
 ```js
 import { StochasticResolvePass } from "gaussian-splat-lite";
@@ -57,13 +55,13 @@ composer.addPass(new OutputPass());
 renderer.setAnimationLoop(() => composer.render());
 ```
 
-For a custom render graph:
+For custom post-processing:
 
 ```js
 resolvePass.resolve(renderer, inputTarget, outputTarget);
 ```
 
-Use half-float or float input after the complete scene render. The pass is enabled by default; call `dispose()` when finished.
+Use a `HalfFloatType` or `FloatType` input after the complete scene render. Input and output must be different targets. Outside XR, input dimensions must match the output target, or the canvas drawing buffer when output is `null`. For XR output, use the eye layout described below. The pass is enabled by default; call `dispose()` when finished.
 
 ### WebXR
 
@@ -74,42 +72,46 @@ splatRenderer.autoStochastic = false;
 splatRenderer.stochastic = true;
 ```
 
-`compose()` handles eye targets, color conversion, and depth copying. Disabling resolve keeps raw stochastic rendering. Disabling manual stochastic waits for a sorted replacement when `autoUpdate` is enabled.
+Use `compose()` to handle both eyes automatically. Disabling the resolve pass leaves the original stochastic noise visible.
 
-Custom XR graphs must restore the XR output target before calling `resolve(renderer, input, null)`. Pack eyes horizontally without gaps in `renderer.xr.getCamera().cameras` order, all at y = 0. Input width is the sum of eye widths; height is their maximum. Use eye-local viewports and include a `DepthTexture` to copy depth when the XR output has a depth buffer.
+For a custom XR render graph using `resolve()`:
+
+- Restore the XR output target before calling `resolve(renderer, input, null)`.
+- Pack eyes horizontally without gaps in `renderer.xr.getCamera().cameras` order, with eye-local viewports at y = 0. Input width is the sum of eye widths; height is their maximum.
+- Attach a `DepthTexture` to the input to copy scene depth when the XR output has a depth buffer.
+
+Disabling manual `stochastic` waits for a sorted replacement when `autoUpdate` is enabled.
 
 ## Quality and appearance options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `maxStdDev` | `number` | `Math.sqrt(8)` | Maximum standard deviations drawn from each Gaussian center; lower values improve speed but crop edges |
-| `minPixelRadius` | `number` | `1` | Minimum Splat radius in screen pixels, independent of the internal `focalAdjustment` scale |
-| `maxPixelRadius` | `number` | `512` | Maximum screen-space Splat radius |
-| `minAlpha` | `number` | `0.5 / 255` | Fragments below this alpha are discarded |
-| `preBlurAmount` | `number` | `0.3` | Adds to the covariance diagonal before opacity correction |
-| `blurAmount` | `number` | `0` | Anti-aliasing blur amount with opacity correction |
-| `clipXY` | `number` | `1.25` | Center-clipping factor relative to the X/Y frustum boundary; `1` clips immediately outside it |
-| `focalAdjustment` | `number` | `2` | Projected Splat-size adjustment; larger values generally look sharper |
+| `maxStdDev` | `number` | `Math.sqrt(8)` | Control the extent of each Splat; lower values crop its outer edges |
+| `minPixelRadius` | `number` | `1` | Skip Splats smaller than this screen radius in pixels |
+| `maxPixelRadius` | `number` | `512` | Limit Splat screen radius in pixels |
+| `minAlpha` | `number` | `0.5 / 255` | Hide parts more transparent than this value |
+| `preBlurAmount` | `number` | `0.3` | Enlarge and soften Splats |
+| `blurAmount` | `number` | `0` | Add smoothing with an opacity adjustment |
+| `clipXY` | `number` | `1.25` | Allow centers slightly outside the view; `1` clips at its edge |
+| `focalAdjustment` | `number` | `2` | Adjust projected size; higher values generally look sharper |
 
-`minPixelRadius=1` means approximately a 1 px screen-radius cutoff. Previously, the effective cutoff was `minPixelRadius / focalAdjustment`; divide an old explicit value by `focalAdjustment` to preserve its previous cutoff. Wide kernels retain the full-support size test before transparent-tail trimming.
-
-Native WebGPU projection quantization can cause slight visual differences.
+`minPixelRadius=1` means a screen-radius cutoff of about 1 pixel. When upgrading from before 1.0.0, divide an old explicit value by `focalAdjustment` to preserve its previous cutoff. WebGPU may show slight visual differences.
 
 ## Sorting, material, and offscreen options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sortRadial` | `boolean` | `false` | Sorts by geometric distance when `true`, or by Z depth when `false` |
-| `minSortIntervalMs` | `number` | `0` | Minimum interval between asynchronous WebGL worker sort calls; ignored by native WebGPU |
-| `transparent` | `boolean` | `true` | Controls sorted Splat blending; stochastic-enabled Splats stay at the end of the opaque list |
-| `depthTest` | `boolean` | `true` | Reads the depth buffer for occlusion with regular meshes |
-| `depthWrite` | `boolean` | `false` | Writes depth; normally undesirable for transparent Splats |
-| `extraUniforms` | `Record<string, unknown>` | `undefined` | Additional values merged into the default shader uniforms |
-| `vertexShader` | `string` | Built in | Replaces the default Splat vertex shader in WebGLRenderer; custom GLSL is rejected by WebGPURenderer on either backend |
-| `fragmentShader` | `string` | Built in | Replaces the default Splat fragment shader in WebGLRenderer; custom GLSL is rejected by WebGPURenderer on either backend |
-| `target` | `TargetOptions` | `undefined` | Creates a dedicated offscreen render target |
+| `sortRadial` | `boolean` | `false` | Sort by distance when `true`, or by camera depth when `false` |
+| `minSortIntervalMs` | `number` | `0` | Minimum time between WebGL sorts; unused on native WebGPU |
+| `transparent` | `boolean` | `true` | Enable transparent blending in sorted rendering |
+| `depthTest` | `boolean` | `true` | Respect depth from other geometry |
+| `depthWrite` | `boolean` | `false` | Write depth directly; normally leave off for transparent Splats |
+| `extraUniforms` | `Record<string, unknown>` | `undefined` | Additional shader values |
+| `vertexShader` | `string` | Built in | Custom vertex shader for WebGLRenderer only |
+| `fragmentShader` | `string` | Built in | Custom fragment shader for WebGLRenderer only |
+| `target` | `TargetOptions` | `undefined` | Set the size and options for offscreen captures |
 
-Both WebGL backends use asynchronous Worker/WASM sorting and keep the current order until the worker result is ready. Native WebGPU uses 32-bit GPU sorting before drawing; equal-depth Splats have no guaranteed source order. Stochastic rendering skips sorting.
+On WebGL, the current sort order stays in use until a new sort is ready. Native WebGPU sorts before drawing. Use stochastic rendering for more responsive movement, with some visible noise.
 
 ```ts
 type TargetOptions = {
@@ -120,7 +122,7 @@ type TargetOptions = {
 } & THREE.RenderTargetOptions;
 ```
 
-`superXY` renders at higher resolution; `readTarget()` averages pixels on the CPU. Each target dimension multiplied by `superXY` must be at most 8192.
+`superXY` improves capture quality by rendering at higher resolution. The returned image keeps the requested width and height. Each dimension multiplied by `superXY` must be at most 8192.
 
 ```js
 const captureRenderer = new GaussianSplatRenderer({
@@ -137,27 +139,27 @@ If a display renderer shares the scene, use `layers` or `visible` to keep both S
 
 ### Color management
 
-WebGPURenderer (including its WebGL2 fallback) decodes stored sRGB colors into `THREE.ColorManagement.workingColorSpace`, then uses the renderer's output conversion. WebGL decodes sRGB only for linear and offscreen targets.
+Built-in materials handle model color conversion. Use your Three.js renderer's output color-space settings to control the final image.
 
 ## Common properties and methods
 
 | API | Description |
 | --- | --- |
-| `update({ scene, camera })` | Updates Splats; returns `Promise<void>`. Native WebGPU defers GPU work until drawing |
-| `shrinkResources({ scene, camera })` | Updates the scene, clears cached readbacks, and shrinks renderer GPU/worker allocations; native WebGPU applies resizing at the next draw |
-| `clearSplats()` | Clears the current display buffer without removing scene objects |
+| `update({ scene, camera })` | Refresh the scene and camera state; returns `Promise<void>` |
+| `shrinkResources({ scene, camera })` | Reduce retained rendering resources after scene changes |
+| `clearSplats()` | Clear the current Splat display without removing scene objects |
 | `render(scene, camera)` | Renders with this instance active; normally use the Three.js renderer directly |
 | `renderTarget({ scene, camera })` | Renders to the target configured in the constructor |
 | `readTarget()` | Reads the latest offscreen result as an RGBA `Uint8Array` |
 | `renderReadTarget({ scene, camera })` | Renders and reads an offscreen result |
 | `renderCubeMap(...)` | Renders a cube map from a world-space position |
 | `readCubeTargets()` | Reads RGBA bytes from all six cube faces |
-| `renderEnvMap(...)` | Renders and PMREM-prefilters an environment map |
+| `renderEnvMap(...)` | Capture an environment map for lighting |
 | `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
-| `dispose()` | Releases materials, geometry, textures, targets, and the sorting worker |
-| `stochasticActive` | Read-only flag indicating that the current frame is using the stochastic path |
-| `synchronousSort` | Read-only sorting mode: `true` for native WebGPU, `false` for both WebGL backends |
-| `depthMesh` | Lazily created depth-only companion mesh |
+| `dispose()` | Release this renderer's resources |
+| `stochasticActive` | Read whether the current frame uses stochastic rendering |
+| `synchronousSort` | Read whether sorting finishes before drawing: `true` on native WebGPU |
+| `depthMesh` | Depth-only mesh used by depth rendering |
 
 `premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, and `renderDepth` are also writable properties with the behavior listed above.
 
@@ -215,4 +217,4 @@ splat.opacity = 0.5;
 requestRender();
 ```
 
-For capture delegation, renderer state and backend responsibilities, see [Rendering boundaries](Architecture.md#rendering-boundaries).
+Dispose textures returned by `renderEnvMap()` when no longer needed. See the [overview](Architecture.md) for the main loading and rendering workflow.

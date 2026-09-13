@@ -1,12 +1,12 @@
-import * as TSL from "three/tsl";
 import {
+  type ComputeNode,
   IndirectStorageBufferAttribute,
+  type Node,
   StorageBufferAttribute,
+  type StorageBufferNode,
 } from "three/webgpu";
 
-// biome-ignore lint/suspicious/noExplicitAny: Three's public TSL typings do not expose a common chainable node type.
-type TSLNode = any;
-const N = TSL as Record<string, TSLNode>;
+import { N, setIndirectDispatch } from "../tsl/tslCompat";
 
 const RADIX_BITS = 4;
 const RADIX_BUCKETS = 1 << RADIX_BITS;
@@ -18,23 +18,20 @@ const ELEMENTS_PER_WORKGROUP = WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
 const PREFIX_ITEMS_PER_WORKGROUP = WORKGROUP_SIZE * 2;
 const PREFIX_LEVELS = 3;
 
-type MutableUniform = { value: number };
-
 type BufferRef = { value: StorageBufferAttribute };
 
-export type WebGPURadixSortOptions = {
-  /** GPU count of compact input records. Omit for the CPU-count interface. */
-  count?: TSLNode;
-  /** Optional final-pass write, compiled once with the persistent sort graph. */
-  storeOrder?: (index: TSLNode, value: TSLNode) => void;
-  maxComputeWorkgroupsPerDimension?: number;
-  maxStorageBufferBindingSize?: number;
-  maxBufferSize?: number;
+type WebGPURadixSortOptions = {
+  /** GPU count of compact input records. */
+  count: Node<"uint">;
+  /** Final-pass write, compiled once with the persistent sort graph. */
+  storeOrder: (index: Node<"uint">, value: Node<"uint">) => void;
+  maxComputeWorkgroupsPerDimension: number;
+  maxStorageBufferBindingSize: number;
 };
 
 type PrefixLevel = {
-  scan: TSLNode;
-  add: TSLNode | null;
+  scan: ComputeNode;
+  add: ComputeNode | null;
   dispatch: IndirectStorageBufferAttribute;
   blockSums: BufferRef;
 };
@@ -45,16 +42,8 @@ function storage(buffer: BufferRef, name: string) {
     .onObjectUpdate(() => buffer.value);
 }
 
-function mutableUniform(value: number, type: string) {
-  const holder: MutableUniform = { value };
-  return {
-    holder,
-    node: N.uniform(value, type).onObjectUpdate(() => holder.value),
-  };
-}
-
 function makeBuffer(count: number) {
-  return new StorageBufferAttribute(new Uint32Array(Math.max(1, count)), 1);
+  return new StorageBufferAttribute(new Uint32Array(count), 1);
 }
 
 function makeBufferRef(count: number): BufferRef {
@@ -74,9 +63,9 @@ function makeHistogramTask({
 }: {
   input: BufferRef;
   blockSums: BufferRef;
-  elementCount: TSLNode;
+  elementCount: Node<"uint">;
   bitOffset: number;
-  workgroupCount: TSLNode;
+  workgroupCount: Node<"uint">;
 }) {
   const inputKeys = storage(input, "gslRadixInputKeys").toReadOnly();
   const sums = storage(blockSums, "gslRadixBlockSums");
@@ -101,7 +90,7 @@ function makeHistogramTask({
         type: "uint",
         condition: "<",
       },
-      ({ i: round }: { i: TSLNode }) => {
+      ({ i: round }) => {
         const index = workgroup
           .mul(ELEMENTS_PER_WORKGROUP)
           .add(round.mul(WORKGROUP_SIZE))
@@ -121,14 +110,14 @@ function makeHistogramTask({
         .assign(N.atomicLoad(histogram.element(tid)));
     });
   })()
-    .compute([1, 1, 1], [WORKGROUP_SIZE])
+    .computeKernel([WORKGROUP_SIZE])
     .setName("Splat radix histogram");
 }
 
 function makePrefixScanTask(
   itemsBuffer: BufferRef,
   blockSumsBuffer: BufferRef,
-  elementCount: TSLNode,
+  elementCount: Node<"uint">,
 ) {
   const items = storage(itemsBuffer, "gslPrefixItems");
   const blockSums = storage(blockSumsBuffer, "gslPrefixBlockSums");
@@ -136,7 +125,7 @@ function makePrefixScanTask(
     "gslPrefixTemp",
   );
 
-  const compute = N.Fn(() => {
+  return N.Fn(() => {
     const tid = N.invocationLocalIndex;
     const workgroup = workgroupIndex();
     const first = workgroup.mul(PREFIX_ITEMS_PER_WORKGROUP).add(tid.mul(2));
@@ -160,7 +149,7 @@ function makePrefixScanTask(
         condition: ">",
         update: ">>= 1",
       },
-      ({ i: distance }: { i: TSLNode }) => {
+      ({ i: distance }) => {
         N.workgroupBarrier();
         N.If(tid.lessThan(distance), () => {
           const a = offset.mul(tid.mul(2).add(1)).sub(1);
@@ -187,7 +176,7 @@ function makePrefixScanTask(
         condition: "<",
         update: "<<= 1",
       },
-      ({ i: distance }: { i: TSLNode }) => {
+      ({ i: distance }) => {
         offset.shiftRightAssign(1);
         N.workgroupBarrier();
         N.If(tid.lessThan(distance), () => {
@@ -208,21 +197,19 @@ function makePrefixScanTask(
       items.element(second).assign(temp.element(tid.mul(2).add(1)));
     });
   })()
-    .compute([1, 1, 1], [WORKGROUP_SIZE])
+    .computeKernel([WORKGROUP_SIZE])
     .setName("Splat radix prefix scan");
-
-  return compute;
 }
 
 function makePrefixAddTask(
   itemsBuffer: BufferRef,
   blockSumsBuffer: BufferRef,
-  elementCount: TSLNode,
+  elementCount: Node<"uint">,
 ) {
   const items = storage(itemsBuffer, "gslPrefixItems");
   const blockSums = storage(blockSumsBuffer, "gslPrefixBlockSums").toReadOnly();
 
-  const compute = N.Fn(() => {
+  return N.Fn(() => {
     const workgroup = workgroupIndex();
     const first = workgroup
       .mul(PREFIX_ITEMS_PER_WORKGROUP)
@@ -236,10 +223,8 @@ function makePrefixAddTask(
       });
     });
   })()
-    .compute([1, 1, 1], [WORKGROUP_SIZE])
+    .computeKernel([WORKGROUP_SIZE])
     .setName("Splat radix prefix add");
-
-  return compute;
 }
 
 function makeReorderTask({
@@ -260,12 +245,12 @@ function makeReorderTask({
   inputValuesAttribute: BufferRef;
   outputValuesAttribute: BufferRef;
   prefixAttribute: BufferRef;
-  elementCount: TSLNode;
+  elementCount: Node<"uint">;
   bitOffset: number;
   firstPass: boolean;
   lastPass: boolean;
-  workgroupCount: TSLNode;
-  storeOrder?: (index: TSLNode, value: TSLNode) => void;
+  workgroupCount: Node<"uint">;
+  storeOrder?: (index: Node<"uint">, value: Node<"uint">) => void;
 }) {
   const inputKeys = storage(
     inputKeysAttribute,
@@ -309,7 +294,7 @@ function makeReorderTask({
         type: "uint",
         condition: "<",
       },
-      ({ i: round }: { i: TSLNode }) => {
+      ({ i: round }) => {
         const index = workgroup
           .mul(ELEMENTS_PER_WORKGROUP)
           .add(round.mul(WORKGROUP_SIZE))
@@ -342,7 +327,7 @@ function makeReorderTask({
               type: "uint",
               condition: "<",
             },
-            ({ i: precedingWord }: { i: TSLNode }) => {
+            ({ i: precedingWord }) => {
               localPrefix.addAssign(
                 N.countOneBits(
                   N.atomicLoad(digitMasks.element(base.add(precedingWord))),
@@ -376,7 +361,7 @@ function makeReorderTask({
                 type: "uint",
                 condition: "<",
               },
-              ({ i: maskWord }: { i: TSLNode }) => {
+              ({ i: maskWord }) => {
                 const maskIndex = tid.mul(8).add(maskWord);
                 count.addAssign(
                   N.countOneBits(N.atomicLoad(digitMasks.element(maskIndex))),
@@ -391,7 +376,7 @@ function makeReorderTask({
       },
     );
   })()
-    .compute([1, 1, 1], [WORKGROUP_SIZE])
+    .computeKernel([WORKGROUP_SIZE])
     .setName("Splat radix reorder");
 }
 
@@ -399,9 +384,9 @@ function makeReorderTask({
 export class WebGPURadixSort {
   capacity: number;
   readonly maxCapacity: number;
-  readonly nodes: TSLNode[];
+  readonly nodes: ComputeNode[];
 
-  private readonly elementCount = mutableUniform(0, "uint");
+  private readonly elementCount = N.uniform(0, "uint");
   private readonly keys: [BufferRef, BufferRef];
   private readonly values: [BufferRef, BufferRef];
   private readonly blockSums: BufferRef;
@@ -413,20 +398,17 @@ export class WebGPURadixSort {
   );
   private readonly prefixLevels: PrefixLevel[] = [];
   private readonly maxWorkgroups: number;
-  private readonly dispatchNodes: TSLNode[][];
+  private readonly dispatchNodes: ComputeNode[][];
 
   constructor(
     capacity: number,
     inputKeys: BufferRef,
-    options: WebGPURadixSortOptions = {},
+    options: WebGPURadixSortOptions,
   ) {
-    this.maxWorkgroups = options.maxComputeWorkgroupsPerDimension ?? 65535;
+    this.maxWorkgroups = options.maxComputeWorkgroupsPerDimension;
     this.maxCapacity = Math.min(
       0xffffffff - ELEMENTS_PER_WORKGROUP + 1,
-      Math.floor(
-        (options.maxStorageBufferBindingSize ?? Number.POSITIVE_INFINITY) / 4,
-      ),
-      Math.floor((options.maxBufferSize ?? Number.POSITIVE_INFINITY) / 4),
+      Math.floor(options.maxStorageBufferBindingSize / 4),
     );
     const safeCapacity = this.validateCapacity(capacity);
     this.capacity = safeCapacity;
@@ -480,8 +462,8 @@ export class WebGPURadixSort {
         lastPass: pass === RADIX_PASSES - 1,
         storeOrder: pass === RADIX_PASSES - 1 ? options.storeOrder : undefined,
       });
-      histogram.dispatchSize = this.sortDispatch;
-      reorder.dispatchSize = this.sortDispatch;
+      setIndirectDispatch(histogram, this.sortDispatch);
+      setIndirectDispatch(reorder, this.sortDispatch);
       this.nodes.push(histogram, reorder);
       for (let level = 0; level < PREFIX_LEVELS; level++) {
         this.dispatchNodes[level].push(
@@ -511,10 +493,10 @@ export class WebGPURadixSort {
   private paddedWorkgroups(count: number, itemsPerWorkgroup: number) {
     const groups = Math.ceil(count / itemsPerWorkgroup);
     const width = Math.min(groups, this.maxWorkgroups);
-    return Math.max(1, width * Math.ceil(groups / this.maxWorkgroups));
+    return width * Math.ceil(groups / this.maxWorkgroups);
   }
 
-  private makeSetupTask(gpuCount?: TSLNode) {
+  private makeSetupTask(gpuCount: Node<"uint">) {
     const counts = storage(this.counts, "gslRadixCounts");
     const dispatchBuffers = [
       this.sortDispatch,
@@ -523,10 +505,7 @@ export class WebGPURadixSort {
     const maxWorkgroups = N.uint(this.maxWorkgroups);
 
     return N.Fn(() => {
-      const count = N.min(
-        gpuCount ?? this.elementCount.node,
-        this.elementCount.node,
-      ).toVar();
+      const count = gpuCount.min(this.elementCount).toVar();
       counts.element(0).assign(count);
       let itemCount = count;
       for (let index = 0; index < dispatchBuffers.length; index++) {
@@ -536,11 +515,12 @@ export class WebGPURadixSort {
           .add(itemsPerWorkgroup - 1)
           .div(N.uint(itemsPerWorkgroup))
           .toVar();
-        const width = N.min(groups, maxWorkgroups).toVar();
-        const height = N.max(
-          groups.add(this.maxWorkgroups - 1).div(maxWorkgroups),
-          N.uint(1),
-        ).toVar();
+        const width = groups.min(maxWorkgroups).toVar();
+        const height = groups
+          .add(this.maxWorkgroups - 1)
+          .div(maxWorkgroups)
+          .max(N.uint(1))
+          .toVar();
         const dispatch = dispatchBuffers[index];
         dispatch.element(0).assign(width);
         dispatch.element(1).assign(height);
@@ -562,15 +542,17 @@ export class WebGPURadixSort {
   }
 
   private replaceBuffer(buffer: BufferRef, count: number) {
-    const nextCount = Math.max(1, count);
-    if (buffer.value.count === nextCount) return;
+    if (buffer.value.count === count) return;
 
     const previous = buffer.value;
-    buffer.value = makeBuffer(nextCount);
+    buffer.value = makeBuffer(count);
     previous.dispose();
   }
 
-  private createPrefixLevels(itemCount: number, counts: TSLNode) {
+  private createPrefixLevels(
+    itemCount: number,
+    counts: StorageBufferNode<"uint">,
+  ) {
     let items = this.blockSums;
     let currentCount = itemCount;
 
@@ -590,8 +572,8 @@ export class WebGPURadixSort {
         levelIndex < PREFIX_LEVELS - 1
           ? makePrefixAddTask(items, blockSums, elementCount)
           : null;
-      scan.dispatchSize = dispatch;
-      if (add) add.dispatchSize = dispatch;
+      setIndirectDispatch(scan, dispatch);
+      if (add) setIndirectDispatch(add, dispatch);
       this.prefixLevels.push({ scan, add, dispatch, blockSums });
       items = blockSums;
       currentCount = blockCount;
@@ -619,7 +601,7 @@ export class WebGPURadixSort {
   }
 
   /** Prepare the persistent graph; GPU count is clamped to this input bound. */
-  prepare(elementCount: number): TSLNode[] {
+  prepare(elementCount: number): ComputeNode[] {
     if (
       !Number.isSafeInteger(elementCount) ||
       elementCount < 0 ||
@@ -630,7 +612,7 @@ export class WebGPURadixSort {
       );
     }
     if (elementCount === 0) return [];
-    this.elementCount.holder.value = elementCount;
+    this.elementCount.value = elementCount;
     // The CPU knows an upper bound, while the live count stays on the GPU.
     // Include 2D dispatch padding just as the GPU setup does, so every possible
     // live count fits the selected hierarchy without a count readback.

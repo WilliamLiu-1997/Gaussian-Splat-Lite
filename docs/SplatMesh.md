@@ -49,16 +49,16 @@ await splat.initialized;
 | `fileType` | `SplatFileType` | Inferred from name | Explicitly selects `PLY`, `SPZ`, `SOG`, or `RAD` |
 | `fileName` | `string` | `File.name` when available | Supplies a name for inferring the input format |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
-| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Apply a [load-time transform](PostDecode.md) to each Splat |
 | `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
 | `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |
 | `constructSplats` | `(splats) => void \| Promise<void>` | `undefined` | Populates `Splats` during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Download or file-reading progress callback |
 | `onLoad` | `(mesh) => void \| Promise<void>` | `undefined` | Called after initialization completes |
-| `editable` | `boolean` | `true` | Applies global and local SDF edits |
+| `editable` | `boolean` | `true` | Allow scene-wide and model-specific region edits |
 | `raycastable` | `boolean` | `true` | Participates in Three.js raycasting |
-| `minRaycastOpacity` | `number` | `0.15` | Per-Splat kernel-alpha threshold; clips the raycast hit area at this opacity, including special-shape Splats |
-| `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before Splat generation for a frame |
+| `minRaycastOpacity` | `number` | `0.15` | Ignore more transparent areas when picking; higher values narrow the hit area |
+| `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before each model update; use for animation |
 
 Choose at most one of `url`, `file`, `fileBytes`, `splats`, or `constructSplats`; mixing inputs throws.
 
@@ -71,10 +71,10 @@ Choose at most one of `url`, `file`, `fileBytes`, `splats`, or `constructSplats`
 | `numSplats` | `number` | Current Splat count |
 | `recolor` | `THREE.Color(1, 1, 1)` | RGB multiplier applied to the entire object |
 | `opacity` | `1` | Opacity multiplier applied to the entire object |
-| `maxSh` | `3` | Maximum spherical-harmonic degree; use `0` for base color only |
+| `maxSh` | `3` | Limit view-dependent color detail; `0` uses base color only |
 | `edits` | `SplatEdit[] \| null` | Explicit edits applied only to this mesh |
 | `splats` | `Splats \| undefined` | Current underlying Splat data |
-| `needsUpdate` | `boolean` setter | Set to `true` to force Splat regeneration and depth re-sorting; `false` does nothing |
+| `needsUpdate` | `boolean` setter | Set to `true` to force a refresh; `false` does nothing |
 
 ## Common methods
 
@@ -122,7 +122,7 @@ if (intersections.length > 0) {
 }
 ```
 
-Requires a built-in `Splats` source and `raycastable: true`. Returns no hits until main-thread WebAssembly is ready. Streaming raycasts use selected records at their original opacity.
+Requires `raycastable: true`. Picking may return no hits during initial setup. Streaming models can be picked, but hits do not follow their display fades.
 
 ## Scene integration
 
@@ -136,6 +136,8 @@ const splat = new SplatMesh({
 scene.add(splat);
 ```
 
-For GIS/ECEF scenes, keep Splat centers local and put large offsets in the mesh transform. Rendering and sorting handle offsets in double precision; precision already lost in float32 source data cannot be recovered.
+If `onFrame` throws, the current update stops and the error propagates through the renderer's update/render call. Changes already made by the callback are not rolled back.
+
+For GIS/ECEF scenes, keep model coordinates local and put large offsets in the mesh transform. This helps preserve detail; precision already lost in the source file cannot be restored.
 
 For models using `+Y` down and `+Z` forward, use `splat.quaternion.set(1, 0, 0, 0)` to rotate 180° around X.

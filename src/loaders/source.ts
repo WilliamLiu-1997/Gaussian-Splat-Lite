@@ -20,7 +20,7 @@ export function checkRange(offset: number, length: number, size?: number) {
 }
 
 export function joinBytes(chunks: Uint8Array[], length: number) {
-  if (chunks.length === 1 && chunks[0].byteLength === length) return chunks[0];
+  if (chunks.length === 1) return chunks[0];
   const bytes = new Uint8Array(length);
   let offset = 0;
   for (const chunk of chunks) {
@@ -67,20 +67,10 @@ export async function readResponse(
     const announced = Number(response.headers.get("Content-Length"));
     if (Number.isFinite(announced) && announced > maxBytes)
       throw new Error("Source response exceeds its byte limit");
-    if (!reader) {
-      const bytes = new Uint8Array(
-        await abortable(response.arrayBuffer(), signal),
-      );
-      if (bytes.byteLength > maxBytes)
-        throw new Error("Source response exceeds its byte limit");
-      validateChunk?.(bytes, bytes.byteLength);
-      progress(bytes.byteLength);
-      return { chunks: [bytes], size: bytes.byteLength };
-    }
     return await collectBytes(
       async () => {
-        const { done, value } = await reader.read();
-        return done ? undefined : value;
+        const chunk = await reader?.read();
+        return chunk?.done ? undefined : chunk?.value;
       },
       maxBytes,
       progress,
@@ -118,13 +108,6 @@ export async function* prefetchOrdered<T>(
   read: (index: number) => Promise<T>,
   signal?: AbortSignal,
 ) {
-  if (
-    !Number.isSafeInteger(count) ||
-    count < 0 ||
-    !Number.isSafeInteger(concurrency) ||
-    concurrency < 1
-  )
-    throw new Error("Invalid source prefetch count or concurrency");
   signal?.throwIfAborted();
   const pending = new Map<number, Promise<T>>();
   let next = 0;

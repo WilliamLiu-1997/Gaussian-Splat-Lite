@@ -143,8 +143,7 @@ export async function readZip(source: Source) {
   if (!rootMeta && candidates.length !== 1)
     fail("ZIP must contain one unambiguous meta.json");
   const metaName = rootMeta ? "meta.json" : candidates[0];
-  const meta = entries.get(metaName);
-  if (!meta) fail("ZIP metadata is missing");
+  const meta = entries.get(metaName) as Entry;
   const prefix = metaName.slice(0, metaName.length - "meta.json".length);
   const read = async (entry: Entry) => {
     if (entry.offset + 30 + entry.nameLength > offset)

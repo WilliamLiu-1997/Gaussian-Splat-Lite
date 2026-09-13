@@ -179,7 +179,6 @@ export class RadSource {
     signal?.throwIfAborted();
     this.controller.signal.throwIfAborted();
     const { input, offset, length } = read;
-    checkRange(offset, length);
     if (typeof input === "string") {
       const remote = this.remote(input);
       const controller = this.requestController(signal);
@@ -300,7 +299,6 @@ export class RadSource {
   ): Promise<Uint8Array> {
     signal?.throwIfAborted();
     this.controller.signal.throwIfAborted();
-    checkRange(offset, length);
     if (typeof input === "string") {
       return this.readRemote(
         this.remote(input),

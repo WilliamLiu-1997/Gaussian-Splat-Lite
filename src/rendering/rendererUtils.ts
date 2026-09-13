@@ -66,13 +66,9 @@ export function setRendererRenderTarget(
   activeCubeFace?: number,
   activeMipmapLevel?: number,
 ) {
-  if (isWebGPURenderer(renderer)) {
-    renderer.setRenderTarget(target, activeCubeFace, activeMipmapLevel);
-  } else {
-    renderer.setRenderTarget(
-      target as THREE.WebGLRenderTarget | null,
-      activeCubeFace,
-      activeMipmapLevel,
-    );
-  }
+  renderer.setRenderTarget(
+    target as THREE.WebGLRenderTarget | null,
+    activeCubeFace,
+    activeMipmapLevel,
+  );
 }

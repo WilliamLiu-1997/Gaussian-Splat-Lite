@@ -151,7 +151,6 @@ async function decodeSog(args: LoadArgs, controller: AbortController) {
     progress(0, loaded);
     return result;
   } finally {
-    controller.abort();
     if (!consumed) session.free();
   }
 }

@@ -1,8 +1,8 @@
-import * as TSL from "three/tsl";
+import type { Node } from "three/webgpu";
 import type { Uniforms } from "../uniforms";
 import {
   E,
-  type TSLNode,
+  N,
   decodeAlphaShape,
   decodeCenter,
   decodeLnScales,
@@ -13,68 +13,72 @@ import {
   uniformBinding,
 } from "./shaderUtils";
 
-const N = TSL as Record<string, TSLNode>;
-
 export type ProjectionView = {
-  projectionMatrix: TSLNode;
-  renderToViewQuat: TSLNode;
-  renderToViewPos: TSLNode;
-  renderToViewScale: TSLNode;
-  near: TSLNode;
-  far: TSLNode;
-  renderSize: TSLNode;
+  projectionMatrix: Node<"mat4">;
+  renderToViewQuat: Node<"vec4">;
+  renderToViewPos: Node<"vec3">;
+  renderToViewScale: Node<"float">;
+  near: Node<"float">;
+  far: Node<"float">;
+  renderSize: Node<"vec2">;
 };
 
 type ProjectionInput =
-  | { first: TSLNode; second: TSLNode }
+  | { first: Node<"uvec4">; second: Node<"uvec4"> }
   | {
-      valid: TSLNode;
-      center: TSLNode;
-      lnScales: TSLNode;
-      quaternion: TSLNode;
-      rgba: TSLNode;
-      shapeAmount: TSLNode;
+      valid: Node<"bool">;
+      center: Node<"vec3">;
+      lnScales: Node<"vec3">;
+      quaternion: Node<"vec4">;
+      rgba: Node<"vec4">;
+      shapeAmount: Node<"float">;
     };
 
 export type SplatProjection = {
-  valid: TSLNode;
-  clipCenter: TSLNode;
-  viewDepth: TSLNode;
+  valid: Node<"bool">;
+  clipCenter: Node<"vec4">;
+  viewDepth: Node<"float">;
   /** NDC offsets for each +/-1 quad corner. */
-  axis1: TSLNode;
-  axis2: TSLNode;
+  axis1: Node<"vec2">;
+  axis2: Node<"vec2">;
   /** Source color space; the draw stage applies encodeLinear. */
-  rgba: TSLNode;
-  supportRadius: TSLNode;
-  kernelPower: TSLNode;
+  rgba: Node<"vec4">;
+  supportRadius: Node<"float">;
+  kernelPower: Node<"float">;
 };
 
-const scaleQuaternionToMatrix = N.Fn(([scale, quaternion]: TSLNode[]) => {
-  const x = quaternion.x;
-  const y = quaternion.y;
-  const z = quaternion.z;
-  const w = quaternion.w;
-  return N.mat3(
-    N.vec3(
-      scale.x.mul(N.float(1).sub(y.mul(y).add(z.mul(z)).mul(2))),
-      scale.x.mul(x.mul(y).add(w.mul(z)).mul(2)),
-      scale.x.mul(x.mul(z).sub(w.mul(y)).mul(2)),
-    ),
-    N.vec3(
-      scale.y.mul(x.mul(y).sub(w.mul(z)).mul(2)),
-      scale.y.mul(N.float(1).sub(x.mul(x).add(z.mul(z)).mul(2))),
-      scale.y.mul(y.mul(z).add(w.mul(x)).mul(2)),
-    ),
-    N.vec3(
-      scale.z.mul(x.mul(z).add(w.mul(y)).mul(2)),
-      scale.z.mul(y.mul(z).sub(w.mul(x)).mul(2)),
-      scale.z.mul(N.float(1).sub(x.mul(x).add(y.mul(y)).mul(2))),
-    ),
-  );
-});
+const scaleQuaternionToMatrix = N.Fn(
+  ([scale, quaternion]: [Node<"vec3">, Node<"vec4">]) => {
+    const x = quaternion.x;
+    const y = quaternion.y;
+    const z = quaternion.z;
+    const w = quaternion.w;
+    return N.mat3(
+      N.vec3(
+        scale.x.mul(N.float(1).sub(y.mul(y).add(z.mul(z)).mul(2))),
+        scale.x.mul(x.mul(y).add(w.mul(z)).mul(2)),
+        scale.x.mul(x.mul(z).sub(w.mul(y)).mul(2)),
+      ),
+      N.vec3(
+        scale.y.mul(x.mul(y).sub(w.mul(z)).mul(2)),
+        scale.y.mul(N.float(1).sub(x.mul(x).add(z.mul(z)).mul(2))),
+        scale.y.mul(y.mul(z).add(w.mul(x)).mul(2)),
+      ),
+      N.vec3(
+        scale.z.mul(x.mul(z).add(w.mul(y)).mul(2)),
+        scale.z.mul(y.mul(z).sub(w.mul(x)).mul(2)),
+        scale.z.mul(N.float(1).sub(x.mul(x).add(y.mul(y)).mul(2))),
+      ),
+    );
+  },
+);
 
 const gaussianSupportRadius = N.Fn(
-  ([alpha, maximumRadius, minimumAlpha]: TSLNode[]) => {
+  ([alpha, maximumRadius, minimumAlpha]: [
+    Node<"float">,
+    Node<"float">,
+    Node<"float">,
+  ]) => {
     const radius = maximumRadius.toVar();
     N.If(minimumAlpha.greaterThan(0), () => {
       radius.assign(
@@ -86,7 +90,12 @@ const gaussianSupportRadius = N.Fn(
 );
 
 const wideSupportRadius = N.Fn(
-  ([alpha, power, maximumRadius, minimumAlpha]: TSLNode[]) => {
+  ([alpha, power, maximumRadius, minimumAlpha]: [
+    Node<"float">,
+    Node<"float">,
+    Node<"float">,
+    Node<"float">,
+  ]) => {
     const radius = maximumRadius.toVar();
     N.If(minimumAlpha.greaterThan(0), () => {
       // 1 - (1 - x)^power <= power * x for power >= 1.

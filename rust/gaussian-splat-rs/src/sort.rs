@@ -10,7 +10,7 @@ pub struct MeshSortState {
     pub radial_centers: Vec<f32>,
     pub transform: [f64; 9],
     pub origin: [f64; 3],
-    pub generation: u32,
+    pub generation: u64,
 }
 
 impl Default for MeshSortState {
@@ -29,8 +29,8 @@ impl Default for MeshSortState {
 pub struct Sort32Buffers {
     /// persistent sort state indexed by the renderer-assigned mesh ID
     pub meshes: Vec<MeshSortState>,
-    /// current mesh center cache generation
-    pub mesh_generation: u32,
+    /// Wide counter avoids a rollover/reset path during a worker's lifetime.
+    pub mesh_generation: u64,
     /// mesh ID backing each contiguous global splat range
     pub range_mesh_ids: Vec<u32>,
     /// first splat index for each contiguous mesh range
@@ -71,7 +71,7 @@ impl Sort32Buffers {
     }
 
     pub fn ensure_radial_centers(&mut self, mesh_id: usize) {
-        let mesh = self.ensure_mesh(mesh_id);
+        let mesh = &mut self.meshes[mesh_id];
         if mesh.radial_centers.len() == mesh.raw_centers.len() {
             return;
         }
@@ -147,16 +147,7 @@ pub fn sort32_centers_internal(
             "Sort ordering buffer too small: {max_splats} < {num_splats}"
         ));
     }
-    if buffers.range_mesh_ids.len() != buffers.range_bases.len()
-        || buffers.range_bases.len() != buffers.range_counts.len()
-    {
-        return Err(format!(
-            "Sort range mesh/base/count length mismatch: {}/{}/{}",
-            buffers.range_mesh_ids.len(),
-            buffers.range_bases.len(),
-            buffers.range_counts.len(),
-        ));
-    }
+    // The WASM setter validates the parallel arrays and creates every mesh.
     let mut previous_end = 0usize;
     for (range_index, (&base, &count)) in buffers
         .range_bases
@@ -178,10 +169,7 @@ pub fn sort32_centers_internal(
         }
         let mesh_id = buffers.range_mesh_ids[range_index] as usize;
         let center_values = (count as usize).saturating_mul(3);
-        let mesh_center_values = buffers
-            .meshes
-            .get(mesh_id)
-            .map_or(0, |mesh| mesh.raw_centers.len());
+        let mesh_center_values = buffers.meshes[mesh_id].raw_centers.len();
         if mesh_center_values < center_values {
             return Err(format!(
                 "Sort center buffer for mesh {} too small: {} < {}",
@@ -283,7 +271,7 @@ pub fn sort32_centers_internal(
         keys[next_index..num_splats].fill(invalid_key);
     }
 
-    sort32_counted_internal(buffers, num_splats)
+    Ok(sort32_counted_internal(buffers, num_splats))
 }
 
 /// Count a key into both radix passes without branching. Invalid keys add zero;
@@ -305,7 +293,7 @@ fn prefix_sum_exclusive(buckets: &mut [u32]) -> u32 {
     for bucket in buckets.iter_mut() {
         let count = *bucket;
         *bucket = sum;
-        sum = sum.wrapping_add(count);
+        sum += count;
     }
     sum
 }
@@ -313,11 +301,7 @@ fn prefix_sum_exclusive(buckets: &mut [u32]) -> u32 {
 /// Two-pass radix sort (base 2^16) of 32-bit float bit-patterns,
 /// descending order (largest keys first).
 #[cfg(test)]
-pub fn sort32_internal(
-    buffers: &mut Sort32Buffers,
-    max_splats: usize,
-    num_splats: usize,
-) -> Result<u32, String> {
+pub fn sort32_internal(buffers: &mut Sort32Buffers, max_splats: usize, num_splats: usize) -> u32 {
     buffers.ensure_size(max_splats);
 
     {
@@ -353,7 +337,7 @@ pub fn sort32_internal(
 
 /// Finish the radix sort after `buckets16lo` and `buckets16hi` have already
 /// been tallied for `keys[..num_splats]`.
-fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> Result<u32, String> {
+fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> u32 {
     let Sort32Buffers {
         keys,
         ordering,
@@ -368,7 +352,7 @@ fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> Re
     prefix_sum_exclusive(buckets16hi);
 
     if active_splats == 0 {
-        return Ok(0);
+        return 0;
     }
 
     // Pass 1: bucket by the low 16 bits of the inverted key. Keep the key
@@ -436,15 +420,8 @@ fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> Re
         place2!(inv_index);
     }
 
-    if buckets16hi[RADIX_BASE - 1] != active_splats {
-        return Err(format!(
-            "Expected {} active splats but got {}",
-            active_splats,
-            buckets16hi[RADIX_BASE - 1]
-        ));
-    }
-
-    Ok(active_splats)
+    debug_assert_eq!(buckets16hi[RADIX_BASE - 1], active_splats);
+    active_splats
 }
 
 #[cfg(test)]
@@ -457,7 +434,7 @@ mod tests {
         buffers.keys = vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000];
         buffers.ordering = vec![7, 7, 7, 7];
 
-        assert_eq!(sort32_internal(&mut buffers, 4, 4), Ok(0));
+        assert_eq!(sort32_internal(&mut buffers, 4, 4), 0);
         assert_eq!(buffers.ordering, [7, 7, 7, 7]);
     }
 
@@ -474,7 +451,7 @@ mod tests {
             0x7fc00000, // NaN, excluded
         ];
 
-        let active = sort32_internal(&mut buffers, 7, 7).unwrap();
+        let active = sort32_internal(&mut buffers, 7, 7);
 
         assert_eq!(active, 4);
         assert_eq!(&buffers.ordering[..active as usize], &[4, 0, 3, 2]);
@@ -489,7 +466,7 @@ mod tests {
             *dst = value.to_bits();
         }
 
-        let active = sort32_internal(&mut buffers, values.len(), values.len()).unwrap();
+        let active = sort32_internal(&mut buffers, values.len(), values.len());
 
         assert_eq!(active, 4);
         assert_eq!(&buffers.ordering[..active as usize], &[1, 3, 0, 5]);
@@ -511,7 +488,7 @@ mod tests {
             }
             expected.sort_by(|left, right| right.1.total_cmp(&left.1));
 
-            let active = sort32_internal(&mut buffers, len, len).unwrap();
+            let active = sort32_internal(&mut buffers, len, len);
             let expected_indices: Vec<u32> = expected.into_iter().map(|(index, _)| index).collect();
 
             assert_eq!(active as usize, len);

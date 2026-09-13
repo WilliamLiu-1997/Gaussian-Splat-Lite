@@ -314,21 +314,17 @@ impl<T: SplatReceiver> SpzDecoder<T> {
 
     fn v4_input_needed(&self) -> usize {
         match &self.v4_stage {
-            V4Stage::NeedHeader => NGSP_HEADER_SIZE.saturating_sub(self.raw.len()),
+            V4Stage::NeedHeader => NGSP_HEADER_SIZE - self.raw.len(),
             V4Stage::SkipExtensions { remaining, .. } => {
                 (*remaining).min(usize::MAX as u64) as usize
             }
-            V4Stage::NeedToc(header) => {
-                (header.num_streams * TOC_ENTRY_SIZE).saturating_sub(self.raw.len())
-            }
+            V4Stage::NeedToc(header) => header.num_streams * TOC_ENTRY_SIZE - self.raw.len(),
             V4Stage::NeedStream {
                 streams,
                 next_stream,
                 decoder,
-            } => streams[*next_stream]
-                .compressed_size
-                .saturating_sub(decoder.compressed_received)
-                .min(MAX_V4_COMPRESSED_BUFFER_SIZE.saturating_sub(self.raw.len()) as u64)
+            } => (streams[*next_stream].compressed_size - decoder.compressed_received)
+                .min((MAX_V4_COMPRESSED_BUFFER_SIZE - self.raw.len()) as u64)
                 as usize,
             V4Stage::Done => 0,
         }
@@ -347,9 +343,8 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             }
 
             let needed = self.v4_input_needed();
-            if needed == 0 {
-                return Err(anyhow::anyhow!("v4 decoder made no progress"));
-            }
+            // try_decode_v4 only pauses for more input with free buffer space.
+            debug_assert!(needed > 0);
             let take = needed.min(bytes.len());
             if let V4Stage::SkipExtensions { remaining, .. } = &mut self.v4_stage {
                 *remaining -= take as u64;
@@ -399,18 +394,14 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         loop {
             let mut made_progress = false;
 
-            if self.buffer_offset > 0 {
-                self.compact_buffer();
-            }
+            self.compact_buffer();
 
             while stream_decoder.decoder.can_collect() > 0 {
-                let output_remaining = stream
-                    .uncompressed_size
-                    .saturating_sub(stream_decoder.decoded_size);
-                let output_limit = output_remaining.saturating_add(1);
-                let chunk_space = max_chunk_size.saturating_sub(self.buffer.len());
+                let output_remaining = stream.uncompressed_size - stream_decoder.decoded_size;
+                let chunk_space = max_chunk_size - self.buffer.len();
+                // Read one extra byte to detect output beyond the declared size.
                 let read_size = (stream_decoder.decoder.can_collect().min(chunk_space) as u64)
-                    .min(output_limit) as usize;
+                    .min(output_remaining + 1) as usize;
                 if read_size == 0 {
                     break;
                 }
@@ -660,16 +651,11 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         while !self.gzip_deflate_done && in_offset < self.compressed.len() {
             // Ensure at least 64 KiB free space; keep last 32 KiB history at buffer start
             const WINDOW: usize = 32 * 1024;
-            let free = self.decompressed.len().saturating_sub(self.out_pos);
+            let free = self.decompressed.len() - self.out_pos;
             if free < 64 * 1024 {
-                let keep_start = self.out_pos.saturating_sub(WINDOW);
-                let keep_len = self.out_pos - keep_start;
-                // Move last WINDOW bytes to beginning
-                if keep_len > 0 {
-                    // Use copy_within handles overlap
-                    self.decompressed.copy_within(keep_start..self.out_pos, 0);
-                }
-                self.out_pos = keep_len;
+                self.decompressed
+                    .copy_within(self.out_pos - WINDOW..self.out_pos, 0);
+                self.out_pos = WINDOW;
             }
 
             let (status, in_consumed, out_written) = decompress(

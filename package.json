@@ -71,7 +71,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
-    "@types/three": "0.185.4",
+    "@types/three": "0.186.0",
     "gaussian-splat-rs": "file:rust/gaussian-splat-rs/pkg",
     "publint": "0.3.24",
     "three": "0.186.0",

@@ -22,17 +22,6 @@ export class SplatOpacityTable {
   private nextGroup = 4;
 
   constructor(capacity: number, layerSize: number, blockBits: number) {
-    const layerBits = Math.log2(layerSize);
-    if (
-      !Number.isInteger(layerBits) ||
-      !Number.isInteger(blockBits) ||
-      blockBits < 0 ||
-      blockBits > layerBits ||
-      !Number.isSafeInteger(capacity) ||
-      capacity < layerSize ||
-      capacity % layerSize !== 0
-    )
-      throw new Error("Invalid Splat opacity table layout");
     this.blockSize = 2 ** blockBits;
     this.blocksPerLayer = layerSize / this.blockSize;
     this.blocks = new Uint32Array(capacity / this.blockSize);
@@ -91,8 +80,8 @@ export class SplatOpacityTable {
 
   private releaseBlock(group: number) {
     if (group < 4) return;
-    const range = this.ranges.get(group);
-    if (range && --range.refs === 0) {
+    const range = this.ranges.get(group) as OpacityRange;
+    if (--range.refs === 0) {
       this.ranges.delete(group);
       this.freeGroups.push(group);
     }
@@ -102,7 +91,6 @@ export class SplatOpacityTable {
   setOpacity(start: number, count: number, opacity: number) {
     const first = Math.floor(start / this.blockSize);
     const last = Math.ceil((start + count) / this.blockSize);
-    const value = Math.fround(opacity);
     const previous = this.blocks[first];
     const range = this.ranges.get(previous);
     if (
@@ -110,8 +98,9 @@ export class SplatOpacityTable {
       range.last === last &&
       range.refs === last - first
     )
-      return this.setGroupOpacity(previous, value);
+      return this.setGroupOpacity(previous, opacity);
 
+    const value = Math.fround(opacity);
     let block = first;
     while (block < last && this.values[this.blocks[block]] === value) block++;
     if (block === last) return false;
@@ -123,16 +112,12 @@ export class SplatOpacityTable {
       this.valueTexture.dispose();
       this.valueTexture = this.createValueTexture();
     }
-    const nextRange = { first, last, refs: 0 };
-    this.ranges.set(group, nextRange);
+    this.ranges.set(group, { first, last, refs: last - first });
     this.values[group] = value;
     this.valuesDirty = true;
     for (let index = first; index < last; index++) {
-      // Equal signed zeros retain their original bits.
-      if (value === 0 && this.values[this.blocks[index]] === 0) continue;
       this.releaseBlock(this.blocks[index]);
       this.blocks[index] = group;
-      nextRange.refs++;
     }
     this.dirtyLayers.fill(
       1,
@@ -149,13 +134,6 @@ export class SplatOpacityTable {
 
   /** Adopt a prepared RAD table, retaining any uploads still pending. */
   commitBlocks(blocks: Uint32Array, dirtyLayers: Uint8Array) {
-    if (
-      this.blockSize !== 1 ||
-      this.ranges.size ||
-      blocks.length !== this.blocks.length ||
-      dirtyLayers.length !== this.dirtyLayers.length
-    )
-      throw new Error("Invalid RAD opacity table");
     this.blocks = blocks;
     this.blockTexture.image.data = blocks;
     for (let layer = 0; layer < dirtyLayers.length; layer++) {

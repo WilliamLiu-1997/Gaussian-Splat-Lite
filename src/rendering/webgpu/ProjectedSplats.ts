@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
+import type { ComputeNode } from "three/webgpu";
 import {
   IndirectStorageBufferAttribute,
   StorageBufferAttribute,
@@ -14,18 +14,17 @@ import {
 import { createGenerateProgram } from "../tsl/GenerateProgram";
 import { createProjectionProgram } from "../tsl/ProjectionProgram";
 import type { ProjectedVertexData } from "../tsl/SplatMaterial";
-import { type TSLNode, uniformBinding } from "../tsl/shaderUtils";
+import { N, type UniformType, uniformBinding } from "../tsl/shaderUtils";
 import { splatViewportUniforms } from "../tsl/viewUniforms";
 import { type Uniforms, makeGenerateUniforms } from "../uniforms";
 import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache";
 import { WebGPURadixSort } from "./RadixSort";
 
-const N = TSL as Record<string, TSLNode>;
 const WORKGROUP_SIZE = 256;
 const PROJECT_SLOTS = 8;
 
 type BufferRef = { value: StorageBufferAttribute; name: string };
-type ComputeSlot = { uniforms: Uniforms; node: TSLNode };
+type ComputeSlot = { uniforms: Uniforms; node: ComputeNode };
 type DeviceLimits = {
   maxStorageBufferBindingSize: number;
   maxBufferSize: number;
@@ -34,7 +33,7 @@ type DeviceLimits = {
   maxComputeWorkgroupsPerDimension: number;
 };
 type ComputeRenderer = WebGPURenderer & {
-  compileComputeAsync(nodes: TSLNode[]): Promise<void>;
+  compileComputeAsync(nodes: ComputeNode[]): Promise<void>;
   backend: { device: { limits: DeviceLimits } };
 };
 
@@ -73,8 +72,8 @@ export class ProjectedSplats {
   private readonly slots: ComputeSlot[] = [];
   private readonly compilation: Promise<void>;
   private compiledSlots = 0;
-  private readonly resetCount: TSLNode;
-  private readonly finish: TSLNode;
+  private readonly resetCount: ComputeNode;
+  private readonly finish: ComputeNode;
   private readonly state: Uniforms;
   private readonly matrix = new THREE.Matrix4();
   private readonly translation = new THREE.Matrix4();
@@ -207,7 +206,7 @@ export class ProjectedSplats {
 
   private createSlot(): ComputeSlot {
     const uniforms = { ...this.state, ...makeGenerateUniforms() };
-    const u = (name: string, type: string) =>
+    const u = <Type extends UniformType>(name: string, type: Type) =>
       uniformBinding(uniforms, name, type);
     const generate = createGenerateProgram({ uniforms });
     const project = createProjectionProgram(uniforms, {
@@ -372,23 +371,16 @@ export class ProjectedSplats {
   private resize(count: number, views: number, shrink = false) {
     const required = Math.max(1, count);
     const bytes = required * 4;
-    if (
-      bytes >
-      Math.min(
-        this.limits.maxStorageBufferBindingSize,
-        this.limits.maxBufferSize,
-      )
-    ) {
+    const byteLimit = Math.min(
+      this.limits.maxStorageBufferBindingSize,
+      this.limits.maxBufferSize,
+    );
+    if (bytes > byteLimit) {
       throw new RangeError(
         `WebGPU sort requires ${bytes} bytes per index buffer; device binding limit is ${this.limits.maxStorageBufferBindingSize}. Request higher requiredLimits when creating WebGPURenderer or reduce resident Splats.`,
       );
     }
-    const limit = Math.floor(
-      Math.min(
-        this.limits.maxStorageBufferBindingSize,
-        this.limits.maxBufferSize,
-      ) / 4,
-    );
+    const limit = Math.floor(byteLimit / 4);
     // Amortize small mapping changes without tying shader graphs to capacity.
     const capacity = shrink
       ? required
@@ -468,7 +460,7 @@ export class ProjectedSplats {
         );
       this.state.renderToViewScale.value =
         (this.scale.x + this.scale.y + this.scale.z) / 3;
-      const pending: TSLNode[] = [this.resetCount];
+      const pending: ComputeNode[] = [this.resetCount];
       let slotCount = 0;
       for (const { node, count } of accumulator.mapping) {
         if (!view.layers.test(node.layers)) continue;
@@ -486,7 +478,7 @@ export class ProjectedSplats {
         pending.push(slot.node);
       }
       pending.push(this.finish);
-      if (!this.uniforms.stochastic.value && accumulator.numSplats > 0) {
+      if (!this.uniforms.stochastic.value) {
         pending.push(...this.sorter.prepare(accumulator.numSplats));
       }
       this.renderer.compute(pending);

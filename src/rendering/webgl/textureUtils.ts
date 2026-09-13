@@ -27,7 +27,6 @@ export function uploadU32DataTextureRows(
   rows: number,
   data: Uint32Array,
 ) {
-  if (rows <= 0) return;
   // Initialize before filling the shared view: onUpdate may trigger another upload.
   renderer.initTexture(texture);
   uploadView.image.data = data;

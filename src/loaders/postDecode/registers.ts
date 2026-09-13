@@ -17,11 +17,7 @@ export const CONDITION_CARRY_EVENT_OFFSET_MASK = 0x7fff_ffff;
 export const CONDITION_CARRY_EVENT_REMOVAL = 0x8000_0000;
 
 export function getInstructionCount(instructions: Uint16Array) {
-  const count = instructions.length / SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
-  if (!Number.isInteger(count)) {
-    throw new Error("Invalid packed postDecode instructions");
-  }
-  return count;
+  return instructions.length / SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
 }
 
 export function instructionWidth(instructions: Uint16Array, index: number) {
@@ -191,16 +187,9 @@ export function allocateSplatPostDecodeRegisters(
   const conditionStageCount = packedConditionStages
     ? packedConditionStages.length / SPLAT_POST_DECODE_FLOW_STAGE_STRIDE
     : 0;
-  if (!Number.isInteger(conditionStageCount)) {
-    throw new Error("Invalid packed postDecode condition flow");
-  }
   let conditionCarryStageStarts = new Uint32Array();
   let conditionCarryEvents = new Uint32Array();
-  if (packedConditionStages && conditionStageCount !== 0) {
-    if (registerValueCount > 0x1_0000) {
-      throw new Error("postDecode register offsets exceed Uint16 capacity");
-    }
-
+  if (packedConditionStages) {
     const stageBoundaries = new Uint16Array(conditionStageCount);
     for (let stage = 0; stage < conditionStageCount; stage += 1) {
       const boundary =
@@ -208,12 +197,6 @@ export function allocateSplatPostDecodeRegisters(
           stage * SPLAT_POST_DECODE_FLOW_STAGE_STRIDE +
             SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION
         ] + 1;
-      if (
-        boundary > instructionCount ||
-        (stage !== 0 && boundary <= stageBoundaries[stage - 1])
-      ) {
-        throw new Error("Invalid postDecode condition stage boundary");
-      }
       stageBoundaries[stage] = boundary;
     }
 

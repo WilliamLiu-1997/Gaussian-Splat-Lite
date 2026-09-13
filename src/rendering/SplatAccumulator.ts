@@ -279,16 +279,12 @@ export class SplatAccumulator {
     });
 
     for (const mesh of allMeshes) {
-      try {
-        mesh.frameUpdate({
-          time: this.time,
-          deltaTime: this.deltaTime,
-          camera,
-          globalEdits: Array.from(globalEdits),
-        });
-      } catch (error) {
-        console.error("SplatMesh frame update failed", error);
-      }
+      mesh.frameUpdate({
+        time: this.time,
+        deltaTime: this.deltaTime,
+        camera,
+        globalEdits: Array.from(globalEdits),
+      });
     }
 
     const visibleMeshes: SplatMesh[] = [];

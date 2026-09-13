@@ -1,10 +1,10 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
+import type { Node } from "three/webgpu";
 import { StorageArrayTexture } from "three/webgpu";
 import type { SplatProjection } from "../tsl/ProjectionProgram";
-import { type TSLNode, loadArray } from "../tsl/shaderUtils";
+import { N, loadArray } from "../tsl/shaderUtils";
+import { uintTexture } from "../tsl/tslCompat";
 
-const N = TSL as Record<string, TSLNode>;
 type TextureLimits = {
   maxTextureDimension2D: number;
   maxTextureArrayLayers: number;
@@ -44,7 +44,7 @@ export function getProjectionCacheSize(count: number, limits: TextureLimits) {
   return { width, height, depth };
 }
 
-const cacheTexCoord = N.Fn(([index, size]: TSLNode[]) => {
+const cacheTexCoord = N.Fn(([index, size]: [Node<"uint">, Node<"uvec4">]) => {
   const value = N.uint(index);
   const row = value.shiftRight(size.w).toVar();
   const layer = N.uint(0).toVar();
@@ -60,7 +60,11 @@ const cacheTexCoord = N.Fn(([index, size]: TSLNode[]) => {
   );
 });
 
-function store(texture: StorageArrayTexture, coord: TSLNode, value: TSLNode) {
+function store(
+  texture: StorageArrayTexture,
+  coord: Node<"ivec3">,
+  value: Node<"uvec4">,
+) {
   N.storageTexture(texture, coord.xy, value)
     .depth(coord.z)
     .toWriteOnly()
@@ -93,24 +97,24 @@ export class ProjectionCache {
     }
   }
 
-  storeOrder(index: TSLNode, value: TSLNode) {
+  storeOrder(index: Node<"uint">, value: Node<"uvec4">) {
     store(this.order, cacheTexCoord(index, this.dimensions), value);
   }
 
-  readOrder(index: TSLNode) {
+  readOrder(index: Node<"uint">) {
     return loadArray(
-      N.textureLoad(this.order),
+      uintTexture(this.order),
       cacheTexCoord(index, this.dimensions),
     );
   }
 
   // Call after visibility and deferred color evaluation, inside the same guard.
   write(
-    index: TSLNode,
+    index: Node<"uint">,
     projection: SplatProjection,
-    ndc: TSLNode,
-    pixelScale: TSLNode,
-    centerRange: TSLNode,
+    ndc: Node<"vec2">,
+    pixelScale: Node<"vec2">,
+    centerRange: Node<"float">,
   ) {
     const coord = cacheTexCoord(index, this.dimensions).toVar();
     // The axes are orthogonal before the per-component viewport division.
@@ -168,10 +172,14 @@ export class ProjectionCache {
   }
 
   // Call inside the per-eye visible-count guard. No cache loads precede it.
-  read(index: TSLNode, pixelScale: TSLNode, centerRange: TSLNode) {
+  read(
+    index: Node<"uint">,
+    pixelScale: Node<"vec2">,
+    centerRange: Node<"float">,
+  ) {
     const coord = cacheTexCoord(index, this.dimensions).toVar();
-    const first = loadArray(N.textureLoad(this.textures[0]), coord).toVar();
-    const second = loadArray(N.textureLoad(this.textures[1]), coord).toVar();
+    const first = loadArray(uintTexture(this.textures[0]), coord).toVar();
+    const second = loadArray(uintTexture(this.textures[1]), coord).toVar();
     const ndc = N.unpackSnorm2x16(first.x).mul(centerRange);
     const viewZ = N.uintBitsToFloat(first.y).negate();
     const matrix = N.cameraProjectionMatrix;

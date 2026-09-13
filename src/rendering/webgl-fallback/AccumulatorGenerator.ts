@@ -1,17 +1,14 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
 import { NodeMaterial, QuadMesh, type WebGPURenderer } from "three/webgpu";
 import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "../../data/defines";
 import { createGenerateProgram } from "../tsl/GenerateProgram";
-import { type TSLNode, uniformBinding } from "../tsl/shaderUtils";
+import { N, uniformBinding } from "../tsl/shaderUtils";
 import { makeGenerateUniforms } from "../uniforms";
 import {
   type AccumulatorRenderOptions,
   createWebGLAccumulatorTarget,
   renderAccumulatorLayers,
 } from "../webgl/AccumulatorGenerator";
-
-const N = TSL as Record<string, TSLNode>;
 
 export function createWebGLFallbackAccumulatorTarget(
   width: number,

@@ -1,9 +1,8 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
+import type { Node } from "three/webgpu";
 import type { Uniforms } from "../uniforms";
-import { type TSLNode, uniformBinding } from "./shaderUtils";
-
-const N = TSL as Record<string, TSLNode>;
+import type { ProjectionView } from "./ProjectionProgram";
+import { N, uniformBinding } from "./shaderUtils";
 
 /** Viewport data for drawing splats that have already been projected. */
 export function splatViewportUniforms(
@@ -19,9 +18,9 @@ export function splatViewportUniforms(
   }
 
   const views = arrayCamera.cameras.map(() => new THREE.Vector4());
-  const viewData = N.uniformArray(views, "vec4").onObjectUpdate(
-    ({ camera }: { camera: THREE.ArrayCamera }) => {
-      camera.cameras.forEach((eye, i) => {
+  const viewData = N.uniformArray<"vec4">(views, "vec4").onObjectUpdate(
+    ({ camera }) => {
+      (camera as THREE.ArrayCamera).cameras.forEach((eye, i) => {
         const size = uniforms.renderSize.value;
         views[i].set(
           eye.viewport?.z ?? size.x,
@@ -40,7 +39,10 @@ export function splatViewportUniforms(
   return { renderSize: viewport.xy, viewportOrigin: viewport.zw };
 }
 
-export function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
+export function splatViewUniforms(
+  uniforms: Uniforms,
+  camera: THREE.Camera,
+): Omit<ProjectionView, "projectionMatrix"> & { viewportOrigin: Node<"vec2"> } {
   const arrayCamera = camera as THREE.ArrayCamera;
   if (!arrayCamera.isArrayCamera || arrayCamera.cameras.length === 0) {
     return {
@@ -66,9 +68,9 @@ export function splatViewUniforms(uniforms: Uniforms, camera: THREE.Camera) {
   const position = new THREE.Vector3();
   const rotation = new THREE.Quaternion();
   const scale = new THREE.Vector3();
-  const viewData = N.uniformArray(views, "vec4").onObjectUpdate(
-    ({ camera }: { camera: THREE.ArrayCamera }) => {
-      camera.cameras.forEach((eye, i) => {
+  const viewData = N.uniformArray<"vec4">(views, "vec4").onObjectUpdate(
+    ({ camera }) => {
+      (camera as THREE.ArrayCamera).cameras.forEach((eye, i) => {
         // Subtract the world origin in CPU double precision before GPU upload.
         matrix.makeTranslation(uniforms.renderOrigin.value);
         matrix.premultiply(eye.matrixWorldInverse);

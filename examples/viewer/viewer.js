@@ -72,23 +72,11 @@ function configureRenderer(value) {
 }
 
 async function initializeWebGPURenderer(value, backend, onFailure) {
-  let failureMessage;
-  if (backend === "webgpu") {
-    const getFallback = value._getFallback;
-    value._getFallback = (error) => {
-      // Three's fallback otherwise discards the native initialization error.
-      failureMessage = `Native WebGPU initialization failed: ${String(error)}`;
-      console.error("Native WebGPU initialization failed", error);
-      onFailure(failureMessage);
-      return getFallback.call(value, error);
-    };
-  }
   await value.init();
   if (backend === "webgpu" && !value.backend.isWebGPUBackend) {
-    // Inspector's saved Force WebGL setting can bypass native init entirely.
+    // Inspect the initialized backend without replacing Three's fallback hook.
     onFailure(
-      failureMessage ??
-        "Native WebGPU was not initialized. Disable Force WebGL in Inspector Settings to use WebGPU.",
+      "Native WebGPU was not initialized. Check browser support and disable Force WebGL in Inspector Settings to use WebGPU.",
     );
   }
 }
@@ -528,9 +516,7 @@ function frameSplat(splat) {
   const referenceSize =
     Math.max(frameSize.x, frameSize.y, frameSize.z, 0.01) * 1.5;
   referenceHelpers.setFrame(frameCenter, referenceSize);
-  const radius = bounds.isEmpty()
-    ? 0.01
-    : Math.max(frameSize.length() * 0.5, 0.01);
+  const radius = Math.max(frameSize.length() * 0.5, 0.01);
   const defaultCameraDistance = 10;
   const verticalHalfFov =
     THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2;
@@ -754,7 +740,7 @@ function loadLocalFiles(files) {
 }
 
 fileInput.addEventListener("change", () => {
-  const files = Array.from(fileInput.files ?? []);
+  const files = Array.from(fileInput.files);
   if (files.length) loadLocalFiles(files);
 });
 

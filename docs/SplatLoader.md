@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-`SplatLoader` follows the Three.js `Loader` API style. It first returns decoded `Splats`; `parse()` then wraps that source in a `SplatMesh`.
+`SplatLoader` follows the Three.js `Loader` API. Load a model as `Splats` data, then use `parse()` to create a scene object.
 
 ```js
 import { SplatLoader } from "gaussian-splat-lite";
@@ -27,7 +27,7 @@ loader.load(
 );
 ```
 
-`loadAsync(url, onProgress?, signal?)` accepts an optional `AbortSignal`. Cancellation also interrupts worker decoding:
+`loadAsync(url, onProgress?, signal?)` accepts an optional `AbortSignal`. Use it to cancel loading:
 
 ```js
 const controller = new AbortController();
@@ -35,9 +35,9 @@ const loading = loader.loadAsync("/assets/model.sog", undefined, controller.sign
 controller.abort(); // `loading` rejects with the signal's reason.
 ```
 
-For loads started through `Splats` or `SplatMesh`, `dispose()` also cancels pending downloading and decoding.
+For `Splats` or `SplatMesh`, call `dispose()` to cancel a pending load.
 
-For RAD paging, use [RadStreamScheduler](RadStreamScheduler.md).
+For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md).
 For `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).
 
 ## Local split files
@@ -63,4 +63,4 @@ scene.add(mesh);
 await mesh.initialized;
 ```
 
-For the shared data-loading implementation used by `SplatLoader` and `Splats`, see [Decoder boundaries](Architecture.md#decoder-boundaries).
+A resolver may return a URL, `Blob`, `Uint8Array`, or `ArrayBuffer`, directly or as a promise. For subfolders, match the paths referenced by the model.

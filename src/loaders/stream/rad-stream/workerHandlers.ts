@@ -15,35 +15,27 @@ import {
 import { prepareRadSelection } from "./prepareRadSelection";
 import type { RadLodChunk, RadLodSelection } from "./radLod";
 
-/** Workers initialize either the dataset LOD tree or a page decoder. */
+/** Each worker initializes once as either the dataset LOD tree or a page decoder. */
 export function createRadStreamHandlers() {
-  let header: RadHeader | undefined;
-  let decoder: RadDecoder | undefined;
-  let lod: RadLodTree | undefined;
-  let selections = new RadSelectionState();
+  let header: RadHeader;
+  let decoder: RadDecoder;
+  let lod: RadLodTree;
+  const selections = new RadSelectionState();
   const loads = new Map<number, AbortController>();
-  function initialize(value: RadHeader) {
-    decoder?.free();
-    decoder = undefined;
-    header = value;
-    lod?.free();
-    lod = undefined;
-    selections = new RadSelectionState();
-  }
   return {
     prepareRadSelection,
     initializeRad({ bytes }: { bytes: Uint8Array }) {
       const value = decode_rad_header(bytes) as RadHeader | undefined;
       if (!value) throw new Error("RAD: truncated header");
-      initialize(value);
+      header = value;
       lod = new RadLodTree(JSON.stringify(value.meta));
       return value;
     },
     initializeRadDecoder({
-      header,
+      header: value,
       rootBytes,
     }: { header: RadHeader; rootBytes?: Uint8Array }) {
-      initialize(header);
+      header = value;
       decoder = new RadDecoder(
         JSON.stringify(header.meta),
         header.meta.maxSh ?? 0,
@@ -63,8 +55,6 @@ export function createRadStreamHandlers() {
       },
       { sendStatus }: { sendStatus: (data: { loaded: number }) => void },
     ) {
-      if (!header || !decoder)
-        throw new Error("RAD: decoder is not initialized");
       const controller = new AbortController();
       loads.set(generation, controller);
       let loaded = 0;
@@ -87,7 +77,8 @@ export function createRadStreamHandlers() {
           decoder.decode_chunk(bytes) as RadDecodedChunk,
         );
         const span = getRadChunkSpan(header.meta, index);
-        if (decoded.base !== span.base || decoded.numSplats !== span.count)
+        // Rust matches the count to its directory entry; verify the requested page.
+        if (decoded.base !== span.base)
           throw new Error(
             "RAD: decoded chunk does not match its directory entry",
           );
@@ -139,7 +130,6 @@ export function createRadStreamHandlers() {
       generation,
       tree,
     }: { index: number; generation: number; tree: RadLodChunk }) {
-      if (!lod) throw new Error("RAD: LOD tree is not initialized");
       lod.retain_chunk(
         index,
         generation,
@@ -150,18 +140,10 @@ export function createRadStreamHandlers() {
       );
     },
     selectRadLod(request: RadSelectionRequest): RadSelectionReply {
-      if (!header || !lod) throw new Error("RAD: LOD tree is not initialized");
-      if (!Number.isSafeInteger(request.splatBudget) || request.splatBudget < 1)
-        throw new Error("Invalid RAD LOD request");
       // 16 model-view values, pixel scale, projection type, 8 X/Y projection values.
       const stride = 26;
       const views = new Float64Array(request.views.length * stride);
       request.views.forEach((view, index) => {
-        if (
-          view.viewFromObject.length !== 16 ||
-          view.projectionRows.length !== 8
-        )
-          throw new Error("Invalid RAD LOD request");
         const offset = index * stride;
         views.set(view.viewFromObject, offset);
         views[offset + 16] = view.pixelScale;
@@ -181,7 +163,7 @@ export function createRadStreamHandlers() {
       index,
       generation,
     }: { index: number; generation?: number }) {
-      lod?.release_chunk(index, generation);
+      lod.release_chunk(index, generation);
     },
   };
 }

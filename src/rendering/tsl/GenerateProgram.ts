@@ -1,9 +1,10 @@
-import * as TSL from "three/tsl";
+import type { Node } from "three/webgpu";
 import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines";
 import type { Uniforms } from "../uniforms";
-import type { TSLNode } from "./shaderUtils";
 import {
   E,
+  N,
+  type UniformType,
   decodeAlphaShape,
   decodeCenter,
   decodeLnScales,
@@ -18,13 +19,24 @@ import {
   uniformBinding,
 } from "./shaderUtils";
 
-const N = TSL as Record<string, TSLNode>;
-
 // Finite sentinel for empty/unbounded SDFs. Runtime infinity arithmetic is not
 // portable in WGSL, and smooth ALL shapes otherwise evaluate exp(inf - inf).
 const SDF_DISTANCE_LIMIT = 1e20;
 
-const encodeQuaternion = N.Fn(([input]: TSLNode[]) => {
+type ShInputs = [
+  first: Node<"uvec4">,
+  second: Node<"uvec4">,
+  direction: Node<"vec3">,
+];
+
+type DeferredColor = {
+  coord: Node<"ivec3">;
+  center: Node<"vec3">;
+  scale: Node<"vec3">;
+  offset: Node<"vec3">;
+};
+
+const encodeQuaternion = N.Fn(([input]: [Node<"vec4">]) => {
   const quaternion = N.select(input.w.lessThan(0), input.negate(), input);
   const theta = quaternion.w.clamp(0, 1).acos().mul(2);
   const sum = quaternion.x
@@ -62,7 +74,7 @@ const encodeQuaternion = N.Fn(([input]: TSLNode[]) => {
   return angle.shiftLeft(20).bitOr(quantV.shiftLeft(10)).bitOr(quantU);
 });
 
-const decodeShRgb = N.Fn(([encoded]: TSLNode[]) => {
+const decodeShRgb = N.Fn(([encoded]: [Node<"uint">]) => {
   const biasedBase = encoded.shiftRight(27).bitAnd(0x1f);
   const divisor = N.uintBitsToFloat(biasedBase.add(112).shiftLeft(23)).div(255);
   const rgb = N.vec3(
@@ -95,22 +107,24 @@ const decodeShRgb = N.Fn(([encoded]: TSLNode[]) => {
   inputs: [{ name: "encoded", type: "uint" }],
 });
 
-const decodeSemanticOpacity = N.Fn(([alpha, shapeAmount]: TSLNode[]) => {
-  const result = alpha.toVar();
-  N.If(shapeAmount.greaterThan(0), () => {
-    const kernelShape = shapeAmount.min(1).mul(4).add(1);
-    const kernelOpacity = kernelShape.mul(kernelShape).sub(1).div(E).exp();
-    result.assign(alpha.mul(kernelOpacity));
-  });
-  return result;
-});
+const decodeSemanticOpacity = N.Fn(
+  ([alpha, shapeAmount]: [Node<"float">, Node<"float">]) => {
+    const result = alpha.toVar();
+    N.If(shapeAmount.greaterThan(0), () => {
+      const kernelShape = shapeAmount.min(1).mul(4).add(1);
+      const kernelOpacity = kernelShape.mul(kernelShape).sub(1).div(E).exp();
+      result.assign(alpha.mul(kernelOpacity));
+    });
+    return result;
+  },
+);
 
-const encodeWideSemanticOpacity = N.Fn(([opacity]: TSLNode[]) => {
+const encodeWideSemanticOpacity = N.Fn(([opacity]: [Node<"float">]) => {
   return opacity.log().mul(E).add(1).sqrt().sub(1).mul(0.25).min(1);
 });
 
 export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
-  const bindUniform = (name: string, type?: string) =>
+  const bindUniform = <Type extends UniformType>(name: string, type: Type) =>
     uniformBinding(uniforms, name, type);
   const bindTexture = (name: string, array = false) =>
     textureBinding(uniforms, name, array);
@@ -141,14 +155,16 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const sdfTexture = bindTexture("sdfTexture");
   const editTexture = bindTexture("editTexture");
 
-  const evaluateSH1 = N.Fn(([data, direction]: TSLNode[]) => {
-    return decodeShRgb(data.x)
-      .mul(direction.y.mul(-0.4886025))
-      .add(decodeShRgb(data.y).mul(direction.z.mul(0.4886025)))
-      .add(decodeShRgb(data.z).mul(direction.x.mul(-0.4886025)));
-  });
+  const evaluateSH1 = N.Fn(
+    ([data, direction]: [Node<"uvec4">, Node<"vec3">]) => {
+      return decodeShRgb(data.x)
+        .mul(direction.y.mul(-0.4886025))
+        .add(decodeShRgb(data.y).mul(direction.z.mul(0.4886025)))
+        .add(decodeShRgb(data.z).mul(direction.x.mul(-0.4886025)));
+    },
+  );
 
-  const evaluateSH12 = N.Fn(([first, second, direction]: TSLNode[]) => {
+  const evaluateSH12 = N.Fn(([first, second, direction]: ShInputs) => {
     const result = evaluateSH1(first, direction).toVar();
     result.addAssign(
       decodeShRgb(first.w).mul(direction.x.mul(direction.y).mul(1.0925484)),
@@ -180,7 +196,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     return result;
   });
 
-  const evaluateSH3 = N.Fn(([first, second, direction]: TSLNode[]) => {
+  const evaluateSH3 = N.Fn(([first, second, direction]: ShInputs) => {
     const xx = direction.x.mul(direction.x);
     const yy = direction.y.mul(direction.y);
     const zz = direction.z.mul(direction.z);
@@ -218,32 +234,38 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       );
   });
 
-  const evaluateSH = N.Fn(([coord, direction]: TSLNode[]) => {
-    const result = N.vec3(0).toVar();
-    N.If(numSh.equal(N.int(1)), () => {
-      result.assign(evaluateSH1(loadArray(sh1Texture, coord), direction));
-    }).ElseIf(numSh.greaterThanEqual(N.int(2)), () => {
-      result.assign(
-        evaluateSH12(
-          loadArray(sh1Texture, coord),
-          loadArray(sh2Texture, coord),
-          direction,
-        ),
-      );
-      N.If(numSh.greaterThanEqual(N.int(3)), () => {
-        result.addAssign(
-          evaluateSH3(
-            loadArray(sh3TextureA, coord),
-            loadArray(sh3TextureB, coord),
+  const evaluateSH = N.Fn(
+    ([coord, direction]: [Node<"ivec3">, Node<"vec3">]) => {
+      const result = N.vec3(0).toVar();
+      N.If(numSh.equal(N.int(1)), () => {
+        result.assign(evaluateSH1(loadArray(sh1Texture, coord), direction));
+      }).ElseIf(numSh.greaterThanEqual(N.int(2)), () => {
+        result.assign(
+          evaluateSH12(
+            loadArray(sh1Texture, coord),
+            loadArray(sh2Texture, coord),
             direction,
           ),
         );
+        N.If(numSh.greaterThanEqual(N.int(3)), () => {
+          result.addAssign(
+            evaluateSH3(
+              loadArray(sh3TextureA, coord),
+              loadArray(sh3TextureB, coord),
+              direction,
+            ),
+          );
+        });
       });
-    });
-    return result;
-  });
+      return result;
+    },
+  );
 
-  const addShColor = (rgb: TSLNode, coord: TSLNode, center: TSLNode) => {
+  const addShColor = (
+    rgb: Node<"vec3">,
+    coord: Node<"ivec3">,
+    center: Node<"vec3">,
+  ) => {
     N.If(numSh.greaterThan(N.int(0)), () => {
       const inverseObjectQuaternion = N.vec4(
         objectQuaternion.xyz.negate(),
@@ -257,15 +279,10 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     });
   };
 
-  const generateValues = (index: TSLNode, deferColor = false) => {
-    const deferredColor = deferColor
-      ? {
-          coord: N.ivec3(0).toVar(),
-          center: N.vec3(0).toVar(),
-          scale: N.vec3(1).toVar(),
-          offset: N.vec3(0).toVar(),
-        }
-      : null;
+  const generateValues = (
+    index: Node<"uint">,
+    deferredColor?: DeferredColor,
+  ) => {
     const valid = N.bool(false).toVar();
     const center = N.vec3(0).toVar();
     const lnScales = N.vec3(0).toVar();
@@ -340,7 +357,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
 
         N.Loop(
           { start: N.int(0), end: numEdits, type: "int", condition: "<" },
-          ({ i: editIndex }: { i: TSLNode }) => {
+          ({ i: editIndex }) => {
             const edit = load2D(editTexture, N.ivec2(N.int(0), editIndex));
             const blendMode = edit.x.bitAnd(0xff);
             const invert = edit.x.bitAnd(0x100).notEqual(N.uint(0));
@@ -366,7 +383,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                 condition: "<",
                 name: "sdfIndex",
               },
-              ({ sdfIndex }: { sdfIndex: TSLNode }) => {
+              ({ sdfIndex }: { sdfIndex: Node<"int"> }) => {
                 const data0 = load2D(
                   sdfTexture,
                   N.ivec2(N.int(0), sdfIndex),
@@ -614,7 +631,6 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       rgba,
       shapeAmount,
       stochasticSeed,
-      deferredColor,
     };
   };
 
@@ -648,16 +664,20 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
     };
   };
 
-  const generateAccumulator = (index: TSLNode) =>
+  const generateAccumulator = (index: Node<"uint">) =>
     packAccumulator(generateValues(index));
 
   // SDFs update alpha and compose RGB scale/offset in one traversal. Apply the
   // composed color transform after visibility and SH. Composition preserves
   // the affine edit semantics, but can change float32 rounding between edits.
-  const prepare = (index: TSLNode) => {
-    const generated = generateValues(index, true);
-    const color = generated.deferredColor;
-    if (!color) throw new Error("Deferred Splat color is not initialized");
+  const prepare = (index: Node<"uint">) => {
+    const color = {
+      coord: N.ivec3(0).toVar(),
+      center: N.vec3(0).toVar(),
+      scale: N.vec3(1).toVar(),
+      offset: N.vec3(0).toVar(),
+    };
+    const generated = generateValues(index, color);
     return {
       ...generated,
       // Call in the branch that passes projection and screen-footprint culling.

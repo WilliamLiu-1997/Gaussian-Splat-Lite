@@ -5,24 +5,16 @@ import { getTransferable } from "./transferable";
 export function startWorker(
   rpcHandlers: Record<string, (...args: never[]) => unknown>,
 ) {
-  let wasmMemory: WebAssembly.Memory | undefined;
-  function getWasmMemoryBytes() {
-    return wasmMemory?.buffer.byteLength ?? 0;
-  }
+  let wasmMemory: WebAssembly.Memory;
 
   async function onMessage(event: MessageEvent) {
     const { id, name, args }: { id: unknown; name: string; args: unknown } =
       event.data;
     try {
-      const handler = Object.prototype.hasOwnProperty.call(rpcHandlers, name)
-        ? (rpcHandlers[name] as (
-            args: unknown,
-            options: { sendStatus: (data: unknown) => void },
-          ) => unknown | Promise<unknown>)
-        : undefined;
-      if (!handler) {
-        throw new Error(`Unknown worker RPC: ${name}`);
-      }
+      const handler = rpcHandlers[name] as (
+        args: unknown,
+        options: { sendStatus: (data: unknown) => void },
+      ) => unknown;
 
       const sendStatus = (data: unknown) => {
         self.postMessage(
@@ -32,14 +24,14 @@ export function startWorker(
       };
       const result = await handler(args, { sendStatus });
       self.postMessage(
-        { id, result, wasmMemoryBytes: getWasmMemoryBytes() },
+        { id, result, wasmMemoryBytes: wasmMemory.buffer.byteLength },
         { transfer: getTransferable(result) },
       );
     } catch (error) {
       if (!(error instanceof Error && error.name === "AbortError"))
         console.warn(`Worker error: ${error}`);
       self.postMessage(
-        { id, error, wasmMemoryBytes: getWasmMemoryBytes() },
+        { id, error, wasmMemoryBytes: wasmMemory.buffer.byteLength },
         { transfer: getTransferable(error) },
       );
     }
@@ -70,7 +62,6 @@ export function startWorker(
     for (const event of pending) {
       onMessage(event);
     }
-    pending.length = 0;
   }
 
   void initialize().catch((error) => {

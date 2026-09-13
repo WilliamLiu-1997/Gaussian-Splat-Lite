@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Isolated cube targets and PMREM generators per renderer, included filtering in cube target reuse, and released cached resources on disposal.
+- Disposing a texture returned by `renderEnvMap()` also releases its PMREM output render target.
+- Released the WASM sort-cache borrow before throwing validation errors so subsequent sorts can recover.
+
+### Changed
+
+- Propagated `onFrame` callback errors through the renderer's update/render call instead of logging them and continuing generation.
+- Removed the viewer's private WebGL2 fallback hook override.
+- Replaced dynamic TSL node chains with typed nodes, updated Three.js development typings to r186, and isolated upstream typing gaps in a compatibility module.
+- Centralized RAD page ownership, slot occupancy, and page pins while preserving streaming budgets, fades, and retirement behavior.
+- Simplified redundant checks in decoders, post-decode, streaming data, workers, and rendering; widened sort-cache generations and removed their 32-bit rollover handling.
+- Reused cached sort centers when switching between axial and radial sorting.
+
 ## [1.0.3] - 2026-09-13
 
 ### Fixed

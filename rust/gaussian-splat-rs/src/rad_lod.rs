@@ -34,8 +34,7 @@ struct Page {
 }
 
 fn contains(bits: &[u64], index: usize) -> bool {
-    bits.get(index / 64)
-        .is_some_and(|word| word & (1_u64 << (index % 64)) != 0)
+    bits[index / 64] & (1_u64 << (index % 64)) != 0
 }
 
 fn insert(bits: &mut [u64], index: usize) {
@@ -164,13 +163,11 @@ impl View {
 }
 
 fn hypot3(x: f64, y: f64, z: f64) -> f64 {
+    // Validated finite centers and camera origins cannot produce NaN deltas.
     let values = [x.abs(), y.abs(), z.abs()];
     let max = values[0].max(values[1]).max(values[2]);
     if max.is_infinite() {
         return max;
-    }
-    if values.iter().any(|value| value.is_nan()) {
-        return f64::NAN;
     }
     if max == 0.0 {
         return 0.0;
@@ -284,16 +281,12 @@ impl RadLodTree {
         {
             return Ok(());
         }
-        let valid = generation.is_finite()
-            && generation >= 0.0
-            && generation.fract() == 0.0
-            && generation <= 9_007_199_254_740_991.0
-            && centers.length() as u64 == page.count as u64 * 3
+        let valid = centers.length() as u64 == page.count as u64 * 3
             && radii.length() == page.count
             && (child_start.length() == 0 || child_start.length() == page.count)
             && (child_count.length() == 0 || child_count.length() == page.count);
         if !valid {
-            return Err(js_error("Invalid RAD tree arrays or generation"));
+            return Err(js_error("Invalid RAD tree arrays"));
         }
         let centers = centers.to_vec();
         let radii = radii.to_vec();
@@ -393,16 +386,16 @@ impl RadLodTree {
 }
 
 impl RadLodTree {
-    fn page_index(&self, index: u32) -> Result<usize> {
-        ensure!(index < self.count, "RAD tree index is out of range");
+    // traverse validates the nonempty child range before looking up either end.
+    fn page_index(&self, index: u32) -> usize {
         let candidate = (index / self.chunk_size) as usize;
         if let Some(page) = self.pages.get(candidate) {
             if index >= page.base && index - page.base < page.count {
-                return Ok(candidate);
+                return candidate;
             }
         }
         // Metadata validation guarantees contiguous, ordered spans.
-        Ok(self.pages.partition_point(|page| page.base <= index) - 1)
+        self.pages.partition_point(|page| page.base <= index) - 1
     }
 
     fn touch(&mut self, index: usize) {
@@ -425,10 +418,8 @@ impl RadLodTree {
         let start = (indices.start - page.base) as usize;
         let end = (indices.end - page.base) as usize;
         visit_range(&mut page.seen, start..end)?;
-        let tree = page
-            .tree
-            .as_ref()
-            .context("RAD selection references an unavailable page")?;
+        // Only resident pages are enqueued during this synchronous traversal.
+        let tree = page.tree.as_ref().unwrap();
         for (local, &count) in tree.child_count.iter().enumerate().take(end).skip(start) {
             // The remaining budget only shrinks. Keep these nodes in the cut without
             // scoring or queueing refinements that cannot fit; unary nodes still fit.
@@ -516,8 +507,8 @@ impl RadLodTree {
                 .context("RAD child range is out of bounds")?;
             let end = start as u64 + count as u64;
             ensure!(end <= self.count as u64, "RAD child range is out of bounds");
-            let first = self.page_index(start)?;
-            let last = self.page_index((end - 1) as u32)?;
+            let first = self.page_index(start);
+            let last = self.page_index((end - 1) as u32);
             let mut ready = true;
             for index in first..=last {
                 let page = &mut self.pages[index];

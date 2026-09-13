@@ -1,9 +1,9 @@
 # gaussian-splat-rs
 
-Rust/WebAssembly support for Gaussian Splat Lite. This package contains the
-PLY/SPZ decoders, 32-bit depth sorter, and raycaster used by the browser bundle.
+Support package included in Gaussian Splat Lite. Application users do not need
+to build it separately.
 
-From the repository root, build the WebAssembly package with:
+For local development, build it from the repository root:
 
 ```sh
 npm run build:wasm

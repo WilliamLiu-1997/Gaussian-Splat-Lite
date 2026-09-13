@@ -11,7 +11,7 @@ export type SogChunkInfo = {
   byteLength: number;
 };
 
-/** Workers own either LOD traversal or decoded chunk caches. */
+/** LOD workers parse the index once before selection; other workers own chunk caches. */
 export function createSogStreamHandlers(
   loadSplats: (
     args: SplatLoadArgs,
@@ -20,7 +20,7 @@ export function createSogStreamHandlers(
 ) {
   const sogChunks = new Map<number, SplatResult>();
   const sogLoads = new Map<number, AbortController>();
-  let visibility: SogVisibility | undefined;
+  let visibility: SogVisibility;
 
   function parseSogIndex({
     bytes,
@@ -46,7 +46,6 @@ export function createSogStreamHandlers(
   }
 
   function selectSogLod({ view, budget }: { view: SogView; budget: number }) {
-    if (!visibility) throw new Error("SOG LOD index is not initialized");
     return visibility.select(view, budget);
   }
 

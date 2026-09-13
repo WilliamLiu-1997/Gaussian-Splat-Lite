@@ -548,9 +548,7 @@ export class SogStreamScheduler {
 
   private async extract(chunk: Chunk, batch: PendingRegion[]) {
     try {
-      const source = chunk.data;
-      if (!source?.alive)
-        throw new Error("Streaming chunk is no longer cached");
+      const source = chunk.data as SogChunkSource;
       const results = await source.extract(
         batch.map(({ range }) => ({
           start: range.offset,
@@ -688,15 +686,12 @@ export class SogStreamScheduler {
       decoded?.dispose();
       chunk.controller = undefined;
       this.pruneChunk(chunk);
-      // Refill without waiting for update(); defer to avoid recursive failures
-      // when a custom loader throws synchronously.
-      if (!this.disposed)
-        queueMicrotask(() => {
-          this.pump(performance.now());
-          // Loading the environment changes the budget available to LOD.
-          if (chunk === this.environment) void this.requestSelection();
-          this.changed();
-        });
+      if (!this.disposed) {
+        this.pump(performance.now());
+        // Loading the environment changes the budget available to LOD.
+        if (chunk === this.environment) void this.requestSelection();
+        this.changed();
+      }
     }
   }
 

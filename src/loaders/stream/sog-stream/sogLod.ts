@@ -171,9 +171,7 @@ export function parseSogLodManifest(
       if (
         !Array.isArray(value) ||
         value.length !== 3 ||
-        !value.every(
-          (item) => typeof item === "number" && Number.isFinite(item),
-        )
+        !value.every(Number.isFinite)
       )
         fail("invalid bounding box");
       return new Vector3(value[0], value[1], value[2]);
@@ -196,12 +194,7 @@ export function parseSogLodManifest(
     leaves.push(leaf);
     for (const [key, value] of Object.entries(object(node.lods))) {
       const level = Number(key);
-      if (
-        !/^\d+$/.test(key) ||
-        String(level) !== key ||
-        !Number.isInteger(level) ||
-        level >= levels
-      )
+      if (!/^\d+$/.test(key) || String(level) !== key || level >= levels)
         fail(`invalid LOD level ${key}`);
       const entry = object(value);
       const fileIndex = integer(entry.file, "file index");
@@ -353,8 +346,8 @@ export function selectSogLods(
   };
   const pop = () => {
     const first = heap[0];
-    const last = heap.pop();
-    if (heap.length && last) {
+    const last = heap.pop() as Upgrade;
+    if (heap.length) {
       let index = 0;
       while (index * 2 + 1 < heap.length) {
         let child = index * 2 + 1;

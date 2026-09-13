@@ -33,8 +33,6 @@ type SplatShTextures = {
   sh3b?: THREE.DataArrayTexture;
 };
 
-type SplatShArrays = (Uint32Array | undefined)[];
-
 const SH_COUNTS = [0, 3, 8, 15] as const;
 
 type DecodedSplat = ReturnType<typeof decodeSplat>;
@@ -129,8 +127,7 @@ function createSplatsState(options: SplatsInitializationOptions): SplatsState {
       throw new Error("sortCenters is smaller than numSplats");
     }
 
-    const maxSplats =
-      inputCapacity === 0 ? 0 : getTextureSize(inputCapacity).maxSplats;
+    const maxSplats = getTextureSize(inputCapacity).maxSplats;
     let splatArrays = options.splatArrays;
     if (maxSplats !== inputCapacity) {
       splatArrays = [
@@ -305,13 +302,8 @@ export class Splats {
   }
 
   private disposeTextures() {
-    for (const texture of this.textures ?? []) {
-      if (texture !== Splats.emptyTexture) {
-        texture.dispose();
-      }
-    }
-    this.textures = [Splats.emptyTexture, Splats.emptyTexture];
-    for (const texture of Object.values(this.shTextures ?? {})) {
+    this.disposeMainTextures();
+    for (const texture of Object.values(this.shTextures)) {
       texture?.dispose();
     }
     this.shTextures = {};
@@ -379,18 +371,17 @@ export class Splats {
   }
 
   private ensureShCapacity(degree: number, capacity: number) {
-    const numArrays = SH_ARRAY_COUNTS[degree] ?? 0;
     const requiredValues = capacity * 4;
-    for (let index = 0; index < numArrays; index += 1) {
-      const key = SH_KEYS[index];
+    return SH_KEYS.slice(0, SH_ARRAY_COUNTS[degree]).map((key) => {
       const current = this.extra[key];
       if (current instanceof Uint32Array && current.length >= requiredValues) {
-        continue;
+        return current;
       }
       const data = new Uint32Array(requiredValues);
       if (current instanceof Uint32Array) data.set(current);
       this.extra[key] = data;
-    }
+      return data;
+    });
   }
 
   private ensureSplats(numSplats: number): [Uint32Array, Uint32Array] {
@@ -400,7 +391,7 @@ export class Splats {
         ? this.maxSplats
         : Math.max(numSplats, 2 * this.maxSplats);
     if (targetSize > currentCapacity) {
-      this.maxSplats = getTextureSize(Math.max(1, targetSize)).maxSplats;
+      this.maxSplats = getTextureSize(targetSize).maxSplats;
       const first = new Uint32Array(this.maxSplats * 4);
       const second = new Uint32Array(this.maxSplats * 4);
       first.set(this.splatArrays[0]);
@@ -410,13 +401,12 @@ export class Splats {
     }
     const capacity = this.splatArrays[0].length / 4;
     this.ensureSortCenterCapacity(capacity);
-    this.ensureShCapacity(this.getNumSh(), capacity);
     return this.splatArrays;
   }
 
   private prepareSplatEncoding(numSplats: number, shDegree: number) {
     const arrays = this.ensureSplats(numSplats);
-    this.ensureShCapacity(shDegree, arrays[0].length / 4);
+    const shArrays = this.ensureShCapacity(shDegree, arrays[0].length / 4);
     return {
       arrays,
       splatCenters: new Float32Array(
@@ -425,7 +415,7 @@ export class Splats {
         arrays[0].length,
       ),
       sortCenters: this.getSortCenters(),
-      shArrays: shDegree === 0 ? undefined : getSplatShArrays(this.extra),
+      shArrays,
     };
   }
 
@@ -750,16 +740,16 @@ export class Splats {
 }
 
 function matchesUintArrayTexture(
-  texture: THREE.DataArrayTexture | undefined,
+  texture: THREE.DataArrayTexture,
   data: Uint32Array,
   width: number,
   height: number,
   depth: number,
 ) {
-  const image = texture?.image;
+  const image = texture.image;
   return (
     texture !== Splats.emptyTexture &&
-    image?.width === width &&
+    image.width === width &&
     image.height === height &&
     image.depth === depth &&
     image.data?.buffer === data.buffer &&
@@ -789,7 +779,7 @@ function decodeSplatSh(
   index: number,
   degree: number,
 ) {
-  const count = SH_COUNTS[degree] ?? 0;
+  const count = SH_COUNTS[degree];
   const result = new Array<THREE.Color>(count);
   const rgb = [0, 0, 0];
   const base = index * 4;
@@ -834,7 +824,7 @@ function copySplatRange(
 function encodeSplat(
   splatArrays: [Uint32Array, Uint32Array],
   splatCenters: Float32Array,
-  shArrays: SplatShArrays | undefined,
+  shArrays: Uint32Array[],
   sortCenters: Float32Array,
   index: number,
   splat: SplatInput,
@@ -856,7 +846,7 @@ function encodeSplat(
     quaternion.z,
     quaternion.w,
   );
-  if (shArrays) encodeSplatSh(shArrays, index, splat.sh);
+  encodeSplatSh(shArrays, index, splat.sh);
 
   const i3 = index * 3;
   const disabled = scales.x === 0 && scales.y === 0 && scales.z === 0;
@@ -881,28 +871,13 @@ function getShDegree(sh?: readonly THREE.Color[]) {
   }
 }
 
-function getSplatShArrays(extra: Record<string, unknown>): SplatShArrays {
-  const sh1 = extra.sh1;
-  const sh2 = extra.sh2;
-  const sh3a = extra.sh3a;
-  const sh3b = extra.sh3b;
-  return [
-    sh1 instanceof Uint32Array ? sh1 : undefined,
-    sh2 instanceof Uint32Array ? sh2 : undefined,
-    sh3a instanceof Uint32Array ? sh3a : undefined,
-    sh3b instanceof Uint32Array ? sh3b : undefined,
-  ];
-}
-
 function encodeSplatSh(
-  shArrays: SplatShArrays,
+  shArrays: Uint32Array[],
   index: number,
   sh?: readonly THREE.Color[],
 ) {
   const base = index * 4;
-  for (let arrayIndex = 0; arrayIndex < shArrays.length; arrayIndex += 1) {
-    const data = shArrays[arrayIndex];
-    if (!data) continue;
+  for (const data of shArrays) {
     data[base] = 0;
     data[base + 1] = 0;
     data[base + 2] = 0;
@@ -912,7 +887,6 @@ function encodeSplatSh(
 
   for (let coefficient = 0; coefficient < sh.length; coefficient += 1) {
     const data = shArrays[coefficient >> 2];
-    if (!data) continue;
     const { r, g, b } = sh[coefficient];
     data[base + (coefficient & 3)] = encodeShRgb(r, g, b);
   }

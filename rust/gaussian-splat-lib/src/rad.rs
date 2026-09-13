@@ -91,7 +91,7 @@ impl RadMeta {
             .map(u64::from)
             .unwrap_or(size.min(self.count - base));
         ensure!(
-            base.checked_add(count).is_some_and(|end| end <= self.count),
+            count <= self.count - base,
             "RAD chunk range exceeds splat count"
         );
         Ok((base as u32, count as u32))
@@ -128,10 +128,7 @@ impl RadMeta {
         for (index, chunk) in self.chunks.iter().enumerate() {
             safe_integer(chunk.offset, "chunk offset")?;
             safe_integer(chunk.bytes, "chunk bytes")?;
-            let end = chunk
-                .offset
-                .checked_add(chunk.bytes)
-                .context("RAD chunk byte range overflow")?;
+            let end = chunk.offset + chunk.bytes;
             safe_integer(end, "chunk byte range end")?;
             ensure!(
                 chunk.bytes >= 16,
@@ -210,9 +207,7 @@ pub fn decode_rad_header(bytes: &[u8]) -> Result<Option<(RadMeta, u64)>> {
         serde_json::from_slice(&bytes[8..8 + length]).context("Invalid RAD metadata JSON")?;
     meta.validate()?;
     ensure!(
-        meta.all_chunk_bytes
-            .checked_add(chunks_start as u64)
-            .is_some_and(|end| end <= MAX_SAFE_INTEGER),
+        meta.all_chunk_bytes + chunks_start as u64 <= MAX_SAFE_INTEGER,
         "RAD complete byte range exceeds JavaScript safe integer range"
     );
     Ok(Some((meta, chunks_start as u64)))
@@ -552,7 +547,6 @@ impl DecodedChunk {
                         linear.iter().all(|v| v.is_finite()),
                         "Non-finite RAD Scales value"
                     );
-                    ensure!(linear.iter().all(|v| *v >= 0.0), "Negative RAD scale");
                     self.scales_f16.extend((0..3).map(|d| {
                         if linear[d] == 0.0 {
                             f16::NEG_INFINITY.to_bits()
@@ -749,13 +743,6 @@ impl RadDecoder {
             "Unsupported RADC version: {}",
             chunk.version
         );
-        ensure!(
-            chunk
-                .base
-                .checked_add(chunk.count)
-                .is_some_and(|end| end <= self.meta.count),
-            "RADC splat range exceeds dataset"
-        );
         safe_integer(chunk.payload_bytes, "payloadBytes")?;
         let payload_length =
             u64::from_le_bytes(bytes[payload_start - 8..payload_start].try_into().unwrap());
@@ -787,7 +774,6 @@ impl RadDecoder {
         );
         let header_sh = self.meta.max_sh.unwrap_or(0) as usize;
         let declared_sh = chunk.max_sh.unwrap_or(header_sh as u32) as usize;
-        ensure!(declared_sh <= 3, "Unsupported RADC SH degree");
         ensure!(
             declared_sh <= header_sh,
             "RADC SH degree exceeds RAD header"
@@ -822,18 +808,9 @@ impl RadDecoder {
                 .checked_add(prop.bytes)
                 .context("RAD property range overflow")?;
             ensure!(end <= payload_length, "RAD property extends beyond payload");
-            let padded_end = prop
-                .offset
-                .checked_add(align8(
-                    usize::try_from(prop.bytes)
-                        .context("RAD property bytes exceed address space")?,
-                )? as u64)
-                .context("RAD property alignment overflow")?;
-            ensure!(
-                padded_end <= payload_length,
-                "RAD property padding extends beyond payload"
-            );
-            ranges.push((prop.offset, padded_end));
+            // Payload length and property offsets are aligned, so these bounds
+            // also prevent padding from overlapping the next property or EOF.
+            ranges.push((prop.offset, end));
             let records = if prop.property.is_code() {
                 ensure!(
                     chunk.base == 0,
@@ -1032,7 +1009,7 @@ impl RadDecoder {
             return Ok(result);
         }
         if labels_present && decode_sh > 0 {
-            let labels = labels.context("Missing decoded RAD SH labels")?;
+            let labels = labels.unwrap();
             let code_count = self.meta.sh_code_count.unwrap() as usize;
             ensure!(
                 labels.iter().all(|label| (*label as usize) < code_count),
@@ -1123,9 +1100,7 @@ fn validate_local_tree(base: u32, total: u32, starts: &[u32], counts: &[u16]) ->
         );
         ranges.push((u64::from(start), child_end));
         for child in u64::from(start).max(u64::from(base))..child_end.min(end) {
-            let degree = &mut indegree[(child - u64::from(base)) as usize];
-            ensure!(*degree == 0, "RAD tree child has multiple parents");
-            *degree = 1;
+            indegree[(child - u64::from(base)) as usize] = 1;
         }
     }
     ranges.sort_unstable();

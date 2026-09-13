@@ -1,5 +1,4 @@
 import type * as THREE from "three";
-import { textureLoad } from "three/tsl";
 import type { WebGPURenderer } from "three/webgpu";
 import type {
   CPUOrderingUpdate,
@@ -8,6 +7,7 @@ import type {
 } from "../backend";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
 import type { SplatNodeMaterial } from "../tsl/SplatMaterial";
+import { uintTexture } from "../tsl/tslCompat";
 import { type Uniforms, emptyOrdering } from "../uniforms";
 import { OrderingTexture } from "../webgl/OrderingTexture";
 
@@ -32,7 +32,7 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
     uniforms: Uniforms,
     options: SplatMaterialOptions,
   ) {
-    super(renderer, uniforms, options, textureLoad(emptyOrdering));
+    super(renderer, uniforms, options, uintTexture(emptyOrdering));
   }
 
   getOrderingCapacity(count: number) {

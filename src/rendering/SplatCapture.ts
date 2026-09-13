@@ -4,10 +4,7 @@ import type {
   GaussianSplatRendererOptions,
 } from "./GaussianSplatRenderer";
 import type { SplatBackend } from "./backend";
-import {
-  type GaussianSplatCompatibleRenderer,
-  setRendererRenderTarget,
-} from "./rendererUtils";
+import { setRendererRenderTarget } from "./rendererUtils";
 
 // Public target fields stay on the renderer so existing callers retain ownership access.
 type CaptureHost = Pick<
@@ -28,6 +25,8 @@ type CaptureScope = { activate(): void; restore(): void };
 
 /** Offscreen targets, pixel readback, cube captures and environment-map filtering. */
 export class SplatCapture {
+  private disposed = false;
+
   constructor(
     private readonly host: CaptureHost,
     private readonly backend: SplatBackend,
@@ -74,14 +73,16 @@ export class SplatCapture {
   }
 
   dispose() {
-    if (this.host.target) {
-      this.host.target.dispose();
-      this.host.target = undefined;
-    }
-    if (this.host.backTarget) {
-      this.host.backTarget.dispose();
-      this.host.backTarget = undefined;
-    }
+    if (this.disposed) return;
+    this.disposed = true;
+    this.cubeRender?.target.dispose();
+    this.cubeRender = null;
+    this.pmrem?.dispose();
+    this.pmrem = null;
+    this.host.target?.dispose();
+    this.host.target = undefined;
+    this.host.backTarget?.dispose();
+    this.host.backTarget = undefined;
   }
 
   renderTarget({
@@ -185,17 +186,19 @@ export class SplatCapture {
   }
 
   // Data and buffers used for environment map rendering
-  private static cubeRender: {
+  private cubeRender: {
     target: THREE.WebGLCubeRenderTarget;
     cubeCamera: THREE.CubeCamera;
     near: number;
     far: number;
+    filter: boolean;
   } | null = null;
-  private static pmrem: {
-    fromCubemap(texture: THREE.Texture): { texture: THREE.Texture };
-    dispose(): void;
-  } | null = null;
-  private static pmremRenderer: GaussianSplatCompatibleRenderer | null = null;
+
+  private pmrem: ReturnType<SplatBackend["createPMREMGenerator"]> | null = null;
+
+  private assertActive() {
+    if (this.disposed) throw new Error("Splat capture is disposed");
+  }
 
   // Renders out the scene to a cube map that can be used for
   // Image-based lighting or similar applications. First optionally updates Gsplats,
@@ -219,15 +222,15 @@ export class SplatCapture {
     update: boolean;
     filter: boolean;
   }): Promise<THREE.CubeTexture> {
+    this.assertActive();
     if (
-      !SplatCapture.cubeRender ||
-      SplatCapture.cubeRender.target.width !== size ||
-      SplatCapture.cubeRender.near !== near ||
-      SplatCapture.cubeRender.far !== far
+      !this.cubeRender ||
+      this.cubeRender.target.width !== size ||
+      this.cubeRender.near !== near ||
+      this.cubeRender.far !== far ||
+      this.cubeRender.filter !== filter
     ) {
-      if (SplatCapture.cubeRender) {
-        SplatCapture.cubeRender.target.dispose();
-      }
+      this.cubeRender?.target.dispose();
       const target = new THREE.WebGLCubeRenderTarget(size, {
         format: THREE.RGBAFormat,
         type: THREE.UnsignedByteType,
@@ -237,20 +240,17 @@ export class SplatCapture {
         colorSpace: filter ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace,
       });
       const cubeCamera = new THREE.CubeCamera(near, far, target);
-      SplatCapture.cubeRender = { target, cubeCamera, near, far };
+      this.cubeRender = { target, cubeCamera, near, far, filter };
     }
 
-    const { target, cubeCamera } = SplatCapture.cubeRender;
+    const { target, cubeCamera } = this.cubeRender;
     cubeCamera.position.copy(worldCenter);
 
     // Save the visibility state of objects we want to hide before render
-    const objectVisibility = new Map<THREE.Object3D, boolean>();
-    for (const object of hideObjects) {
-      if (!objectVisibility.has(object)) {
-        objectVisibility.set(object, object.visible);
-      }
-      object.visible = false;
-    }
+    const objectVisibility = new Map(
+      hideObjects.map((object) => [object, object.visible]),
+    );
+    for (const object of objectVisibility.keys()) object.visible = false;
 
     const scope = this.beginCapture();
     try {
@@ -260,6 +260,7 @@ export class SplatCapture {
         await this.host.update({ scene, camera: tempCamera });
       }
 
+      this.assertActive();
       scope.activate();
       // Update the CubeCamera, which performs 6 cube face renders
       cubeCamera.update(this.host.renderer as THREE.WebGLRenderer, scene);
@@ -273,11 +274,12 @@ export class SplatCapture {
   }
 
   async readCubeTargets(): Promise<Uint8Array[]> {
-    if (!SplatCapture.cubeRender) {
+    this.assertActive();
+    if (!this.cubeRender) {
       throw new Error("No cube render");
     }
 
-    const { target } = SplatCapture.cubeRender;
+    const { target } = this.cubeRender;
     const { width, height } = target;
     const promises = [];
     const buffers = [];
@@ -316,6 +318,7 @@ export class SplatCapture {
     hideObjects: THREE.Object3D[];
     update: boolean;
   }): Promise<THREE.Texture> {
+    this.assertActive();
     const cubeTexture = await this.host.renderCubeMap({
       scene,
       worldCenter,
@@ -326,16 +329,16 @@ export class SplatCapture {
       update,
       filter: true,
     });
-    // Pre-filter the cube map using THREE.PMREMGenerator if requested
-    if (SplatCapture.pmremRenderer !== this.host.renderer) {
-      SplatCapture.pmrem?.dispose();
-      SplatCapture.pmrem = this.backend.createPMREMGenerator();
-      SplatCapture.pmremRenderer = this.host.renderer;
-    }
-
-    const pmrem = SplatCapture.pmrem;
-    if (!pmrem) throw new Error("PMREM generator is not initialized");
-    return pmrem.fromCubemap(cubeTexture).texture;
+    this.assertActive();
+    this.pmrem ??= this.backend.createPMREMGenerator();
+    const target = this.pmrem.fromCubemap(cubeTexture);
+    // Callers receive only the texture; release its framebuffer along with it.
+    const disposeTarget = () => {
+      target.texture.removeEventListener("dispose", disposeTarget);
+      target.dispose();
+    };
+    target.texture.addEventListener("dispose", disposeTarget);
+    return target.texture;
   }
 
   // Utility function to recursively set the envMap property for any

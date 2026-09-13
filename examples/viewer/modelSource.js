@@ -61,7 +61,7 @@ export function fileTypeFor(file) {
 
 export async function detectFileType(file, url) {
   const fileType = fileTypeFor(file);
-  if (fileType || url || !(file instanceof Blob)) return fileType;
+  if (fileType || url) return fileType;
   const prefix = new Uint8Array(await file.slice(0, 4).arrayBuffer());
   return String.fromCharCode(...prefix) === "RAD0"
     ? SplatFileType.RAD

@@ -269,7 +269,6 @@ pub struct MultiDecoder<T: SplatReceiver> {
     pub pathname: Option<String>,
     splats: Option<T>,
     buffer: Vec<u8>,
-    buffer_gz: Option<Vec<u8>>,
     inner: Option<Box<dyn ChunkReceiver>>,
     expected_input_size: Option<u64>,
 }
@@ -286,28 +285,16 @@ impl<T: SplatReceiver> MultiDecoder<T> {
             pathname: pathname.map(|s| s.to_string()),
             splats,
             buffer: Vec::new(),
-            buffer_gz: None,
             inner,
             expected_input_size: None,
         }
     }
 
     pub fn into_splats(self) -> T {
-        let inner_any = self.inner.unwrap().into_any();
-        let inner_any = match inner_any.downcast::<PlyDecoder<T>>() {
-            Ok(ply) => {
-                return ply.into_splats();
-            }
-            Err(inner_any) => inner_any,
-        };
-        let inner_any = match inner_any.downcast::<SpzDecoder<T>>() {
-            Ok(spz) => {
-                return spz.into_splats();
-            }
-            Err(inner_any) => inner_any,
-        };
-        let _ = inner_any;
-        panic!("Invalid decoder type");
+        match self.inner.unwrap().into_any().downcast::<PlyDecoder<T>>() {
+            Ok(ply) => ply.into_splats(),
+            Err(inner) => inner.downcast::<SpzDecoder<T>>().unwrap().into_splats(),
+        }
     }
 
     fn init_file_type(&mut self, file_type: SplatFileType) -> anyhow::Result<()> {
@@ -319,7 +306,6 @@ impl<T: SplatReceiver> MultiDecoder<T> {
         }
         inner.push(&self.buffer)?;
         self.buffer.clear();
-        self.buffer_gz = None;
         self.inner = Some(inner);
         Ok(())
     }
@@ -347,8 +333,6 @@ impl<T: SplatReceiver> ChunkReceiver for MultiDecoder<T> {
                 return Ok(());
             }
 
-            let mut detection_complete = false;
-
             let magic = u32::from_le_bytes([
                 self.buffer[0],
                 self.buffer[1],
@@ -364,39 +348,22 @@ impl<T: SplatReceiver> ChunkReceiver for MultiDecoder<T> {
             }
             if (magic & 0x00ffffff) == GZIP_MAGIC {
                 // Gzipped file, unpack beginning to check magic number
-                if self.buffer_gz.is_none() {
-                    self.buffer_gz = try_gunzip(&self.buffer, 4)?;
+                let Some(prefix) = try_gunzip(&self.buffer, 4)? else {
+                    return Ok(());
+                };
+                if prefix == SPZ_MAGIC.to_le_bytes() {
+                    return self.init_file_type(SplatFileType::SPZ);
                 }
-                if let Some(buffer_gz) = self.buffer_gz.as_ref() {
-                    detection_complete = true;
-                    if buffer_gz.len() >= 4 {
-                        let magic = u32::from_le_bytes([
-                            buffer_gz[0],
-                            buffer_gz[1],
-                            buffer_gz[2],
-                            buffer_gz[3],
-                        ]);
-                        if magic == SPZ_MAGIC {
-                            return self.init_file_type(SplatFileType::SPZ);
-                        }
-                    }
-                }
-            } else {
-                detection_complete = true;
             }
 
-            if detection_complete {
-                if let Some(pathname) = &self.pathname {
-                    if let Some(file_type) = SplatFileType::from_pathname(pathname) {
-                        return self.init_file_type(file_type);
-                    }
-                    return Err(anyhow::anyhow!("Unknown file type"));
-                }
-
-                Err(anyhow::anyhow!("Unknown file type"))
-            } else {
-                Ok(())
+            if let Some(file_type) = self
+                .pathname
+                .as_deref()
+                .and_then(SplatFileType::from_pathname)
+            {
+                return self.init_file_type(file_type);
             }
+            Err(anyhow::anyhow!("Unknown file type"))
         } else {
             self.inner.as_mut().unwrap().push(bytes)
         }

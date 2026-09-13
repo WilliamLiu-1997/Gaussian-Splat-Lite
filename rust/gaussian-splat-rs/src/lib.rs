@@ -63,13 +63,7 @@ pub fn set_sort_center_state(
     }
 
     SORT32_BUFFERS.with_borrow_mut(|buffers| {
-        buffers.mesh_generation = buffers.mesh_generation.wrapping_add(1);
-        if buffers.mesh_generation == 0 {
-            for mesh in &mut buffers.meshes {
-                mesh.generation = 0;
-            }
-            buffers.mesh_generation = 1;
-        }
+        buffers.mesh_generation += 1;
         let generation = buffers.mesh_generation;
         for index in 0..range_mesh_ids.length() {
             let mesh_id = range_mesh_ids.get_index(index) as usize;
@@ -86,7 +80,7 @@ pub fn set_sort_center_state(
         for index in 0..center_update_range_indices.length() {
             let range_index = center_update_range_indices.get_index(index);
             let mesh_id = range_mesh_ids.get_index(range_index) as usize;
-            let center_values = range_counts.get_index(range_index).saturating_mul(3);
+            let center_values = range_counts.get_index(range_index) * 3;
             let mesh = buffers.ensure_mesh(mesh_id);
             mesh.raw_centers.resize(center_values as usize, f32::NAN);
             update_centers
@@ -133,26 +127,25 @@ pub fn sort32_centers(
 ) -> u32 {
     let max_splats = ordering.length() as usize;
 
-    SORT32_BUFFERS.with_borrow_mut(|buffers| {
-        let active_splats = match sort32_centers_internal(
+    let result: Result<u32, String> = SORT32_BUFFERS.with_borrow_mut(|buffers| {
+        let active_splats = sort32_centers_internal(
             buffers,
             max_splats,
             num_splats as usize,
             [camera_x, camera_y, camera_z],
             [direction_x, direction_y, direction_z],
             radial,
-        ) {
-            Ok(active_splats) => active_splats,
-            Err(err) => wasm_bindgen::throw_str(&err),
-        };
+        )?;
 
         if active_splats > 0 {
             ordering
                 .subarray(0, active_splats)
                 .copy_from(&buffers.ordering[..active_splats as usize]);
         }
-        active_splats
-    })
+        Ok(active_splats)
+    });
+    // JS exceptions do not unwind Rust; release the RefCell borrow first.
+    result.unwrap_or_else(|err| wasm_bindgen::throw_str(&err))
 }
 
 fn parse_file_type(file_type: Option<String>) -> Result<Option<SplatFileType>, JsValue> {

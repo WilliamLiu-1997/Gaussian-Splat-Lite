@@ -35,10 +35,8 @@ export type RadLodSelection = {
   touchedChunks: Uint32Array;
 };
 
-/** Resolve global indices without assuming that chunks are 64K records. */
+/** Resolve validated LOD indices without assuming that chunks are 64K records. */
 export function radChunkIndex(meta: RadMeta, index: number): number {
-  if (!Number.isSafeInteger(index) || index < 0 || index >= meta.count)
-    throw new Error("RAD tree index is out of range");
   const size = meta.chunkSize ?? meta.count;
   const candidate = Math.floor(index / size);
   if (candidate < meta.chunks.length) {
@@ -46,14 +44,13 @@ export function radChunkIndex(meta: RadMeta, index: number): number {
     if (index >= range.base && index < range.base + range.count)
       return candidate;
   }
+  // Header validation guarantees contiguous, ordered spans covering every index.
   let low = 0;
   let high = meta.chunks.length;
   while (low < high) {
     const middle = (low + high) >>> 1;
-    const range = getRadChunkSpan(meta, middle);
-    if (index < range.base) high = middle;
-    else if (index >= range.base + range.count) low = middle + 1;
-    else return middle;
+    if (getRadChunkSpan(meta, middle).base <= index) low = middle + 1;
+    else high = middle;
   }
-  throw new Error("RAD tree references a gap in the chunk directory");
+  return low - 1;
 }

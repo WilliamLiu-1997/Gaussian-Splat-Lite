@@ -16,11 +16,6 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
     uniforms: Uniforms,
     options: SplatMaterialOptions,
   ) {
-    if (options.vertexShader || options.fragmentShader) {
-      throw new Error(
-        "Custom GLSL shaders are only supported by WebGLRenderer",
-      );
-    }
     const projection = new ProjectedSplats(renderer, uniforms);
     super(renderer, uniforms, options, undefined, (camera) =>
       projection.vertexData(camera),

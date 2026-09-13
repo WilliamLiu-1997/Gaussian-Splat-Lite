@@ -2,9 +2,9 @@
 
 [Back to documentation](../README.md#documentation)
 
-Transforms each Splat in the decode worker while loading PLY/SPZ/SOG/RAD files.
+Changes each Splat while loading PLY/SPZ/SOG/RAD files. Use `define()` to describe the changes, then pass the result as `postDecode`.
 
-`define()` runs its callback immediately to build an expression program. The worker executes that program; the library handles packing and sorting centers.
+`define()` runs its callback immediately to build an expression program; the decode worker executes that program for each Splat.
 
 ```ts
 import { postDecode, SplatFileType, SplatMesh } from "gaussian-splat-lite";
@@ -22,17 +22,17 @@ const mesh = new SplatMesh({
 await mesh.initialized;
 ```
 
-Also accepted by `Splats`. The transform preserves Splat count and order.
+Also accepted by `Splats`. The example shifts the model and gives it a warmer tint. All `postDecode` transforms preserve Splat count and order.
 
 ## Logical input
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `splat.position` | `vec3` | xyz center |
-| `splat.scale` | `vec3` | Linear scale |
+| `splat.scale` | `vec3` | Linear scale along each axis |
 | `splat.quaternion` | `quaternion` | xyzw rotation |
-| `splat.opacity` | `float` | Semantic opacity in the `[0, 1000]` range |
-| `splat.alpha` | `float` | Standard alpha in the `[0, 1]` range |
+| `splat.opacity` | `float` | Model opacity, including values above 1 |
+| `splat.alpha` | `float` | Alpha from 0 (transparent) to 1 (opaque) |
 | `splat.color` | `vec3` | RGB color |
 | `splat.sh.coefficient(index)` | `vec3` | One of the 15 degree-1-through-3 RGB coefficients |
 
@@ -40,15 +40,16 @@ Also accepted by `Splats`. The transform preserves Splat count and order.
 
 ## Patch output
 
-Return any subset of `position`, `scale`, `quaternion`, `opacity`, `alpha`, `color`, or `sh`. Omitted fields stay unchanged. If `when` is false, the entire Splat stays byte-for-byte unchanged.
+Return any subset of `position`, `scale`, `quaternion`, `opacity`, `alpha`, `color`, or `sh`. Omitted fields stay unchanged. Use `when` to apply changes only to matching Splats; when false, the entire Splat stays byte-for-byte unchanged.
 
-- `opacity` is clamped to `[0, 1000]`.
+- Negative `opacity` values become zero. Values above 1 use an extended kernel shape and saturate at the codec's maximum shape.
 - `alpha` is clamped to `[0, 1]`, preserving other opacity state. Output either `opacity` or `alpha`, never both.
 - Quaternions are normalized. Invalid or zero-length results preserve the original.
 - Position and scale updates keep sorting centers synchronized.
-- SH uses the `Splats` codec: NaN channels become zero without affecting the shared exponent; nonnegative magnitudes round to nearest, with ties up. Expressions use float32 precision.
 
-`when` short-circuits nested `and`, `or`, and `not` expressions. Put cheap, selective predicates first. Group explicitly: `op.or(A, op.and(B, C))` means `A || (B && C)`. Programs are limited to 4096 instructions.
+`when` short-circuits nested `and`, `or`, and `not` expressions, so put cheap, selective conditions first. For example, `op.or(A, op.and(B, C))` means `A || (B && C)`.
+
+Expressions use float32 precision. Programs are limited to 4096 instructions, and compiled conditions to 4096 flow nodes; exceeding either limit throws. Output uses the `Splats` packed codecs, so stored values may be quantized. SH NaN channels become zero without affecting other channels' shared exponent.
 
 ## External attributes
 
@@ -67,17 +68,17 @@ const weights = attribute({
 
 - `data` accepts any `ArrayBufferView`, including `DataView`; `byteOffset` is relative to that view.
 - `components` accepts 1–4. Formats: `f32`, `f16`, `u8`, `unorm8`, `i8`, `snorm8`, `u16`, `unorm16`, `i16`, `snorm16`, `u32`, `i32`.
-- Attribute bytes travel with the program to the worker. If an attribute is shorter than the file, only the common prefix is processed.
+- Match attributes to Splats in file order. If an attribute array is shorter than the model, only the matching prefix is changed.
 
 ## Expression operations
 
-Use `op` for runtime expressions; JavaScript `if` cannot inspect a Splat value.
+Use `op` to calculate per-Splat values; JavaScript `if` does not evaluate individual Splats.
 
 - arithmetic: `add`, `sub`, `mul`, `div`, `min`, `max`, `pow`, `clamp`, `mix`, `neg`, `abs`, `sqrt`, `log`, `exp`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, and `atan2`;
 - predicates: `isFinite`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `and`, `or`, `not`, and `select`;
 - vectors: `vec2`, `vec3`, `vec4`, `component`, `length`, `normalize`, `dot`, `cross`, and `maxComponentIndex`;
 - rotations: `quaternion`, `quatMul`, and `rotateVector`;
 
-Scalar arithmetic broadcasts over vector operands. Values from different `postDecode` programs cannot be combined.
+A number can be combined with a vector, for example `op.mul(splat.scale, 2)`. Values from different `postDecode` programs cannot be combined.
 
-For expression construction, compilation and worker execution internals, see [Post-decode boundaries](Architecture.md#post-decode-boundaries).
+To change a model after loading, use [Splats](Splats.md) or [region edits](SplatEdit.md).

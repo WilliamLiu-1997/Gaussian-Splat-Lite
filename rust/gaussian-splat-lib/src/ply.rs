@@ -77,7 +77,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
         let header = std::str::from_utf8(&self.buffer[..header_end])?;
         let parsed = parse_header(header)?;
 
-        let state = if parsed.is_supersplat {
+        let state = if parsed.chunk.is_some() {
             let state = SuperSplatState::new(parsed)?;
             self.splats.init_splats(&SplatInit {
                 num_splats: state.num_splats,
@@ -129,7 +129,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
         let mut offset = 0;
         loop {
             let available = (self.buffer.len() - offset) / state.record_size;
-            let remaining = state.num_splats.saturating_sub(state.next_splat);
+            let remaining = state.num_splats - state.next_splat;
             let count = remaining.min(available).min(MAX_SPLAT_CHUNK);
             if count == 0 {
                 break;
@@ -191,7 +191,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
         let mut offset = 0;
         loop {
             let available = (self.buffer.len() - offset) / state.record_size;
-            let remaining = state.num_splats.saturating_sub(state.next_splat);
+            let remaining = state.num_splats - state.next_splat;
             let count = remaining.min(available).min(MAX_SPLAT_CHUNK);
             if count == 0 {
                 break;
@@ -288,10 +288,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             }
 
             let available = (self.buffer.len() - offset) / elem_record_size;
-            if available == 0 {
-                break;
-            }
-            let remaining = elem_count.saturating_sub(elem_read);
+            let remaining = elem_count - elem_read;
             let chunk = remaining.min(available).min(MAX_SPLAT_CHUNK);
             if chunk == 0 {
                 break;
@@ -299,7 +296,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
 
             match elem_kind {
                 PlyElementKind::Chunk => {
-                    state.decode_chunks(chunk, offset, elem_record_size, &self.buffer)?;
+                    state.decode_chunks(chunk, offset, elem_record_size, &self.buffer);
                 }
                 PlyElementKind::Vertex => {
                     state.decode_vertices(
@@ -422,20 +419,17 @@ impl<T: SplatReceiver> ChunkReceiver for PlyDecoder<T> {
                 }
             }
             PlyState::SuperSplat(state) => {
-                if let Some(vertex_elem) = state
+                let vertex_elem = state
                     .elements
                     .iter()
                     .find(|e| matches!(e.kind, PlyElementKind::Vertex))
-                {
-                    if vertex_elem.read != vertex_elem.desc.count
-                        || vertex_elem.desc.count != state.num_splats
-                    {
-                        return Err(anyhow!(
-                            "Expected {} splats, got {}",
-                            state.num_splats,
-                            vertex_elem.read
-                        ));
-                    }
+                    .unwrap();
+                if vertex_elem.read != state.num_splats {
+                    return Err(anyhow!(
+                        "Expected {} splats, got {}",
+                        state.num_splats,
+                        vertex_elem.read
+                    ));
                 }
                 if let Some(sh_elem) = state
                     .elements
@@ -516,7 +510,6 @@ struct ParsedHeader {
     sh: Option<PlyElementDesc>,
     num_splats: usize,
     is_pointcloud: bool,
-    is_supersplat: bool,
 }
 
 fn parse_property_type(s: &str) -> anyhow::Result<PlyPropertyType> {
@@ -616,7 +609,6 @@ fn parse_header(header: &str) -> anyhow::Result<ParsedHeader> {
         chunk,
         sh,
         is_pointcloud,
-        is_supersplat: elements.iter().any(|e| e.name == "chunk"),
         elements,
     })
 }
@@ -744,9 +736,7 @@ struct SuperSplatState {
 
 impl SuperSplatState {
     fn new(parsed: ParsedHeader) -> anyhow::Result<Self> {
-        let chunk_desc = parsed
-            .chunk
-            .ok_or(anyhow!("Missing chunk element for SuperSplat PLY"))?;
+        let chunk_desc = parsed.chunk.unwrap();
         let vertex_desc = parsed.vertex;
         let expected_chunks = vertex_desc.count.div_ceil(SUPER_CHUNK_SIZE);
         if chunk_desc.count < expected_chunks {
@@ -860,13 +850,7 @@ impl SuperSplatState {
         })
     }
 
-    fn decode_chunks(
-        &mut self,
-        count: usize,
-        offset: usize,
-        record_size: usize,
-        data: &[u8],
-    ) -> anyhow::Result<()> {
+    fn decode_chunks(&mut self, count: usize, offset: usize, record_size: usize, data: &[u8]) {
         for i in 0..count {
             let base = offset + i * record_size;
             let c = SuperSplatChunk {
@@ -915,7 +899,6 @@ impl SuperSplatState {
             };
             self.chunks.push(c);
         }
-        Ok(())
     }
 
     fn decode_vertices(
@@ -1017,30 +1000,22 @@ impl SuperSplatState {
         record_size: usize,
         data: &[u8],
     ) {
-        let num_f_rest = match self.sh_props.as_ref() {
-            Some(sh_props) => sh_props.num_f_rest,
-            None => return,
-        };
+        let sh_props = self.sh_props.as_ref().unwrap();
+        let num_f_rest = sh_props.num_f_rest;
         if self.temp_rest.len() < num_f_rest {
             self.temp_rest.resize(num_f_rest, 0.0);
         }
         self.output
             .ensure(count, array::from_fn(|band| band < self.max_sh_degree));
-        let Some(sh_props) = self.sh_props.as_ref() else {
-            return;
-        };
-
         for i in 0..count {
             let base = offset + i * record_size;
             for (idx, prop) in sh_props.f_rest.iter().enumerate() {
                 self.temp_rest[idx] = prop.get_raw_f32(data, base);
             }
 
-            if self.max_sh_degree >= 1 {
-                let start = i * 9;
-                for (j, idx) in sh_props.sh1_props.iter().enumerate() {
-                    self.output.sh1[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
-                }
+            let start = i * 9;
+            for (j, idx) in sh_props.sh1_props.iter().enumerate() {
+                self.output.sh1[start + j] = self.temp_rest[*idx] * 8.0 / 255.0 - 4.0;
             }
             if self.max_sh_degree >= 2 {
                 let start = i * 15;
@@ -1231,12 +1206,7 @@ impl PlyPropertyType {
         match self {
             PlyPropertyType::Uint | PlyPropertyType::Int | PlyPropertyType::Float => {
                 let bytes: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
-                match self {
-                    PlyPropertyType::Uint => u32::from_le_bytes(bytes),
-                    PlyPropertyType::Int => i32::from_le_bytes(bytes) as u32,
-                    PlyPropertyType::Float => f32::from_le_bytes(bytes).to_bits(),
-                    _ => unreachable!(),
-                }
+                u32::from_le_bytes(bytes)
             }
             PlyPropertyType::Ushort => {
                 let bytes: [u8; 2] = data[offset..offset + 2].try_into().unwrap();

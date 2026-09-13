@@ -65,8 +65,7 @@ export async function loadSplatData(
     fileName ??= (file as File | undefined)?.name;
     const byteArray =
       fileBytes instanceof ArrayBuffer ? new Uint8Array(fileBytes) : fileBytes;
-    const resourcePath =
-      url === undefined ? undefined : (context.path ?? "") + url;
+    const resourcePath = url === undefined ? undefined : context.path + url;
     resolvedURL =
       resourcePath === undefined
         ? undefined

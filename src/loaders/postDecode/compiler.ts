@@ -11,7 +11,6 @@ import {
   SPLAT_POST_DECODE_FLOW_STAGE_START,
   SPLAT_POST_DECODE_FLOW_STAGE_STRIDE,
   SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_0,
-  SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_COUNT,
   SPLAT_POST_DECODE_INSTRUCTION_IMMEDIATE,
   SPLAT_POST_DECODE_INSTRUCTION_OPCODE,
   SPLAT_POST_DECODE_INSTRUCTION_STRIDE,
@@ -35,12 +34,8 @@ class GenerationRegisterMap {
   }
 
   clear() {
-    if (this.generation === 0xffff_ffff) {
-      this.generations.fill(0);
-      this.generation = 1;
-    } else {
-      this.generation += 1;
-    }
+    // A map lives for one compilation, capped at 4096 condition stages.
+    this.generation += 1;
   }
 
   has(source: number) {
@@ -48,7 +43,7 @@ class GenerationRegisterMap {
   }
 
   get(source: number) {
-    return this.has(source) ? this.values[source] : undefined;
+    return this.values[source];
   }
 
   set(source: number, target: number) {
@@ -81,8 +76,7 @@ function markDependencies(
     pending.push(root);
   }
   while (pending.length !== 0) {
-    const register = pending.pop();
-    if (register === undefined) break;
+    const register = pending.pop() as number;
     for (const argument of builder.instructions[register].args) {
       if (marked[argument]) continue;
       marked[argument] = 1;
@@ -135,9 +129,8 @@ class InstructionSerializer {
       if (root !== undefined && !registers.has(root)) pending.push(root);
     }
     while (pending.length !== 0) {
-      const source = pending.pop();
+      const source = pending.pop() as number;
       if (
-        source === undefined ||
         registers.has(source) ||
         this.dependencyMarks[source] === generation
       ) {
@@ -188,13 +181,7 @@ class InstructionSerializer {
         }
         immediate = target;
       }
-      const args = source.args.map((argument) => {
-        const target = registers.get(argument);
-        if (target === undefined) {
-          throw new Error("Invalid postDecode instruction dependency");
-        }
-        return target;
-      });
+      const args = source.args.map((argument) => registers.get(argument));
       registers.set(sourceIndex, this.instructions.length);
       this.instructions.push({ ...source, args, immediate });
     }
@@ -230,13 +217,7 @@ function remapOutputs(
     opacity: remap(outputs.opacity),
     alpha: remap(outputs.alpha),
     color: remap(outputs.color),
-    sh: outputs.sh?.map((register) => {
-      const target = registers.get(register);
-      if (target === undefined) {
-        throw new Error("Invalid postDecode output dependency");
-      }
-      return target;
-    }),
+    sh: outputs.sh?.map((register) => registers.get(register)),
   };
 }
 
@@ -297,7 +278,9 @@ function compileConditionFlow(
   const FLOW_AND_LEFT = 0;
   const FLOW_OR_LEFT = 1;
   const FLOW_CONTINUATION_SIZE = 3;
-  let continuations: Int32Array | undefined;
+  const continuations = new Int32Array(
+    (whenRegister + 1) * FLOW_CONTINUATION_SIZE,
+  );
   let continuationEnd = 0;
   let register = whenRegister;
   let onTrue = FLOW_ACCEPT;
@@ -320,12 +303,6 @@ function compileConditionFlow(
         instruction.opcode === Opcode.And ||
         instruction.opcode === Opcode.Or
       ) {
-        continuations ??= new Int32Array(
-          (whenRegister + 1) * FLOW_CONTINUATION_SIZE,
-        );
-        if (continuationEnd === continuations.length) {
-          throw new Error("Invalid postDecode condition depth");
-        }
         const isAnd = instruction.opcode === Opcode.And;
         continuations[continuationEnd] = isAnd ? FLOW_AND_LEFT : FLOW_OR_LEFT;
         continuations[continuationEnd + 1] = instruction.args[0];
@@ -343,9 +320,6 @@ function compileConditionFlow(
 
     if (continuationEnd === 0) break;
     continuationEnd -= FLOW_CONTINUATION_SIZE;
-    if (!continuations) {
-      throw new Error("Invalid postDecode condition continuation");
-    }
     const type = continuations[continuationEnd];
     register = continuations[continuationEnd + 1];
     const target = continuations[continuationEnd + 2];
@@ -366,9 +340,6 @@ function compileConditionFlow(
   }
 
   const stageCount = reverseNodes.length;
-  if (entry !== stageCount - 1) {
-    throw new Error("Invalid postDecode condition flow");
-  }
 
   const acceptTarget = stageCount;
   const rejectTarget = acceptTarget + 1;
@@ -426,11 +397,9 @@ function compileConditionFlow(
     serializer.appendDependencies([node.register], pathRegisters, true);
     stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION] =
       serializer.instructions.length - 1;
-    const predicateRegister = pathRegisters.get(node.register);
-    if (predicateRegister === undefined) {
-      throw new Error("Invalid postDecode condition register");
-    }
-    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_REGISTER] = predicateRegister;
+    stages[offset + SPLAT_POST_DECODE_FLOW_STAGE_REGISTER] = pathRegisters.get(
+      node.register,
+    );
   }
 
   if (acceptPredecessor !== stageCount - 1) pathRegisters.clear();
@@ -506,26 +475,14 @@ function compileSource(
 export function packInstructions(
   instructions: readonly SplatPostDecodeInstruction[],
 ): Uint16Array {
+  // The builder and compiler cap programs at 4096 instructions with at most
+  // four arguments/components each, so registers and immediates fit Uint16.
   const packed = new Uint16Array(
     instructions.length * SPLAT_POST_DECODE_INSTRUCTION_STRIDE,
   );
   packed.fill(SPLAT_POST_DECODE_MISSING_ARGUMENT);
   for (let index = 0; index < instructions.length; index += 1) {
     const instruction = instructions[index];
-    if (
-      instruction.args.length > SPLAT_POST_DECODE_INSTRUCTION_ARGUMENT_COUNT ||
-      !Number.isInteger(instruction.immediate) ||
-      instruction.immediate < 0 ||
-      instruction.immediate > 0xffff ||
-      instruction.args.some(
-        (argument) =>
-          !Number.isInteger(argument) ||
-          argument < 0 ||
-          argument >= SPLAT_POST_DECODE_MISSING_ARGUMENT,
-      )
-    ) {
-      throw new Error("postDecode instruction exceeds Uint16 bytecode limits");
-    }
     const offset = index * SPLAT_POST_DECODE_INSTRUCTION_STRIDE;
     packed[offset + SPLAT_POST_DECODE_INSTRUCTION_OPCODE] = instruction.opcode;
     packed[offset + SPLAT_POST_DECODE_INSTRUCTION_WIDTH] =
@@ -548,44 +505,52 @@ type AttributeRegion = {
 };
 
 export function snapshotAttributes(bindings: readonly AttributeBinding[]) {
+  const attributes: SerializedSplatPostDecodeAttribute[] = bindings.map(
+    ({ format, components, byteStride, count }) => ({
+      format,
+      components,
+      byteOffset: 0,
+      byteStride,
+      count,
+    }),
+  );
   const rangesByBuffer = new Map<
     ArrayBufferLike,
-    { start: number; end: number }[]
+    {
+      start: number;
+      end: number;
+      attribute: SerializedSplatPostDecodeAttribute;
+    }[]
   >();
-  for (const binding of bindings) {
+  for (const [index, binding] of bindings.entries()) {
     if (binding.count === 0) continue;
     const packedBytes =
       ATTRIBUTE_FORMAT_BYTES[binding.format] * binding.components;
     const start = binding.data.byteOffset + binding.byteOffset;
     const end = start + (binding.count - 1) * binding.byteStride + packedBytes;
     const ranges = rangesByBuffer.get(binding.data.buffer) ?? [];
-    ranges.push({ start, end });
+    ranges.push({ start, end, attribute: attributes[index] });
     rangesByBuffer.set(binding.data.buffer, ranges);
   }
 
   const regions: AttributeRegion[] = [];
-  const regionsByBuffer = new Map<ArrayBufferLike, AttributeRegion[]>();
+  let byteLength = 0;
   for (const [buffer, ranges] of rangesByBuffer) {
     ranges.sort((left, right) => left.start - right.start);
-    const bufferRegions: AttributeRegion[] = [];
-    for (const range of ranges) {
-      const previous = bufferRegions[bufferRegions.length - 1];
-      if (previous && range.start <= previous.end) {
-        previous.end = Math.max(previous.end, range.end);
+    let region: AttributeRegion | undefined;
+    for (const { start, end, attribute } of ranges) {
+      if (region && start <= region.end) {
+        byteLength += Math.max(0, end - region.end);
+        region.end = Math.max(region.end, end);
       } else {
-        const region = { buffer, ...range, outputOffset: 0 };
-        bufferRegions.push(region);
+        region = { buffer, start, end, outputOffset: byteLength };
         regions.push(region);
+        byteLength += end - start;
       }
+      attribute.byteOffset = region.outputOffset + start - region.start;
     }
-    regionsByBuffer.set(buffer, bufferRegions);
   }
 
-  let byteLength = 0;
-  for (const region of regions) {
-    region.outputOffset = byteLength;
-    byteLength += region.end - region.start;
-  }
   const data = new Uint8Array(byteLength);
   for (const region of regions) {
     data.set(
@@ -594,30 +559,5 @@ export function snapshotAttributes(bindings: readonly AttributeBinding[]) {
     );
   }
 
-  const attributes: SerializedSplatPostDecodeAttribute[] = bindings.map(
-    (binding) => {
-      let byteOffset = 0;
-      if (binding.count !== 0) {
-        const sourceOffset = binding.data.byteOffset + binding.byteOffset;
-        const region = regionsByBuffer
-          .get(binding.data.buffer)
-          ?.find(
-            (candidate) =>
-              sourceOffset >= candidate.start && sourceOffset < candidate.end,
-          );
-        if (!region) {
-          throw new Error("postDecode attribute view was not serialized");
-        }
-        byteOffset = region.outputOffset + sourceOffset - region.start;
-      }
-      return {
-        format: binding.format,
-        components: binding.components,
-        byteOffset,
-        byteStride: binding.byteStride,
-        count: binding.count,
-      };
-    },
-  );
   return { data, attributes };
 }

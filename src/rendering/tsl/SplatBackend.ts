@@ -4,11 +4,11 @@ import type { SplatMaterialOptions } from "../backend";
 import { usesNativeWebGPU } from "../rendererUtils";
 import type { Uniforms } from "../uniforms";
 import {
+  type OrderingNode,
   type ProjectedVertexData,
   type SplatNodeMaterial,
   createSplatNodeMaterial,
 } from "./SplatMaterial";
-import type { TSLNode } from "./shaderUtils";
 
 export function configureNodeSplatOutput(
   renderer: WebGPURenderer,
@@ -42,14 +42,9 @@ export class NodeSplatBackend {
     readonly renderer: WebGPURenderer,
     uniforms: Uniforms,
     options: SplatMaterialOptions,
-    orderingNode?: TSLNode,
+    orderingNode?: OrderingNode,
     private readonly vertexData?: (camera: THREE.Camera) => ProjectedVertexData,
   ) {
-    if (options.vertexShader || options.fragmentShader) {
-      throw new Error(
-        "Custom GLSL shaders are only supported by WebGLRenderer",
-      );
-    }
     this.material = createSplatNodeMaterial({
       uniforms,
       ...options,

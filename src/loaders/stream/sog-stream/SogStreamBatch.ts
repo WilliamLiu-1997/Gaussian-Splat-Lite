@@ -36,8 +36,6 @@ export class SogStreamBatch extends SplatMesh {
   writeRegion(start: number, data: SplatResult) {
     const count = data.numSplats;
     // The scheduler assigns disjoint fixed slots; only occupancy changes.
-    if (this.slots.has(start))
-      throw new Error("Streaming batch region slot is occupied");
     this.source.write(start, data);
     this.slots.set(start, count);
   }
@@ -64,7 +62,6 @@ export class SogStreamBatch extends SplatMesh {
     if (!this.slots.size) {
       this.dispose();
       this.onEmpty();
-      return;
     }
   }
 }

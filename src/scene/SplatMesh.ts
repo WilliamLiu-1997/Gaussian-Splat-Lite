@@ -136,11 +136,9 @@ export class SplatMesh extends THREE.Object3D {
       });
     } else {
       this.isInitialized = true;
-      const maybePromise = options.onLoad?.(this);
-      this.initialized =
-        maybePromise instanceof Promise
-          ? maybePromise.then(() => this)
-          : Promise.resolve(this);
+      this.initialized = Promise.resolve(options.onLoad?.(this)).then(
+        () => this,
+      );
     }
     void this.initialized.catch(() => {});
   }
@@ -183,7 +181,6 @@ export class SplatMesh extends THREE.Object3D {
   }
 
   dispose() {
-    // @ts-expect-error @types/three 0.185.x does not declare Object3D.dispose().
     super.dispose();
 
     this.sdfEdits?.dispose();
@@ -237,8 +234,6 @@ export class SplatMesh extends THREE.Object3D {
     if (!source) {
       return;
     }
-    this.splats = source;
-
     let updated = false;
     let centersUpdated = false;
     let transformUpdated = false;

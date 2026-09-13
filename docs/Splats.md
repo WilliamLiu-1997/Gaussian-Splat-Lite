@@ -24,19 +24,19 @@ The constructor and `initialize()` accept `SplatsOptions`:
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `url` | `string` | `undefined` | PLY/SPZ/SOG/RAD file or SOG metadata URL |
-| `file` | `Blob` (including `File`) | `undefined` | Local file; PLY/SPZ stream internally, SOG/RAD use random reads |
+| `file` | `Blob` (including `File`) | `undefined` | Local file |
 | `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | In-memory file data |
 | `fileType` | `SplatFileType` | Inferred from name | Explicit file format |
 | `fileName` | `string` | `File.name` when available | Name used to infer the input format |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
-| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Serializable per-Splat transform executed in the decode worker |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Apply a [load-time transform](PostDecode.md) to each Splat |
 | `maxSplats` | `number` | `0` | Initial capacity |
 | `construct` | `(splats) => void \| Promise<void>` | `undefined` | Populates the source during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |
 
 Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs throws.
 
-`initialize()` returns `initialized`. A newer initialization supersedes earlier loading or construction results. Reinitializing or disposing a source also cancels its pending file load and decode worker; the cancelled load's `initialized` promise rejects with `AbortError`. Construction callbacks are not interrupted, and their superseded results are discarded.
+`initialize()` returns the new `initialized` promise and replaces earlier data. Reinitializing or disposing cancels pending file loading with `AbortError`. An existing construction callback may finish, but its result is ignored if a newer initialization has started.
 
 ## Methods
 
@@ -44,23 +44,24 @@ Choose at most one of `url`, `file`, `fileBytes`, or `construct`; mixing inputs 
 | --- | --- |
 | `initialized` / `isInitialized` | Asynchronous initialization state |
 | `getNumSplats()` / `getNumSh()` | Returns Splat count and available SH degree |
-| `getByteLength()` | Returns current retained bytes for encoded Splat, sort-center, and SH arrays |
-| `extractRange(start, count)` | Copies a contiguous range into independent initialized `Splats`, preserving packed records, SH and sort centers |
-| `getSplat(index, includeSh?)` | Decodes one Splat with SH coefficients by default; pass `false` to skip SH decoding |
+| `getByteLength()` | Return memory used by the retained data arrays |
+| `extractRange(start, count)` | Copy a range into an independent, initialized, editable `Splats` |
+| `getSplat(index, includeSh?)` | Read one Splat; pass `false` to skip spherical harmonics |
 | `setSplats(indices, splats)` | Adds or overwrites Splats at the paired indices, including optional SH0/1/2/3 data |
 | `pushSplats(splats)` | Appends a batch of Splats, including optional SH0/1/2/3 data |
-| `removeSplats(indices)` | Removes the indexed Splats and compacts the surviving records in their original order |
+| `removeSplats(indices)` | Remove Splats and shift later indices down, keeping their order |
 | `forEachCenter(callback)` | Iterates centers only, suitable for spatial-index construction |
-| `forEachSplat(callback)` | Iterates and fully decodes every Splat |
+| `forEachSplat(callback)` | Visit every Splat |
 | `initialize(options)` | Initializes or replaces data from a URL, file, bytes, or construction callback |
-| `dispose()` | Cancels pending file loading and releases textures and data references |
+| `dispose()` | Cancel pending loading and release data resources |
 
 ## Data rules
 
-- Use the read and batch-mutation methods above; encoded arrays are private. Mutation keeps data, SH, and sort centers synchronized.
+- Use the methods above to read and edit data. Mutations keep Splat data, spherical harmonics, and sort centers synchronized.
 - Each input has `center`, `scales`, `quaternion`, `opacity`, and `color`. Optional `sh` holds 0, 3, 8, or 15 RGB coefficients for SH0/1/2/3. Lower-degree overwrites clear stale coefficients.
 - `setSplats()` requires equally sized index and Splat arrays. Removal indices may be unordered; duplicates are removed once.
-- `copySplatRecords()`, `copySortCenters()`, and `setTextureUniforms()` are low-level renderer methods. Texture data from `setTextureUniforms()` aliases source storage and is read-only.
-- RAD/SOG streaming reads and iteration use selected indices; display fades preserve source and picking opacity. These sources reject mutation and reinitialization; `extractRange()` returns a mutable copy.
+- Streamed RAD/SOG data is read-only and cannot be reinitialized. Use `extractRange()` to make an editable copy.
 
-For the separation between data loading, source initialization and scene objects, see [Decoder boundaries](Architecture.md#decoder-boundaries).
+Changes become visible after the renderer updates the data and any required sorting completes. Sorted WebGL rendering keeps the previous display while waiting for an asynchronous sort. For [on-demand rendering](GaussianSplatRenderer.md#on-demand-rendering), request a redraw after editing and connect `onDirty` to the same render scheduler. With `autoUpdate: false`, await `splatRenderer.update({ scene, camera })` before rendering.
+
+For loading progress, cancellation, and companion files, see [SplatLoader](SplatLoader.md).

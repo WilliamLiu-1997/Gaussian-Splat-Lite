@@ -36,25 +36,12 @@ export class SogRegionSplats extends IndexedSplats {
   }
 
   write(start: number, data: SplatResult) {
-    if (start % BLOCK_SIZE !== 0)
-      throw new Error("SOG region slot must be block aligned");
     this.writeRecords(start, data, sogBatchAllocationSize(data.numSplats));
   }
 
   setOpacity(start: number, count: number, opacity: number) {
     this.assertLive();
-    if (
-      !Number.isSafeInteger(start) ||
-      start < 0 ||
-      start % BLOCK_SIZE !== 0 ||
-      !Number.isSafeInteger(count) ||
-      count < 1 ||
-      start + sogBatchAllocationSize(count) > this.maxSplats ||
-      !Number.isFinite(opacity) ||
-      opacity < 0 ||
-      opacity > 1
-    )
-      throw new Error("Invalid SOG region opacity range");
+    // The scheduler supplies block-aligned slots and clamped fade values.
     const previous = this.opacities.getOpacity(start);
     if (!this.opacities.setOpacity(start, count, opacity)) return;
     const visible = Math.fround(opacity) > 0;

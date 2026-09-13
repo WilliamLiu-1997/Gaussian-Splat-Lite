@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-SDF edits change color and opacity within a region, preserving centers and sort order. Attach an edit to a `SplatMesh` to affect only that mesh:
+SDF edits change color and opacity within a shape without moving or deleting Splats. Attach an edit to a `SplatMesh` to affect only that mesh:
 
 ```js
 import * as THREE from "three";
@@ -40,18 +40,18 @@ scene.add(edit);
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | `string` | Generated | Object name |
-| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY_RGBA` | Multiplication, replacement, or addition on assigned RGBA channels |
-| `sdfSmooth` | `number` | `0` | Smoothing amount when combining SDF shapes |
-| `softEdge` | `number` | `0` | Region-edge feathering distance |
-| `invert` | `boolean` | `false` | Inverts the entire edit region |
+| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY_RGBA` | Multiply, replace, or add to the assigned color and opacity channels |
+| `sdfSmooth` | `number` | `0` | Soften the join between shapes |
+| `softEdge` | `number` | `0` | Soften the region boundary |
+| `invert` | `boolean` | `false` | Affect the outside instead of the inside |
 | `sdfs` | `SplatEditSdf[]` | `null` | Explicit shape list; SDFs can instead be child objects |
 
 ## SplatEdit methods
 
 | API | Description |
 | --- | --- |
-| `addSdf(sdf)` | Adds an SDF to the explicit `sdfs` list without adding the same object twice |
-| `removeSdf(sdf)` | Removes an SDF from the explicit `sdfs` list |
+| `addSdf(sdf)` | Add a shape to the explicit `sdfs` list without duplicates |
+| `removeSdf(sdf)` | Remove a shape from the explicit `sdfs` list |
 
 An explicit `sdfs` list takes precedence over child objects. For child shapes, use `edit.add(sdf)` and `edit.remove(sdf)`.
 
@@ -70,11 +70,11 @@ Unassigned channels stay unchanged. For example, `color: { r: 1, g: 0.5 }` with 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `type` | `SplatEditSdfType` | `SPHERE` | SDF shape |
-| `invert` | `boolean` | `false` | Inverts the inside and outside of the shape |
-| `opacity` | `number` | Unassigned | Alpha value used by the edit; an unassigned alpha is preserved |
-| `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | RGB values used by the edit; each unassigned channel is preserved |
+| `invert` | `boolean` | `false` | Affect the outside instead of the inside |
+| `opacity` | `number` | Unassigned | Opacity applied inside the shape; leave unassigned to preserve it |
+| `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | Color applied inside the shape; unassigned channels stay unchanged |
 | `radius` | `number` | `0` | Radius used by sphere, cylinder, capsule, and related shapes |
 
 Shapes (`SplatEditSdfType`): `ALL`, `PLANE`, `SPHERE`, `BOX`, `ELLIPSOID`, `CYLINDER`, `CAPSULE`, `INFINITE_CONE`.
 
-An SDF is a `THREE.Object3D`; its transform defines the region. Edits run in creation order unless changed with `edit.ordering`.
+Move, rotate, and scale shapes with normal Three.js transforms. Edits apply in creation order; use `edit.ordering` to change it.

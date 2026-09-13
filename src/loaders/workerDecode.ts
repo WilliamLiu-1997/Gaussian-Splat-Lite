@@ -186,11 +186,7 @@ async function decodeInput(args: DecodeArgs) {
     decoder = undefined;
     return complete.finish();
   } catch (error) {
-    try {
-      await streamReader?.cancel(error);
-    } catch {
-      // Preserve the decoding error if stream cancellation itself fails.
-    }
+    await streamReader?.cancel(error).catch(() => {});
     throw error;
   } finally {
     decoder?.free();
@@ -251,7 +247,6 @@ export function resolveFile({
   input,
 }: { requestId: number; input: SplatFileInput }) {
   fileRequests.get(requestId)?.(input);
-  fileRequests.delete(requestId);
 }
 
 export function resolveAsset({
@@ -259,5 +254,4 @@ export function resolveAsset({
   url,
 }: { requestId: number; url: string }) {
   assetRequests.get(requestId)?.(url);
-  assetRequests.delete(requestId);
 }

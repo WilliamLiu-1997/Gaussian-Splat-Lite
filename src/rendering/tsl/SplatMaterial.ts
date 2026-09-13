@@ -1,35 +1,41 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
-import { NodeMaterial, StorageBufferAttribute } from "three/webgpu";
+import type { Node } from "three/webgpu";
+import {
+  NodeMaterial,
+  StorageBufferAttribute,
+  type StorageBufferNode,
+  type TextureNode,
+} from "three/webgpu";
 import { ORDERING_TEXTURE_WIDTH, type Uniforms } from "../uniforms";
 import { createProjectionProgram } from "./ProjectionProgram";
 import {
-  type TSLNode,
+  N,
   load2D,
   loadArray,
   splatTexCoord,
   textureBinding,
   uniformBinding,
 } from "./shaderUtils";
+import { materialCamera } from "./tslCompat";
 import { splatViewUniforms } from "./viewUniforms";
 
 export type ProjectedVertexData = {
-  clipPosition: TSLNode;
+  clipPosition: Node<"vec4">;
   /** Source color space; this material applies encodeLinear. */
-  rgba: TSLNode;
-  splatUv: TSLNode;
-  stochasticSeed: TSLNode;
-  supportRadiusSquared: TSLNode;
-  kernelPower: TSLNode;
-  viewportOrigin: TSLNode;
+  rgba: Node<"vec4">;
+  splatUv: Node<"vec2">;
+  stochasticSeed: Node<"uint">;
+  supportRadiusSquared: Node<"float">;
+  kernelPower: Node<"float">;
+  viewportOrigin: Node<"vec2">;
 };
+
+export type OrderingNode = StorageBufferNode<"uint"> | TextureNode<"uvec4">;
 
 export type SplatNodeMaterial = NodeMaterial & {
   uniforms: Uniforms;
-  orderingNode: TSLNode;
+  orderingNode: OrderingNode;
 };
-
-const N = TSL as Record<string, TSLNode>;
 
 function createDefaultOrderingNode() {
   const ordering = new StorageBufferAttribute(new Uint32Array([0xffffffff]), 1);
@@ -37,7 +43,7 @@ function createDefaultOrderingNode() {
   return N.storage(ordering, "uint").toReadOnly();
 }
 
-const stochasticHash = N.Fn(([input]: TSLNode[]) => {
+const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
   const value = N.uint(input).toVar();
   value.bitXorAssign(value.shiftRight(16));
   value.mulAssign(N.uint(0x7feb352d));
@@ -54,11 +60,11 @@ function createSplatFragment({
   depthOnly,
   premultipliedAlpha,
 }: {
-  minAlpha: TSLNode;
-  stochastic: TSLNode;
-  stochasticResolve: TSLNode;
-  depthOnly: TSLNode;
-  premultipliedAlpha: TSLNode;
+  minAlpha: Node<"float">;
+  stochastic: Node<"bool">;
+  stochasticResolve: Node<"bool">;
+  depthOnly: Node<"bool">;
+  premultipliedAlpha: Node<"bool">;
 }) {
   const vRgba = N.varyingProperty("vec4", "gslRgba");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
@@ -135,7 +141,7 @@ export function createSplatNodeMaterial({
   depthWrite,
 }: {
   uniforms: Uniforms;
-  orderingNode?: TSLNode;
+  orderingNode?: OrderingNode;
   vertexData?: (camera: THREE.Camera) => ProjectedVertexData;
   premultipliedAlpha: boolean;
   transparent: boolean;
@@ -176,7 +182,8 @@ export function createSplatNodeMaterial({
     premultipliedAlpha: premultipliedAlphaNode,
   });
 
-  const vertexNode = N.Fn(({ camera }: { camera: THREE.Camera }) => {
+  const vertexNode = N.Fn((builder) => {
+    const camera = materialCamera(builder);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
     vSplatUv.assign(N.vec2(0));
@@ -212,7 +219,7 @@ export function createSplatNodeMaterial({
       const splatIndex = N.uint(N.instanceIndex).toVar();
       N.If(stochastic.or(depthOnly).not(), () => {
         const index = N.uint(N.instanceIndex);
-        if (orderingNode.isTextureNode) {
+        if ("isTextureNode" in orderingNode) {
           const texel = index.shiftRight(2);
           const coord = N.ivec2(
             texel.mod(ORDERING_TEXTURE_WIDTH),

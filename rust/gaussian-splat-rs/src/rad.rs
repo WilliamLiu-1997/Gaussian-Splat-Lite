@@ -24,9 +24,7 @@ pub fn decode_rad_header(bytes: Uint8Array) -> Result<JsValue, JsValue> {
     }
     // Copy only the declared header, even when the caller supplies a full file.
     let bytes = bytes.subarray(0, header_length as u32).to_vec();
-    let Some((meta, chunks_start)) = rad::decode_rad_header(&bytes).map_err(js_error)? else {
-        return Ok(JsValue::UNDEFINED);
-    };
+    let (meta, chunks_start) = rad::decode_rad_header(&bytes).map_err(js_error)?.unwrap();
     let object = Object::new();
     let meta_json = serde_json::to_string(&meta).map_err(js_error)?;
     Reflect::set(&object, &"meta".into(), &js_sys::JSON::parse(&meta_json)?)?;

@@ -16,18 +16,18 @@
 
 </div>
 
-3D Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering for scene occlusion**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD files into standard Three.js scenes, stream RAD and SOG scenes with camera-driven LOD, and render multiple Splat objects together.
+Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD models, combine them with regular 3D objects, and explore large scenes as detail loads around the camera.
 
 ## Features
 
 | Focus | What you get |
 | --- | --- |
-| **WebGPU / WebGL2** | Shared Three.js scene API with GPU sorting on native WebGPU and asynchronous Worker/WASM sorting on both WebGL2 backends |
-| **Depth Rendering** | Separate unsorted depth draw with stochastic coverage at transparent edges |
-| **Large-scene streaming** | RAD tree LOD and SOG `lod-meta.json` scenes with camera-driven selection, on-demand loading, worker decoding, caching, and opacity crossfades for smooth LOD changes on both backends |
-| **Stochastic rendering** | Sorting-free rendering for responsive camera movement, with optional spatial resolve to reduce noise |
-| **SDF edits** | Region-based color and opacity editing without moving Splats |
-| **Data and precision** | PLY/SPZ/SOG/RAD from URLs, files, or bytes; camera-relative rendering for large GIS/ECEF coordinates |
+| **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
+| **Depth Rendering** | Let Splats occlude other scene objects |
+| **Large-scene streaming** | Load RAD and SOG detail as the camera moves, with smooth transitions |
+| **Stochastic rendering** | Responsive camera movement with optional noise reduction |
+| **SDF edits** | Recolor or hide parts of a model without moving Splats |
+| **Data and precision** | Load URLs, files, or bytes; place local models in large GIS/ECEF scenes |
 
 ## Installation
 
@@ -39,7 +39,7 @@ Requires Three.js `>=0.186.0`.
 
 ## Quick start
 
-`SplatMesh` is a scene object. One `GaussianSplatRenderer` handles generation, sorting, and drawing for all visible Splat objects.
+`SplatMesh` is a scene object. Add one `GaussianSplatRenderer` to display all visible Splat models in the scene.
 
 ### WebGPU
 
@@ -80,7 +80,7 @@ window.addEventListener("resize", () => {
 
 ### WebGL2
 
-`WebGPURenderer` automatically falls back to its WebGL2 backend when WebGPU is unavailable. To force this backend while keeping TSL materials:
+`WebGPURenderer` automatically falls back to its WebGL2 backend when WebGPU is unavailable. To choose WebGL2 explicitly:
 
 ```js
 const renderer = new WebGPURenderer({ antialias: false, forceWebGL: true });
@@ -97,7 +97,7 @@ Keep the rest of the example, including `renderDepth`.
 
 ## Streaming large scenes
 
-Use `RadStreamScheduler` for RAD files, or `SogStreamScheduler` for SOG scenes. Both work with the same `GaussianSplatRenderer` on WebGPU and WebGL2, loading and retaining data as the camera moves.
+Use `RadStreamScheduler` for RAD scenes with levels of detail (LOD), or `SogStreamScheduler` for SOG `lod-meta.json` scenes. Both load detail as the camera moves and work on WebGPU and WebGL2.
 
 For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
 
@@ -141,28 +141,28 @@ const streaming = new SogStreamScheduler({
 
 ## Depth Rendering
 
-**`renderDepth` adds a dedicated depth draw while keeping sorted color blending.** Both WebGPU and WebGL2 support it.
+**`renderDepth` lets Splats occlude geometry drawn later.** Both WebGPU and WebGL2 support it.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `renderDepth` | `false` | Adds Splat depth for geometry drawn later, including transparent meshes |
-| `stochastic` | `false` | Forces sorting-free stochastic rendering with direct depth writes |
-| `autoStochastic` | `false` | Uses stochastic rendering during motion and enables companion depth on sorted frames |
+| `renderDepth` | `false` | Let Splats occlude geometry drawn later, including transparent meshes |
+| `stochastic` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
+| `autoStochastic` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
 
-With default depth settings, the companion draw uses unsorted Splats on non-stochastic frames and samples alpha coverage so transparent edges do not become solid. Stochastic frames already write their own depth.
+Draw order and depth testing in other materials still matter. Stochastic rendering and transparent edges may show noise; [StochasticResolvePass](docs/GaussianSplatRenderer.md#stochastic-resolve) can reduce stochastic noise.
 
 ## Documentation
 
-- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering, sorting, depth, resolve, and XR.
+- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, depth, noise reduction, captures, and XR.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
-- [RadStreamScheduler](docs/RadStreamScheduler.md) — Spark RAD decoding, tree LOD and on-demand paging.
-- [SogStreamScheduler](docs/SogStreamScheduler.md) — Streamed SOG, camera-driven LOD and caching.
+- [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
+- [SogStreamScheduler](docs/SogStreamScheduler.md) — Large SOG scenes with adaptive detail.
 - [Splats](docs/Splats.md) — Data access and updates.
 - [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG/RAD formats.
 - [SplatEdit / SplatEditSdf](docs/SplatEdit.md) — Color and opacity editing.
-- [postDecode](docs/PostDecode.md) — Per-Splat transformations during decoding.
-- [SplatAccumulator](docs/SplatAccumulator.md) — Low-level GPU buffers.
+- [postDecode](docs/PostDecode.md) — Transform models while loading.
+- [SplatAccumulator](docs/SplatAccumulator.md) — Combined model data for custom integrations.
 
 ## Development
 

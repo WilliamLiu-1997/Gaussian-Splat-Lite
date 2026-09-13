@@ -19,8 +19,7 @@ export type RadSelectionRange = {
 };
 
 export type RadSelectionSnapshot = {
-  pageStride: number;
-  pageOccupancy: Int32Array;
+  pageCount: number;
   opacityBlocks: Uint32Array;
   ranges: RadSelectionRange[];
 };
@@ -59,7 +58,7 @@ export function radPageTextureLayout({
   const pageStride =
     2 ** Math.ceil(Math.log2(Math.max(SPLAT_TEX_WIDTH, pageSize)));
   const capacity = pageStride * pageCount;
-  if (!Number.isSafeInteger(capacity) || capacity > 0x1_0000_0000)
+  if (capacity > 0x1_0000_0000)
     throw new Error("RAD page pool exceeds the 32-bit source index limit");
   return {
     pageSize,
@@ -77,7 +76,6 @@ export class RadPagedSplats extends IndexedSplats {
   readonly pageSize: number;
   readonly pageStride: number;
   readonly pageCount: number;
-  private pageOccupancy: Int32Array;
   private selectedPages: Uint32Array;
   private finalSelection?: RadPreparedSelection["final"];
   private fadeProgress = 1;
@@ -94,26 +92,19 @@ export class RadPagedSplats extends IndexedSplats {
     this.pageSize = layout.pageSize;
     this.pageStride = layout.pageStride;
     this.pageCount = layout.pageCount;
-    this.pageOccupancy = new Int32Array(this.pageCount).fill(-1);
     this.selectedPages = new Uint32Array(this.pageCount);
   }
 
   pageStart(slot: number) {
-    this.assertLive();
-    if (!Number.isInteger(slot) || slot < 0 || slot >= this.pageCount)
-      throw new Error("Invalid RAD page slot");
     return slot * this.pageStride;
   }
 
   /** Copies data; callers retain ownership of the packed buffers. */
   writePage(slot: number, data: SplatResult) {
     const start = this.pageStart(slot);
-    if (this.pageOccupancy[slot] !== -1)
-      throw new Error("RAD page slot is occupied");
     if (data.numSplats > this.pageSize)
       throw new Error("RAD chunk does not fit its page slot");
     this.writeRecords(start, data, this.pageStride);
-    this.pageOccupancy[slot] = data.numSplats;
   }
 
   /** Remove the displayed cut when its scheduler becomes hidden. */
@@ -134,14 +125,13 @@ export class RadPagedSplats extends IndexedSplats {
   snapshotSelection(ranges: RadSelectionRange[]): RadSelectionSnapshot {
     this.assertLive();
     return {
-      pageStride: this.pageStride,
-      pageOccupancy: this.pageOccupancy.slice(),
+      pageCount: this.pageCount,
       opacityBlocks: this.opacities.copyBlocks(),
       ranges,
     };
   }
 
-  /** Internal commit of validated data; the caller gives up the prepared arrays. */
+  /** Internal commit of worker-prepared data; the caller gives up the arrays. */
   commitSelection(prepared: RadPreparedSelection) {
     this.commitIndices(prepared.indices);
     this.selectedPages = prepared.selectedPages;
@@ -156,8 +146,6 @@ export class RadPagedSplats extends IndexedSplats {
   /** A normal streaming fade changes only two group coefficients. */
   setFadeProgress(progress: number) {
     this.assertLive();
-    if (!Number.isFinite(progress) || progress < 0 || progress > 1)
-      throw new Error("RAD fade progress must be between 0 and 1");
     if (progress === this.fadeProgress) return false;
     this.fadeProgress = progress;
     if (!this.fadeKinds) return false;
@@ -169,7 +157,6 @@ export class RadPagedSplats extends IndexedSplats {
   }
 
   isPageSelected(slot: number) {
-    this.pageStart(slot);
     return this.selectedPages[slot] > 0;
   }
 
@@ -183,7 +170,6 @@ export class RadPagedSplats extends IndexedSplats {
 
   /** The worker already removed outgoing records from the final cut. */
   finishFade() {
-    this.assertLive();
     if (!this.finalSelection) return this.finishFadeIn();
     this.commitIndices(this.finalSelection.indices);
     this.selectedPages = this.finalSelection.selectedPages;
@@ -191,27 +177,17 @@ export class RadPagedSplats extends IndexedSplats {
     return true;
   }
 
-  /** Selected pages must be removed from the cut before their slots are reused. */
-  releasePage(slot: number) {
-    this.pageStart(slot);
-    if (this.selectedPages[slot] > 0)
-      throw new Error("Cannot release a selected RAD page");
-    this.pageOccupancy[slot] = -1;
-  }
-
   override getByteLength() {
     return (
       super.getByteLength() +
       (this.finalSelection?.indices.byteLength ?? 0) +
       (this.finalSelection?.selectedPages.byteLength ?? 0) +
-      this.pageOccupancy.byteLength +
       this.selectedPages.byteLength
     );
   }
 
   override dispose() {
     super.dispose();
-    this.pageOccupancy = new Int32Array(0);
     this.selectedPages = new Uint32Array(0);
     this.finalSelection = undefined;
   }

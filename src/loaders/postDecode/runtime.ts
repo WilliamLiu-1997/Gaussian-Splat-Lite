@@ -33,11 +33,12 @@ const MAX_BLOCK_SIZE = 512;
 const MAX_REGISTER_BYTES = 4 * 1024 ** 2;
 
 function getBlockSize(registerValueCount: number, processCount: number) {
+  // At most 4096 four-component instructions fit well below the byte limit.
   const bytesPerSplat = registerValueCount * Float32Array.BYTES_PER_ELEMENT;
   return Math.min(
     processCount,
     MAX_BLOCK_SIZE,
-    Math.max(1, Math.floor(MAX_REGISTER_BYTES / bytesPerSplat)),
+    Math.floor(MAX_REGISTER_BYTES / bytesPerSplat),
   );
 }
 
@@ -226,21 +227,12 @@ function applyConditionCarryEvents(carry: ConditionCarryState, stage: number) {
       const offset = event & CONDITION_CARRY_EVENT_OFFSET_MASK;
       if (event & CONDITION_CARRY_EVENT_REMOVAL) {
         const position = carry.activePositions[offset];
-        if (position === -1) {
-          throw new Error("Invalid postDecode condition carry removal");
-        }
         const lastPosition = carry.activeCount - 1;
         const lastOffset = carry.activeOffsets[lastPosition];
-        if (position !== lastPosition) {
-          carry.activeOffsets[position] = lastOffset;
-          carry.activePositions[lastOffset] = position;
-        }
-        carry.activePositions[offset] = -1;
+        carry.activeOffsets[position] = lastOffset;
+        carry.activePositions[lastOffset] = position;
         carry.activeCount = lastPosition;
       } else {
-        if (carry.activePositions[offset] !== -1) {
-          throw new Error("Invalid postDecode condition carry addition");
-        }
         carry.activePositions[offset] = carry.activeCount;
         carry.activeOffsets[carry.activeCount] = offset;
         carry.activeCount += 1;
@@ -266,17 +258,6 @@ function collectConditionFlowBlock(
   }
   heads[stage] = -1;
   return count;
-}
-
-function enqueueConditionFlowBlock(
-  heads: Int32Array,
-  nextIndices: Int32Array,
-  stage: number,
-  sourceIndex: number,
-) {
-  if (stage < 0 || stage >= heads.length) return;
-  nextIndices[sourceIndex] = heads[stage];
-  heads[stage] = sourceIndex;
 }
 
 function runProgram(
@@ -318,9 +299,7 @@ function runProgram(
           events: conditionCarryEvents,
           nextStage: 0,
           activeOffsets: new Uint16Array(registers.length / blockSize),
-          activePositions: new Int32Array(registers.length / blockSize).fill(
-            -1,
-          ),
+          activePositions: new Int32Array(registers.length / blockSize),
           activeCount: 0,
         };
   const outputWordBases = outputPlan.writesOutputs
@@ -452,13 +431,10 @@ function runProgram(
                 flow.sourceIndices[nextStageCount] = sourceIndex;
               }
               nextStageCount += 1;
-            } else {
-              enqueueConditionFlowBlock(
-                flow.heads,
-                flow.nextIndices,
-                target,
-                sourceIndex,
-              );
+            } else if (target !== rejectTarget) {
+              // The compiler emits a later stage, acceptance, or rejection.
+              flow.nextIndices[sourceIndex] = flow.heads[target];
+              flow.heads[target] = sourceIndex;
             }
           }
         }
@@ -512,11 +488,6 @@ function runProgram(
         blockSize,
         blockCount,
       );
-    }
-    if (carry) {
-      for (let index = 0; index < carry.activeCount; index += 1) {
-        carry.activePositions[carry.activeOffsets[index]] = -1;
-      }
     }
   }
 }

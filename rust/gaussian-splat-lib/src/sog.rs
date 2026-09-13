@@ -171,7 +171,6 @@ impl Metadata {
         ];
         let (mut degree, mut palette_count, mut sh) = (0, 0, [0.0; 256]);
         if let Some(section) = root.get("shN").filter(|value| !value.is_null()) {
-            ensure!(section.is_object(), "shN must be an object");
             let names = files("shN", 2)?;
             if version == 2 {
                 if let Some(value) = section.get("bands") {
@@ -369,7 +368,6 @@ impl<T: SplatReceiver> SogDecoder<T> {
 
     pub fn finish(&mut self) -> Result<()> {
         ensure!(self.group == self.meta.groups.len(), "decode is incomplete");
-        ensure!(self.initialized, "missing output");
         self.splats.finish()
     }
 
@@ -392,12 +390,11 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 && self.images.len() < self.meta.groups[self.group].1.len(),
             "invalid asset sequence"
         );
-        ensure!(matches!(method, 0 | 8), "invalid entry method");
         let bytes = unpack(bytes, method, size, crc)?;
         let image = Image::decode(&bytes)?;
         if self.meta.groups[self.group].0 != "centroids" {
             ensure!(
-                image.width.saturating_mul(image.height) >= self.meta.count,
+                image.width * image.height >= self.meta.count,
                 "texture has fewer pixels than splats"
             );
             let dimensions = (image.width, image.height);
@@ -436,10 +433,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
             self.meta.degree = degree;
         }
         if self.meta.palette_count == 0 {
-            self.meta.palette_count = image
-                .height
-                .checked_mul(64)
-                .context("palette size overflow")?;
+            self.meta.palette_count = image.height * 64;
         }
         ensure!(
             degree == self.meta.degree,
@@ -447,7 +441,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
         );
         ensure!(
             (1..=65536).contains(&self.meta.palette_count)
-                && self.meta.palette_count <= image.height.saturating_mul(64),
+                && self.meta.palette_count <= image.height * 64,
             "invalid centroid count or height"
         );
         let words = SH_WORDS[self.meta.degree];
@@ -571,7 +565,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
                     &self.labels,
                 );
             }
-            _ => bail!("unknown property group"),
+            _ => unreachable!("property groups are assigned by Metadata::parse"),
         }
         self.base += count;
         if self.base == self.meta.count {

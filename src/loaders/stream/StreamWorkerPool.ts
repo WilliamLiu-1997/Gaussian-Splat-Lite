@@ -1,6 +1,5 @@
 import type { LoadingManager } from "three";
 import { abortable, linkedAbortController } from "../../runtime/abort";
-import { positiveInteger } from "./streamOptions";
 
 type StreamWorker = {
   disposed: boolean;
@@ -15,6 +14,7 @@ type Slot<W> = {
 
 type WorkerLease<W> = {
   worker: W;
+  /** The retained cache handle releases this reference once on disposal. */
   retain: () => () => void;
   release: () => void;
 };
@@ -39,9 +39,7 @@ export class StreamWorkerPool<W extends StreamWorker> {
     private readonly createWorker: () => W,
     readonly concurrency: number,
     private readonly retainIdle = false,
-  ) {
-    positiveInteger(concurrency, "maxConcurrentLoads");
-  }
+  ) {}
 
   get workers() {
     return this.slots.map(({ worker }) => worker);
@@ -102,7 +100,7 @@ export class StreamWorkerPool<W extends StreamWorker> {
           request.signal.throwIfAborted();
         },
         progress: (next) => {
-          this.downloadedBytes += Math.max(0, next - loaded);
+          this.downloadedBytes += next - loaded;
           loaded = next;
         },
       });
@@ -143,13 +141,8 @@ export class StreamWorkerPool<W extends StreamWorker> {
         return {
           worker,
           retain: () => {
-            if (released)
-              throw new Error("Cannot retain a released worker lease");
             owner.references++;
-            let retained = true;
             return () => {
-              if (!retained) return;
-              retained = false;
               if (owner.worker === worker) {
                 owner.references--;
                 this.retire(owner);

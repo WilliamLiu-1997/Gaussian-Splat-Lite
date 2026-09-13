@@ -1,21 +1,22 @@
 import * as THREE from "three";
-import * as TSL from "three/tsl";
+import type { Node } from "three/webgpu";
 import { NodeMaterial, type WebGPURenderer } from "three/webgpu";
 import type { ResolveState } from "../StochasticResolvePass";
-import { type TSLNode, load2D } from "./shaderUtils";
-
-const N = TSL as Record<string, TSLNode>;
+import { N, load2D } from "./shaderUtils";
+import { type ResolveOutputNode, materialCamera } from "./tslCompat";
 
 // A layout emits one reusable shader function for all 16 taps and the final
 // conversion. Keep its inputs explicit instead of capturing material uniforms.
-const convertPremultiplied = N.Fn(([texel, gamma, perceptual]: TSLNode[]) => {
-  const alpha = texel.a.clamp(0, 1);
-  const color = N.select(alpha.greaterThan(0), texel.rgb, N.vec3(0)).toVar();
-  N.If(perceptual.and(alpha.greaterThan(0)), () => {
-    color.assign(color.div(alpha).max(0).pow(gamma).mul(alpha));
-  });
-  return N.vec4(color, alpha);
-}).setLayout({
+const convertPremultiplied = N.Fn(
+  ([texel, gamma, perceptual]: [Node<"vec4">, Node<"float">, Node<"bool">]) => {
+    const alpha = texel.a.clamp(0, 1);
+    const color = N.select(alpha.greaterThan(0), texel.rgb, N.vec3(0)).toVar();
+    N.If(perceptual.and(alpha.greaterThan(0)), () => {
+      color.assign(color.div(alpha).max(0).pow(gamma).mul(alpha));
+    });
+    return N.vec4(color, alpha);
+  },
+).setLayout({
   name: "gslConvertPremultiplied",
   type: "vec4",
   inputs: [
@@ -40,23 +41,28 @@ export function createNodeResolveMaterial(state: ResolveState) {
     );
   });
 
-  const physicalSource = (texel: TSLNode) =>
+  const physicalSource = (texel: Node<"vec4">) =>
     N.vec4(texel.rgb, texel.a.clamp(0, 1));
 
-  const view = N.Fn(({ camera }: { camera: THREE.Camera }) => {
+  const view = N.Fn((builder) => {
+    const camera = materialCamera(builder);
     if ((camera as THREE.ArrayCamera).isArrayCamera) {
-      return N.uniformArray(state.sourceViews, "vec4").element(N.cameraIndex);
+      return N.uniformArray<"vec4">(state.sourceViews, "vec4").element(
+        N.cameraIndex,
+      );
     }
     return N.uniform(state.sourceRect, "vec4");
   })();
-  const origin = N.Fn(({ camera }: { camera: THREE.Camera }) =>
-    (camera as THREE.ArrayCamera).isArrayCamera
-      ? N.uniformArray(state.outputOrigins, "vec2").element(N.cameraIndex)
+  const origin = N.Fn((builder) =>
+    (materialCamera(builder) as THREE.ArrayCamera).isArrayCamera
+      ? N.uniformArray<"vec2">(state.outputOrigins, "vec2").element(
+          N.cameraIndex,
+        )
       : N.uniform(state.outputOrigin, "vec2"),
   )();
   const sourceCoord = N.ivec2(N.screenCoordinate.xy.sub(origin));
   const sourceRect = N.ivec4(view);
-  const load = (coord: TSLNode) =>
+  const load = (coord: Node<"ivec2">) =>
     load2D(
       source,
       sourceRect.xy.add(coord.clamp(N.ivec2(0), sourceRect.zw.sub(1))),
@@ -135,7 +141,7 @@ export function configureNodeResolveOutput(
 ) {
   // Convert in the resolve shader so Three's output blit does not drop
   // the per-eye depth or allocate another full-resolution intermediate.
-  const output = material.outputNode as TSLNode;
+  const output = material.outputNode as ResolveOutputNode;
   const toneMapping = xrOutput ? renderer.toneMapping : THREE.NoToneMapping;
   const colorSpace = xrOutput ? renderer.outputColorSpace : THREE.NoColorSpace;
   if (

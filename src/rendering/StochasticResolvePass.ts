@@ -101,12 +101,12 @@ export class StochasticResolvePass {
       }
     };
 
-    if (Symbol.iterator in Object(splats)) {
-      for (const splat of splats as Iterable<GaussianSplatRenderer>) {
+    if (Symbol.iterator in splats) {
+      for (const splat of splats) {
         this.addSplatRenderer(splat);
       }
     } else {
-      this.addSplatRenderer(splats as GaussianSplatRenderer);
+      this.addSplatRenderer(splats);
     }
   }
 
@@ -340,7 +340,7 @@ export class StochasticResolvePass {
       xrTarget !== null && (destination === null || destination === xrTarget);
     const outputCamera = xrOutput ? renderer.xr.getCamera() : null;
     const outputTarget = xrOutput ? xrTarget : destination;
-    if (outputTarget === input || outputTarget?.texture === input.texture) {
+    if (outputTarget?.texture === input.texture) {
       throw new Error(
         "StochasticResolvePass input and destination must differ",
       );

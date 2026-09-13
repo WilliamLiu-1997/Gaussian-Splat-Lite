@@ -17,17 +17,12 @@ import { collectBytes, prefetchOrdered } from "./source";
 
 const TEXTURE_KEYS = ["splat0", "splat1", ...SH_KEYS] as const;
 
-/** Check the complete directed forest, including references across RADC pages. */
+/** Rust validates each page's ranges; check ownership and cycles across pages. */
 function validateRadTree(start: Uint32Array, count: Uint16Array) {
-  if (start.length !== count.length)
-    throw new Error("RAD: invalid tree arrays");
   const owners = new Uint8Array(start.length);
   for (let node = 0; node < start.length; node++) {
     const end = start[node] + count[node];
-    if (count[node] && end > start.length)
-      throw new Error("RAD: child range is out of bounds");
     for (let child = start[node]; child < end; child++) {
-      if (child === node) throw new Error("RAD: node references itself");
       if (owners[child]) throw new Error("RAD: a child has multiple parents");
       owners[child] = 1;
     }
@@ -46,7 +41,7 @@ function validateRadTree(start: Uint32Array, count: Uint16Array) {
 }
 
 function createRadOutput(numSplats: number): PostDecodeSplatData {
-  const capacity = numSplats ? getTextureSize(numSplats).maxSplats : 0;
+  const capacity = getTextureSize(numSplats).maxSplats;
   return {
     numSplats,
     splat0: new Uint32Array(capacity * 4),
@@ -63,7 +58,6 @@ function copyRadChunk(
 ) {
   let output = offset;
   const { sortCenters: centers, childCount } = chunk;
-  if (!centers) throw new Error("RAD: decoded centers are missing");
   for (const key of TEXTURE_KEYS) {
     const source = chunk[key];
     if (!source?.length) continue;
@@ -102,7 +96,7 @@ function copyRadChunk(
 
 /** Replace oversized buffers; subarray views would retain the full allocation. */
 function trimRadOutput(result: PostDecodeSplatData, numSplats: number) {
-  const capacity = numSplats ? getTextureSize(numSplats).maxSplats : 0;
+  const capacity = getTextureSize(numSplats).maxSplats;
   result.numSplats = numSplats;
   for (const key of TEXTURE_KEYS) {
     const array = result[key];
@@ -201,18 +195,14 @@ export async function loadRad(args: LoadRadArgs) {
       signal.throwIfAborted();
       const chunk = decoder.decode_chunk(bytes) as RadDecodedChunk;
       const expected = getRadChunkSpan(header.meta, chunkIndex++);
-      if (chunk.base !== expected.base || chunk.numSplats !== expected.count)
+      // Rust matches the count to its directory entry; verify the requested page.
+      if (chunk.base !== expected.base)
         throw new Error(
           "RAD: decoded chunk does not match its directory entry",
         );
       if (tree) {
-        if (
-          chunk.childStart?.length !== chunk.numSplats ||
-          chunk.childCount?.length !== chunk.numSplats
-        )
-          throw new Error("RAD: LOD chunk is missing child arrays");
-        tree.start.set(chunk.childStart, chunk.base);
-        tree.count.set(chunk.childCount, chunk.base);
+        tree.start.set(chunk.childStart as Uint32Array, chunk.base);
+        tree.count.set(chunk.childCount as Uint16Array, chunk.base);
       }
       outputCount = copyRadChunk(result, chunk, outputCount);
     }

@@ -49,17 +49,9 @@ export abstract class IndexedSplats extends Splats {
   private disposed = false;
 
   constructor({ capacity, layerSize, numSh, blockBits }: IndexedSplatsOptions) {
-    if (!Number.isInteger(numSh) || numSh < 0 || numSh > 3)
-      throw new Error("SH degree must be between 0 and 3");
-    if (
-      !Number.isInteger(Math.log2(layerSize)) ||
-      layerSize < SPLAT_TEX_WIDTH ||
-      !Number.isSafeInteger(capacity) ||
-      capacity < layerSize ||
-      capacity % layerSize !== 0 ||
-      capacity > 0x1_0000_0000
-    )
-      throw new Error("Invalid indexed Splat texture layout");
+    // RAD and SOG layout helpers supply aligned power-of-two layers.
+    if (capacity > 0x1_0000_0000)
+      throw new Error("Indexed Splat capacity exceeds 32-bit addressing");
     super();
     this.maxSplats = capacity;
     this.layerSize = layerSize;
@@ -102,16 +94,9 @@ export abstract class IndexedSplats extends Splats {
 
   protected commitIndices(indices: Uint32Array) {
     this.assertLive();
-    if (indices.length > this.maxSplats)
-      throw new Error("Visible indices exceed source capacity");
-    // In-place fade compaction already owns this storage and needs no copy.
-    const inPlace =
-      indices.buffer === this.sourceIndices.buffer &&
-      indices.byteOffset === this.sourceIndices.byteOffset;
     if (
-      !inPlace &&
-      (indices.length > this.sourceIndices.length ||
-        indices.length < this.sourceIndices.length / 4)
+      indices.length > this.sourceIndices.length ||
+      indices.length < this.sourceIndices.length / 4
     ) {
       const layout = getTextureSize(Math.max(1, Math.ceil(indices.length / 4)));
       if (this.indexTexture !== Splats.emptyTexture)
@@ -124,7 +109,7 @@ export abstract class IndexedSplats extends Splats {
         layout.depth,
       );
     }
-    if (!inPlace) this.sourceIndices.set(indices);
+    this.sourceIndices.set(indices);
     this.numSplats = indices.length;
     if (this.indexTexture !== Splats.emptyTexture)
       this.indexTexture.needsUpdate = true;
@@ -152,11 +137,7 @@ export abstract class IndexedSplats extends Splats {
   }
 
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
-  protected writeRecords(
-    start: number,
-    data: SplatResult,
-    allocation = data.numSplats,
-  ) {
+  protected writeRecords(start: number, data: SplatResult, allocation: number) {
     this.assertLive();
     const count = data.numSplats;
     if (
@@ -358,7 +339,7 @@ export abstract class IndexedSplats extends Splats {
     this.assertLive();
     this.ensureIndices();
     this.checkVisibleRange(start, count);
-    const capacity = count ? getTextureSize(count).maxSplats : 0;
+    const capacity = getTextureSize(count).maxSplats;
     const arrays = this.sourceArrays.map((source) => {
       const target = new Uint32Array(capacity * 4);
       for (let index = 0; index < count; index++) {

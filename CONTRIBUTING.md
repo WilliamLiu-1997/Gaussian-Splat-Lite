@@ -12,7 +12,7 @@ npm run dev
 
 Check WebGL2, WebGPU, and WebGPU · WebGL2 in the viewer. For depth changes, compare mesh occlusion and transparent edges; disable **Automatic stochastic** to expose **Force Splat depth**.
 
-See [Source architecture](docs/Architecture.md) for module responsibilities and backend boundaries.
+See [Architecture](docs/Architecture.md) for module responsibilities, backend boundaries, and resource ownership.
 
 ## Validation
 
@@ -31,8 +31,8 @@ Review new or changed dependency install scripts and update `allowScripts` with 
 - Keep changes focused on one problem.
 - Update the relevant API docs when behavior changes; keep the README focused on setup and capabilities.
 - Add or update tests for behavior that can be exercised without WebGL.
-- Include a minimal reproduction and captures for rendering changes where possible.
-- Add user-visible changes to the `Unreleased` section of `CHANGELOG.md`.
+- Include a small reproduction and before/after images for rendering changes where possible.
+- Add user-visible changes to the `Unreleased` section of `CHANGELOG.md`; leave published version sections unchanged.
 - Do not commit generated `dist/`, `site-dist/`, Rust `target/`, or wasm-pack `pkg/` directories.
 
 ## Maintainer releases

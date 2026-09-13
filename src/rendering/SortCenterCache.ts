@@ -14,13 +14,7 @@ export class SortCenterCache {
   private nextMeshId = 0;
 
   private allocateMeshId() {
-    const reused = this.freeMeshIds.pop();
-    if (reused !== undefined) return reused;
-
-    if (this.nextMeshId > 0xffff_ffff) {
-      throw new Error("Sort center mesh ID space exhausted");
-    }
-    return this.nextMeshId++;
+    return this.freeMeshIds.pop() ?? this.nextMeshId++;
   }
 
   dispose() {
@@ -33,7 +27,7 @@ export class SortCenterCache {
     const rangeMeshIds = new Uint32Array(current.mapping.length);
     const rangeBases = new Uint32Array(current.mapping.length);
     const rangeCounts = new Uint32Array(current.mapping.length);
-    const retiredNodes = new Set(this.entries.keys());
+    const retiredEntries = new Map(this.entries);
     const changedCenters: {
       node: SplatMesh;
       count: number;
@@ -47,7 +41,7 @@ export class SortCenterCache {
 
     current.mapping.forEach(
       ({ node, base, count, centerVersion, sortVersion }, rangeIndex) => {
-        retiredNodes.delete(node);
+        retiredEntries.delete(node);
         let entry = this.entries.get(node);
         if (!entry) {
           // Store a provisional entry immediately so a failed worker call can
@@ -111,18 +105,16 @@ export class SortCenterCache {
         rangeCounts,
       },
       commit: () => {
+        // The renderer serializes updates and skips commit after disposal.
         for (const { node, centerVersion, sortVersion } of current.mapping) {
-          const entry = this.entries.get(node);
-          if (!entry) continue;
+          const entry = this.entries.get(node) as SortCenterEntry;
           entry.centerVersion = centerVersion;
           entry.sortVersion = sortVersion;
         }
         // Recycle IDs only after the worker accepted the replacement state.
         // A mesh that later becomes active again gets a fresh entry and must
         // upload all of its centers before using its recycled ID.
-        for (const node of retiredNodes) {
-          const entry = this.entries.get(node);
-          if (!entry) continue;
+        for (const [node, entry] of retiredEntries) {
           this.entries.delete(node);
           this.freeMeshIds.push(entry.meshId);
         }
