@@ -112,9 +112,27 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
   const webGPU = backend !== "webgl";
   try {
     if (webGPU) {
+      // Match Three's adapter options; leave failures to its WebGL fallback.
+      const adapter =
+        backend === "webgpu"
+          ? await navigator.gpu
+              ?.requestAdapter({
+                powerPreference: rendererParameters.powerPreference,
+                featureLevel: "compatibility",
+                xrCompatible: false,
+              })
+              .catch(() => null)
+          : null;
       state.renderer = new WebGPURenderer({
         ...rendererParameters,
         forceWebGL: backend === "webgl-fallback",
+        requiredLimits: adapter
+          ? {
+              maxStorageBufferBindingSize:
+                adapter.limits.maxStorageBufferBindingSize,
+              maxBufferSize: adapter.limits.maxBufferSize,
+            }
+          : undefined,
       });
       await initializeWebGPURenderer(state.renderer, backend, (message) => {
         state.failureMessage = message;
