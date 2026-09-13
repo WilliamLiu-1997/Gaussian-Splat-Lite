@@ -105,7 +105,7 @@ SOG retains resources per chunk and region:
 | State | Owned resources and release point |
 | --- | --- |
 | Chunk load | Abort controller and loading slot remain until the request settles; successful decoding retains a worker cache handle |
-| Cached chunk | Decoded worker data and its worker lease remain while wanted, loading, or needed by visible/fading regions or pending extractions; otherwise they release after `cooldownTicks` updates |
+| Cached chunk | Decoded worker data and its worker lease remain while wanted, loading, or needed by visible/fading regions or pending extractions; otherwise they release after `cooldownMs` milliseconds |
 | Pending extraction | Target range, chunk reference, and reserved bytes remain until extraction settles; stale results are discarded |
 | Ready region | Copied records and pending bytes remain until upload writes them into a batch slot or a target change discards them |
 | Current region | Batch slot and opacity state remain while visible or fading; a hidden region releases after cooldown once no outgoing region remains |
@@ -135,9 +135,11 @@ The scheduler retains resources through these stages:
 | Preparation | Pool snapshots, page pins, and pending bytes remain until the result is consumed or discarded; cancellation prevents publication |
 | Displayed cut | Selection, protected pages, and fade state are replaced together on publication or cleared when hidden |
 
-Page pins prevent retirement while traversal, preparation, or display still needs the data. They do not renew cooldowns. Unused pages retire after fade-out and `cooldownTicks` updates; empty pools release their storage. Root and traversal ancestors remain available for coarsening. Decode generations prevent stale cancellation from releasing replacement pages.
+Page pins prevent retirement while traversal, preparation, or display still needs the data. They do not renew cooldowns. Unused pages retire during cleanup after fade-out and `cooldownMs` milliseconds; empty pools release their storage. Root and traversal ancestors remain available for coarsening. Decode generations prevent stale cancellation from releasing replacement pages.
 
 Budget changes invalidate pending selections while preserving the displayed cut. Hiding clears the displayed cut and wanted pages. Disposal terminates workers before dropping their snapshots and page pools.
+
+Both schedulers defer expired-cache retirement while a new LOD decision is pending, preserving the original expiry times. Each accepted decision updates wanted data before cleanup, allowing cache reuse after an update pause and regular retirement during continuous camera movement. SOG also protects newly selected regions before their opacity recovers. Hidden scenes can continue cleanup without waiting for a new selection; existing resource pins still apply.
 
 `SplatOpacityTable` separates source-block group IDs from opacity coefficients. SOG regions fade independently; RAD uses stable, incoming, and outgoing groups. Fade ticks change coefficients without rewriting source records or picking opacity.
 

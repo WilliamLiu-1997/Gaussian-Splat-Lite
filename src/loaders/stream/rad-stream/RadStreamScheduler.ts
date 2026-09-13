@@ -102,7 +102,7 @@ export class RadStreamScheduler {
   readonly group: THREE.Group;
   readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
-  readonly cooldownTicks: number;
+  readonly cooldownMs: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
   readonly maxUploadBytesPerUpdate: number;
@@ -120,7 +120,6 @@ export class RadStreamScheduler {
   private pageBudget = 0;
   private numSh = 0;
   private maxPagePendingBytes = 0;
-  private tick = 0;
   private disposed = false;
   private shown = true;
   private displayed?: DisplayedCut;
@@ -140,7 +139,7 @@ export class RadStreamScheduler {
     this.group = options.group ?? new THREE.Group();
     const settings = streamSettings(options);
     this._splatBudget = settings.splatBudget;
-    this.cooldownTicks = settings.cooldownTicks;
+    this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
     this.maxUploadBytesPerUpdate = settings.maxUploadBytesPerUpdate;
@@ -273,7 +272,6 @@ export class RadStreamScheduler {
       !Number.isFinite(viewport.width + viewport.height)
     )
       throw new Error("RAD viewport dimensions must be positive and finite");
-    this.tick++;
     for (const { batch } of this.pools) batch.source.beginUpdate();
     const now = performance.now();
     camera.updateWorldMatrix(true, false);
@@ -369,7 +367,9 @@ export class RadStreamScheduler {
           ) || changed;
       if (reselect) this.revision++;
     }
-    changed = this.releaseUnused() || changed;
+    // Keep expired caches until a pending view/budget decision can reuse them.
+    const allowRelease = !shown || this.lastRequestedRevision === this.revision;
+    changed = this.releaseUnused(now, allowRelease) || changed;
     if (shown) {
       void this.requestSelection();
       this.pump();
@@ -402,6 +402,7 @@ export class RadStreamScheduler {
     this.lastRequestedRevision = this.revision;
     const { previous, splatBudget } = traversal;
     const started = performance.now();
+    let accepted = false;
     try {
       const selection = await this.loader.selectLod({
         views: this.views,
@@ -418,6 +419,7 @@ export class RadStreamScheduler {
       // Keep the selected tree path while its reserved pages await writing.
       this.wanted = new Set(selection.wantedChunks);
       for (const index of selection.touchedChunks) this.wanted.add(index);
+      accepted = true;
       this.cancelUnusedLoads();
       this.pump();
       // A completed cut may be applied or hidden during traversal. Recompute
@@ -450,11 +452,15 @@ export class RadStreamScheduler {
       }
     } finally {
       if (this.traversal === traversal) this.traversal = undefined;
-      // Release unused reservations before the next snapshot pins them again.
+      // Each accepted decision retires unused caches before the next snapshot,
+      // even if the camera kept moving while the worker was selecting.
       if (!this.disposed) {
         const revision = this.revision;
         this.cancelUnusedLoads();
-        const released = this.releaseUnused();
+        const released = this.releaseUnused(
+          performance.now(),
+          accepted || !this.shown,
+        );
         if (released || revision !== this.revision) {
           this.changed();
           this.pump();
@@ -829,7 +835,7 @@ export class RadStreamScheduler {
     this.revision++;
   }
 
-  private releaseUnused() {
+  private releaseUnused(now: number, allowRelease: boolean) {
     let changed = false;
     for (const page of this.pages.values()) {
       const allocation = page.storage?.allocation;
@@ -843,9 +849,14 @@ export class RadStreamScheduler {
         page.expiresAt = undefined;
         continue;
       }
-      page.expiresAt ??= this.tick + this.cooldownTicks;
+      page.expiresAt ??= now + this.cooldownMs;
       // A traversal snapshot delays release without renewing unused pages.
-      if (this.tick < page.expiresAt || this.isPagePinned(page.index)) continue;
+      if (
+        !allowRelease ||
+        now < page.expiresAt ||
+        this.isPagePinned(page.index)
+      )
+        continue;
       this.releasePage(page);
       changed = true;
     }

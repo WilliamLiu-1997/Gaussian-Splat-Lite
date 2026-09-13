@@ -84,7 +84,7 @@ export class SogStreamScheduler {
   readonly group: THREE.Group;
   readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
-  readonly cooldownTicks: number;
+  readonly cooldownMs: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
   readonly maxUploadBytesPerUpdate: number;
@@ -109,7 +109,6 @@ export class SogStreamScheduler {
     Region,
     { from: number; to: number; startedAt: number }
   >();
-  private tick = 0;
   private shown = true;
   private disposed = false;
   private resolveFirst!: (value: this) => void;
@@ -120,7 +119,7 @@ export class SogStreamScheduler {
     this.group = options.group ?? new THREE.Group();
     const settings = streamSettings(options);
     this._splatBudget = settings.splatBudget;
-    this.cooldownTicks = settings.cooldownTicks;
+    this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
     this.maxUploadBytesPerUpdate = settings.maxUploadBytesPerUpdate;
@@ -252,7 +251,6 @@ export class SogStreamScheduler {
   /** Call before rendering. Returns whether the displayed data changed. */
   update(camera: THREE.Camera): boolean {
     if (this.disposed || !this.manifest) return false;
-    this.tick++;
     for (const chunk of this.activeChunks) {
       this.pruneChunk(chunk);
       chunk.batch?.beginUpdate();
@@ -268,7 +266,9 @@ export class SogStreamScheduler {
     const { selected, refinements } = this.selectRegions();
     const changed = this.applySelection(selected, now);
     this.updateRequests(refinements, now);
-    this.releaseUnused();
+    // Start the new view's decision before retiring caches it may reuse.
+    void this.requestSelection();
+    this.releaseUnused(now, !shown || !this.selecting);
     if (
       shown &&
       [...this.leaves.values()].some(
@@ -277,7 +277,6 @@ export class SogStreamScheduler {
       )
     )
       this.resolveFirst(this);
-    void this.requestSelection();
     if (changed) this.changed();
     return changed;
   }
@@ -312,6 +311,8 @@ export class SogStreamScheduler {
       const now = performance.now();
       this.queueExtractions(selected, now);
       this.updateRequests(refinements, now);
+      // Retire after every accepted decision so motion cannot postpone cleanup.
+      this.releaseUnused(now, true);
       this.changed();
     } catch (error) {
       if (!this.disposed) {
@@ -586,19 +587,25 @@ export class SogStreamScheduler {
     }
   }
 
-  private releaseUnused() {
+  private releaseUnused(now: number, allowRelease: boolean) {
     const referenced = new Set(this.wanted);
     for (const [id, leaf] of this.leaves) {
       const { current, outgoing, pending } = leaf;
       if (pending) referenced.add(pending.chunk);
       if (outgoing) referenced.add(this.chunkFor(outgoing.range));
       if (current) {
-        if (current.opacity > 0 || this.fades.has(current) || outgoing) {
+        if (
+          leaf.target ||
+          current.opacity > 0 ||
+          this.fades.has(current) ||
+          outgoing
+        ) {
           current.expiresAt = undefined;
           referenced.add(this.chunkFor(current.range));
         } else {
-          current.expiresAt ??= this.tick + this.cooldownTicks;
-          if (this.tick >= current.expiresAt) this.releaseRegion(current);
+          current.expiresAt ??= now + this.cooldownMs;
+          if (allowRelease && now >= current.expiresAt)
+            this.releaseRegion(current);
         }
       }
       if (!leaf.target && !leaf.current && !leaf.outgoing && !leaf.pending)
@@ -608,8 +615,8 @@ export class SogStreamScheduler {
       if (referenced.has(chunk) || chunk.controller || !chunk.data) {
         chunk.expiresAt = undefined;
       } else {
-        chunk.expiresAt ??= this.tick + this.cooldownTicks;
-        if (this.tick >= chunk.expiresAt) {
+        chunk.expiresAt ??= now + this.cooldownMs;
+        if (allowRelease && now >= chunk.expiresAt) {
           chunk.data.dispose();
           this.pruneChunk(chunk);
         }

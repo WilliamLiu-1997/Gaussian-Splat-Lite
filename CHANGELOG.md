@@ -9,12 +9,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Preserved expired RAD/SOG caches until pending LOD decisions update demand, allowing reuse after update pauses while retaining cleanup during continuous camera movement.
 - Isolated cube targets and PMREM generators per renderer, included filtering in cube target reuse, and released cached resources on disposal.
 - Disposing a texture returned by `renderEnvMap()` also releases its PMREM output render target.
 - Released the WASM sort-cache borrow before throwing validation errors so subsequent sorts can recover.
 
 ### Changed
 
+- Replaced RAD/SOG `cooldownTicks` with `cooldownMs` (default `2000`), making unused-data retirement depend on elapsed time instead of update count.
 - Propagated `onFrame` callback errors through the renderer's update/render call instead of logging them and continuing generation.
 - Removed the viewer's private WebGL2 fallback hook override.
 - Replaced dynamic TSL node chains with typed nodes, updated Three.js development typings to r186, and isolated upstream typing gaps in a compatibility module.

@@ -9,7 +9,8 @@ export type StreamSchedulerOptions = {
   group?: Group;
   /** Initial Splat budget; update scheduler.splatBudget to change it at runtime. */
   splatBudget?: number;
-  cooldownTicks?: number;
+  /** Milliseconds to retain unused data after fade-out; defaults to 2000. */
+  cooldownMs?: number;
   fadeDurationMs?: number;
   /** Active downloads/decodes. Ready copies use a separate bounded byte queue. */
   maxConcurrentLoads?: number;
@@ -45,9 +46,9 @@ export function streamSettings(options: StreamSchedulerOptions) {
     options.splatBudget ?? 3_000_000,
     "splatBudget",
   );
-  const cooldownTicks = options.cooldownTicks ?? 100;
-  if (!Number.isSafeInteger(cooldownTicks) || cooldownTicks < 0)
-    throw new Error("cooldownTicks must be a nonnegative safe integer");
+  const cooldownMs = options.cooldownMs ?? 2000;
+  if (!Number.isFinite(cooldownMs) || cooldownMs < 0)
+    throw new Error("cooldownMs must be finite and nonnegative");
   const fadeDurationMs = options.fadeDurationMs ?? 200;
   if (!Number.isFinite(fadeDurationMs) || fadeDurationMs < 0)
     throw new Error("fadeDurationMs must be finite and nonnegative");
@@ -61,7 +62,7 @@ export function streamSettings(options: StreamSchedulerOptions) {
   );
   return {
     splatBudget,
-    cooldownTicks,
+    cooldownMs,
     fadeDurationMs,
     maxConcurrentLoads,
     maxUploadBytesPerUpdate,

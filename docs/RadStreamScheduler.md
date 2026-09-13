@@ -40,7 +40,7 @@ Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed mo
 | `resolveFile` | Relative URL resolution | Companion-page resolver: `(filename, signal) => URL \| Blob \| Uint8Array \| ArrayBuffer`, optionally asynchronous |
 | `group` | New `THREE.Group` | Parent group for moving, rotating, scaling, or hiding the scene |
 | `splatBudget` | `3_000_000` | Maximum selected Splat count before transition overlap |
-| `cooldownTicks` | `100` | Updates to retain unused pages after fade-out; `0` releases eligible pages immediately |
+| `cooldownMs` | `2000` | Milliseconds to retain unused pages after fade-out; `0` releases eligible pages immediately |
 | `fadeDurationMs` | `200` | Initial visibility and LOD fade duration in milliseconds; `0` switches immediately |
 | `maxConcurrentLoads` | `4` | Maximum simultaneous loads |
 | `maxUploadBytesPerUpdate` | `8 MiB` | Estimated data upload allowance per update; a large item may proceed alone |
@@ -68,6 +68,8 @@ The upload allowance spreads loading work across updates. A large item may excee
 | `dispose()` | Cancel loading and release scene resources; pending readiness promises reject with `AbortError` |
 
 For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so loading, retries, fades, and cleanup progress.
+
+Cooldown uses elapsed time, independent of update frequency. Pending LOD decisions defer expired-page cleanup so newly needed pages can be reused. Each accepted decision updates demand before cleanup, even during camera movement; existing page pins still apply.
 
 ```js
 const hits = raycaster.intersectObject(streaming.group, true);

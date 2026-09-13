@@ -32,7 +32,7 @@ Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed mo
 | `url` | Required | Streamed SOG index URL |
 | `group` | New `THREE.Group` | Parent group for moving, rotating, scaling, or hiding the scene |
 | `splatBudget` | `3_000_000` | Target visible Splat count, including the environment |
-| `cooldownTicks` | `100` | Updates to retain unused data after fade-out; `0` releases it immediately |
+| `cooldownMs` | `2000` | Milliseconds to retain unused data after fade-out; `0` releases eligible data immediately |
 | `fadeDurationMs` | `200` | Visibility and LOD fade duration in milliseconds; `0` disables fades |
 | `maxConcurrentLoads` | `4` | Maximum simultaneous loads |
 | `maxUploadBytesPerUpdate` | `8 MiB` | Estimated data upload allowance per update; a large item may proceed alone |
@@ -60,3 +60,5 @@ The upload allowance spreads loading work across updates. A large item may excee
 | `dispose()` | Cancel loading and release scene resources; pending readiness promises reject with `AbortError` |
 
 For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so loading, retries, fades, and cleanup progress.
+
+Cooldown uses elapsed time, independent of update frequency. Expired data releases during updates or after accepted LOD decisions once no longer needed. Pending decisions defer cleanup so newly needed data can be reused; each accepted decision permits cleanup even during camera movement.
