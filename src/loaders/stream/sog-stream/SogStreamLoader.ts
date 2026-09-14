@@ -13,7 +13,7 @@ import type { SogChunkInfo } from "./workerHandlers";
 
 export type SogStreamLoaderOptions = StreamRequestOptions & {
   url: string;
-  /** Returns independently owned data in original storage order. */
+  /** Returns owned data in file order, or with a complete source ID map. */
   loadChunk?: (url: string, signal: AbortSignal) => Promise<Splats>;
 };
 

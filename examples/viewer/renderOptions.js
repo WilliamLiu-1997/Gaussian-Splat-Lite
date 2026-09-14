@@ -24,6 +24,17 @@ export const renderOptionGroups = [
         trueLabel: "sRGB",
       },
       {
+        property: "splatBudget",
+        label: "Streaming splat budget",
+        description:
+          "Target splat count for RAD and SOG streaming. Adjusts detail without reloading.",
+        min: 1_000_000,
+        max: 5_000_000,
+        step: 100_000,
+        defaultValue: 3_000_000,
+        format: (value) => `${(value / 1_000_000).toFixed(1)}M`,
+      },
+      {
         property: "renderOnDemand",
         description:
           "Skips unchanged frames. Disable it to render continuously for profiling.",

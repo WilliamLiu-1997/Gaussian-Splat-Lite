@@ -22,7 +22,7 @@ const mesh = new SplatMesh({
 await mesh.initialized;
 ```
 
-Also accepted by `Splats`. The example shifts the model and gives it a warmer tint. All `postDecode` transforms preserve Splat count and order.
+Also accepted by `Splats`. The example shifts the model and gives it a warmer tint. All `postDecode` transforms preserve Splat count and order; [spatial reordering](Splats.md#data-rules) runs afterward.
 
 ## Logical input
 
@@ -81,4 +81,4 @@ Use `op` to calculate per-Splat values; JavaScript `if` does not evaluate indivi
 
 A number can be combined with a vector, for example `op.mul(splat.scale, 2)`. Values from different `postDecode` programs cannot be combined.
 
-To change a model after loading, use [Splats](Splats.md) or [region edits](SplatEdit.md).
+To change a model after loading, use [SplatMesh properties](SplatMesh.md#common-properties) or [region edits](SplatEdit.md).

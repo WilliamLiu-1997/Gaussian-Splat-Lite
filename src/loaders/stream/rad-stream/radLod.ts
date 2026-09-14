@@ -5,8 +5,12 @@ import { getRadChunkSpan } from "../../rad/radFormat";
 export type RadLodChunk = {
   centers: Float32Array;
   radii: Float32Array;
-  childStart?: Uint32Array;
-  childCount?: Uint16Array;
+  childStart: Uint32Array;
+  childCount: Uint16Array;
+  /** Original page index to Morton storage; tree arrays keep file order. */
+  sourceToStorage: Uint32Array;
+  /** Center and scale/rotation bounds per Morton storage block. */
+  boundsBlocks: Float32Array;
 };
 
 export type RadLodView = {

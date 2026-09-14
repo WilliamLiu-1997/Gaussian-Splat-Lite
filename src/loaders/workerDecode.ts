@@ -1,5 +1,5 @@
 import { type ChunkDecoder, decode_to_splats } from "gaussian-splat-rs";
-import type { SplatResult } from "../data/defines";
+import type { ReorderedSplatResult, SplatResult } from "../data/defines";
 import { abortable } from "../runtime/abort";
 import { getAssetBaseUrl } from "./assetUrl";
 import type {
@@ -8,6 +8,7 @@ import type {
   SplatLoadArgs,
   SplatLoadStatus,
 } from "./loadTypes";
+import { reorderSplats } from "./morton";
 import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { applySplatPostDecode } from "./postDecode/runtime";
 import { isRadPrefix, loadRad } from "./rad";
@@ -19,7 +20,7 @@ type DecodeArgs = SplatLoadArgs & {
   resolveFile?: SplatFileResolver;
 };
 
-async function decodeInput(args: DecodeArgs) {
+async function decodeInput(args: DecodeArgs): Promise<PostDecodeSplatData> {
   const {
     file,
     fileType,
@@ -194,11 +195,12 @@ async function decodeInput(args: DecodeArgs) {
   }
 }
 
-export async function loadSplats(
+/** Decode in source order so streamed SOG can extract file ranges first. */
+export async function decodeSplats(
   args: SplatLoadArgs,
   { sendStatus }: { sendStatus: (data: SplatLoadStatus) => void },
 ): Promise<SplatResult> {
-  const decoded = (await decodeInput({
+  const decoded = await decodeInput({
     ...args,
     sendStatus,
     resolveAsset: (url) => {
@@ -223,12 +225,13 @@ export async function loadSplats(
           ).finally(() => fileRequests.delete(requestId));
         }
       : undefined,
-  })) as PostDecodeSplatData;
+  });
   if (args.postDecode) applySplatPostDecode(decoded, args.postDecode);
   return {
     numSplats: decoded.numSplats,
     splatArrays: [decoded.splat0, decoded.splat1],
     sortCenters: decoded.sortCenters,
+    sourceIds: decoded.sourceIds,
     extra: {
       sh1: decoded.sh1,
       sh2: decoded.sh2,
@@ -236,6 +239,15 @@ export async function loadSplats(
       sh3b: decoded.sh3b,
     },
   };
+}
+
+export async function loadSplats(
+  args: SplatLoadArgs,
+  options: { sendStatus: (data: SplatLoadStatus) => void },
+): Promise<ReorderedSplatResult> {
+  const data = await decodeSplats(args, options);
+  reorderSplats(data);
+  return data;
 }
 
 let assetRequestId = 0;

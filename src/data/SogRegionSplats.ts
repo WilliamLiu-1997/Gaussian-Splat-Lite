@@ -1,5 +1,10 @@
 import { IndexedSplats } from "./IndexedSplats";
-import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH, type SplatResult } from "./defines";
+import {
+  type ReorderedSplatResult,
+  SPLAT_TEX_HEIGHT,
+  SPLAT_TEX_WIDTH,
+} from "./defines";
+import { resetSplatBounds, unionSplatBounds } from "./splatData";
 import { getTextureSize } from "./textureLayout";
 
 // Small allocation blocks avoid a separate 2048-Splat texture row per region.
@@ -29,14 +34,29 @@ export function sogBatchTextureLayout(count: number) {
 export class SogRegionSplats extends IndexedSplats {
   private readonly activeRanges = new Map<number, number>();
   private indicesDirty = false;
+  private boundsDirty = true;
+  private readonly regionBounds = new Map<
+    number,
+    { centers: Float32Array; full: Float32Array }
+  >();
 
   constructor(count: number, numSh: number) {
     const { capacity, layerSize } = sogBatchTextureLayout(count);
     super({ capacity, layerSize, numSh, blockBits: BLOCK_BITS });
   }
 
-  write(start: number, data: SplatResult) {
+  write(start: number, data: ReorderedSplatResult) {
+    if (
+      data.centerOnlyBoundingBox?.length !== 6 ||
+      data.boundingBox?.length !== 6
+    )
+      throw new Error("SOG region bounds must contain six values");
     this.writeRecords(start, data, sogBatchAllocationSize(data.numSplats));
+    this.regionBounds.set(start, {
+      centers: data.centerOnlyBoundingBox.slice(),
+      full: data.boundingBox.slice(),
+    });
+    if (this.activeRanges.has(start)) this.boundsDirty = true;
   }
 
   setOpacity(start: number, count: number, opacity: number) {
@@ -51,24 +71,51 @@ export class SogRegionSplats extends IndexedSplats {
       else this.activeRanges.delete(start);
       this.numSplats += visible ? count : -count;
       this.indicesDirty = true;
+      this.boundsDirty = true;
     }
     return { visibilityChanged };
   }
 
+  /** The batch hides the region before releasing its slot. */
+  release(start: number) {
+    this.assertLive();
+    this.regionBounds.delete(start);
+  }
+
+  override getBoundingBox(centersOnly = true) {
+    this.assertLive();
+    if (this.boundsDirty) {
+      resetSplatBounds(this.centerOnlyBounds);
+      resetSplatBounds(this.bounds);
+      for (const start of this.activeRanges.keys()) {
+        const bounds = this.regionBounds.get(start);
+        if (!bounds) throw new Error("Visible SOG region has no cached bounds");
+        unionSplatBounds(this.centerOnlyBounds, bounds.centers);
+        unionSplatBounds(this.bounds, bounds.full);
+      }
+      this.boundsDirty = false;
+    }
+    return super.getBoundingBox(centersOnly);
+  }
+
+  override getByteLength() {
+    return super.getByteLength() + this.regionBounds.size * 48;
+  }
+
   protected override ensureIndices() {
     if (!this.indicesDirty) return;
-    const indices = new Uint32Array(this.numSplats);
+    const indices = this.prepareIndices(this.numSplats);
     let target = 0;
     for (const [start, count] of this.activeRanges)
       for (let source = start; source < start + count; source++)
         indices[target++] = source;
-    this.commitIndices(indices);
     this.indicesDirty = false;
   }
 
   override dispose() {
     super.dispose();
     this.activeRanges.clear();
+    this.regionBounds.clear();
     this.indicesDirty = false;
   }
 }

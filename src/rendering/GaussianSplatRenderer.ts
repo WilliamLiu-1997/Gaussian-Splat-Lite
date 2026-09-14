@@ -235,7 +235,10 @@ export interface GaussianSplatRendererOptions {
   depthWrite?: boolean;
 }
 
-export class GaussianSplatRenderer extends THREE.Mesh {
+export class GaussianSplatRenderer extends THREE.Mesh<
+  SplatGeometry,
+  SplatMaterial
+> {
   readonly renderer: GaussianSplatCompatibleRenderer;
   readonly material: SplatMaterial;
   readonly uniforms: ReturnType<typeof GaussianSplatRenderer.makeUniforms>;
@@ -580,7 +583,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     material.blending = THREE.NoBlending;
     material.colorWrite = false;
 
-    const mesh = new THREE.Mesh(this.geometry as SplatGeometry, material);
+    const mesh = new THREE.Mesh(this.geometry, material);
     mesh.frustumCulled = false;
     mesh.matrixAutoUpdate = false;
     mesh.layers = this.layers;
@@ -738,7 +741,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
 
     const display = gaussianSplatRenderer.display;
     this.uniforms.renderOrigin.value.copy(display.viewOrigin);
-    const geometry = this.geometry as SplatGeometry;
+    const geometry = this.geometry;
     geometry.setSplatCount(
       gaussianSplatRenderer.stochasticFrame
         ? display.numSplats

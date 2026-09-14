@@ -27,7 +27,7 @@ export {
 } from "./loaders/stream/sog-stream/SogStreamScheduler";
 export type { SplatWorker } from "./runtime/SplatWorker";
 
-export { Splats, type SplatInput, type SplatsOptions } from "./data/Splats";
+export { Splats, type SplatsOptions } from "./data/Splats";
 export {
   postDecode,
   type SplatPostDecodeProgram,
@@ -48,6 +48,7 @@ export {
   SplatMesh,
   type SplatMeshFrameContext,
   type SplatMeshOptions,
+  type SplatIntersection,
 } from "./scene/SplatMesh";
 
 export {

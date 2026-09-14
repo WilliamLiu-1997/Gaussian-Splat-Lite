@@ -3,7 +3,7 @@ import {
   sogBatchAllocationSize,
   sogBatchTextureLayout,
 } from "../../../data/SogRegionSplats";
-import type { SplatResult } from "../../../data/defines";
+import type { ReorderedSplatResult } from "../../../data/defines";
 import {
   getSplatByteLength,
   getSplatShDegree,
@@ -66,7 +66,7 @@ type PendingRegion = {
   range: SogLodRange;
   chunk: Chunk;
   bytes: number;
-  data?: SplatResult;
+  data?: ReorderedSplatResult;
 };
 
 type LeafState = {
@@ -490,21 +490,27 @@ export class SogStreamScheduler {
       streamPendingLimit(this.maxConcurrentLoads, this.maxUploadBytesPerUpdate),
       pendingBytes,
     );
-    const batches = new Map<Chunk, PendingRegion[]>();
+    const batches = new Map<
+      Chunk,
+      { source: SogChunkSource; regions: PendingRegion[] }
+    >();
     for (const leaf of selected) {
       const range = leaf.target;
       if (!range || leaf.current?.range === range || leaf.pending) continue;
       const chunk = this.chunkFor(range);
-      if (!chunk.data?.alive || now < chunk.retryAt) continue;
-      const bytes = getSplatTextureBytes(range.count, chunk.data.info.numSh);
+      const source = chunk.data;
+      if (!source?.alive || now < chunk.retryAt) continue;
+      const bytes =
+        getSplatTextureBytes(range.count, source.info.numSh) + range.count * 4;
       if (!budget.reserve(bytes)) continue;
       const pending = { range, chunk, bytes };
       leaf.pending = pending;
-      const batch = batches.get(chunk) ?? [];
-      batch.push(pending);
+      const batch = batches.get(chunk) ?? { source, regions: [] };
+      batch.regions.push(pending);
       batches.set(chunk, batch);
     }
-    for (const [chunk, batch] of batches) void this.extract(chunk, batch);
+    for (const [chunk, { source, regions }] of batches)
+      void this.extract(chunk, source, regions);
   }
 
   private addBatchRange(chunk: Chunk, offset: number, count: number) {
@@ -547,9 +553,12 @@ export class SogStreamScheduler {
     return changed;
   }
 
-  private async extract(chunk: Chunk, batch: PendingRegion[]) {
+  private async extract(
+    chunk: Chunk,
+    source: SogChunkSource,
+    batch: PendingRegion[],
+  ) {
     try {
-      const source = chunk.data as SogChunkSource;
       const results = await source.extract(
         batch.map(({ range }) => ({
           start: range.offset,

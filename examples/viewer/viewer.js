@@ -298,6 +298,9 @@ const renderOptionActions = {
   renderOnDemand: (value) => {
     renderOnDemand = value;
   },
+  splatBudget: (value) => {
+    if (activeStream) activeStream.splatBudget = value;
+  },
 };
 
 let rendererSwitchToken = 0;
@@ -507,7 +510,7 @@ function frameSplat(splat) {
   const streamed = activeStream?.group === splat;
   const bounds = streamed
     ? activeStream.getBoundingBox()
-    : splat.getBoundingBox(true);
+    : splat.getBoundingBox();
   splat.updateWorldMatrix(true, false);
   bounds.applyMatrix4(splat.matrixWorld);
   bounds.getSize(frameSize);
@@ -560,6 +563,7 @@ async function initializeModel(
   if (fileType === SplatFileType.RAD) {
     model.stream = new RadStreamScheduler({
       ...source,
+      splatBudget: optionsPanel.getValue("splatBudget"),
       onChange: requestRender,
       onError: (error, chunkUrl) => {
         console.error("RAD chunk failed", chunkUrl, error);
@@ -585,6 +589,7 @@ async function initializeModel(
     model.stream = new SogStreamScheduler({
       url,
       manager,
+      splatBudget: optionsPanel.getValue("splatBudget"),
       onChange: requestRender,
       onError: (error, chunkUrl) =>
         console.error("Streaming chunk failed", chunkUrl, error),

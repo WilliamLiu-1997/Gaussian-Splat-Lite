@@ -1,4 +1,4 @@
-import type { SplatResult } from "../../data/defines";
+import type { ReorderedSplatResult, SplatResult } from "../../data/defines";
 import type { PostDecodeSplatData } from "../postDecode/protocol";
 
 export type RadChunkRange = {
@@ -34,7 +34,7 @@ export type RadChunkData = SplatResult & {
 };
 
 /** Render records for streaming; tree arrays are transferred to the LOD worker. */
-export type RadStreamChunk = Omit<SplatResult, "sortCenters"> & {
+export type RadStreamChunk = Omit<ReorderedSplatResult, "sortCenters"> & {
   /** Root-page radius used when its initial bounds collapse to one point. */
   rootRadius?: number;
 };

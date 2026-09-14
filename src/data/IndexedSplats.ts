@@ -1,7 +1,11 @@
 import * as THREE from "three";
 import { SplatOpacityTable } from "./SplatOpacityTable";
-import { type SplatInput, Splats, type SplatsOptions } from "./Splats";
-import { SPLAT_TEX_WIDTH, type SplatResult } from "./defines";
+import { Splats, type SplatsOptions } from "./Splats";
+import {
+  type ReorderedSplatResult,
+  SPLAT_TEX_WIDTH,
+  type SplatResult,
+} from "./defines";
 import { decodeShRgbToArray } from "./splatCodec";
 import { SH_ARRAY_COUNTS, SH_KEYS, getSplatTextureBytes } from "./splatData";
 import { getTextureSize } from "./textureLayout";
@@ -63,6 +67,7 @@ export abstract class IndexedSplats extends Splats {
       () => new Uint32Array(capacity * 4),
     );
     this.sourceCenters = new Float32Array(this.sourceArrays[0].buffer);
+    this.sourceIds = new Uint32Array(capacity);
     this.sourceTextures = this.sourceArrays.map((array) =>
       makeTexture(
         array,
@@ -77,43 +82,47 @@ export abstract class IndexedSplats extends Splats {
     if (this.disposed) throw new Error("Streaming Splat source is disposed");
   }
 
-  private rejectMutation(): never {
-    throw new Error(
-      "Streaming sources are immutable; edit an extracted Splats source",
-    );
-  }
-
   override initialize(options: SplatsOptions = {}) {
     // Splats calls initialize once during super(); fixed storage is installed next.
-    if (this.sourceArrays !== undefined) this.rejectMutation();
+    if (this.sourceArrays !== undefined)
+      throw new Error("Streaming sources cannot be reinitialized");
     return super.initialize(options);
   }
 
   /** Range-based sources can materialize their visible map lazily. */
   protected ensureIndices() {}
 
+  /** Each source updates its bounds independently of the visible-index map. */
   protected commitIndices(indices: Uint32Array) {
+    this.prepareIndices(indices.length).set(indices);
+  }
+
+  /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
+  protected prepareIndices(count: number) {
     this.assertLive();
     if (
-      indices.length > this.sourceIndices.length ||
-      indices.length < this.sourceIndices.length / 4
+      count > this.sourceIndices.length ||
+      count < this.sourceIndices.length / 4
     ) {
-      const layout = getTextureSize(Math.max(1, Math.ceil(indices.length / 4)));
-      if (this.indexTexture !== Splats.emptyTexture)
-        this.indexTexture.dispose();
-      this.sourceIndices = new Uint32Array(layout.maxSplats * 4);
-      this.indexTexture = makeTexture(
-        this.sourceIndices,
-        layout.width,
-        layout.height,
-        layout.depth,
-      );
+      const layout = getTextureSize(Math.max(1, Math.ceil(count / 4)));
+      const capacity = layout.maxSplats * 4;
+      if (capacity !== this.sourceIndices.length) {
+        if (this.indexTexture !== Splats.emptyTexture)
+          this.indexTexture.dispose();
+        this.sourceIndices = new Uint32Array(capacity);
+        this.indexTexture = makeTexture(
+          this.sourceIndices,
+          layout.width,
+          layout.height,
+          layout.depth,
+        );
+      }
     }
-    this.sourceIndices.set(indices);
-    this.numSplats = indices.length;
+    this.numSplats = count;
     if (this.indexTexture !== Splats.emptyTexture)
       this.indexTexture.needsUpdate = true;
     this.needsUpdate = true;
+    return this.sourceIndices;
   }
 
   beginUpdate() {
@@ -137,7 +146,11 @@ export abstract class IndexedSplats extends Splats {
   }
 
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
-  protected writeRecords(start: number, data: SplatResult, allocation: number) {
+  protected writeRecords(
+    start: number,
+    data: ReorderedSplatResult,
+    allocation: number,
+  ) {
     this.assertLive();
     const count = data.numSplats;
     if (
@@ -158,6 +171,7 @@ export abstract class IndexedSplats extends Splats {
     ];
     if (
       arrays.length !== this.sourceArrays.length ||
+      data.sourceIds.length < count ||
       arrays.some(
         (array) =>
           count > 0 &&
@@ -165,6 +179,8 @@ export abstract class IndexedSplats extends Splats {
       )
     )
       throw new Error("Incomplete packed Splat or SH records");
+    this.sourceIds.set(data.sourceIds.subarray(0, count), start);
+    this.sourceIds.fill(0, start + count, start + allocation);
     const firstLayer = Math.floor(start / this.layerSize);
     const lastLayer = Math.ceil((start + allocation) / this.layerSize);
     for (let index = 0; index < this.sourceArrays.length; index++) {
@@ -182,11 +198,15 @@ export abstract class IndexedSplats extends Splats {
     this.needsUpdate = true;
   }
 
-  getSourceIndex(index: number) {
+  private getStorageIndex(index: number) {
     this.assertLive();
     this.ensureIndices();
     this.checkVisibleRange(index, 1);
     return this.sourceIndices[index];
+  }
+
+  override getSourceIndex(index: number) {
+    return this.sourceIds[this.getStorageIndex(index)];
   }
 
   private checkVisibleRange(start: number, count: number) {
@@ -213,7 +233,12 @@ export abstract class IndexedSplats extends Splats {
   }
 
   override getByteLength() {
-    return this.textureByteLength;
+    return (
+      this.textureByteLength +
+      this.sourceIds.byteLength +
+      this.centerOnlyBounds.byteLength +
+      this.bounds.byteLength
+    );
   }
 
   get residentBytes() {
@@ -282,7 +307,7 @@ export abstract class IndexedSplats extends Splats {
   override getSplat(index: number, includeSh: false): DecodedSplat;
   override getSplat(index: number, includeSh: boolean): DecodedSplat;
   override getSplat(index: number, includeSh = true) {
-    const source = this.getSourceIndex(index);
+    const source = this.getStorageIndex(index);
     const splat = decodeSplat(
       [this.sourceArrays[0], this.sourceArrays[1]],
       source,
@@ -335,50 +360,32 @@ export abstract class IndexedSplats extends Splats {
     }
   }
 
-  private extractData(start: number, count: number): SplatResult {
+  override takeData(): SplatResult & { sourceIds: Uint32Array } {
     this.assertLive();
     this.ensureIndices();
-    this.checkVisibleRange(start, count);
-    const capacity = getTextureSize(count).maxSplats;
+    const count = this.numSplats;
+    const sourceIds = new Uint32Array(count);
+    for (let i = 0; i < count; i++)
+      sourceIds[i] = this.sourceIds[this.sourceIndices[i]];
     const arrays = this.sourceArrays.map((source) => {
-      const target = new Uint32Array(capacity * 4);
+      const target = new Uint32Array(count * 4);
       for (let index = 0; index < count; index++) {
-        const offset = this.sourceIndices[start + index] * 4;
+        const offset = this.sourceIndices[index] * 4;
         for (let word = 0; word < 4; word++)
           target[index * 4 + word] = source[offset + word];
       }
       return target;
     });
-    return {
+    const data = {
       numSplats: count,
       splatArrays: [arrays[0], arrays[1]],
+      sourceIds,
       extra: Object.fromEntries(
         arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
       ),
-    };
-  }
-
-  override extractRange(start: number, count: number) {
-    return new Splats(this.extractData(start, count) as SplatsOptions);
-  }
-
-  override takeData() {
-    const data = this.extractData(0, this.numSplats);
+    } satisfies SplatResult;
     this.dispose();
     return data;
-  }
-
-  override pushSplats(_splats: readonly SplatInput[]): never {
-    return this.rejectMutation();
-  }
-  override setSplats(
-    _indices: readonly number[],
-    _splats: readonly SplatInput[],
-  ): never {
-    return this.rejectMutation();
-  }
-  override removeSplats(_indices: readonly number[]): never {
-    return this.rejectMutation();
   }
 
   override setTextureUniforms(uniforms: Record<string, THREE.IUniform>) {

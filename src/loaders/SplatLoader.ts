@@ -1,5 +1,5 @@
 import { Loader } from "three";
-import { Splats, type SplatsOptions } from "../data/Splats";
+import { Splats } from "../data/Splats";
 import { SplatMesh } from "../scene/SplatMesh";
 import { type SplatDataLoadOptions, loadSplatData } from "./loadSplatData";
 
@@ -46,7 +46,7 @@ export class SplatLoader extends Loader {
         ...options,
         onLoad: (decoded) => {
           result = splats ?? new Splats();
-          result.initialize(decoded as SplatsOptions);
+          result.initializeDecoded(decoded);
           onLoad?.(result);
         },
       },

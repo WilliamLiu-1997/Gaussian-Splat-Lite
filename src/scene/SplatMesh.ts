@@ -6,7 +6,7 @@ import {
   get_raycast_indices,
   raycast_splat_buffers,
 } from "gaussian-splat-rs";
-import { type SplatInput, Splats } from "../data/Splats";
+import { Splats } from "../data/Splats";
 import type { SplatFileType } from "../data/defines";
 import type { SplatFileResolver } from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
@@ -28,8 +28,6 @@ export type SplatMeshOptions = {
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
   splats?: Splats;
-  maxSplats?: number;
-  constructSplats?: (splats: Splats) => Promise<void> | void;
   onProgress?: (event: ProgressEvent) => void;
   onLoad?: (mesh: SplatMesh) => Promise<void> | void;
   editable?: boolean;
@@ -49,16 +47,22 @@ export type SplatMeshFrameContext = {
   globalEdits: SplatEdit[];
 };
 
+export type SplatIntersection = THREE.Intersection<SplatMesh> & {
+  /** Current readable index in this mesh's Splats. */
+  index: number;
+  /** Original file index; for streamed SOG, relative to this batch's chunk. */
+  sourceIndex: number;
+};
+
 function validateSplatMeshInitializationInputs(options: SplatMeshOptions) {
   const inputs: string[] = [];
   if (options.url !== undefined) inputs.push("url");
   if (options.file !== undefined) inputs.push("file");
   if (options.fileBytes !== undefined) inputs.push("fileBytes");
   if (options.splats !== undefined) inputs.push("splats");
-  if (options.constructSplats !== undefined) inputs.push("constructSplats");
   if (inputs.length > 1) {
     throw new Error(
-      `SplatMesh initialization inputs are mutually exclusive; provide only one of url, file, fileBytes, splats, or constructSplats (received: ${inputs.join(", ")})`,
+      `SplatMesh initialization inputs are mutually exclusive; provide only one of url, file, fileBytes, or splats (received: ${inputs.join(", ")})`,
     );
   }
 }
@@ -115,8 +119,6 @@ export class SplatMesh extends THREE.Object3D {
         fileName: options.fileName,
         resolveFile: options.resolveFile,
         postDecode: options.postDecode,
-        maxSplats: options.maxSplats,
-        construct: options.constructSplats,
         onProgress: options.onProgress,
       });
 
@@ -143,30 +145,6 @@ export class SplatMesh extends THREE.Object3D {
     void this.initialized.catch(() => {});
   }
 
-  pushSplats(splats: readonly SplatInput[]) {
-    if (!this.splats) {
-      throw new Error("Cannot push Splats after SplatMesh is disposed");
-    }
-    this.splats.pushSplats(splats);
-    this.numSplats = this.splats.getNumSplats();
-  }
-
-  setSplats(indices: readonly number[], splats: readonly SplatInput[]) {
-    if (!this.splats) {
-      throw new Error("Cannot set Splats after SplatMesh is disposed");
-    }
-    this.splats.setSplats(indices, splats);
-    this.numSplats = this.splats.getNumSplats();
-  }
-
-  removeSplats(indices: readonly number[]) {
-    if (!this.splats) {
-      throw new Error("Cannot remove Splats after SplatMesh is disposed");
-    }
-    this.splats.removeSplats(indices);
-    this.numSplats = this.splats.getNumSplats();
-  }
-
   forEachSplat(
     callback: (
       index: number,
@@ -189,42 +167,14 @@ export class SplatMesh extends THREE.Object3D {
     this.splats = undefined;
   }
 
-  getBoundingBox(centersOnly = true) {
+  /** Cached local bounds; optionally include per-Splat scale and rotation. */
+  getBoundingBox(centersOnly = true): THREE.Box3 {
     if (!this.isInitialized) {
       throw new Error(
         "Cannot get bounding box before SplatMesh is initialized",
       );
     }
-    const minimum = new THREE.Vector3().setScalar(Number.POSITIVE_INFINITY);
-    const maximum = new THREE.Vector3().setScalar(Number.NEGATIVE_INFINITY);
-    const corner = new THREE.Vector3();
-
-    if (centersOnly) {
-      this.splats?.forEachCenter((_index, x, y, z) => {
-        if (Number.isNaN(x)) return;
-        corner.set(x, y, z);
-        minimum.min(corner);
-        maximum.max(corner);
-      });
-      return new THREE.Box3(minimum, maximum);
-    }
-
-    const signs = [-1, 1];
-    this.splats?.forEachSplat((_index, center, scales, quaternion) => {
-      for (const x of signs) {
-        for (const y of signs) {
-          for (const z of signs) {
-            corner
-              .set(x * scales.x, y * scales.y, z * scales.z)
-              .applyQuaternion(quaternion)
-              .add(center);
-            minimum.min(corner);
-            maximum.max(corner);
-          }
-        }
-      }
-    });
-    return new THREE.Box3(minimum, maximum);
+    return this.splats?.getBoundingBox(centersOnly) ?? new THREE.Box3();
   }
 
   frameUpdate({ time, deltaTime, camera, globalEdits }: SplatMeshFrameContext) {
@@ -393,12 +343,15 @@ export class SplatMesh extends THREE.Object3D {
 
       for (let index = 0; index < distances.length; index += 1) {
         const distance = distances[index];
-        intersects.push({
+        const splatIndex = base + hitIndices[index];
+        const hit: SplatIntersection = {
           distance,
           point: ray.at(distance, new THREE.Vector3()),
           object: this,
-          index: base + hitIndices[index],
-        });
+          index: splatIndex,
+          sourceIndex: this.splats.getSourceIndex(splatIndex),
+        };
+        intersects.push(hit);
       }
     }
   }

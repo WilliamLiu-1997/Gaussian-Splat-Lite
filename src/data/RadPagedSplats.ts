@@ -1,5 +1,10 @@
 import { IndexedSplats } from "./IndexedSplats";
-import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH, type SplatResult } from "./defines";
+import {
+  type ReorderedSplatResult,
+  SPLAT_TEX_HEIGHT,
+  SPLAT_TEX_WIDTH,
+} from "./defines";
+import { resetSplatBounds } from "./splatData";
 
 export type RadPagedSplatsOptions = {
   /** Maximum records in one decoded chunk. Defaults to Spark's 65,536. */
@@ -15,7 +20,9 @@ export type RadSelectionRange = {
   start: number;
   end: number;
   slot: number;
-  sourceOffset: number;
+  pageStart: number;
+  chunkIndex: number;
+  sourceBase: number;
 };
 
 export type RadSelectionSnapshot = {
@@ -24,13 +31,18 @@ export type RadSelectionSnapshot = {
   ranges: RadSelectionRange[];
 };
 
-export type RadPreparedSelection = {
+type RadPreparedCut = {
   indices: Uint32Array;
   selectedPages: Uint32Array;
+  centerOnlyBoundingBox: Float32Array;
+  boundingBox: Float32Array;
+};
+
+export type RadPreparedSelection = RadPreparedCut & {
   opacityBlocks: Uint32Array;
   dirtyLayers: Uint8Array;
   fadeKinds: number;
-  final?: { indices: Uint32Array; selectedPages: Uint32Array };
+  final?: RadPreparedCut;
 };
 
 const EMPTY_INDICES = new Uint32Array(0);
@@ -77,7 +89,7 @@ export class RadPagedSplats extends IndexedSplats {
   readonly pageStride: number;
   readonly pageCount: number;
   private selectedPages: Uint32Array;
-  private finalSelection?: RadPreparedSelection["final"];
+  private finalSelection?: RadPreparedCut;
   private fadeProgress = 1;
   private fadeKinds = 0;
 
@@ -100,7 +112,7 @@ export class RadPagedSplats extends IndexedSplats {
   }
 
   /** Copies data; callers retain ownership of the packed buffers. */
-  writePage(slot: number, data: SplatResult) {
+  writePage(slot: number, data: ReorderedSplatResult) {
     const start = this.pageStart(slot);
     if (data.numSplats > this.pageSize)
       throw new Error("RAD chunk does not fit its page slot");
@@ -113,6 +125,8 @@ export class RadPagedSplats extends IndexedSplats {
     if (!this.numSplats) return false;
     this.commitIndices(EMPTY_INDICES);
     this.selectedPages.fill(0);
+    resetSplatBounds(this.centerOnlyBounds);
+    resetSplatBounds(this.bounds);
     this.finalSelection = undefined;
     this.fadeKinds = 0;
     this.fadeProgress = 1;
@@ -133,14 +147,21 @@ export class RadPagedSplats extends IndexedSplats {
 
   /** Internal commit of worker-prepared data; the caller gives up the arrays. */
   commitSelection(prepared: RadPreparedSelection) {
-    this.commitIndices(prepared.indices);
-    this.selectedPages = prepared.selectedPages;
+    this.commitCut(prepared);
     this.finalSelection = prepared.final;
     this.fadeKinds = prepared.fadeKinds;
     this.fadeProgress = this.fadeKinds ? 0 : 1;
     this.opacities.setGroupOpacity(2, this.fadeKinds ? 0 : 1);
     this.opacities.setGroupOpacity(3, 1);
     this.opacities.commitBlocks(prepared.opacityBlocks, prepared.dirtyLayers);
+  }
+
+  /** Keep record indices, page occupancy and bounds on the same cut. */
+  private commitCut(cut: RadPreparedCut) {
+    this.commitIndices(cut.indices);
+    this.selectedPages = cut.selectedPages;
+    this.centerOnlyBounds = cut.centerOnlyBoundingBox;
+    this.bounds = cut.boundingBox;
   }
 
   /** A normal streaming fade changes only two group coefficients. */
@@ -171,8 +192,7 @@ export class RadPagedSplats extends IndexedSplats {
   /** The worker already removed outgoing records from the final cut. */
   finishFade() {
     if (!this.finalSelection) return this.finishFadeIn();
-    this.commitIndices(this.finalSelection.indices);
-    this.selectedPages = this.finalSelection.selectedPages;
+    this.commitCut(this.finalSelection);
     this.finishFadeIn();
     return true;
   }
@@ -182,6 +202,8 @@ export class RadPagedSplats extends IndexedSplats {
       super.getByteLength() +
       (this.finalSelection?.indices.byteLength ?? 0) +
       (this.finalSelection?.selectedPages.byteLength ?? 0) +
+      (this.finalSelection?.centerOnlyBoundingBox.byteLength ?? 0) +
+      (this.finalSelection?.boundingBox.byteLength ?? 0) +
       this.selectedPages.byteLength
     );
   }

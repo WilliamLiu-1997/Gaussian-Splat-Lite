@@ -1,9 +1,10 @@
 import { RadDecoder, RadLodTree, decode_rad_header } from "gaussian-splat-rs";
+import { SPLAT_BOUNDS_BLOCK_SIZE } from "../../../data/defines";
+import { invertSplatOrder, reorderSplats } from "../../morton";
 import { type RadReadRequest, RadSource } from "../../rad/RadSource";
 import {
   type RadDecodedChunk,
   type RadHeader,
-  type RadStreamChunk,
   getRadChunkSpan,
   unpackRadChunk,
 } from "../../rad/radFormat";
@@ -12,7 +13,10 @@ import {
   type RadSelectionRequest,
   RadSelectionState,
 } from "./RadSelectionState";
-import { prepareRadSelection } from "./prepareRadSelection";
+import {
+  type RadSelectionChunk,
+  prepareRadSelection,
+} from "./prepareRadSelection";
 import type { RadLodChunk, RadLodSelection } from "./radLod";
 
 /** Each worker initializes once as either the dataset LOD tree or a page decoder. */
@@ -20,10 +24,20 @@ export function createRadStreamHandlers() {
   let header: RadHeader;
   let decoder: RadDecoder;
   let lod: RadLodTree;
+  const chunks = new Map<
+    number,
+    RadSelectionChunk & {
+      generation: number;
+      bytes: number;
+    }
+  >();
+  let chunkBytes = 0;
   const selections = new RadSelectionState();
   const loads = new Map<number, AbortController>();
   return {
-    prepareRadSelection,
+    prepareRadSelection(request: Parameters<typeof prepareRadSelection>[0]) {
+      return prepareRadSelection(request, chunks);
+    },
     initializeRad({ bytes }: { bytes: Uint8Array }) {
       const value = decode_rad_header(bytes) as RadHeader | undefined;
       if (!value) throw new Error("RAD: truncated header");
@@ -82,7 +96,10 @@ export function createRadStreamHandlers() {
           throw new Error(
             "RAD: decoded chunk does not match its directory entry",
           );
-        if (index === 0 && header.meta.count > 1 && !decoded.childCount?.[0])
+        const { lodRadii: radii, childStart, childCount } = decoded;
+        if (!childStart || !childCount || radii?.length !== decoded.numSplats)
+          throw new Error("RAD: decoded LOD arrays are missing or incomplete");
+        if (index === 0 && header.meta.count > 1 && !childCount[0])
           throw new Error(
             "RAD: streaming requires a root at index 0 with child nodes",
           );
@@ -95,21 +112,28 @@ export function createRadStreamHandlers() {
         for (let index = 0; index < decoded.numSplats; index++)
           for (let axis = 0; axis < 3; axis++)
             centers[index * 3 + axis] = positions[index * 4 + axis];
-        const { lodRadii: radii, childStart, childCount } = decoded;
-        if (radii?.length !== decoded.numSplats)
-          throw new Error("RAD: decoded radii are missing");
         // Only packed render records stay on the main thread after registration.
-        const data: RadStreamChunk = {
+        const data = {
           numSplats: decoded.numSplats,
           splatArrays: decoded.splatArrays,
           extra: decoded.extra,
           rootRadius: index === 0 ? radii[0] : undefined,
         };
-        const tree = {
+        // Bounds blocks belong to the LOD tree, not the packed page data.
+        const boundsBlocks = new Float32Array(
+          Math.ceil(data.numSplats / SPLAT_BOUNDS_BLOCK_SIZE) * 12,
+        );
+        reorderSplats(data, boundsBlocks);
+        const sourceToStorage = invertSplatOrder(data.sourceIds);
+        for (let i = 0; i < data.numSplats; i++)
+          data.sourceIds[i] += decoded.base;
+        const tree: RadLodChunk = {
           centers,
           radii,
           childStart,
           childCount,
+          sourceToStorage,
+          boundsBlocks,
         };
         // Only the root's compressed bytes seed codebooks in other workers.
         const rootBytes =
@@ -130,14 +154,30 @@ export function createRadStreamHandlers() {
       generation,
       tree,
     }: { index: number; generation: number; tree: RadLodChunk }) {
+      const previous = chunks.get(index);
+      if (previous && previous.generation > generation) return;
+      if (
+        tree.boundsBlocks.length !==
+        Math.ceil(tree.radii.length / SPLAT_BOUNDS_BLOCK_SIZE) * 12
+      )
+        throw new Error("Incomplete RAD bounds blocks");
       lod.retain_chunk(
         index,
         generation,
         tree.centers,
         tree.radii,
-        tree.childStart ?? new Uint32Array(0),
-        tree.childCount ?? new Uint16Array(0),
+        tree.childStart,
+        tree.childCount,
       );
+      const bytes =
+        tree.sourceToStorage.byteLength + tree.boundsBlocks.byteLength;
+      chunks.set(index, {
+        generation,
+        sourceToStorage: tree.sourceToStorage,
+        boundsBlocks: tree.boundsBlocks,
+        bytes,
+      });
+      chunkBytes += bytes - (previous?.bytes ?? 0);
     },
     selectRadLod(request: RadSelectionRequest): RadSelectionReply {
       // 16 model-view values, pixel scale, projection type, 8 X/Y projection values.
@@ -157,13 +197,23 @@ export function createRadStreamHandlers() {
         request.pixelThreshold,
         request.hysteresis ?? 0.05,
       ) as RadLodSelection;
-      return selections.prepare(header.meta, selected, request);
+      const reply = selections.prepare(header.meta, selected, request);
+      reply.retainedBytes += chunkBytes;
+      return reply;
     },
     releaseRadChunk({
       index,
       generation,
     }: { index: number; generation?: number }) {
       lod.release_chunk(index, generation);
+      const previous = chunks.get(index);
+      if (
+        previous &&
+        (generation === undefined || previous.generation === generation)
+      ) {
+        chunkBytes -= previous.bytes;
+        chunks.delete(index);
+      }
     },
   };
 }

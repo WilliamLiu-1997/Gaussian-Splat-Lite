@@ -3,6 +3,7 @@ import {
   type RadSelectionRange,
   radPageTextureLayout,
 } from "../../../data/RadPagedSplats";
+import { SPLAT_BOUNDS_BLOCK_SIZE } from "../../../data/defines";
 import {
   getSplatByteLength,
   getSplatTextureBytes,
@@ -113,7 +114,6 @@ export class RadStreamScheduler {
   private readonly pools: Pool[] = [];
   private readonly bounds = new THREE.Box3();
   private readonly matrix = new THREE.Matrix4();
-  private readonly point = new THREE.Vector3();
   private meta?: RadMeta;
   private pageSize = 0;
   private pageStride = 0;
@@ -251,8 +251,9 @@ export class RadStreamScheduler {
     const paddedCount = Math.ceil(this.pageSize / 2048) * 2048;
     this.maxPagePendingBytes =
       getSplatTextureBytes(paddedCount, this.numSh) +
-      // Centers, radii and child arrays awaiting LOD worker registration.
-      this.pageSize * 22;
+      // Tree data, source IDs, Morton order and bounds awaiting LOD registration.
+      this.pageSize * 30 +
+      Math.ceil(this.pageSize / SPLAT_BOUNDS_BLOCK_SIZE) * 48;
     this.pageBudget = meta.chunks.length;
     this.wanted.add(0);
     this.pump();
@@ -515,7 +516,9 @@ export class RadStreamScheduler {
             start,
             end,
             slot,
-            sourceOffset: pool.batch.source.pageStart(slot) - page.base,
+            pageStart: pool.batch.source.pageStart(slot),
+            chunkIndex: page.index,
+            sourceBase: page.base,
           });
           selectedCount += end - start;
         }
@@ -540,10 +543,10 @@ export class RadStreamScheduler {
           selection.touchedChunks.byteLength +
           selection.wantedChunks.byteLength +
           selectedCount * 8 + // Render indices and post-fade indices.
-          // Opacity tables, selected/post-fade page counts and dirty flags.
+          // Opacity tables, current/post-fade page counts and bounds, dirty flags.
           pools.reduce(
             (bytes, pool) =>
-              bytes + pool.opacityBlocks.byteLength + pool.pageCount * 9,
+              bytes + pool.opacityBlocks.byteLength + pool.pageCount * 9 + 96,
             0,
           ),
       };
@@ -739,19 +742,10 @@ export class RadStreamScheduler {
   }
 
   private setInitialBounds(data: RadStreamChunk) {
-    const positions = new Float32Array(
-      data.splatArrays[0].buffer,
-      data.splatArrays[0].byteOffset,
-      data.splatArrays[0].length,
-    );
-    for (let index = 0; index < data.numSplats; index++) {
-      this.point.set(
-        positions[index * 4],
-        positions[index * 4 + 1],
-        positions[index * 4 + 2],
-      );
-      this.bounds.expandByPoint(this.point);
-    }
+    // The page worker computes these bounds during Morton reordering.
+    const bounds = data.centerOnlyBoundingBox;
+    this.bounds.min.fromArray(bounds);
+    this.bounds.max.fromArray(bounds, 3);
     if (this.bounds.min.equals(this.bounds.max))
       this.bounds.expandByScalar(Math.max(0.001, data.rootRadius ?? 1));
   }
@@ -876,11 +870,7 @@ export class RadStreamScheduler {
   getGlobalIndex(mesh: THREE.Object3D, renderedIndex: number) {
     const pool = this.pools.find(({ batch }) => batch === mesh);
     if (!pool) throw new Error("Mesh does not belong to this RAD dataset");
-    const source = pool.batch.source.getSourceIndex(renderedIndex);
-    const slot = Math.floor(source / pool.batch.source.pageStride);
-    const page = pool.slots[slot];
-    if (!page) throw new Error("RAD raycast references a retired page");
-    return page.base + source - pool.batch.source.pageStart(slot);
+    return pool.batch.source.getSourceIndex(renderedIndex);
   }
 
   private changed() {

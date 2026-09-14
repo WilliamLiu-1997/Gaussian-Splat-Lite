@@ -21,23 +21,7 @@ await splat.initialized;
 
 `file` accepts a `File` or `Blob`. For bytes, use `fileBytes: bytes`; `fileName` or `fileType` can supply an explicit format hint for any input.
 
-To create Splats in code:
-
-```js
-const splat = new SplatMesh({
-  constructSplats: (data) => {
-    data.pushSplats([{
-      center: new THREE.Vector3(0, 0, 0),
-      scales: new THREE.Vector3(0.2, 0.1, 0.1),
-      quaternion: new THREE.Quaternion(),
-      opacity: 1,
-      color: new THREE.Color(0x4f8cff),
-    }]);
-  },
-});
-scene.add(splat);
-await splat.initialized;
-```
+Loaded indices may differ from file order; see [data rules](Splats.md#data-rules).
 
 ## Options
 
@@ -51,8 +35,6 @@ await splat.initialized;
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | Apply a [load-time transform](PostDecode.md) to each Splat |
 | `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
-| `maxSplats` | `number` | `0` | Initial capacity for programmatic construction; grows when necessary |
-| `constructSplats` | `(splats) => void \| Promise<void>` | `undefined` | Populates `Splats` during initialization |
 | `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Download or file-reading progress callback |
 | `onLoad` | `(mesh) => void \| Promise<void>` | `undefined` | Called after initialization completes |
 | `editable` | `boolean` | `true` | Allow scene-wide and model-specific region edits |
@@ -60,13 +42,13 @@ await splat.initialized;
 | `minRaycastOpacity` | `number` | `0.15` | Ignore more transparent areas when picking; higher values narrow the hit area |
 | `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before each model update; use for animation |
 
-Choose at most one of `url`, `file`, `fileBytes`, `splats`, or `constructSplats`; mixing inputs throws.
+Choose at most one of `url`, `file`, `fileBytes`, or `splats`; mixing inputs throws.
 
 ## Common properties
 
 | Property | Type / default | Description |
 | --- | --- | --- |
-| `initialized` | `Promise<SplatMesh>` | Resolves after asynchronous loading and construction |
+| `initialized` | `Promise<SplatMesh>` | Resolves after loading and the `onLoad` callback |
 | `isInitialized` | `boolean` | Whether initialization has completed |
 | `numSplats` | `number` | Current Splat count |
 | `recolor` | `THREE.Color(1, 1, 1)` | RGB multiplier applied to the entire object |
@@ -81,12 +63,9 @@ Choose at most one of `url`, `file`, `fileBytes`, `splats`, or `constructSplats`
 ```ts
 await mesh.initialized;
 
-mesh.getBoundingBox();      // Centers only; faster.
-mesh.getBoundingBox(false); // Includes rotated and scaled Splat bounds.
+mesh.getBoundingBox();      // Centers only.
+mesh.getBoundingBox(false); // Includes each Splat's scale and rotation.
 
-mesh.setSplats([index], [splat]);
-mesh.pushSplats([splat]);
-mesh.removeSplats([indexA, indexB]); // Compacts surviving Splat indices.
 mesh.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 
 mesh.updateVersion();                 // Regenerate and re-sort.
@@ -95,7 +74,9 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-Batch inputs contain `center`, `scales`, `quaternion`, `opacity`, `color`, and optional `sh` (0, 3, 8, or 15 coefficients for SH0/1/2/3). Bounds require initialization; mutation throws after disposal.
+Bounds require initialization. `getBoundingBox()` returns a new `Box3` in mesh-local space; pass `false` to include Splat scale and rotation. Bounds include zero-scale Splats and ignore non-finite centers. Streamed bounds follow the visible selection, but RAD bounds may also include unselected Splats.
+
+For world-space bounds, update the world matrix and apply `mesh.matrixWorld` to the returned box.
 
 `mesh.dispose()` also disposes its `Splats`, including caller-supplied data. To keep shared or reusable data:
 
@@ -123,6 +104,8 @@ if (intersections.length > 0) {
 ```
 
 Requires `raycastable: true`. Picking may return no hits during initial setup. Streaming models can be picked, but hits do not follow their display fades.
+
+Hits include `index` for reading the current Splat and `sourceIndex` for its original source ID (`SplatIntersection` in TypeScript). Streamed indices can change with the visible selection. RAD source IDs are file-global node indices; streamed SOG source IDs are indices within the hit batch's source chunk.
 
 ## Scene integration
 

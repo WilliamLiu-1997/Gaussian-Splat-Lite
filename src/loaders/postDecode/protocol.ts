@@ -228,6 +228,7 @@ export type PostDecodeSplatData = {
   splat0: Uint32Array;
   splat1: Uint32Array;
   sortCenters: Float32Array;
+  sourceIds?: Uint32Array;
   sh1?: Uint32Array;
   sh2?: Uint32Array;
   sh3a?: Uint32Array;

@@ -6,7 +6,9 @@ use wasm_bindgen::prelude::*;
 
 use crate::{decoder::ChunkDecoder, splats::SplatsData};
 
+mod bounds;
 mod decoder;
+mod morton;
 mod rad;
 mod rad_lod;
 mod raycast;

@@ -32,6 +32,8 @@ await streaming.firstRenderable;
 
 Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed models support SDF edits and picking; their data is read-only.
 
+For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#raycasting).
+
 ## Options
 
 | Option | Default | Description |

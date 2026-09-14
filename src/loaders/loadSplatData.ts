@@ -1,5 +1,5 @@
 import { DefaultLoadingManager, type Loader } from "three";
-import type { SplatFileType, SplatResult } from "../data/defines";
+import type { ReorderedSplatResult, SplatFileType } from "../data/defines";
 import { workerPool } from "../runtime/SplatWorker";
 import { abortable } from "../runtime/abort";
 import { getAssetBaseUrl } from "./assetUrl";
@@ -19,7 +19,7 @@ export type SplatDataLoadOptions = {
   postDecode?: SplatPostDecodeProgram;
   signal?: AbortSignal;
   onProgress?: (event: ProgressEvent) => void;
-  onLoad?: (decoded: SplatResult) => void;
+  onLoad?: (decoded: ReorderedSplatResult) => void;
   onError?: (error: unknown) => void;
 };
 
@@ -49,7 +49,7 @@ export async function loadSplatData(
     requestHeader: {},
     withCredentials: false,
   },
-): Promise<SplatResult> {
+): Promise<ReorderedSplatResult> {
   let resolvedURL: string | undefined;
   let started = false;
   const controller = new AbortController();

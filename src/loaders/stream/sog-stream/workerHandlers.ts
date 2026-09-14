@@ -2,6 +2,7 @@ import type { SplatResult } from "../../../data/defines";
 import { getSplatByteLength, getSplatShDegree } from "../../../data/splatData";
 import { extractSplatRange } from "../../../data/splatRange";
 import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes";
+import { reorderSplats, restoreSplatOrder } from "../../morton";
 import { packSogLodIndex, parseSogLodManifest } from "./sogLod";
 import { type SogView, SogVisibility } from "./sogVisibility";
 
@@ -13,7 +14,7 @@ export type SogChunkInfo = {
 
 /** LOD workers parse the index once before selection; other workers own chunk caches. */
 export function createSogStreamHandlers(
-  loadSplats: (
+  decodeSplats: (
     args: SplatLoadArgs,
     options: { sendStatus: (data: SplatLoadStatus) => void },
   ) => Promise<SplatResult>,
@@ -53,6 +54,9 @@ export function createSogStreamHandlers(
     id,
     data,
   }: { id: number; data: SplatResult }): SogChunkInfo {
+    // A custom loader may have reordered the whole chunk. Restore file ranges
+    // once; each extracted region is reordered independently below.
+    restoreSplatOrder(data);
     sogChunks.set(id, data);
     return {
       numSplats: data.numSplats,
@@ -68,7 +72,7 @@ export function createSogStreamHandlers(
     const controller = new AbortController();
     sogLoads.set(id, controller);
     try {
-      const data = await loadSplats(
+      const data = await decodeSplats(
         { ...args, signal: controller.signal },
         options,
       );
@@ -89,9 +93,12 @@ export function createSogStreamHandlers(
     const source = sogChunks.get(id);
     if (!source) throw new Error("Streaming chunk is no longer cached");
     // Fixed batch storage supplies alignment and reads centers from packed XYZ.
-    return ranges.map(({ start, count }) =>
-      extractSplatRange(source, start, count, true),
-    );
+    return ranges.map(({ start, count }) => {
+      const data = extractSplatRange(source, start, count);
+      reorderSplats(data);
+      for (let i = 0; i < count; i++) data.sourceIds[i] += start;
+      return data;
+    });
   }
 
   function releaseSogChunk({ id }: { id: number }) {

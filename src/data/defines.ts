@@ -27,9 +27,25 @@ export type SplatExtra = {
   sh3b?: Uint32Array;
 };
 
+/** Morton storage records per cached RAD bounds block. */
+export const SPLAT_BOUNDS_BLOCK_SIZE = 256;
+
 export type SplatResult = {
   numSplats: number;
   splatArrays: [Uint32Array, Uint32Array];
   sortCenters?: Float32Array;
+  /** Storage index to original source index; absent for identity order. */
+  sourceIds?: Uint32Array;
+  /** Local finite center bounds: min XYZ followed by max XYZ. */
+  centerOnlyBoundingBox?: Float32Array;
+  /** Local bounds including scale and rotation: min XYZ followed by max XYZ. */
+  boundingBox?: Float32Array;
   extra: SplatExtra;
+};
+
+/** Spatially reordered records with source IDs and cached local bounds. */
+export type ReorderedSplatResult = SplatResult & {
+  sourceIds: Uint32Array;
+  centerOnlyBoundingBox: Float32Array;
+  boundingBox: Float32Array;
 };

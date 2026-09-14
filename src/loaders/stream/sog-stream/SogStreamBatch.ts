@@ -1,6 +1,6 @@
 import type * as THREE from "three";
 import { SogRegionSplats } from "../../../data/SogRegionSplats";
-import type { SplatResult } from "../../../data/defines";
+import type { ReorderedSplatResult } from "../../../data/defines";
 import { SplatMesh } from "../../../scene/SplatMesh";
 
 /** Regions share one source, one scene node and one accumulator generation call. */
@@ -33,7 +33,7 @@ export class SogStreamBatch extends SplatMesh {
     return this.source.uploadBytes(start, count);
   }
 
-  writeRegion(start: number, data: SplatResult) {
+  writeRegion(start: number, data: ReorderedSplatResult) {
     const count = data.numSplats;
     // The scheduler assigns disjoint fixed slots; only occupancy changes.
     this.source.write(start, data);
@@ -58,6 +58,7 @@ export class SogStreamBatch extends SplatMesh {
   releaseRegion(start: number) {
     if (!this.slots.has(start)) return;
     this.setRegionOpacity(start, 0);
+    this.source.release(start);
     this.slots.delete(start);
     if (!this.slots.size) {
       this.dispose();

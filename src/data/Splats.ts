@@ -2,27 +2,22 @@ import * as THREE from "three";
 
 import type { SplatFileResolver } from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
-import { toHalf } from "../utils/numeric";
 import {
+  type ReorderedSplatResult,
   SPLAT_BLOCKS_DISABLED,
   SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
+  type SplatExtra,
   type SplatFileType,
   type SplatResult,
 } from "./defines";
+import { decodeShRgbToArray } from "./splatCodec";
 import {
-  decodeShRgbToArray,
-  encodeQuatOctXy1010R12,
-  encodeShRgb,
-  encodeSplatOpacity,
-} from "./splatCodec";
-import {
-  SH_ARRAY_COUNTS,
   SH_KEYS,
   getSplatByteLength,
   getSplatShDegree,
+  resetSplatBounds,
 } from "./splatData";
-import { extractSplatRange } from "./splatRange";
 import { getTextureSize } from "./textureLayout";
 import { decodeSplat } from "./unpack";
 
@@ -36,16 +31,6 @@ type SplatShTextures = {
 const SH_COUNTS = [0, 3, 8, 15] as const;
 
 type DecodedSplat = ReturnType<typeof decodeSplat>;
-export type SplatInput = {
-  center: THREE.Vector3;
-  scales: THREE.Vector3;
-  quaternion: THREE.Quaternion;
-  opacity: number;
-  color: THREE.Color;
-  /** SH0/1/2/3 use 0, 3, 8, or 15 RGB coefficients respectively. */
-  sh?: readonly THREE.Color[];
-};
-
 type DecodedSplatWithSh = DecodedSplat & { sh: THREE.Color[] };
 
 export type SplatsOptions = {
@@ -58,106 +43,88 @@ export type SplatsOptions = {
   resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
-  maxSplats?: number;
-  construct?: (splats: Splats) => Promise<void> | void;
   onProgress?: (event: ProgressEvent) => void;
 };
 
-type SplatsInitializationOptions = SplatsOptions & {
-  splatArrays?: [Uint32Array, Uint32Array];
-  sortCenters?: Float32Array;
-  numSplats?: number;
-  extra?: Record<string, unknown>;
-};
-
-type SplatsState = {
+type SplatsState = ReorderedSplatResult & {
   maxSplats: number;
-  numSplats: number;
-  splatArrays: [Uint32Array, Uint32Array];
-  sortCenters: Float32Array;
-  extra: Record<string, unknown>;
-  sortCentersDirty: boolean;
 };
 
-function validateInitializationInputs(options: SplatsInitializationOptions) {
+function validateInitializationInputs(options: SplatsOptions) {
+  if ("splatArrays" in options)
+    throw new Error(
+      "splatArrays initialization is not supported; use url, file, or fileBytes",
+    );
   const inputs: string[] = [];
   if (options.url !== undefined) inputs.push("url");
   if (options.file !== undefined) inputs.push("file");
   if (options.fileBytes !== undefined) inputs.push("fileBytes");
-  if (options.splatArrays !== undefined) inputs.push("splatArrays");
-  if (options.construct !== undefined) inputs.push("construct");
   if (inputs.length > 1) {
     throw new Error(
-      `Splats initialization inputs are mutually exclusive; provide only one of url, file, fileBytes, splatArrays, or construct (received: ${inputs.join(", ")})`,
+      `Splats initialization inputs are mutually exclusive; provide only one of url, file, or fileBytes (received: ${inputs.join(", ")})`,
     );
   }
+  return inputs.length > 0;
 }
 
-function hasFileInput(options: SplatsOptions) {
-  return (
-    options.url !== undefined ||
-    options.file !== undefined ||
-    options.fileBytes !== undefined
-  );
-}
-
-function createSplatsState(options: SplatsInitializationOptions): SplatsState {
-  if (options.splatArrays !== undefined) {
-    const [first, second] = options.splatArrays;
-    if (first.length !== second.length) {
-      throw new Error("splatArrays must have the same length");
-    }
-    if (first.length % 4 !== 0) {
-      throw new Error("splatArrays must contain complete four-word records");
-    }
-
-    const inputCapacity = first.length / 4;
-    const numSplats = options.numSplats ?? inputCapacity;
-    if (
-      !Number.isSafeInteger(numSplats) ||
-      numSplats < 0 ||
-      numSplats > inputCapacity
-    ) {
-      throw new Error("numSplats must be an integer within splatArrays");
-    }
-    if (
-      options.sortCenters !== undefined &&
-      options.sortCenters.length < numSplats * 3
-    ) {
-      throw new Error("sortCenters is smaller than numSplats");
-    }
-
-    const maxSplats = getTextureSize(inputCapacity).maxSplats;
-    let splatArrays = options.splatArrays;
-    if (maxSplats !== inputCapacity) {
-      splatArrays = [
-        new Uint32Array(maxSplats * 4),
-        new Uint32Array(maxSplats * 4),
-      ];
-      splatArrays[0].set(first);
-      splatArrays[1].set(second);
-    }
-    return {
-      maxSplats,
-      numSplats,
-      splatArrays,
-      sortCenters: options.sortCenters ?? new Float32Array(0),
-      extra: options.extra ?? {},
-      sortCentersDirty: options.sortCenters === undefined,
-    };
+function createDecodedState(data: ReorderedSplatResult): SplatsState {
+  const [first, second] = data.splatArrays;
+  if (first.length !== second.length) {
+    throw new Error("splatArrays must have the same length");
+  }
+  if (first.length % 4 !== 0) {
+    throw new Error("splatArrays must contain complete four-word records");
   }
 
+  const inputCapacity = first.length / 4;
+  const numSplats = data.numSplats;
+  if (
+    !Number.isSafeInteger(numSplats) ||
+    numSplats < 0 ||
+    numSplats > inputCapacity
+  ) {
+    throw new Error("numSplats must be an integer within splatArrays");
+  }
+  if (
+    data.sortCenters !== undefined &&
+    data.sortCenters.length < numSplats * 3
+  ) {
+    throw new Error("sortCenters is smaller than numSplats");
+  }
+  if (data.sourceIds.length < numSplats)
+    throw new Error("sourceIds is smaller than numSplats");
+  if (data.centerOnlyBoundingBox?.length !== 6)
+    throw new Error("Decoded center bounds must contain six values");
+  if (data.boundingBox?.length !== 6)
+    throw new Error("Decoded bounds must contain six values");
+  const maxSplats = getTextureSize(inputCapacity).maxSplats;
+  let splatArrays = data.splatArrays;
+  if (maxSplats !== inputCapacity) {
+    splatArrays = [
+      new Uint32Array(maxSplats * 4),
+      new Uint32Array(maxSplats * 4),
+    ];
+    splatArrays[0].set(first);
+    splatArrays[1].set(second);
+  }
+  return { ...data, maxSplats, splatArrays };
+}
+
+function createEmptyState(): SplatsState {
+  const bounds = new Float32Array(6);
+  resetSplatBounds(bounds);
   return {
-    maxSplats: options.maxSplats ?? 0,
+    maxSplats: 0,
     numSplats: 0,
     splatArrays: [new Uint32Array(0), new Uint32Array(0)],
-    sortCenters: new Float32Array(0),
-    extra: options.extra ?? {},
-    sortCentersDirty: false,
+    sourceIds: new Uint32Array(0),
+    centerOnlyBoundingBox: bounds,
+    boundingBox: bounds.slice(),
+    extra: {},
   };
 }
 
-/** A mutable splat source with two 16-byte texture records per splat. */
+/** An encoded splat source with two 16-byte texture records per splat. */
 export class Splats {
   maxSplats = 0;
   numSplats = 0;
@@ -165,17 +132,18 @@ export class Splats {
     new Uint32Array(0),
     new Uint32Array(0),
   ];
-  private sortCenters: Float32Array = new Float32Array(0);
-  private extra: Record<string, unknown> = {};
+  private sortCenters?: Float32Array;
+  protected sourceIds!: Uint32Array;
+  protected centerOnlyBounds!: Float32Array;
+  protected bounds!: Float32Array;
+  private extra: SplatExtra = {};
 
   initialized: Promise<Splats>;
   isInitialized = false;
+  needsUpdate = true;
 
   private textures: [THREE.DataArrayTexture, THREE.DataArrayTexture];
   private shTextures: SplatShTextures = {};
-  private updateNeeded = true;
-  private sortCentersDirty = false;
-  private initializationVersion = 0;
   private loadController?: AbortController;
 
   constructor(options: SplatsOptions = {}) {
@@ -185,41 +153,26 @@ export class Splats {
   }
 
   initialize(options: SplatsOptions = {}): Promise<Splats> {
-    const initializationOptions = options as SplatsInitializationOptions;
-    validateInitializationInputs(initializationOptions);
-    const isAsync = hasFileInput(options) || options.construct !== undefined;
-    const state = createSplatsState(
-      isAsync ? { maxSplats: options.maxSplats } : initializationOptions,
-    );
-    const version = ++this.initializationVersion;
+    const isAsync = validateInitializationInputs(options);
+    const state = createEmptyState();
     this.loadController?.abort();
-    const controller = hasFileInput(options)
-      ? new AbortController()
-      : undefined;
+    const controller = isAsync ? new AbortController() : undefined;
     this.loadController = controller;
 
     this.isInitialized = false;
     this.commitState(state);
 
-    if (isAsync) {
-      // Defer construction so initialize() can publish the new promise before a
-      // user callback has an opportunity to re-enter initialize().
+    if (controller) {
+      // Publish the readiness promise before starting the file load.
       this.initialized = Promise.resolve()
         .then(() => {
-          controller?.signal.throwIfAborted();
-          return version === this.initializationVersion
-            ? this.asyncInitialize(options, controller?.signal)
-            : undefined;
+          controller.signal.throwIfAborted();
+          return this.asyncInitialize(options, controller.signal);
         })
-        .then((initialized) => {
-          if (!initialized) return this;
-          try {
-            if (version === this.initializationVersion) {
-              this.commitState(initialized.captureState());
-              this.isInitialized = true;
-            }
-          } finally {
-            initialized.dispose();
+        .then((state) => {
+          if (this.loadController === controller) {
+            this.commitState(state);
+            this.isInitialized = true;
           }
           return this;
         })
@@ -243,62 +196,34 @@ export class Splats {
     this.numSplats = state.numSplats;
     this.splatArrays = state.splatArrays;
     this.sortCenters = state.sortCenters;
+    this.sourceIds = state.sourceIds;
+    this.centerOnlyBounds = state.centerOnlyBoundingBox;
+    this.bounds = state.boundingBox;
     this.extra = state.extra;
-    this.sortCentersDirty = state.sortCentersDirty;
-    this.updateNeeded = true;
+    this.needsUpdate = true;
   }
 
-  private captureState(): SplatsState {
-    return {
-      maxSplats: this.maxSplats,
-      numSplats: this.numSplats,
-      splatArrays: this.splatArrays,
-      sortCenters: this.sortCenters,
-      extra: this.extra,
-      sortCentersDirty: this.sortCentersDirty,
-    };
+  /** @internal Adopt a loader result with precomputed bounds. */
+  initializeDecoded(data: ReorderedSplatResult) {
+    const state = createDecodedState(data);
+    this.initialize();
+    this.commitState(state);
   }
 
   private async asyncInitialize(
     options: SplatsOptions,
-    signal?: AbortSignal,
-  ): Promise<Splats> {
-    if (hasFileInput(options)) {
-      const { loadSplatData } = await import("../loaders/loadSplatData");
-      let initialized!: Splats;
-      await loadSplatData({
-        url: options.url,
-        file: options.file,
-        fileBytes: options.fileBytes,
-        fileType: options.fileType,
-        fileName: options.fileName,
-        resolveFile: options.resolveFile,
-        postDecode: options.postDecode,
-        onProgress: options.onProgress,
-        onLoad: (decoded) => {
-          initialized = new Splats(decoded as SplatsInitializationOptions);
-        },
-        signal,
-      });
-      return initialized;
-    }
-
-    const initialized = new Splats({ maxSplats: options.maxSplats });
-    try {
-      await options.construct?.(initialized);
-      return initialized;
-    } catch (error) {
-      initialized.dispose();
-      throw error;
-    }
+    signal: AbortSignal,
+  ): Promise<SplatsState> {
+    const { loadSplatData } = await import("../loaders/loadSplatData");
+    const decoded = await loadSplatData({ ...options, signal });
+    return createDecodedState(decoded);
   }
 
   dispose() {
-    this.initializationVersion += 1;
     this.loadController?.abort();
     this.loadController = undefined;
     this.isInitialized = false;
-    this.commitState(createSplatsState({}));
+    this.commitState(createEmptyState());
   }
 
   private disposeTextures() {
@@ -313,110 +238,53 @@ export class Splats {
     return this.numSplats;
   }
 
+  /** @internal A fresh cached local-space box for SplatMesh. */
+  getBoundingBox(centersOnly = true): THREE.Box3 {
+    if (!this.isInitialized) throw new Error("Splats is not initialized");
+    const bounds = centersOnly ? this.centerOnlyBounds : this.bounds;
+    return new THREE.Box3(
+      new THREE.Vector3().fromArray(bounds, 0),
+      new THREE.Vector3().fromArray(bounds, 3),
+    );
+  }
+
   getNumSh() {
     return getSplatShDegree(this.extra);
   }
 
   /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
   getByteLength() {
-    return getSplatByteLength(this.captureState());
-  }
-
-  /** Copies a contiguous range, preserving packed records, SH and sort centers. */
-  extractRange(start: number, count: number): Splats {
-    if (!this.isInitialized) throw new Error("Invalid Splat extraction range");
-    return new Splats(
-      extractSplatRange(this.packedData(), start, count) as SplatsOptions,
-    );
-  }
-
-  private packedData(): SplatResult {
-    return {
-      numSplats: this.numSplats,
+    return getSplatByteLength({
       splatArrays: this.splatArrays,
-      sortCenters: this.sortCentersDirty ? undefined : this.sortCenters,
-      extra: Object.fromEntries(
-        SH_KEYS.flatMap((key) => {
-          const array = this.extra[key];
-          return array instanceof Uint32Array ? [[key, array]] : [];
-        }),
-      ),
-    };
+      sortCenters: this.sortCenters,
+      sourceIds: this.sourceIds,
+      centerOnlyBoundingBox: this.centerOnlyBounds,
+      boundingBox: this.bounds,
+      extra: this.extra,
+    });
   }
 
   /** @internal Consume owned arrays for transfer to a streaming worker. */
-  takeData(): SplatResult {
+  takeData(): SplatResult & { sourceIds: Uint32Array } {
     if (!this.isInitialized) throw new Error("Splats is not initialized");
-    const data = this.packedData();
+    const data = {
+      numSplats: this.numSplats,
+      splatArrays: this.splatArrays,
+      sortCenters: this.sortCenters,
+      sourceIds: this.sourceIds,
+      centerOnlyBoundingBox: this.centerOnlyBounds,
+      boundingBox: this.bounds,
+      extra: this.extra,
+    } satisfies SplatResult;
     this.dispose();
     return data;
   }
 
-  get needsUpdate() {
-    return this.updateNeeded;
-  }
-
-  set needsUpdate(value: boolean) {
-    this.updateNeeded = value;
-    if (value) this.sortCentersDirty = true;
-  }
-
-  private ensureSortCenterCapacity(capacity: number) {
-    const requiredValues = capacity * 3;
-    if (this.sortCenters.length >= requiredValues) return;
-
-    const sortCenters = new Float32Array(requiredValues);
-    sortCenters.set(this.sortCenters);
-    this.sortCenters = sortCenters;
-  }
-
-  private ensureShCapacity(degree: number, capacity: number) {
-    const requiredValues = capacity * 4;
-    return SH_KEYS.slice(0, SH_ARRAY_COUNTS[degree]).map((key) => {
-      const current = this.extra[key];
-      if (current instanceof Uint32Array && current.length >= requiredValues) {
-        return current;
-      }
-      const data = new Uint32Array(requiredValues);
-      if (current instanceof Uint32Array) data.set(current);
-      this.extra[key] = data;
-      return data;
-    });
-  }
-
-  private ensureSplats(numSplats: number): [Uint32Array, Uint32Array] {
-    const currentCapacity = this.splatArrays[0].length / 4;
-    const targetSize =
-      numSplats <= this.maxSplats
-        ? this.maxSplats
-        : Math.max(numSplats, 2 * this.maxSplats);
-    if (targetSize > currentCapacity) {
-      this.maxSplats = getTextureSize(targetSize).maxSplats;
-      const first = new Uint32Array(this.maxSplats * 4);
-      const second = new Uint32Array(this.maxSplats * 4);
-      first.set(this.splatArrays[0]);
-      second.set(this.splatArrays[1]);
-      this.splatArrays = [first, second];
-      this.updateNeeded = true;
-    }
-    const capacity = this.splatArrays[0].length / 4;
-    this.ensureSortCenterCapacity(capacity);
-    return this.splatArrays;
-  }
-
-  private prepareSplatEncoding(numSplats: number, shDegree: number) {
-    const arrays = this.ensureSplats(numSplats);
-    const shArrays = this.ensureShCapacity(shDegree, arrays[0].length / 4);
-    return {
-      arrays,
-      splatCenters: new Float32Array(
-        arrays[0].buffer,
-        arrays[0].byteOffset,
-        arrays[0].length,
-      ),
-      sortCenters: this.getSortCenters(),
-      shArrays,
-    };
+  /** Original source ID, retained across reordering and range extraction. */
+  getSourceIndex(index: number) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= this.numSplats)
+      throw new Error("Invalid splat index");
+    return this.sourceIds[index];
   }
 
   getSplat(index: number): DecodedSplatWithSh;
@@ -445,139 +313,6 @@ export class Splats {
     secondTarget.set(this.splatArrays[1].subarray(wordStart, wordEnd));
   }
 
-  setSplats(indices: readonly number[], splats: readonly SplatInput[]) {
-    if (indices.length !== splats.length) {
-      throw new Error("Splat indices and data must have the same length");
-    }
-    const count = splats.length;
-    if (count === 0) return;
-
-    let shDegree = this.getNumSh();
-    let maxIndex = -1;
-    for (let offset = 0; offset < count; offset += 1) {
-      const index = indices[offset];
-      validateSplatIndex(index);
-      if (index > maxIndex) maxIndex = index;
-      const sh = splats[offset].sh;
-      if (sh === undefined) continue;
-      const degree = getShDegree(sh);
-      if (degree > shDegree) shDegree = degree;
-    }
-
-    const { arrays, splatCenters, sortCenters, shArrays } =
-      this.prepareSplatEncoding(maxIndex + 1, shDegree);
-    for (let offset = 0; offset < count; offset += 1) {
-      encodeSplat(
-        arrays,
-        splatCenters,
-        shArrays,
-        sortCenters,
-        indices[offset],
-        splats[offset],
-      );
-    }
-    if (maxIndex >= this.numSplats) this.numSplats = maxIndex + 1;
-    this.updateNeeded = true;
-  }
-
-  pushSplats(splats: readonly SplatInput[]) {
-    const count = splats.length;
-    if (count === 0) return;
-
-    const startIndex = this.numSplats;
-    const endIndex = startIndex + count;
-    validateSplatIndex(endIndex - 1);
-
-    let shDegree = this.getNumSh();
-    for (let offset = 0; offset < count; offset += 1) {
-      const sh = splats[offset].sh;
-      if (sh === undefined) continue;
-      const degree = getShDegree(sh);
-      if (degree > shDegree) shDegree = degree;
-    }
-
-    const { arrays, splatCenters, sortCenters, shArrays } =
-      this.prepareSplatEncoding(endIndex, shDegree);
-    for (let offset = 0; offset < count; offset += 1) {
-      encodeSplat(
-        arrays,
-        splatCenters,
-        shArrays,
-        sortCenters,
-        startIndex + offset,
-        splats[offset],
-      );
-    }
-    this.numSplats = endIndex;
-    this.updateNeeded = true;
-  }
-
-  removeSplats(indices: readonly number[]) {
-    if (indices.length === 0) return;
-
-    let sortedUnique = true;
-    let previousIndex = -1;
-    for (const index of indices) {
-      validateSplatIndex(index);
-      if (index >= this.numSplats) throw new Error("Invalid splat index");
-      if (index <= previousIndex) sortedUnique = false;
-      previousIndex = index;
-    }
-    const removedIndices = sortedUnique
-      ? indices
-      : [...new Set(indices)].sort((left, right) => left - right);
-
-    const recordCount = this.numSplats;
-    this.ensureShCapacity(this.getNumSh(), this.splatArrays[0].length / 4);
-    const sortCenters = this.getSortCenters();
-    const recordArrays = [...this.splatArrays];
-    for (const key of SH_KEYS) {
-      const sh = this.extra[key];
-      if (sh instanceof Uint32Array) recordArrays.push(sh);
-    }
-
-    let targetIndex = removedIndices[0];
-    let sourceIndex = targetIndex + 1;
-    for (let offset = 1; offset < removedIndices.length; offset += 1) {
-      const nextRemoved = removedIndices[offset];
-      const count = nextRemoved - sourceIndex;
-      if (count > 0) {
-        copySplatRange(
-          recordArrays,
-          sortCenters,
-          targetIndex,
-          sourceIndex,
-          count,
-        );
-        targetIndex += count;
-      }
-      sourceIndex = nextRemoved + 1;
-    }
-    const tailCount = recordCount - sourceIndex;
-    if (tailCount > 0) {
-      copySplatRange(
-        recordArrays,
-        sortCenters,
-        targetIndex,
-        sourceIndex,
-        tailCount,
-      );
-      targetIndex += tailCount;
-    }
-    for (const data of recordArrays) {
-      data.fill(0, targetIndex * 4, recordCount * 4);
-    }
-    sortCenters.fill(0, targetIndex * 3, recordCount * 3);
-
-    this.numSplats = targetIndex;
-    this.updateNeeded = true;
-  }
-
-  private getSortCenters() {
-    if (this.sortCentersDirty) this.rebuildSortCenters();
-    return this.sortCenters;
-  }
-
   copySortCenters(target: Float32Array, targetStart: number, count: number) {
     if (count > this.numSplats || targetStart + count * 3 > target.length) {
       throw new Error("Invalid sort center copy range");
@@ -585,9 +320,9 @@ export class Splats {
     target.set(this.getSortCenters().subarray(0, count * 3), targetStart);
   }
 
-  private rebuildSortCenters() {
-    const capacity = this.splatArrays[0].length / 4;
-    this.ensureSortCenterCapacity(capacity);
+  private getSortCenters() {
+    if (this.sortCenters) return this.sortCenters;
+    const centers = new Float32Array(this.numSplats * 3);
     const [splatA, splatB] = this.splatArrays;
     const centerView = new Float32Array(
       splatA.buffer,
@@ -598,14 +333,13 @@ export class Splats {
       const i3 = index * 3;
       const i4 = index * 4;
       const disabled =
-        splatB[i4 + 1] >>> 16 === 0xfc00 &&
-        (splatB[i4 + 2] & 0xffff) === 0xfc00 &&
-        splatB[i4 + 2] >>> 16 === 0xfc00;
-      this.sortCenters[i3] = disabled ? Number.NaN : centerView[i4];
-      this.sortCenters[i3 + 1] = disabled ? Number.NaN : centerView[i4 + 1];
-      this.sortCenters[i3 + 2] = disabled ? Number.NaN : centerView[i4 + 2];
+        splatB[i4 + 1] >>> 16 === 0xfc00 && splatB[i4 + 2] === 0xfc00fc00;
+      centers[i3] = disabled ? Number.NaN : centerView[i4];
+      centers[i3 + 1] = disabled ? Number.NaN : centerView[i4 + 1];
+      centers[i3 + 2] = disabled ? Number.NaN : centerView[i4 + 2];
     }
-    this.sortCentersDirty = false;
+    this.sortCenters = centers;
+    return centers;
   }
 
   forEachCenter(
@@ -659,7 +393,7 @@ export class Splats {
     uniforms.sh2Texture.value = sh.sh2 ?? Splats.emptyTexture;
     uniforms.sh3TextureA.value = sh.sh3a ?? Splats.emptyTexture;
     uniforms.sh3TextureB.value = sh.sh3b ?? Splats.emptyTexture;
-    this.updateNeeded = false;
+    this.needsUpdate = false;
   }
 
   private getSplatTextures() {
@@ -667,19 +401,8 @@ export class Splats {
       return [Splats.emptyTexture, Splats.emptyTexture] as const;
     }
 
-    const { width, height, depth } = getTextureSize(this.maxSplats);
-    const incompatible = this.textures.some(
-      (texture, index) =>
-        !matchesUintArrayTexture(
-          texture,
-          this.splatArrays[index],
-          width,
-          height,
-          depth,
-        ),
-    );
-    if (incompatible) {
-      this.disposeMainTextures();
+    if (this.textures[0] === Splats.emptyTexture) {
+      const { width, height, depth } = getTextureSize(this.maxSplats);
       this.textures = [
         newUintArrayTexture(this.splatArrays[0], width, height, depth),
         newUintArrayTexture(this.splatArrays[1], width, height, depth),
@@ -711,11 +434,12 @@ export class Splats {
     key: (typeof SH_KEYS)[number],
     current?: THREE.DataArrayTexture,
   ) {
-    const data = this.extra[key] as Uint32Array | undefined;
-    if (!data) {
-      current?.dispose();
-      return undefined;
+    if (current) {
+      if (this.needsUpdate) current.needsUpdate = true;
+      return current;
     }
+    const data = this.extra[key];
+    if (!data) return undefined;
     const { width, height, depth, maxSplats } = getTextureSize(
       Math.max(1, data.length / 4),
     );
@@ -725,37 +449,10 @@ export class Splats {
       padded.set(data);
       this.extra[key] = padded;
     }
-    if (
-      !current ||
-      !matchesUintArrayTexture(current, padded, width, height, depth)
-    ) {
-      current?.dispose();
-      return newUintArrayTexture(padded, width, height, depth);
-    }
-    if (this.needsUpdate) current.needsUpdate = true;
-    return current;
+    return newUintArrayTexture(padded, width, height, depth);
   }
 
   static emptyTexture = newUintArrayTexture(new Uint32Array(4), 1, 1, 1);
-}
-
-function matchesUintArrayTexture(
-  texture: THREE.DataArrayTexture,
-  data: Uint32Array,
-  width: number,
-  height: number,
-  depth: number,
-) {
-  const image = texture.image;
-  return (
-    texture !== Splats.emptyTexture &&
-    image.width === width &&
-    image.height === height &&
-    image.depth === depth &&
-    image.data?.buffer === data.buffer &&
-    image.data.byteOffset === data.byteOffset &&
-    image.data.byteLength === data.byteLength
-  );
 }
 
 function newUintArrayTexture(
@@ -774,120 +471,16 @@ function newUintArrayTexture(
   return texture;
 }
 
-function decodeSplatSh(
-  extra: Record<string, unknown>,
-  index: number,
-  degree: number,
-) {
+function decodeSplatSh(extra: SplatExtra, index: number, degree: number) {
   const count = SH_COUNTS[degree];
   const result = new Array<THREE.Color>(count);
   const rgb = [0, 0, 0];
   const base = index * 4;
   for (let coefficient = 0; coefficient < count; coefficient += 1) {
     const data = extra[SH_KEYS[coefficient >> 2]];
-    const word =
-      data instanceof Uint32Array ? data[base + (coefficient & 3)] : 0;
+    const word = data?.[base + (coefficient & 3)] ?? 0;
     decodeShRgbToArray(word, rgb);
     result[coefficient] = new THREE.Color(rgb[0], rgb[1], rgb[2]);
   }
   return result;
-}
-
-function validateSplatIndex(index: number) {
-  if (
-    !Number.isSafeInteger(index) ||
-    index < 0 ||
-    index >= Number.MAX_SAFE_INTEGER
-  ) {
-    throw new Error("Invalid splat index");
-  }
-}
-
-function copySplatRange(
-  recordArrays: Uint32Array[],
-  sortCenters: Float32Array,
-  targetIndex: number,
-  sourceIndex: number,
-  count: number,
-) {
-  const target4 = targetIndex * 4;
-  const source4 = sourceIndex * 4;
-  const count4 = count * 4;
-  for (const data of recordArrays) {
-    data.copyWithin(target4, source4, source4 + count4);
-  }
-  const target3 = targetIndex * 3;
-  const source3 = sourceIndex * 3;
-  sortCenters.copyWithin(target3, source3, source3 + count * 3);
-}
-
-function encodeSplat(
-  splatArrays: [Uint32Array, Uint32Array],
-  splatCenters: Float32Array,
-  shArrays: Uint32Array[],
-  sortCenters: Float32Array,
-  index: number,
-  splat: SplatInput,
-) {
-  const i4 = index * 4;
-  const [splatA, splatB] = splatArrays;
-  const { center, scales, quaternion, opacity, color } = splat;
-  splatCenters[i4] = center.x;
-  splatCenters[i4 + 1] = center.y;
-  splatCenters[i4 + 2] = center.z;
-  splatA[i4 + 3] = encodeSplatOpacity(opacity);
-  splatB[i4] = toHalf(color.r) | (toHalf(color.g) << 16);
-  splatB[i4 + 1] = toHalf(color.b) | (toHalf(Math.log(scales.x)) << 16);
-  splatB[i4 + 2] =
-    toHalf(Math.log(scales.y)) | (toHalf(Math.log(scales.z)) << 16);
-  splatB[i4 + 3] = encodeQuatOctXy1010R12(
-    quaternion.x,
-    quaternion.y,
-    quaternion.z,
-    quaternion.w,
-  );
-  encodeSplatSh(shArrays, index, splat.sh);
-
-  const i3 = index * 3;
-  const disabled = scales.x === 0 && scales.y === 0 && scales.z === 0;
-  sortCenters[i3] = disabled ? Number.NaN : center.x;
-  sortCenters[i3 + 1] = disabled ? Number.NaN : center.y;
-  sortCenters[i3 + 2] = disabled ? Number.NaN : center.z;
-}
-
-function getShDegree(sh?: readonly THREE.Color[]) {
-  const count = sh?.length ?? 0;
-  switch (count) {
-    case 0:
-      return 0;
-    case 3:
-      return 1;
-    case 8:
-      return 2;
-    case 15:
-      return 3;
-    default:
-      throw new Error("SH must contain 0, 3, 8, or 15 coefficients");
-  }
-}
-
-function encodeSplatSh(
-  shArrays: Uint32Array[],
-  index: number,
-  sh?: readonly THREE.Color[],
-) {
-  const base = index * 4;
-  for (const data of shArrays) {
-    data[base] = 0;
-    data[base + 1] = 0;
-    data[base + 2] = 0;
-    data[base + 3] = 0;
-  }
-  if (!sh) return;
-
-  for (let coefficient = 0; coefficient < sh.length; coefficient += 1) {
-    const data = shArrays[coefficient >> 2];
-    const { r, g, b } = sh[coefficient];
-    data[base + (coefficient & 3)] = encodeShRgb(r, g, b);
-  }
 }

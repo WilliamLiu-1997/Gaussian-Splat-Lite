@@ -8,7 +8,7 @@
 
 | Directory | Responsibility |
 | --- | --- |
-| `src/data/` | Packed Splat data, codecs, texture layouts, and CPU reads and edits |
+| `src/data/` | Packed Splat data, codecs, texture layouts, and CPU reads |
 | `src/scene/` | Scene objects, transforms, raycasting, and SDF edits |
 | `src/loaders/` | File loading, decode requests, and load-time transforms |
 | `src/loaders/postDecode/` | Expression building, compilation, register allocation, and execution |
@@ -121,6 +121,7 @@ Pending extractions keep their chunk cache referenced, even if the target change
 - `RadSource` owns bounded reads, HTTP Range consistency, companion-page resolution, and cancellation.
 - `RadStreamLoader` owns a dedicated LOD worker and a bounded decoding pool. Packed geometry transfers to the calling thread; tree arrays transfer to the LOD worker. Decoder slots release after decoding, while pending-byte reservations remain until tree registration and publication can complete.
 - `rad_lod.rs` selects a camera-dependent tree cut using file-global node indices. Children replace parents only as complete groups. `radFade.ts` compares selections and prepares transitions in the LOD worker.
+- The LOD worker retains each chunk's inverse Morton order and block bounds until chunk release. `prepareRadSelection.ts` builds render indices and merges current/post-fade bounds together; publication and fade completion switch indices and bounds together on the calling thread.
 - `RadStreamScheduler` owns page requests, slot occupancy, publication, fades, retries, and retirement. `RadPagedSplats` and `RadStreamBatch` own page storage and selected-index data. Shared nodes render once, and at most two selections overlap during a fade.
 
 The scheduler retains resources through these stages:

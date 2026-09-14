@@ -40,19 +40,22 @@ function validateRadTree(start: Uint32Array, count: Uint16Array) {
   if (end !== start.length) throw new Error("RAD: tree contains a cycle");
 }
 
-function createRadOutput(numSplats: number): PostDecodeSplatData {
+type RadOutput = PostDecodeSplatData & { sourceIds: Uint32Array };
+
+function createRadOutput(numSplats: number): RadOutput {
   const capacity = getTextureSize(numSplats).maxSplats;
   return {
     numSplats,
     splat0: new Uint32Array(capacity * 4),
     splat1: new Uint32Array(capacity * 4),
     sortCenters: new Float32Array(numSplats * 3),
+    sourceIds: new Uint32Array(numSplats),
   };
 }
 
 /** Copy one chunk without retaining its arrays across reads. */
 function copyRadChunk(
-  result: PostDecodeSplatData,
+  result: RadOutput,
   chunk: RadDecodedChunk,
   offset: number,
 ) {
@@ -78,6 +81,8 @@ function copyRadChunk(
     }
   }
   if (!childCount) {
+    for (let i = 0; i < chunk.numSplats; i++)
+      result.sourceIds[output + i] = chunk.base + i;
     result.sortCenters.set(
       centers.subarray(0, chunk.numSplats * 3),
       output * 3,
@@ -86,6 +91,7 @@ function copyRadChunk(
   }
   for (let i = 0; i < chunk.numSplats; i++) {
     if (childCount[i]) continue;
+    result.sourceIds[output] = chunk.base + i;
     result.sortCenters[output * 3] = centers[i * 3];
     result.sortCenters[output * 3 + 1] = centers[i * 3 + 1];
     result.sortCenters[output * 3 + 2] = centers[i * 3 + 2];
@@ -95,7 +101,7 @@ function copyRadChunk(
 }
 
 /** Replace oversized buffers; subarray views would retain the full allocation. */
-function trimRadOutput(result: PostDecodeSplatData, numSplats: number) {
+function trimRadOutput(result: RadOutput, numSplats: number) {
   const capacity = getTextureSize(numSplats).maxSplats;
   result.numSplats = numSplats;
   for (const key of TEXTURE_KEYS) {
@@ -105,6 +111,8 @@ function trimRadOutput(result: PostDecodeSplatData, numSplats: number) {
   }
   if (result.sortCenters.length !== numSplats * 3)
     result.sortCenters = result.sortCenters.slice(0, numSplats * 3);
+  if (result.sourceIds.length !== numSplats)
+    result.sourceIds = result.sourceIds.slice(0, numSplats);
   return result;
 }
 
@@ -119,6 +127,7 @@ export async function loadRad(args: LoadRadArgs) {
     const header = decode_rad_header(bytes) as RadHeader | undefined;
     if (!header) throw new Error("RAD: truncated header");
     parsedHeader = header;
+    return header;
   };
   let { file, fileBytes } = args;
   let loaded = 0;
@@ -162,8 +171,8 @@ export async function loadRad(args: LoadRadArgs) {
       },
       true,
     );
-    if (!parsedHeader) validateHeader(await source.readHeader(signal));
-    const header = parsedHeader as RadHeader;
+    const header =
+      parsedHeader ?? validateHeader(await source.readHeader(signal));
     if (args.url && !file && !fileBytes) {
       total =
         header.chunksStart +
