@@ -167,14 +167,16 @@ export class SplatMesh extends THREE.Object3D {
     this.splats = undefined;
   }
 
-  /** Cached local bounds; optionally include per-Splat scale and rotation. */
-  getBoundingBox(centersOnly = true): THREE.Box3 {
+  /** Copy cached local bounds; optionally include per-Splat scale and rotation. */
+  getBoundingBox(centersOnly = true, target = new THREE.Box3()): THREE.Box3 {
     if (!this.isInitialized) {
       throw new Error(
         "Cannot get bounding box before SplatMesh is initialized",
       );
     }
-    return this.splats?.getBoundingBox(centersOnly) ?? new THREE.Box3();
+    return (
+      this.splats?.getBoundingBox(centersOnly, target) ?? target.makeEmpty()
+    );
   }
 
   frameUpdate({ time, deltaTime, camera, globalEdits }: SplatMeshFrameContext) {

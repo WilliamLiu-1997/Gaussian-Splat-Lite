@@ -1,3 +1,4 @@
+import type { Box3 } from "three";
 import { IndexedSplats } from "./IndexedSplats";
 import {
   type ReorderedSplatResult,
@@ -82,7 +83,7 @@ export class SogRegionSplats extends IndexedSplats {
     this.regionBounds.delete(start);
   }
 
-  override getBoundingBox(centersOnly = true) {
+  override getBoundingBox(centersOnly = true, target?: Box3) {
     this.assertLive();
     if (this.boundsDirty) {
       resetSplatBounds(this.centerOnlyBounds);
@@ -95,7 +96,7 @@ export class SogRegionSplats extends IndexedSplats {
       }
       this.boundsDirty = false;
     }
-    return super.getBoundingBox(centersOnly);
+    return super.getBoundingBox(centersOnly, target);
   }
 
   override getByteLength() {

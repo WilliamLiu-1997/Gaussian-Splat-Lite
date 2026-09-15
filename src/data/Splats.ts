@@ -238,14 +238,13 @@ export class Splats {
     return this.numSplats;
   }
 
-  /** @internal A fresh cached local-space box for SplatMesh. */
-  getBoundingBox(centersOnly = true): THREE.Box3 {
+  /** @internal Copy cached local bounds into the target box. */
+  getBoundingBox(centersOnly = true, target = new THREE.Box3()): THREE.Box3 {
     if (!this.isInitialized) throw new Error("Splats is not initialized");
     const bounds = centersOnly ? this.centerOnlyBounds : this.bounds;
-    return new THREE.Box3(
-      new THREE.Vector3().fromArray(bounds, 0),
-      new THREE.Vector3().fromArray(bounds, 3),
-    );
+    target.min.fromArray(bounds, 0);
+    target.max.fromArray(bounds, 3);
+    return target;
   }
 
   getNumSh() {

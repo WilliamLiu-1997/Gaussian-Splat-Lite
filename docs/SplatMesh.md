@@ -74,7 +74,7 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-Bounds require initialization. `getBoundingBox()` returns a new `Box3` in mesh-local space; pass `false` to include Splat scale and rotation. Bounds include zero-scale Splats and ignore non-finite centers. Streamed bounds follow the visible selection, but RAD bounds may also include unselected Splats.
+Bounds require initialization. `getBoundingBox()` returns a new `Box3` in mesh-local space; pass `false` to include Splat scale and rotation. Pass an existing box as the second argument, `mesh.getBoundingBox(true, target)`, to reuse it and avoid allocating a new box. Bounds include zero-scale Splats and ignore non-finite centers. Streamed bounds follow the visible selection, but RAD bounds may also include unselected Splats.
 
 For world-space bounds, update the world matrix and apply `mesh.matrixWorld` to the returned box.
 
