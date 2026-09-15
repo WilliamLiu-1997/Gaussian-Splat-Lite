@@ -88,14 +88,12 @@ Disabling manual `stochastic` waits for a sorted replacement when `autoUpdate` i
 | --- | --- | --- | --- |
 | `maxStdDev` | `number` | `Math.sqrt(8)` | Control the extent of each Splat; lower values crop its outer edges |
 | `minPixelRadius` | `number` | `1` | Skip Splats smaller than this screen radius in pixels |
-| `maxPixelRadius` | `number` | `512` | Limit Splat screen radius in pixels |
+| `maxPixelRadius` | `number` | `256` | Limit Splat screen radius in pixels, independently of `focalAdjustment` |
 | `minAlpha` | `number` | `0.5 / 255` | Hide parts more transparent than this value |
 | `preBlurAmount` | `number` | `0.3` | Enlarge and soften Splats |
 | `blurAmount` | `number` | `0` | Add smoothing with an opacity adjustment |
 | `clipXY` | `number` | `1.25` | Allow centers slightly outside the view; `1` clips at its edge |
 | `focalAdjustment` | `number` | `2` | Adjust projected size; higher values generally look sharper |
-
-`minPixelRadius=1` means a screen-radius cutoff of about 1 pixel. When upgrading from before 1.0.0, divide an old explicit value by `focalAdjustment` to preserve its previous cutoff. WebGPU may show slight visual differences.
 
 ## Sorting, material, and offscreen options
 

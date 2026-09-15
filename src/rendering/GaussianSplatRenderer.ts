@@ -95,8 +95,9 @@ export interface GaussianSplatRendererOptions {
    */
   minPixelRadius?: number;
   /**
-   * Maximum pixel radius for splat rendering.
-   * @default 512.0
+   * Maximum screen-pixel radius for splat rendering, independent of the
+   * internal projection scale used by focalAdjustment.
+   * @default 256.0
    */
   maxPixelRadius?: number;
   /**
@@ -386,7 +387,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     this.maxStdDev = options.maxStdDev ?? Math.sqrt(8.0);
     this.minPixelRadius = options.minPixelRadius ?? 1.0;
-    this.maxPixelRadius = options.maxPixelRadius ?? 512.0;
+    this.maxPixelRadius = options.maxPixelRadius ?? 256.0;
     this.minAlpha = options.minAlpha ?? DEFAULT_MIN_ALPHA;
     this.preBlurAmount = options.preBlurAmount ?? 0.3;
     this.blurAmount = options.blurAmount ?? 0.0;

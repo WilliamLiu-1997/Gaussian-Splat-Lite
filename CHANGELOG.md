@@ -21,6 +21,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Made `maxPixelRadius` independent of `focalAdjustment` and changed its default from `512` to `256`, preserving the previous default screen-radius limit. Divide previous explicit values by `focalAdjustment` to preserve their limits.
 - Spatially reordered loaded Splats using Morton order after `postDecode`, including streamed RAD pages and SOG regions. Loaded indices may differ from file order; use `getSourceIndex()` or a raycast hit's `sourceIndex` for original IDs.
 - Accelerated raycasting for ordinary and streamed models with cached spatial block bounds. These bounds use a fixed source-alpha cutoff of `0.01`; lowering `minRaycastOpacity` below this value does not make transparent areas outside the cached bounds pickable.
 - Cached model bounds during loading and updated streamed bounds with selection changes, avoiding repeated per-Splat scans in `getBoundingBox()`. `getBoundingBox(false)` now includes scale, rotation, opacity and kernel shape at a fixed source-alpha cutoff of `0.01`. These bounds do not track display settings or SDF edits, and streamed RAD bounds may include unselected Splats.

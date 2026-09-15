@@ -275,10 +275,11 @@ export function createProjectionProgram(
               supportRadius.div(maximumSupportRadius),
               0,
             );
-            const fullScale1 = maxPixelRadius.min(
+            const maxProjectedRadius = maxPixelRadius.mul(focalAdjustment);
+            const fullScale1 = maxProjectedRadius.min(
               maximumSupportRadius.mul(eigen1.sqrt()),
             );
-            const fullScale2 = maxPixelRadius.min(
+            const fullScale2 = maxProjectedRadius.min(
               maximumSupportRadius.mul(eigen2.sqrt()),
             );
             const scale1 = fullScale1.mul(supportScale);

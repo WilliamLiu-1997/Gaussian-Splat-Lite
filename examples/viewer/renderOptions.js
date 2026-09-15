@@ -141,7 +141,7 @@ export const renderOptionGroups = [
         min: 16,
         max: 1024,
         step: 16,
-        defaultValue: 512,
+        defaultValue: 256,
         format: (value) => `${Math.round(value)} px`,
       },
       {

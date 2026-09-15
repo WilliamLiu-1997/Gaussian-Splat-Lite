@@ -214,8 +214,9 @@ void main() {
 
     // Apply maxPixelRadius to the original support first, then shrink both the
     // quad and its UV extent by the same ratio to preserve the Gaussian profile.
-    float scale1 = min(maxPixelRadius, maximumSupportRadius * sqrt(eigen1));
-    float scale2 = min(maxPixelRadius, maximumSupportRadius * sqrt(eigen2));
+    float maxProjectedRadius = maxPixelRadius * focalAdjustment;
+    float scale1 = min(maxProjectedRadius, maximumSupportRadius * sqrt(eigen1));
+    float scale2 = min(maxProjectedRadius, maximumSupportRadius * sqrt(eigen2));
     float supportScale = (maximumSupportRadius > 0.0)
         ? supportRadius / maximumSupportRadius
         : 0.0;

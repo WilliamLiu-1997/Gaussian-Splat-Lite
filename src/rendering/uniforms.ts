@@ -44,7 +44,7 @@ export function makeSplatUniforms() {
     // Minimum pixel radius for splat rendering
     minPixelRadius: { value: 1.0 },
     // Maximum pixel radius for splat rendering
-    maxPixelRadius: { value: 512.0 },
+    maxPixelRadius: { value: 256.0 },
     // Minimum alpha value for splat rendering
     minAlpha: { value: DEFAULT_MIN_ALPHA },
     // Add to projected 2D splat covariance diagonal (thickens and brightens)
