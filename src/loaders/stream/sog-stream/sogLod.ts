@@ -3,6 +3,7 @@ import { Box3, Vector3 } from "three";
 export type SogLodRange = {
   leaf: number;
   level: number;
+  /** -1 for an empty LOD, which has no backing file. */
   file: number;
   offset: number;
   count: number;
@@ -197,6 +198,8 @@ export function parseSogLodManifest(
       if (!/^\d+$/.test(key) || String(level) !== key || level >= levels)
         fail(`invalid LOD level ${key}`);
       const entry = object(value);
+      const count = integer(entry.count, "splat count");
+      if (count === 0) continue;
       const fileIndex = integer(entry.file, "file index");
       if (fileIndex >= fileIndices.length) fail("file index is out of bounds");
       const range: SogLodRange = {
@@ -204,14 +207,12 @@ export function parseSogLodManifest(
         level,
         file: fileIndices[fileIndex],
         offset: integer(entry.offset, "splat offset"),
-        count: integer(entry.count, "splat count"),
+        count,
       };
       integer(range.offset + range.count, "range end");
       counts[level] += range.count;
-      if (range.count > 0) {
-        files[range.file].ranges.push(range);
-        leaf.lods.push(range);
-      }
+      files[range.file].ranges.push(range);
+      leaf.lods.push(range);
     }
     return { bound, leaf };
   };
@@ -222,8 +223,20 @@ export function parseSogLodManifest(
   const distanceErrors = new Float64Array(levels);
   const upgradeRatios: number[] = [];
   for (const leaf of leaves) {
-    // Include every nonempty level before pruning, even with equal or inverted counts.
     leaf.lods.sort((a, b) => b.level - a.level);
+    const coarsest = leaf.lods[0];
+    // Missing coarser data means this region was decimated away. Price its
+    // first nonempty level as an upgrade instead of forcing it into coverage.
+    if (coarsest && coarsest.level < levels - 1) {
+      leaf.lods.unshift({
+        leaf: leaf.id,
+        level: coarsest.level + 1,
+        file: -1,
+        offset: 0,
+        count: 0,
+      });
+    }
+    // Include every level before pruning, even with equal or inverted counts.
     let error = 0;
     for (let i = leaf.lods.length - 1; i >= 0; i--) {
       const lod = leaf.lods[i];
@@ -298,15 +311,20 @@ export function resolveSogLod(
   /** Wait until range is attached before requesting the next LOD. */
   refinement?: boolean;
 } {
+  if (target.count === 0) return { range: undefined };
   if (current === target || isLoaded(target)) return { range: target };
 
   const targetIndex = leaf.lods.indexOf(target);
   const currentIndex = current ? leaf.lods.indexOf(current) : -1;
   // Prefer the finest cached refinement without going beyond the target.
   let index = targetIndex - 1;
-  while (index > currentIndex && !isLoaded(leaf.lods[index])) index--;
+  while (
+    index > currentIndex &&
+    (leaf.lods[index].count === 0 || !isLoaded(leaf.lods[index]))
+  )
+    index--;
   const range = index > currentIndex ? leaf.lods[index] : current;
-  if (!range) return { range, load: leaf.lods[0] };
+  if (!range) return { range, load: leaf.lods.find((lod) => lod.count > 0) };
 
   let load = target;
   if (range.level - target.level >= 4) {

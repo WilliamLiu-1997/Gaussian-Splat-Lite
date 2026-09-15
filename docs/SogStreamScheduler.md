@@ -46,6 +46,8 @@ For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#rayca
 
 The Splat budget is a target: available detail levels, fades, and the environment can exceed it. Cached data also uses memory, so the budget is not a total memory limit.
 
+Regions that disappear at coarser LODs can remain empty until selected for more detail. Empty levels do not load files; visible data fades out when a region returns to an empty level.
+
 The upload allowance spreads loading work across updates. A large item may exceed it; it does not strictly cap every GPU upload in a frame.
 
 ## Common properties and methods

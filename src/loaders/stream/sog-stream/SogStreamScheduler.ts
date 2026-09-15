@@ -234,6 +234,7 @@ export class SogStreamScheduler {
       offset < manifest.lods.length;
       offset += SOG_LOD_STRIDE
     ) {
+      if (manifest.lods[offset + 3] === 0) continue;
       this.addBatchRange(
         this.chunks[manifest.lods[offset + 1]],
         manifest.lods[offset + 2],
