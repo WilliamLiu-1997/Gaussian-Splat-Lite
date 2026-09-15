@@ -36,13 +36,15 @@ export function getSplatByteLength(data: {
   sourceIds?: Uint32Array;
   centerOnlyBoundingBox?: Float32Array;
   boundingBox?: Float32Array;
+  spatialBounds?: Float32Array;
   extra: SplatExtra;
 }) {
   let bytes =
     (data.sortCenters?.byteLength ?? 0) +
     (data.sourceIds?.byteLength ?? 0) +
     (data.centerOnlyBoundingBox?.byteLength ?? 0) +
-    (data.boundingBox?.byteLength ?? 0);
+    (data.boundingBox?.byteLength ?? 0) +
+    (data.spatialBounds?.byteLength ?? 0);
   for (const array of data.splatArrays) bytes += array.byteLength;
   for (const array of Object.values(data.extra))
     bytes += array?.byteLength ?? 0;

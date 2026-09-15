@@ -5,12 +5,14 @@ import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
 import {
   type ReorderedSplatResult,
   SPLAT_BLOCKS_DISABLED,
+  SPLAT_BOUNDS_BLOCK_SIZE,
   SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
   type SplatExtra,
   type SplatFileType,
   type SplatResult,
 } from "./defines";
+import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast";
 import { decodeShRgbToArray } from "./splatCodec";
 import {
   SH_KEYS,
@@ -97,6 +99,11 @@ function createDecodedState(data: ReorderedSplatResult): SplatsState {
     throw new Error("Decoded center bounds must contain six values");
   if (data.boundingBox?.length !== 6)
     throw new Error("Decoded bounds must contain six values");
+  if (
+    data.spatialBounds?.length !==
+    Math.ceil(numSplats / SPLAT_BOUNDS_BLOCK_SIZE) * 6
+  )
+    throw new Error("Incorrect spatial bounds block length");
   const maxSplats = getTextureSize(inputCapacity).maxSplats;
   let splatArrays = data.splatArrays;
   if (maxSplats !== inputCapacity) {
@@ -118,6 +125,7 @@ function createEmptyState(): SplatsState {
     numSplats: 0,
     splatArrays: [new Uint32Array(0), new Uint32Array(0)],
     sourceIds: new Uint32Array(0),
+    spatialBounds: new Float32Array(0),
     centerOnlyBoundingBox: bounds,
     boundingBox: bounds.slice(),
     extra: {},
@@ -136,6 +144,7 @@ export class Splats {
   protected sourceIds!: Uint32Array;
   protected centerOnlyBounds!: Float32Array;
   protected bounds!: Float32Array;
+  private spatialBounds!: Float32Array;
   private extra: SplatExtra = {};
 
   initialized: Promise<Splats>;
@@ -199,6 +208,7 @@ export class Splats {
     this.sourceIds = state.sourceIds;
     this.centerOnlyBounds = state.centerOnlyBoundingBox;
     this.bounds = state.boundingBox;
+    this.spatialBounds = state.spatialBounds;
     this.extra = state.extra;
     this.needsUpdate = true;
   }
@@ -259,6 +269,7 @@ export class Splats {
       sourceIds: this.sourceIds,
       centerOnlyBoundingBox: this.centerOnlyBounds,
       boundingBox: this.bounds,
+      spatialBounds: this.spatialBounds,
       extra: this.extra,
     });
   }
@@ -273,6 +284,7 @@ export class Splats {
       sourceIds: this.sourceIds,
       centerOnlyBoundingBox: this.centerOnlyBounds,
       boundingBox: this.bounds,
+      spatialBounds: this.spatialBounds,
       extra: this.extra,
     } satisfies SplatResult;
     this.dispose();
@@ -298,6 +310,14 @@ export class Splats {
     return includeSh
       ? { ...splat, sh: decodeSplatSh(this.extra, index, this.getNumSh()) }
       : splat;
+  }
+
+  /** @internal Consecutive visible records surviving spatial block picking. */
+  forEachRaycastRange(
+    query: SplatRaycastQuery,
+    callback: RaycastRangeCallback,
+  ) {
+    query.forEachRange(this.spatialBounds, this.numSplats, callback);
   }
 
   copySplatRecords(

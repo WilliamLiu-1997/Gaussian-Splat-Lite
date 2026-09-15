@@ -81,6 +81,7 @@ export class SogRegionSplats extends IndexedSplats {
   release(start: number) {
     this.assertLive();
     this.regionBounds.delete(start);
+    this.releaseSpatialBounds(start);
   }
 
   override getBoundingBox(centersOnly = true, target?: Box3) {
@@ -108,8 +109,10 @@ export class SogRegionSplats extends IndexedSplats {
     const indices = this.prepareIndices(this.numSplats);
     let target = 0;
     for (const [start, count] of this.activeRanges)
-      for (let source = start; source < start + count; source++)
+      for (let source = start; source < start + count; source++) {
+        this.visibleIndices[source] = target;
         indices[target++] = source;
+      }
     this.indicesDirty = false;
   }
 

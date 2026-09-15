@@ -64,7 +64,7 @@ Choose at most one of `url`, `file`, `fileBytes`, or `splats`; mixing inputs thr
 await mesh.initialized;
 
 mesh.getBoundingBox();      // Centers only.
-mesh.getBoundingBox(false); // Includes each Splat's scale and rotation.
+mesh.getBoundingBox(false); // Includes scale, rotation and shape at alpha 0.01.
 
 mesh.forEachSplat((index, center, scales, quaternion, opacity, color) => {});
 
@@ -74,7 +74,7 @@ mesh.updateMappingVersion();          // Count or mapping changed.
 mesh.dispose();
 ```
 
-Bounds require initialization. `getBoundingBox()` returns a new `Box3` in mesh-local space; pass `false` to include Splat scale and rotation. Pass an existing box as the second argument, `mesh.getBoundingBox(true, target)`, to reuse it and avoid allocating a new box. Bounds include zero-scale Splats and ignore non-finite centers. Streamed bounds follow the visible selection, but RAD bounds may also include unselected Splats.
+Bounds require initialization. `getBoundingBox()` returns a new `Box3` in mesh-local space; pass `false` to include Splat scale, rotation and kernel shape at a fixed source-opacity threshold of `0.01`. Splats below this threshold are omitted from these expanded bounds. These bounds do not track renderer settings, mesh opacity, streaming fades or SDF edits. Pass an existing box as the second argument, `mesh.getBoundingBox(true, target)`, to reuse it and avoid allocating a new box. Bounds include zero-scale Splats that meet the opacity threshold and ignore non-finite centers. Streamed bounds follow the visible selection, but RAD bounds may also include unselected Splats.
 
 For world-space bounds, update the world matrix and apply `mesh.matrixWorld` to the returned box.
 
@@ -104,6 +104,8 @@ if (intersections.length > 0) {
 ```
 
 Requires `raycastable: true`. Picking may return no hits during initial setup. Streaming models can be picked, but hits do not follow their display fades.
+
+Picking first checks cached block bounds at a fixed source-opacity threshold of `0.01`. Lowering `minRaycastOpacity` below `0.01` does not expand these bounds, so more transparent areas outside them cannot be picked.
 
 Hits include `index` for reading the current Splat and `sourceIndex` for its original source ID (`SplatIntersection` in TypeScript). Streamed indices can change with the visible selection. RAD source IDs are file-global node indices; streamed SOG source IDs are indices within the hit batch's source chunk.
 

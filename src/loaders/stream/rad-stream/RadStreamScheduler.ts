@@ -253,7 +253,7 @@ export class RadStreamScheduler {
       getSplatTextureBytes(paddedCount, this.numSh) +
       // Tree data, source IDs, Morton order and bounds awaiting LOD registration.
       this.pageSize * 30 +
-      Math.ceil(this.pageSize / SPLAT_BOUNDS_BLOCK_SIZE) * 48;
+      Math.ceil(this.pageSize / SPLAT_BOUNDS_BLOCK_SIZE) * (48 + 32);
     this.pageBudget = meta.chunks.length;
     this.wanted.add(0);
     this.pump();

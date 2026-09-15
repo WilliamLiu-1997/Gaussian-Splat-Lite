@@ -30,6 +30,20 @@ fn position(packed: &[u32], index: u32) -> [f64; 3] {
     std::array::from_fn(|axis| f32::from_bits(packed[offset + axis]) as f64)
 }
 
+fn include_center(min: &mut [f64; 3], max: &mut [f64; 3], p: [f64; 3]) {
+    if !(p[0] + p[1] + p[2]).is_finite() {
+        return;
+    }
+    for axis in 0..3 {
+        if p[axis] < min[axis] {
+            min[axis] = p[axis];
+        }
+        if p[axis] > max[axis] {
+            max[axis] = p[axis];
+        }
+    }
+}
+
 fn sort_range(
     packed: &[u32],
     order: &mut [u32],
@@ -40,18 +54,7 @@ fn sort_range(
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for &index in order.iter() {
-        let p = position(packed, index);
-        if !(p[0] + p[1] + p[2]).is_finite() {
-            continue;
-        }
-        for axis in 0..3 {
-            if p[axis] < min[axis] {
-                min[axis] = p[axis];
-            }
-            if p[axis] > max[axis] {
-                max[axis] = p[axis];
-            }
-        }
+        include_center(&mut min, &mut max, position(packed, index));
     }
     if min[0] > max[0] || min == max {
         return (min, max);
@@ -141,10 +144,12 @@ pub fn morton_reorder(
     center_only_bounds: Float32Array,
     bounds: Float32Array,
     bounds_blocks: Option<Float32Array>,
+    spatial_bounds: Float32Array,
 ) -> Result<Uint32Array, JsValue> {
     let words = count
         .checked_mul(4)
         .ok_or_else(|| js_sys::Error::new("Morton record count exceeds the array limit"))?;
+    let block_count = (count as usize).div_ceil(BOUNDS_BLOCK_SIZE);
     let arrays = arrays
         .iter()
         .map(|array| array.dyn_into::<Uint32Array>())
@@ -156,10 +161,14 @@ pub fn morton_reorder(
     if bounds.length() != 6 {
         return Err(js_sys::Error::new("Bounds must contain six values").into());
     }
-    if bounds_blocks.as_ref().is_some_and(|array| {
-        array.length() as usize != (count as usize).div_ceil(BOUNDS_BLOCK_SIZE) * 12
-    }) {
+    if bounds_blocks
+        .as_ref()
+        .is_some_and(|array| array.length() as usize != block_count * 12)
+    {
         return Err(js_sys::Error::new("Incorrect Morton bounds block length").into());
+    }
+    if spatial_bounds.length() as usize != block_count * 6 {
+        return Err(js_sys::Error::new("Incorrect spatial bounds block length").into());
     }
     if arrays.len() < 2
         || arrays.iter().any(|array| array.length() < words)
@@ -179,13 +188,6 @@ pub fn morton_reorder(
     let mut source = arrays[0].subarray(0, words).to_vec();
     let mut order: Vec<u32> = (0..count).collect();
     let mut scratch = vec![0; source.len()];
-    if bounds_blocks.is_none() {
-        arrays[1].subarray(0, words).copy_to(&mut scratch);
-        // Ordinary loads scan matching records sequentially before reusing the buffer.
-        for (center, attributes) in source.chunks_exact(4).zip(scratch.chunks_exact(4)) {
-            full_bounds.include(center, attributes);
-        }
-    }
     // Reuse the record buffer for radix indices and both key buffers.
     let (radix_scratch, keys) = scratch.split_at_mut(count as usize);
     let (keys, key_scratch) = keys.split_at_mut(count as usize);
@@ -209,35 +211,41 @@ pub fn morton_reorder(
         if index > 0 {
             array.copy_to(&mut source);
         }
-        if index == 1 && bounds_blocks.is_some() {
-            // Scratch holds sorted centers. Accumulate each block before replacing
-            // its centers with matching attributes; reuse both Morton record buffers.
-            let mut output = vec![0.0; (count as usize).div_ceil(BOUNDS_BLOCK_SIZE) * 12];
-            for ((centers, indices), block) in scratch
+        if index == 1 {
+            // Scratch still holds sorted centers. Build spatial bounds while
+            // replacing them with the matching attributes for every load path.
+            let mut block_bounds = vec![0.0; block_count * 6];
+            let mut output = bounds_blocks.as_ref().map(|_| vec![0.0; block_count * 12]);
+            for (block_index, (centers, indices)) in scratch
                 .chunks_mut(BOUNDS_BLOCK_SIZE * 4)
                 .zip(order.chunks(BOUNDS_BLOCK_SIZE))
-                .zip(output.chunks_mut(12))
+                .enumerate()
             {
-                block[..3].fill(f32::INFINITY);
-                block[3..6].fill(f32::NEG_INFINITY);
+                let mut center_min = [f64::INFINITY; 3];
+                let mut center_max = [f64::NEG_INFINITY; 3];
                 let mut local = SplatBounds::new();
                 for (record, &source_index) in centers.chunks_exact_mut(4).zip(indices) {
                     let offset = source_index as usize * 4;
                     let attributes = &source[offset..offset + 4];
-                    let center: [f32; 3] = std::array::from_fn(|axis| f32::from_bits(record[axis]));
-                    if center.iter().all(|value| value.is_finite()) {
-                        for axis in 0..3 {
-                            block[axis] = block[axis].min(center[axis]);
-                            block[axis + 3] = block[axis + 3].max(center[axis]);
-                        }
-                    }
                     local.include(record, attributes);
+                    if output.is_some() {
+                        include_center(&mut center_min, &mut center_max, position(record, 0));
+                    }
                     record.copy_from_slice(attributes);
                 }
-                block[6..].copy_from_slice(&local.values);
+                block_bounds[block_index * 6..block_index * 6 + 6].copy_from_slice(&local.values);
                 full_bounds.union(&local.values);
+                if let Some(output) = &mut output {
+                    let block = &mut output[block_index * 12..block_index * 12 + 12];
+                    block[..3].copy_from_slice(&center_min.map(|value| value as f32));
+                    block[3..6].copy_from_slice(&center_max.map(|value| value as f32));
+                    block[6..].copy_from_slice(&local.values);
+                }
             }
-            bounds_blocks.as_ref().unwrap().copy_from(&output);
+            spatial_bounds.copy_from(&block_bounds);
+            if let Some((array, output)) = bounds_blocks.as_ref().zip(output) {
+                array.copy_from(&output);
+            }
         } else {
             permute::<4>(&source, &mut scratch, &order);
         }

@@ -473,6 +473,7 @@ const optionsPanel = createRenderOptionsPanel({
   groups: renderOptionGroups,
   onChange: applyRenderOption,
 });
+optionsPanel.setHidden("splatBudget", true);
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
 optionsPanel.reset({ skip: ["rendererBackend"] });
@@ -489,6 +490,7 @@ function clearActiveModel() {
   disposeActiveSource = null;
   activeSplat = null;
   activeStream = null;
+  optionsPanel.setHidden("splatBudget", true);
   ui.clearModelInfo();
   requestRender();
 }
@@ -647,6 +649,7 @@ async function loadFile(
     );
     activeSplat = model.splat;
     activeStream = model.stream;
+    optionsPanel.setHidden("splatBudget", !activeStream);
     disposeActiveSource = dispose;
     scene.add(activeSplat);
     requestRender();

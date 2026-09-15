@@ -131,6 +131,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
 
   return {
     getValue,
+    setHidden,
     // Programmatic synchronization is silent unless emit is requested.
     setValue,
     setDisabled(property, disabled) {

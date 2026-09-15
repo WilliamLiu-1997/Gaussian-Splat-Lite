@@ -144,10 +144,14 @@ fn f16_order_key(bits: u16) -> u16 {
 }
 
 /// Returns the standard-deviation radius whose rendered alpha equals the
-/// raycast threshold. Shape amount zero selects the Gaussian kernel; positive
+/// opacity threshold. Shape amount zero selects the Gaussian kernel; positive
 /// values map linearly to the alternate kernel's shape range from one to five.
 #[inline]
-fn splat_isosurface_radius(alpha: f32, shape_amount: f32, min_opacity: f32) -> Option<f32> {
+pub(crate) fn splat_isosurface_radius(
+    alpha: f32,
+    shape_amount: f32,
+    min_opacity: f32,
+) -> Option<f32> {
     if !alpha.is_finite() || !shape_amount.is_finite() || alpha <= 0.0 {
         return None;
     }

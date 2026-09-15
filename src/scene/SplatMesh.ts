@@ -8,11 +8,13 @@ import {
 } from "gaussian-splat-rs";
 import { Splats } from "../data/Splats";
 import type { SplatFileType } from "../data/defines";
+import { SplatRaycastQuery } from "../data/raycast";
 import type { SplatFileResolver } from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
 import * as wasm from "../runtime/wasm";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
 
+let raycastVisibleIndices = new Uint32Array(0);
 const raycastWorldToMesh = new THREE.Matrix4();
 const raycastDirectionMatrix = new THREE.Matrix3();
 const raycastOrigin = new THREE.Vector3();
@@ -167,7 +169,7 @@ export class SplatMesh extends THREE.Object3D {
     this.splats = undefined;
   }
 
-  /** Copy cached local bounds; optionally include per-Splat scale and rotation. */
+  /** Copy cached local bounds; false includes scale/rotation and shape at source alpha 0.01. */
   getBoundingBox(centersOnly = true, target = new THREE.Box3()): THREE.Box3 {
     if (!this.isInitialized) {
       throw new Error(
@@ -325,10 +327,12 @@ export class SplatMesh extends THREE.Object3D {
     const buffer = get_raycast_buffer();
     const buffer2 = get_raycast_buffer2();
     const capacity = buffer.length / 4;
+    const splats = this.splats;
 
-    for (let base = 0; base < this.numSplats; base += capacity) {
-      const count = Math.min(capacity, this.numSplats - base);
-      this.splats.copySplatRecords(buffer, buffer2, base, count);
+    if (raycastVisibleIndices.length !== capacity)
+      raycastVisibleIndices = new Uint32Array(capacity);
+    let count = 0;
+    const flush = () => {
       const distances = raycast_splat_buffers(
         origin.x,
         origin.y,
@@ -345,16 +349,35 @@ export class SplatMesh extends THREE.Object3D {
 
       for (let index = 0; index < distances.length; index += 1) {
         const distance = distances[index];
-        const splatIndex = base + hitIndices[index];
+        const splatIndex = raycastVisibleIndices[hitIndices[index]];
         const hit: SplatIntersection = {
           distance,
           point: ray.at(distance, new THREE.Vector3()),
           object: this,
           index: splatIndex,
-          sourceIndex: this.splats.getSourceIndex(splatIndex),
+          sourceIndex: splats.getSourceIndex(splatIndex),
         };
         intersects.push(hit);
       }
-    }
+      count = 0;
+    };
+    const query = new SplatRaycastQuery(origin, direction, near, far);
+    splats.forEachRaycastRange(query, (start, length) => {
+      for (let base = start; base < start + length; ) {
+        const copied = Math.min(capacity - count, start + length - base);
+        splats.copySplatRecords(
+          buffer.subarray(count * 4),
+          buffer2.subarray(count * 4),
+          base,
+          copied,
+        );
+        for (let i = 0; i < copied; i++)
+          raycastVisibleIndices[count + i] = base + i;
+        count += copied;
+        base += copied;
+        if (count === capacity) flush();
+      }
+    });
+    if (count) flush();
   }
 }

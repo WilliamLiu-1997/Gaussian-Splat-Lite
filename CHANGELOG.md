@@ -7,22 +7,29 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Highlights
+
+- **Faster bounds queries:** Splat bounds are precomputed during loading and reused, avoiding a full model scan whenever its bounding box is requested.
+- **Faster picking:** Raycasting is approximately **10–15× faster** with cached spatial bounds. Gains vary by model and ray.
+- **Faster stochastic rendering:** Spatial reordering groups nearby Splats together during loading, improving rendering performance, especially for large models.
+
 ### Added
 
-- Added `Splats.getSourceIndex()` and raycast hit `sourceIndex`, with an exported `SplatIntersection` type, to recover original source IDs after spatial reordering. RAD IDs are file-global node indices; streamed SOG IDs are local to the source chunk.
-- Added a viewer control for the RAD/SOG streaming Splat budget, adjustable from 1 to 5 million without reloading.
+- Added `Splats.getSourceIndex()`, raycast hit `sourceIndex`, and the exported `SplatIntersection` type to identify original Splats after reordering. RAD IDs are file-global node indices; streamed SOG IDs are local to the source chunk.
+- Added an optional `Box3` target to `SplatMesh.getBoundingBox(centersOnly, target)` to reuse an existing box.
+- Added a viewer control to adjust the RAD/SOG streaming Splat budget from 1 to 5 million without reloading.
 
 ### Changed
 
-- Spatially reordered loaded Splats using Morton order after `postDecode`, keeping packed attributes, spherical harmonics, and sort centers aligned. RAD/SOG streaming retains source mappings across page and region selection.
-- Cached center-only and scale-and-rotation bounds during loading and updated streamed bounds with selection changes, avoiding repeated per-Splat scans in `getBoundingBox()`. Bounds include zero-scale Splats and ignore non-finite centers; streamed RAD bounds may include unselected Splats.
-- Replaced repeated quaternion trigonometry in Rust and TypeScript decoding and SH exponent scaling in TypeScript with lookup tables, preserving existing decode precision.
-- Simplified min/max updates when computing Morton sort bounds.
+- Spatially reordered loaded Splats using Morton order after `postDecode`, including streamed RAD pages and SOG regions. Loaded indices may differ from file order; use `getSourceIndex()` or a raycast hit's `sourceIndex` for original IDs.
+- Accelerated raycasting for ordinary and streamed models with cached spatial block bounds. These bounds use a fixed source-alpha cutoff of `0.01`; lowering `minRaycastOpacity` below this value does not make transparent areas outside the cached bounds pickable.
+- Cached model bounds during loading and updated streamed bounds with selection changes, avoiding repeated per-Splat scans in `getBoundingBox()`. `getBoundingBox(false)` now includes scale, rotation, opacity and kernel shape at a fixed source-alpha cutoff of `0.01`. These bounds do not track display settings or SDF edits, and streamed RAD bounds may include unselected Splats.
+- Reused lookup tables for quaternion and spherical-harmonic decoding while preserving decode precision.
 
 ### Removed
 
-- Removed `setSplats()`, `pushSplats()`, and `removeSplats()` from `Splats` and `SplatMesh`, along with `Splats.extractRange()` and the exported `SplatInput` type. Use `postDecode` for load-time transforms or mesh properties and region edits for display changes.
-- Removed the `maxSplats`, `SplatsOptions.construct`, and `SplatMeshOptions.constructSplats` construction options.
+- Removed `setSplats()`, `pushSplats()`, and `removeSplats()` from `Splats` and `SplatMesh`, along with `Splats.extractRange()` and the exported `SplatInput` type. Use `postDecode` for load-time transforms, or mesh properties and region edits for display changes.
+- Removed the `maxSplats` construction option from `Splats` and `SplatMesh`, along with `SplatsOptions.construct` and `SplatMeshOptions.constructSplats`.
 
 ## [1.0.4] - 2026-09-14
 

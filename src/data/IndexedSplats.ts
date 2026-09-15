@@ -3,9 +3,11 @@ import { SplatOpacityTable } from "./SplatOpacityTable";
 import { Splats, type SplatsOptions } from "./Splats";
 import {
   type ReorderedSplatResult,
+  SPLAT_BOUNDS_BLOCK_SIZE,
   SPLAT_TEX_WIDTH,
   type SplatResult,
 } from "./defines";
+import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast";
 import { decodeShRgbToArray } from "./splatCodec";
 import { SH_ARRAY_COUNTS, SH_KEYS, getSplatTextureBytes } from "./splatData";
 import { getTextureSize } from "./textureLayout";
@@ -43,6 +45,7 @@ export abstract class IndexedSplats extends Splats {
   readonly numSh: 0 | 1 | 2 | 3;
   protected readonly opacities: SplatOpacityTable;
   protected sourceIndices = new Uint32Array(0);
+  protected visibleIndices: Uint32Array;
   private sourceArrays: Uint32Array[];
   private sourceCenters: Float32Array;
   private sourceTextures: THREE.DataArrayTexture[];
@@ -51,6 +54,11 @@ export abstract class IndexedSplats extends Splats {
   private readonly dirtyLayers = new Set<number>();
   private uploadCharged = false;
   private disposed = false;
+  private readonly spatialChunks = new Map<
+    number,
+    { count: number; bounds: Float32Array }
+  >();
+  private spatialBoundsBytes = 0;
 
   constructor({ capacity, layerSize, numSh, blockBits }: IndexedSplatsOptions) {
     // RAD and SOG layout helpers supply aligned power-of-two layers.
@@ -68,6 +76,7 @@ export abstract class IndexedSplats extends Splats {
     );
     this.sourceCenters = new Float32Array(this.sourceArrays[0].buffer);
     this.sourceIds = new Uint32Array(capacity);
+    this.visibleIndices = new Uint32Array(capacity);
     this.sourceTextures = this.sourceArrays.map((array) =>
       makeTexture(
         array,
@@ -94,7 +103,12 @@ export abstract class IndexedSplats extends Splats {
 
   /** Each source updates its bounds independently of the visible-index map. */
   protected commitIndices(indices: Uint32Array) {
-    this.prepareIndices(indices.length).set(indices);
+    const target = this.prepareIndices(indices.length);
+    for (let index = 0; index < indices.length; index++) {
+      const source = indices[index];
+      target[index] = source;
+      this.visibleIndices[source] = index;
+    }
   }
 
   /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
@@ -179,6 +193,16 @@ export abstract class IndexedSplats extends Splats {
       )
     )
       throw new Error("Incomplete packed Splat or SH records");
+    if (
+      data.spatialBounds?.length !==
+      Math.ceil(count / SPLAT_BOUNDS_BLOCK_SIZE) * 6
+    )
+      throw new Error("Incorrect spatial bounds block length");
+    this.releaseSpatialBounds(start);
+    // Packed data remains caller-owned, as do its spatial bounds.
+    const bounds = data.spatialBounds.slice();
+    this.spatialChunks.set(start, { count, bounds });
+    this.spatialBoundsBytes += bounds.byteLength;
     this.sourceIds.set(data.sourceIds.subarray(0, count), start);
     this.sourceIds.fill(0, start + count, start + allocation);
     const firstLayer = Math.floor(start / this.layerSize);
@@ -237,7 +261,9 @@ export abstract class IndexedSplats extends Splats {
       this.textureByteLength +
       this.sourceIds.byteLength +
       this.centerOnlyBounds.byteLength +
-      this.bounds.byteLength
+      this.bounds.byteLength +
+      this.spatialBoundsBytes +
+      this.visibleIndices.byteLength
     );
   }
 
@@ -280,6 +306,44 @@ export abstract class IndexedSplats extends Splats {
           this.sourceIndices[index],
           axis,
         );
+  }
+
+  protected releaseSpatialBounds(start: number) {
+    const chunk = this.spatialChunks.get(start);
+    if (chunk) {
+      this.spatialBoundsBytes -= chunk.bounds.byteLength;
+      this.spatialChunks.delete(start);
+    }
+  }
+
+  override forEachRaycastRange(
+    query: SplatRaycastQuery,
+    callback: RaycastRangeCallback,
+  ) {
+    this.assertLive();
+    this.ensureIndices();
+    let rangeStart = -1;
+    let rangeEnd = -1;
+    for (const [start, { count, bounds }] of this.spatialChunks) {
+      query.forEachRange(bounds, count, (base, length) => {
+        for (
+          let source = start + base;
+          source < start + base + length;
+          source++
+        ) {
+          const index = this.visibleIndices[source];
+          // Validate against the current cut so hidden slots need no clearing.
+          if (index >= this.numSplats || this.sourceIndices[index] !== source)
+            continue;
+          if (index !== rangeEnd) {
+            if (rangeStart >= 0) callback(rangeStart, rangeEnd - rangeStart);
+            rangeStart = index;
+          }
+          rangeEnd = index + 1;
+        }
+      });
+    }
+    if (rangeStart >= 0) callback(rangeStart, rangeEnd - rangeStart);
   }
 
   override copySplatRecords(
@@ -417,8 +481,11 @@ export abstract class IndexedSplats extends Splats {
     this.sourceTextures = [];
     this.sourceCenters = new Float32Array(0);
     this.sourceIndices = new Uint32Array(0);
+    this.visibleIndices = new Uint32Array(0);
     this.indexTexture = Splats.emptyTexture;
     this.dirtyLayers.clear();
+    this.spatialChunks.clear();
+    this.spatialBoundsBytes = 0;
     this.disposed = true;
   }
 }

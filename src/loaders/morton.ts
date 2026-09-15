@@ -1,5 +1,9 @@
 import { morton_reorder } from "gaussian-splat-rs";
-import type { ReorderedSplatResult, SplatResult } from "../data/defines";
+import {
+  type ReorderedSplatResult,
+  SPLAT_BOUNDS_BLOCK_SIZE,
+  type SplatResult,
+} from "../data/defines";
 import { SH_KEYS } from "../data/splatData";
 
 /** Reorder packed attributes together and retain their original source indices. */
@@ -10,6 +14,9 @@ export function reorderSplats(
   const { numSplats, splatArrays, sortCenters, sourceIds } = data;
   const centerBounds = new Float32Array(6);
   const bounds = new Float32Array(6);
+  const spatialBounds = new Float32Array(
+    Math.ceil(numSplats / SPLAT_BOUNDS_BLOCK_SIZE) * 6,
+  );
   const arrays = [...splatArrays];
   for (const key of SH_KEYS) {
     const array = data.extra[key];
@@ -29,16 +36,19 @@ export function reorderSplats(
     centerBounds,
     bounds,
     boundsBlocks,
+    spatialBounds,
   );
   data.sourceIds = order;
   data.centerOnlyBoundingBox = centerBounds;
   data.boundingBox = bounds;
+  data.spatialBounds = spatialBounds;
 }
 
 /** Restore packed chunk file order bit for bit; discard unused sort centers. */
 export function restoreSplatOrder(data: SplatResult) {
   const { numSplats, splatArrays, sourceIds } = data;
   data.sortCenters = undefined;
+  data.spatialBounds = undefined;
   if (!sourceIds) return;
   const order = invertSplatOrder(sourceIds.subarray(0, numSplats));
   const [splat0, splat1] = splatArrays;
