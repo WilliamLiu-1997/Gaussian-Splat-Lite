@@ -3,6 +3,16 @@ import { fromHalf, toHalf } from "../utils/numeric";
 const F32_EPSILON = 1.192_092_895_507_812_5e-7;
 const ENCODED_IDENTITY_QUATERNION = (512 << 10) | 1023;
 
+// Keep JS double precision; the destination array controls decode precision.
+const QUAT_ROTATION_LOOKUP = Float64Array.from({ length: 4096 * 2 }, (_, i) => {
+  const halfTheta = ((i >>> 1) / 4095) * 0.5 * Math.PI;
+  return i & 1 ? Math.cos(halfTheta) : Math.sin(halfTheta);
+});
+const SH_SCALE_LOOKUP = Float64Array.from(
+  { length: 32 },
+  (_, exponent) => 2 ** (exponent - 15) / 255,
+);
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -61,7 +71,7 @@ export function decodeShRgbToArray(
   stride = 1,
 ) {
   const exponentAndSigns = word >>> 24;
-  const multiplier = 2 ** ((exponentAndSigns >>> 3) - 15) / 255;
+  const multiplier = SH_SCALE_LOOKUP[exponentAndSigns >>> 3];
   for (let component = 0; component < 3; component += 1) {
     const magnitude = ((word >>> (component * 8)) & 0xff) * multiplier;
     output[base + component * stride] =
@@ -85,12 +95,11 @@ export function decodeQuatOctXy1010R12ToArray(
   x += x >= 0 ? -fold : fold;
   y += y >= 0 ? -fold : fold;
   const inverseLength = 1 / Math.sqrt(x * x + y * y + z * z);
-  const halfTheta = (angle / 4095) * 0.5 * Math.PI;
-  const sine = Math.sin(halfTheta);
+  const sine = QUAT_ROTATION_LOOKUP[angle * 2];
   output[base] = x * inverseLength * sine;
   output[base + stride] = y * inverseLength * sine;
   output[base + stride * 2] = z * inverseLength * sine;
-  output[base + stride * 3] = Math.cos(halfTheta);
+  output[base + stride * 3] = QUAT_ROTATION_LOOKUP[angle * 2 + 1];
 }
 
 function encodeQuaternion(

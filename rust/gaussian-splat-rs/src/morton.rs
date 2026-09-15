@@ -45,8 +45,12 @@ fn sort_range(
             continue;
         }
         for axis in 0..3 {
-            min[axis] = min[axis].min(p[axis]);
-            max[axis] = max[axis].max(p[axis]);
+            if p[axis] < min[axis] {
+                min[axis] = p[axis];
+            }
+            if p[axis] > max[axis] {
+                max[axis] = p[axis];
+            }
         }
     }
     if min[0] > max[0] || min == max {

@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `Splats.getSourceIndex()` and raycast hit `sourceIndex`, with an exported `SplatIntersection` type, to recover original source IDs after spatial reordering. RAD IDs are file-global node indices; streamed SOG IDs are local to the source chunk.
+- Added a viewer control for the RAD/SOG streaming Splat budget, adjustable from 1 to 5 million without reloading.
+
+### Changed
+
+- Spatially reordered loaded Splats using Morton order after `postDecode`, keeping packed attributes, spherical harmonics, and sort centers aligned. RAD/SOG streaming retains source mappings across page and region selection.
+- Cached center-only and scale-and-rotation bounds during loading and updated streamed bounds with selection changes, avoiding repeated per-Splat scans in `getBoundingBox()`. Bounds include zero-scale Splats and ignore non-finite centers; streamed RAD bounds may include unselected Splats.
+- Replaced repeated quaternion trigonometry in Rust and TypeScript decoding and SH exponent scaling in TypeScript with lookup tables, preserving existing decode precision.
+- Simplified min/max updates when computing Morton sort bounds.
+
+### Removed
+
+- Removed `setSplats()`, `pushSplats()`, and `removeSplats()` from `Splats` and `SplatMesh`, along with `Splats.extractRange()` and the exported `SplatInput` type. Use `postDecode` for load-time transforms or mesh properties and region edits for display changes.
+- Removed the `maxSplats`, `SplatsOptions.construct`, and `SplatMeshOptions.constructSplats` construction options.
+
 ## [1.0.4] - 2026-09-14
 
 ### Fixed

@@ -6,6 +6,15 @@ pub(crate) static F16_LOOKUP: LazyLock<Box<[f32; 65536]>> =
     LazyLock::new(|| f16_table(|bits| f16::from_bits(bits).to_f32()));
 pub(crate) static F16_SH_LOOKUP: LazyLock<F16ShLookup> =
     LazyLock::new(|| F16ShLookup::from_values(F16_LOOKUP.as_ref()));
+// The packed rotation angle has only 12 bits; preserve the exact decode arithmetic.
+static QUAT_ROTATION_LOOKUP: LazyLock<Box<[(f32, f32)]>> = LazyLock::new(|| {
+    (0..4096)
+        .map(|r| {
+            let half_theta = r as f32 / 4095.0 * 0.5 * std::f32::consts::PI;
+            half_theta.sin_cos()
+        })
+        .collect()
+});
 pub(crate) static LOD_OPACITY_LOOKUP: LazyLock<Box<[u32; 65536]>> = LazyLock::new(|| {
     // The only nontrivial interval is [1, 2]: its shape has 1025 possible values.
     let shape: [u16; 1025] = array::from_fn(|i| f16::from_f32(i as f32 / 1024.0).to_bits());
@@ -228,8 +237,7 @@ pub fn decode_quat_oct101012(encoded: u32) -> [f32; 4] {
     let length = (x * x + y * y + z * z).sqrt();
     let axis = [x / length, y / length, z / length];
 
-    let half_theta = r as f32 / 4095.0 * 0.5 * std::f32::consts::PI;
-    let (s, w) = half_theta.sin_cos();
+    let (s, w) = QUAT_ROTATION_LOOKUP[r as usize];
     [axis[0] * s, axis[1] * s, axis[2] * s, w]
 }
 
