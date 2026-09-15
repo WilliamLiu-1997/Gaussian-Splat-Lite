@@ -14,7 +14,12 @@ export {
   type RadStreamSchedulerOptions,
   type RadStreamStats,
 } from "./loaders/stream/rad-stream/RadStreamScheduler";
-export type { SplatFileInput, SplatFileResolver } from "./loaders/loadTypes";
+export type {
+  SplatFileInput,
+  SplatFileResolver,
+  SplatLoadStage,
+  SplatProgressEvent,
+} from "./loaders/loadTypes";
 export type { RadMeta } from "./loaders/rad/radFormat";
 export type {
   StreamSchedulerOptions,

@@ -268,6 +268,7 @@ function runProgram(
   splat0Float: Float32Array,
   registers: Float32Array,
   processCount: number,
+  onProgress?: (loaded: number, total: number) => void,
 ) {
   const { constants, instructions } = program;
   const {
@@ -489,6 +490,7 @@ function runProgram(
         blockCount,
       );
     }
+    onProgress?.(Math.min(blockStart + blockSize, processCount), processCount);
   }
 }
 
@@ -632,12 +634,17 @@ function writeOutputBlock(
 export function applySplatPostDecode(
   data: PostDecodeSplatData,
   program: SerializedSplatPostDecode,
+  onProgress?: (loaded: number, total: number) => void,
 ) {
   let processCount = data.numSplats;
   for (const attribute of program.attributes) {
     processCount = Math.min(processCount, attribute.count);
   }
-  if (processCount === 0 || program.instructions.length === 0) return;
+  if (processCount === 0 || program.instructions.length === 0) {
+    onProgress?.(1, 1);
+    return;
+  }
+  onProgress?.(0, processCount);
 
   const plan = prepareProgram(data, program, processCount);
   const registers = new Float32Array(plan.registerValueCount * plan.blockSize);
@@ -660,5 +667,6 @@ export function applySplatPostDecode(
     splat0Float,
     registers,
     processCount,
+    onProgress,
   );
 }

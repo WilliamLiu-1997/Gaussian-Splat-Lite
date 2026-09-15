@@ -2,6 +2,7 @@ import { Loader } from "three";
 import { Splats } from "../data/Splats";
 import { SplatMesh } from "../scene/SplatMesh";
 import { type SplatDataLoadOptions, loadSplatData } from "./loadSplatData";
+import type { SplatProgressEvent } from "./loadTypes";
 
 type SplatLoadOptions = Omit<SplatDataLoadOptions, "onLoad"> & {
   splats?: Splats;
@@ -13,7 +14,7 @@ export class SplatLoader extends Loader {
   load(
     url: string,
     onLoad?: (decoded: Splats) => void,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: SplatProgressEvent) => void,
     onError?: (error: unknown) => void,
   ) {
     return this.loadInternal({ url, onLoad, onProgress, onError });
@@ -21,7 +22,7 @@ export class SplatLoader extends Loader {
 
   loadAsync(
     url: string,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: SplatProgressEvent) => void,
     signal?: AbortSignal,
   ): Promise<Splats> {
     return this.loadInternalAsync({ url, onProgress, signal });

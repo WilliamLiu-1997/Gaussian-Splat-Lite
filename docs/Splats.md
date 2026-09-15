@@ -24,7 +24,7 @@ The constructor and `initialize()` accept `SplatsOptions`:
 | `fileName` | `string` | `File.name` when available | Name used to infer the input format |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | Apply a [load-time transform](PostDecode.md) to each Splat |
-| `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Loading progress callback |
+| `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Per-stage loading progress](SplatLoader.md#loading-progress) callback |
 
 Choose at most one of `url`, `file`, or `fileBytes`; mixing inputs throws.
 

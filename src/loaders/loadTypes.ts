@@ -1,5 +1,12 @@
 import type { SerializedSplatPostDecode } from "./postDecode/protocol";
 
+export type SplatLoadStage = "download" | "postDecode" | "optimize";
+
+/** loaded/total describe the current stage; only download uses bytes. */
+export type SplatProgressEvent = ProgressEvent & {
+  readonly stage: SplatLoadStage;
+};
+
 export type SplatFileInput = string | Blob | Uint8Array | ArrayBuffer;
 /** Resolves an external SOG image or RAD page named by its metadata. */
 export type SplatFileResolver = (
@@ -36,10 +43,12 @@ export type SplatLoadArgs = SplatRequestOptions & {
   postDecode?: SerializedSplatPostDecode;
   expectedSogCount?: number;
   hasFileResolver?: boolean;
+  /** Request processing progress; streaming loaders only track downloaded bytes. */
+  reportProcessingProgress?: boolean;
   signal?: AbortSignal;
 };
 
 export type SplatLoadStatus =
-  | { loaded: number; total: number }
+  | { loaded: number; total: number; stage?: SplatLoadStage }
   | { assetRequest: number; url: string }
   | { fileRequest: number; filename: string };

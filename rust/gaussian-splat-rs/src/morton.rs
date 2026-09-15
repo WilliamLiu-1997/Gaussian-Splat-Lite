@@ -1,4 +1,4 @@
-use js_sys::{Array, Float32Array, Uint32Array};
+use js_sys::{Array, Float32Array, Function, Uint32Array};
 
 use crate::bounds::SplatBounds;
 
@@ -50,14 +50,19 @@ fn sort_range(
     scratch: &mut [u32],
     keys: &mut [u32],
     key_scratch: &mut [u32],
-) -> ([f64; 3], [f64; 3]) {
+    progress: Option<&Function>,
+    total: f64,
+) -> Result<([f64; 3], [f64; 3]), JsValue> {
+    let count = order.len().max(1) as f64;
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for &index in order.iter() {
         include_center(&mut min, &mut max, position(packed, index));
     }
+    report_progress(progress, count, total)?;
     if min[0] > max[0] || min == max {
-        return (min, max);
+        report_progress(progress, 7.0 * count, total)?;
+        return Ok((min, max));
     }
     // Match JS double precision, including large coordinates and cell boundaries.
     let scale: [f64; 3] = std::array::from_fn(|axis| {
@@ -88,6 +93,8 @@ fn sort_range(
         }
     }
 
+    report_progress(progress, 2.0 * count, total)?;
+
     // Carry keys with indices so every pass reads them sequentially.
     // Stable three-pass radix sort; slices let every refined cell reuse storage.
     let mut source = &mut *order;
@@ -110,8 +117,10 @@ fn sort_range(
         }
         std::mem::swap(&mut source, &mut target);
         std::mem::swap(&mut source_keys, &mut target_keys);
+        report_progress(progress, (3 + pass) as f64 * count, total)?;
     }
     order.copy_from_slice(scratch);
+    report_progress(progress, 6.0 * count, total)?;
 
     // Three passes leave the sorted keys in key_scratch; read them in place.
     let mut first = 0;
@@ -128,11 +137,23 @@ fn sort_range(
                 &mut scratch[first..next],
                 &mut keys[first..next],
                 &mut key_scratch[first..next],
-            );
+                None,
+                total,
+            )?;
+        }
+        if progress.is_some() && (next / 65536 != first / 65536 || next == order.len()) {
+            report_progress(progress, 6.0 * count + next as f64, total)?;
         }
         first = next;
     }
-    (min, max)
+    Ok((min, max))
+}
+
+fn report_progress(progress: Option<&Function>, loaded: f64, total: f64) -> Result<(), JsValue> {
+    if let Some(progress) = progress {
+        progress.call2(&JsValue::UNDEFINED, &loaded.into(), &total.into())?;
+    }
+    Ok(())
 }
 
 #[wasm_bindgen]
@@ -145,6 +166,7 @@ pub fn morton_reorder(
     bounds: Float32Array,
     bounds_blocks: Option<Float32Array>,
     spatial_bounds: Float32Array,
+    progress: Option<Function>,
 ) -> Result<Uint32Array, JsValue> {
     let words = count
         .checked_mul(4)
@@ -184,6 +206,17 @@ pub fn morton_reorder(
         )
         .into());
     }
+    // Work units count sorting passes, attribute/bounds passes, and output copies.
+    // Recursive cell refinement occupies the seventh sorting pass.
+    let work_count = count.max(1) as f64;
+    let total = (7
+        + arrays.len()
+        + usize::from(sort_centers.is_some())
+        + usize::from(source_ids.is_some())
+        + 1) as f64
+        * work_count;
+    let progress = progress.as_ref();
+    report_progress(progress, 0.0, total)?;
     let mut full_bounds = SplatBounds::new();
     let mut source = arrays[0].subarray(0, words).to_vec();
     let mut order: Vec<u32> = (0..count).collect();
@@ -197,7 +230,9 @@ pub fn morton_reorder(
         radix_scratch,
         keys,
         &mut key_scratch[..count as usize],
-    );
+        progress,
+        total,
+    )?;
     center_only_bounds.copy_from(&[
         min[0] as f32,
         min[1] as f32,
@@ -206,6 +241,7 @@ pub fn morton_reorder(
         max[1] as f32,
         max[2] as f32,
     ]);
+    let mut completed = 7.0 * work_count;
     for (index, array) in arrays.iter().enumerate() {
         let array = array.subarray(0, words);
         if index > 0 {
@@ -241,6 +277,14 @@ pub fn morton_reorder(
                     block[3..6].copy_from_slice(&center_max.map(|value| value as f32));
                     block[6..].copy_from_slice(&local.values);
                 }
+                if progress.is_some() && (block_index + 1) % 256 == 0 {
+                    report_progress(
+                        progress,
+                        completed
+                            + ((block_index + 1) * BOUNDS_BLOCK_SIZE).min(count as usize) as f64,
+                        total,
+                    )?;
+                }
             }
             spatial_bounds.copy_from(&block_bounds);
             if let Some((array, output)) = bounds_blocks.as_ref().zip(output) {
@@ -250,6 +294,8 @@ pub fn morton_reorder(
             permute::<4>(&source, &mut scratch, &order);
         }
         array.copy_from(&scratch);
+        completed += work_count;
+        report_progress(progress, completed, total)?;
     }
     bounds.copy_from(&full_bounds.values);
     if let Some(centers) = sort_centers {
@@ -258,6 +304,8 @@ pub fn morton_reorder(
         centers.copy_to(&mut source[..size]);
         permute::<3>(&source, &mut scratch, &order);
         centers.copy_from(&scratch[..size]);
+        completed += work_count;
+        report_progress(progress, completed, total)?;
     }
     if let Some(ids) = source_ids {
         ids.subarray(0, count)
@@ -265,8 +313,12 @@ pub fn morton_reorder(
         for index in &mut order {
             *index = source[*index as usize];
         }
+        completed += work_count;
+        report_progress(progress, completed, total)?;
     }
-    Ok(Uint32Array::from(order.as_slice()))
+    let result = Uint32Array::from(order.as_slice());
+    report_progress(progress, total, total)?;
+    Ok(result)
 }
 
 fn permute<const STRIDE: usize>(source: &[u32], target: &mut [u32], order: &[u32]) {

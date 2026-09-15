@@ -604,7 +604,12 @@ async function initializeModel(
       fileType,
       onProgress: (event) => {
         if (loadId !== activeLoad) return;
-        ui.showLoading(file, event.loaded, event.total || file.size);
+        ui.showLoading(
+          file,
+          event.loaded,
+          event.stage === "download" ? event.total || file.size : event.total,
+          event.stage,
+        );
       },
     });
   }

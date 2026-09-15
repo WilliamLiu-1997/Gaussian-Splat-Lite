@@ -9,7 +9,7 @@ import { SplatLoader } from "gaussian-splat-lite";
 
 const loader = new SplatLoader();
 const decoded = await loader.loadAsync("/assets/model.spz", (event) => {
-  console.log(event.loaded, event.total);
+  console.log(event.stage, event.loaded, event.total);
 });
 
 const splat = loader.parse(decoded);
@@ -22,7 +22,7 @@ The callback form matches the normal Three.js Loader pattern:
 loader.load(
   "/assets/model.ply",
   (decoded) => scene.add(loader.parse(decoded)),
-  (event) => console.log(event.loaded, event.total),
+  (event) => console.log(event.stage, event.loaded, event.total),
   (error) => console.error(error),
 );
 ```
@@ -39,6 +39,18 @@ For `Splats` or `SplatMesh`, call `dispose()` to cancel a pending load.
 
 For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md).
 For `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).
+
+## Loading progress
+
+`onProgress` receives a `SplatProgressEvent` (a `ProgressEvent` with a `stage` field). This also applies to `Splats` and `SplatMesh`:
+
+| `stage` | `loaded` / `total` |
+| --- | --- |
+| `download` | Bytes read or downloaded; `total === 0` means unknown size |
+| `postDecode` | Splats processed by the configured `postDecode` program |
+| `optimize` | Completed work units for Morton ordering and bounding-box calculation |
+
+Progress restarts for each stage. Use `event.loaded / event.total` when `event.lengthComputable` is true. `postDecode` is skipped when no program is configured; empty work reports completion immediately. Percentages describe completed work, not elapsed time. Download completion can precede the end of decoding; wait for `loadAsync()` or `.initialized` to resolve before using the model.
 
 ## Local split files
 

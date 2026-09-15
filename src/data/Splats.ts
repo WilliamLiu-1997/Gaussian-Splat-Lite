@@ -1,6 +1,9 @@
 import * as THREE from "three";
 
-import type { SplatFileResolver } from "../loaders/loadTypes";
+import type {
+  SplatFileResolver,
+  SplatProgressEvent,
+} from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
 import {
   type ReorderedSplatResult,
@@ -45,7 +48,7 @@ export type SplatsOptions = {
   resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
-  onProgress?: (event: ProgressEvent) => void;
+  onProgress?: (event: SplatProgressEvent) => void;
 };
 
 type SplatsState = ReorderedSplatResult & {

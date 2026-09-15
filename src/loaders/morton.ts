@@ -10,6 +10,7 @@ import { SH_KEYS } from "../data/splatData";
 export function reorderSplats(
   data: SplatResult,
   boundsBlocks?: Float32Array,
+  onProgress?: (loaded: number, total: number) => void,
 ): asserts data is ReorderedSplatResult {
   const { numSplats, splatArrays, sortCenters, sourceIds } = data;
   const centerBounds = new Float32Array(6);
@@ -37,6 +38,7 @@ export function reorderSplats(
     bounds,
     boundsBlocks,
     spatialBounds,
+    onProgress,
   );
   data.sourceIds = order;
   data.centerOnlyBoundingBox = centerBounds;

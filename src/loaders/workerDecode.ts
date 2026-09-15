@@ -6,6 +6,7 @@ import type {
   SplatFileInput,
   SplatFileResolver,
   SplatLoadArgs,
+  SplatLoadStage,
   SplatLoadStatus,
 } from "./loadTypes";
 import { reorderSplats } from "./morton";
@@ -13,6 +14,22 @@ import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { applySplatPostDecode } from "./postDecode/runtime";
 import { isRadPrefix, loadRad } from "./rad";
 import { isSogPrefix, loadSog } from "./sog";
+
+/** Limit worker messages while always reporting stage boundaries. */
+function createStageProgress(
+  sendStatus: ((status: SplatLoadStatus) => void) | undefined,
+  stage: Exclude<SplatLoadStage, "download">,
+) {
+  if (!sendStatus) return undefined;
+  let lastReport = Number.NEGATIVE_INFINITY;
+  return (loaded: number, total: number) => {
+    const now = performance.now();
+    if (loaded === 0 || loaded === total || now - lastReport >= 50) {
+      sendStatus({ stage, loaded, total });
+      lastReport = now;
+    }
+  };
+}
 
 type DecodeArgs = SplatLoadArgs & {
   sendStatus: (data: SplatLoadStatus) => void;
@@ -226,7 +243,15 @@ export async function decodeSplats(
         }
       : undefined,
   });
-  if (args.postDecode) applySplatPostDecode(decoded, args.postDecode);
+  if (args.postDecode)
+    applySplatPostDecode(
+      decoded,
+      args.postDecode,
+      createStageProgress(
+        args.reportProcessingProgress ? sendStatus : undefined,
+        "postDecode",
+      ),
+    );
   return {
     numSplats: decoded.numSplats,
     splatArrays: [decoded.splat0, decoded.splat1],
@@ -246,7 +271,14 @@ export async function loadSplats(
   options: { sendStatus: (data: SplatLoadStatus) => void },
 ): Promise<ReorderedSplatResult> {
   const data = await decodeSplats(args, options);
-  reorderSplats(data);
+  reorderSplats(
+    data,
+    undefined,
+    createStageProgress(
+      args.reportProcessingProgress ? options.sendStatus : undefined,
+      "optimize",
+    ),
+  );
   return data;
 }
 

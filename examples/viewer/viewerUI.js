@@ -1,3 +1,10 @@
+// Approximate overall progress; reserve completion for model initialization.
+const LOADING_STAGE_RANGES = {
+  download: [0, 0.7],
+  postDecode: [0.7, 0.8],
+  optimize: [0.8, 0.99],
+};
+
 export function createViewerUI({
   document = globalThis.document,
   onCancelLoad,
@@ -40,6 +47,7 @@ export function createViewerUI({
   const performanceHeap = document.querySelector("#performance-heap");
 
   let hasModel = false;
+  let loadingRatio = 0;
   let toastFrame;
   let toastTimer;
   let toastHideTimer;
@@ -156,41 +164,53 @@ export function createViewerUI({
     }, 4200);
   }
 
-  function showLoading(file, loaded = 0, total = file.size) {
+  function showLoading(
+    file,
+    loaded = 0,
+    total = file.size,
+    stage = "download",
+  ) {
+    if (stage === "download" && loaded === 0) loadingRatio = 0;
     const wasHidden = loadingPanel.hidden;
     loadingBackdrop.hidden = false;
     loadingPanel.hidden = false;
     syncBackgroundInteractivity();
     loadingName.textContent = file.name;
-    loadingProgress.classList.toggle(
-      "is-indeterminate",
-      !(total > 0 && loaded >= 0),
-    );
-
     if (wasHidden) loadingCancelButton.focus();
 
     if (total > 0 && loaded >= 0) {
       const ratio = Math.min(loaded / total, 1);
-      const percent = Math.round(ratio * 100);
-      loadingProgressFill.style.transform = `scaleX(${ratio})`;
+      const [start, end] = LOADING_STAGE_RANGES[stage];
+      loadingRatio = Math.max(loadingRatio, start + ratio * (end - start));
+      const percent = Math.round(loadingRatio * 100);
       loadingProgress.setAttribute("aria-valuemin", "0");
       loadingProgress.setAttribute("aria-valuemax", "100");
       loadingProgress.setAttribute("aria-valuenow", String(percent));
-      loadingDetail.textContent =
-        ratio >= 1
-          ? "File received · Finalizing…"
-          : `${percent}% · ${formatBytes(loaded)} of ${formatBytes(total)}`;
+      if (stage === "download") {
+        loadingDetail.textContent =
+          ratio >= 1
+            ? `File received · ${percent}%`
+            : `${percent}% · ${formatBytes(loaded)} of ${formatBytes(total)}`;
+      } else {
+        const label = stage === "postDecode" ? "Post-processing" : "Optimizing";
+        loadingDetail.textContent = `${label} · ${percent}%`;
+      }
     } else {
-      loadingProgressFill.style.transform = "scaleX(0)";
       loadingProgress.removeAttribute("aria-valuenow");
       loadingDetail.textContent =
         loaded > 0
           ? `Downloading… · ${formatBytes(loaded)} received`
           : "Starting download…";
     }
+    loadingProgress.classList.toggle(
+      "is-indeterminate",
+      total <= 0 && loadingRatio === 0,
+    );
+    loadingProgressFill.style.transform = `scaleX(${loadingRatio})`;
   }
 
   function clearLoading() {
+    loadingRatio = 0;
     loadingProgress.classList.remove("is-indeterminate");
     loadingBackdrop.hidden = true;
     loadingPanel.hidden = true;

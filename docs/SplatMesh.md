@@ -35,7 +35,7 @@ Loaded indices may differ from file order; see [data rules](Splats.md#data-rules
 | `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | Apply a [load-time transform](PostDecode.md) to each Splat |
 | `splats` | `Splats` | New `Splats` | Uses an existing `Splats` instance |
-| `onProgress` | `(event: ProgressEvent) => void` | `undefined` | Download or file-reading progress callback |
+| `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Per-stage loading progress](SplatLoader.md#loading-progress) callback |
 | `onLoad` | `(mesh) => void \| Promise<void>` | `undefined` | Called after initialization completes |
 | `editable` | `boolean` | `true` | Allow scene-wide and model-specific region edits |
 | `raycastable` | `boolean` | `true` | Participates in Three.js raycasting |

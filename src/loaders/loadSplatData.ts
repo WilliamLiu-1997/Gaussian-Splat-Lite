@@ -3,7 +3,11 @@ import type { ReorderedSplatResult, SplatFileType } from "../data/defines";
 import { workerPool } from "../runtime/SplatWorker";
 import { abortable } from "../runtime/abort";
 import { getAssetBaseUrl } from "./assetUrl";
-import type { SplatFileResolver, SplatLoadStatus } from "./loadTypes";
+import type {
+  SplatFileResolver,
+  SplatLoadStatus,
+  SplatProgressEvent,
+} from "./loadTypes";
 import {
   type SplatPostDecodeProgram,
   serializeSplatPostDecode,
@@ -18,7 +22,7 @@ export type SplatDataLoadOptions = {
   resolveFile?: SplatFileResolver;
   postDecode?: SplatPostDecodeProgram;
   signal?: AbortSignal;
-  onProgress?: (event: ProgressEvent) => void;
+  onProgress?: (event: SplatProgressEvent) => void;
   onLoad?: (decoded: ReorderedSplatResult) => void;
   onError?: (error: unknown) => void;
 };
@@ -95,6 +99,7 @@ export async function loadSplatData(
             fileType,
             pathName,
             hasFileResolver: resolveFile !== undefined,
+            reportProcessingProgress: onProgress !== undefined,
             baseUrl: getAssetBaseUrl(requestUrl) ?? resourceUrl,
             postDecode: postDecode
               ? serializeSplatPostDecode(postDecode)
@@ -135,10 +140,14 @@ export async function loadSplatData(
               if (onProgress) {
                 try {
                   onProgress(
-                    new ProgressEvent("progress", {
-                      lengthComputable: status.total !== 0,
-                      ...status,
-                    }),
+                    Object.assign(
+                      new ProgressEvent("progress", {
+                        lengthComputable: status.total !== 0,
+                        loaded: status.loaded,
+                        total: status.total,
+                      }),
+                      { stage: status.stage ?? "download" },
+                    ),
                   );
                 } catch (error) {
                   console.error("Progress callback failed", error);

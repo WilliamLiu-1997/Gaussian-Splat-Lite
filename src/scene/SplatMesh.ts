@@ -9,7 +9,10 @@ import {
 import { Splats } from "../data/Splats";
 import type { SplatFileType } from "../data/defines";
 import { SplatRaycastQuery } from "../data/raycast";
-import type { SplatFileResolver } from "../loaders/loadTypes";
+import type {
+  SplatFileResolver,
+  SplatProgressEvent,
+} from "../loaders/loadTypes";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program";
 import * as wasm from "../runtime/wasm";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit";
@@ -30,7 +33,7 @@ export type SplatMeshOptions = {
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
   splats?: Splats;
-  onProgress?: (event: ProgressEvent) => void;
+  onProgress?: (event: SplatProgressEvent) => void;
   onLoad?: (mesh: SplatMesh) => Promise<void> | void;
   editable?: boolean;
   raycastable?: boolean;
