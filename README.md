@@ -8,7 +8,7 @@
 
 **Three.js Gaussian Splatting · WebGPU · Depth Rendering · Streaming**
 
-**[👉 Try Live Demo](https://gaussian-splat-lite.vercel.app/)**
+**[Try Live Demo](https://gaussian-splat-lite.vercel.app/)**
 
 <p align="center">
   <img src="./Gaussian-Splat-Lite.svg" alt="Gaussian Splat Lite" width="1000">
