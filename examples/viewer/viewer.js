@@ -144,7 +144,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     state.splatRenderer = new GaussianSplatRenderer({
       renderer: state.renderer,
       onDirty: requestRender,
-      autoStochastic: true,
+      autoStochastic: false,
     });
     if (previous) {
       for (const group of renderOptionGroups) {
