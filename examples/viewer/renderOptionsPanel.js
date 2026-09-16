@@ -31,6 +31,9 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     }
     setHidden("stochastic", autoStochastic);
     setHidden("renderDepth", autoStochastic);
+    // Automatic stochastic lives in the toolbar; this group holds its overrides.
+    entries.get("stochastic").row.closest(".option-group").hidden =
+      autoStochastic;
     const nativeWebGPU = getValue("rendererBackend") === "webgpu";
     setHidden("minSortIntervalMs", nativeWebGPU);
   }

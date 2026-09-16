@@ -50,7 +50,7 @@ export const renderOptionGroups = [
     options: [
       {
         property: "autoStochastic",
-        label: "Automatic stochastic",
+        label: "Auto stochastic",
         description:
           "Uses sorting-free rendering while the camera moves and until a fresh sort is ready.",
         defaultValue: true,

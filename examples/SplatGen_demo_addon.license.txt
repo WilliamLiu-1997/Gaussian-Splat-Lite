@@ -1,0 +1,7 @@
+Title: SplatGen_demo_addon🎁🚨
+Author: shehabmekky (https://superspl.at/user/shehabmekky)
+Source: https://superspl.at/scene/c1e6297e
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+File: SplatGen_demo_addon🎁🚨.spz
+Requirements: Author attribution and a link to the license are required. Commercial use and adaptations are allowed.

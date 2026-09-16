@@ -6,35 +6,22 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { Line2 as WebGPULine2 } from "three/addons/lines/webgpu/Line2.js";
 import { LineSegments2 as WebGPULineSegments2 } from "three/addons/lines/webgpu/LineSegments2.js";
-import { Fn, materialColor, materialOpacity, uv, vec2, vec4 } from "three/tsl";
 import { Line2NodeMaterial } from "three/webgpu";
 
 // XZ reference at Y = 0; scaled to the loaded model in frameSplat.
 const referenceBaseSize = 10;
-function createReferenceMaterial(webGPU, color, linewidth, opacity) {
+function createReferenceMaterial(webGPU, color, linewidth) {
   const Material = webGPU ? Line2NodeMaterial : LineMaterial;
   const material = new Material({
     color,
     linewidth,
     worldUnits: false,
-    transparent: true,
-    opacity,
-    depthWrite: false,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true,
     toneMapped: false,
     alphaToCoverage: false,
   });
-  if (webGPU) {
-    // Blend directly instead of sampling Line2NodeMaterial's viewport copy,
-    // which is recreated on resize and differs between canvas/resolve targets.
-    material.blending = THREE.NormalBlending;
-    material.fragmentNode = Fn(() => {
-      const lineUv = uv();
-      const cap = vec2(lineUv.x, lineUv.y.abs().sub(1));
-      // Keep the round endcaps of these solid, screen-space lines.
-      lineUv.y.abs().greaterThan(1).and(cap.dot(cap).greaterThan(1)).discard();
-      return vec4(materialColor.rgb, materialOpacity);
-    })();
-  }
   material.userData.referenceColor = color;
   return material;
 }
@@ -51,10 +38,7 @@ function createGrid(webGPU) {
   }
   const geometry = new LineSegmentsGeometry().setPositions(positions);
   const Line = webGPU ? WebGPULineSegments2 : LineSegments2;
-  const line = new Line(
-    geometry,
-    createReferenceMaterial(webGPU, 0x666666, 1, 0.5),
-  );
+  const line = new Line(geometry, createReferenceMaterial(webGPU, 0x666666, 1));
   line.raycast = () => {};
   return line;
 }
@@ -68,7 +52,7 @@ function createAxes(webGPU) {
     [0x0000ff, [0, 0, -halfSize, 0, 0, halfSize]],
   ]) {
     const geometry = new LineGeometry().setPositions(positions);
-    const material = createReferenceMaterial(webGPU, color, 1.5, 0.8);
+    const material = createReferenceMaterial(webGPU, color, 1.5);
     const line = new Line(geometry, material);
     line.raycast = () => {};
     group.add(line);

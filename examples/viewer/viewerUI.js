@@ -14,7 +14,7 @@ export function createViewerUI({
   const interfaceRoot = document.querySelector(".interface");
   const toolbarActions = document.querySelector(".toolbar-actions");
   const statusBar = document.querySelector(".statusbar");
-  const sourceUpAxis = document.querySelector("#source-up-axis");
+  const modelControls = document.querySelector("#model-controls");
   const emptyState = document.querySelector("#empty-state");
   const sourcePanelBackdrop = document.querySelector("#source-panel-backdrop");
   const sourcePanelToggle = document.querySelector("#source-panel-toggle");
@@ -105,8 +105,8 @@ export function createViewerUI({
     const loading = !loadingPanel.hidden;
     toolbarActions.inert = sourcePanelOpen || loading;
     statusBar.inert = sourcePanelOpen || loading;
-    sourceUpAxis.hidden = !hasModel;
-    sourceUpAxis.inert = sourcePanelOpen || loading;
+    modelControls.hidden = !hasModel;
+    modelControls.inert = sourcePanelOpen || loading;
     emptyState.inert = loading;
     renderOptionsPanel.inert = loading;
   }

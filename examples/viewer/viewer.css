@@ -697,6 +697,37 @@ button {
   outline-offset: 2px;
 }
 
+.toolbar-toggle {
+  flex-shrink: 0;
+  padding-left: 0.8rem;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+}
+
+.toolbar-toggle .option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0;
+  border: 0;
+}
+
+.toolbar-toggle .option-copy label {
+  color: #c4c9d2;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.toolbar-toggle .option-copy p,
+.toolbar-toggle .toggle-value {
+  display: none;
+}
+
+.toolbar-toggle .option-control {
+  display: flex;
+}
+
 .options-footer {
   display: flex;
   align-items: center;
@@ -1012,7 +1043,7 @@ button {
   font-size: 0.68rem;
 }
 
-.source-up-axis {
+.model-controls {
   position: absolute;
   top: calc(100% + 0.45rem);
   right: 0;
@@ -1025,7 +1056,7 @@ button {
   pointer-events: auto;
 }
 
-.source-up-axis::before {
+.model-controls::before {
   position: absolute;
   inset: 0;
   z-index: -1;
@@ -1038,16 +1069,15 @@ button {
   content: "";
 }
 
-#source-up-axis-label {
-  color: #c4c9d2;
-  font-size: 0.75rem;
-  font-weight: 400;
-  white-space: nowrap;
+.source-up-axis {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
 }
 
 .source-up-axis-choices {
   display: flex;
-  gap: 0.7rem;
+  gap: 0.4rem;
 }
 
 .source-up-axis-choices label {
@@ -1060,6 +1090,11 @@ button {
   font-size: 0.75rem;
   font-weight: 400;
   white-space: nowrap;
+}
+
+.axis-arrow {
+  display: inline-block;
+  transform: scaleY(1.2);
 }
 
 .source-up-axis-choices input {
@@ -1270,13 +1305,11 @@ button {
     width: 100%;
   }
 
-  .source-up-axis {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.1rem;
+  .model-controls {
+    overflow-x: auto;
   }
 
-  .source-up-axis-choices {
+  .source-up-axis {
     gap: 0.4rem;
   }
 

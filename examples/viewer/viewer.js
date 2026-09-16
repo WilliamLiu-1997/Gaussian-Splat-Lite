@@ -42,10 +42,10 @@ const ui = createViewerUI({
 });
 
 const EXAMPLE_MODEL = {
-  name: "multi-material-splats.v4.spz",
-  size: 5914266,
-  url: new URL("../multi-material-splats.v4.spz", import.meta.url),
-  credit: "hybridherbst",
+  name: "SplatGen_demo_addon🎁🚨.spz",
+  size: 14783722,
+  url: new URL("../SplatGen_demo_addon🎁🚨.spz", import.meta.url),
+  credit: "shehabmekky",
 };
 
 const scene = new THREE.Scene();
@@ -473,6 +473,13 @@ const optionsPanel = createRenderOptionsPanel({
   groups: renderOptionGroups,
   onChange: applyRenderOption,
 });
+document
+  .querySelector("#auto-stochastic-control")
+  .append(
+    document
+      .querySelector("#render-option-autoStochastic")
+      .closest(".option-row"),
+  );
 optionsPanel.setHidden("splatBudget", true);
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.

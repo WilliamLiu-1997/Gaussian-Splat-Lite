@@ -105,30 +105,32 @@
             Open file
           </button>
         </div>
-        <div id="source-up-axis" class="source-up-axis" role="radiogroup" aria-labelledby="source-up-axis-label" hidden>
-          <span id="source-up-axis-label">Up axis</span>
-          <div class="source-up-axis-choices">
-            <label title="Use the model's default orientation">
-              <input type="radio" name="source-up-axis" value="auto" checked />
-              <span>Default</span>
-            </label>
-            <label>
-              <input type="radio" name="source-up-axis" value="y-up" />
-              <span>Y up</span>
-            </label>
-            <label>
-              <input type="radio" name="source-up-axis" value="y-down" />
-              <span>Y down</span>
-            </label>
-            <label>
-              <input type="radio" name="source-up-axis" value="z-up" />
-              <span>Z up</span>
-            </label>
-            <label>
-              <input type="radio" name="source-up-axis" value="z-down" />
-              <span>Z down</span>
-            </label>
+        <div id="model-controls" class="model-controls" hidden>
+          <div id="source-up-axis" class="source-up-axis" role="radiogroup" aria-label="Up axis">
+            <div class="source-up-axis-choices">
+              <label title="Use the model's default orientation">
+                <input type="radio" name="source-up-axis" value="auto" checked />
+                <span>Auto</span>
+              </label>
+              <label title="Y up">
+                <input type="radio" name="source-up-axis" value="y-up" aria-label="Y up" />
+                <span>Y <span class="axis-arrow">↑</span></span>
+              </label>
+              <label title="Y down">
+                <input type="radio" name="source-up-axis" value="y-down" aria-label="Y down" />
+                <span>Y <span class="axis-arrow">↓</span></span>
+              </label>
+              <label title="Z up">
+                <input type="radio" name="source-up-axis" value="z-up" aria-label="Z up" />
+                <span>Z <span class="axis-arrow">↑</span></span>
+              </label>
+              <label title="Z down">
+                <input type="radio" name="source-up-axis" value="z-down" aria-label="Z down" />
+                <span>Z <span class="axis-arrow">↓</span></span>
+              </label>
+            </div>
           </div>
+          <div id="auto-stochastic-control" class="toolbar-toggle" title="Uses sorting-free rendering while the camera moves and until a fresh sort is ready."></div>
         </div>
       </header>
 
@@ -242,12 +244,12 @@
           <a
             id="model-credit"
             class="model-credit"
-            href="https://superspl.at/scene/16e528da"
+            href="https://superspl.at/scene/c1e6297e"
             target="_blank"
             rel="noreferrer"
-            title="Multi Material Splats by hybridherbst (CC BY 4.0)"
+            title="SplatGen_demo_addon🎁🚨 by shehabmekky (CC BY 4.0)"
             hidden
-          >hybridherbst</a>
+          >shehabmekky</a>
         </div>
       </footer>
     </div>
