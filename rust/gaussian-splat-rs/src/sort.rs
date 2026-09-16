@@ -1,8 +1,10 @@
+use std::ops::Range;
+
 const DEPTH_INFINITY_F32: u32 = 0x7f800000;
-// 16-bit radix (2 passes)
-const RADIX_BITS: u32 = 16;
-const RADIX_BASE: usize = 1 << RADIX_BITS; // 65536
-const RADIX_MASK: u32 = RADIX_BASE as u32 - 1;
+// Full precision uses two 16-bit passes; fast sorting uses one 24-bit pass.
+const FULL_RADIX_BITS: u32 = 16;
+const FAST_KEY_SHIFT: u32 = 8;
+const FAST_RADIX_BITS: u32 = 32 - FAST_KEY_SHIFT;
 
 /// Persistent raw/radial centers and affine state for one renderer mesh.
 pub struct MeshSortState {
@@ -37,16 +39,18 @@ pub struct Sort32Buffers {
     pub range_bases: Vec<u32>,
     /// active splat count for each contiguous mesh range
     pub range_counts: Vec<u32>,
-    /// raw f32 metric bit-patterns (one per splat)
+    /// f32 metric bit-patterns, shifted right by 8 in fast mode
     pub keys: Vec<u32>,
     /// output indices
     pub ordering: Vec<u32>,
-    /// bucket counts / offsets (length == RADIX_BASE)
-    pub buckets16lo: Vec<u32>,
-    /// bucket counts / offsets (length == RADIX_BASE)
-    pub buckets16hi: Vec<u32>,
+    /// bucket counts / offsets for the current radix width
+    pub buckets_lo: Vec<u32>,
+    /// bucket counts / offsets for the current radix width
+    pub buckets_hi: Vec<u32>,
     /// scratch space for (key, index)
     pub scratch: Vec<u64>,
+    /// Occupied bucket range; fast mode skips unused buckets in the prefix sum.
+    bucket_range: Range<usize>,
 }
 
 impl Sort32Buffers {
@@ -109,7 +113,7 @@ impl Sort32Buffers {
         self.range_counts.push((centers.len() / 3) as u32);
     }
 
-    /// ensure all internal buffers are large enough for up to `max_splats`
+    /// Ensure key and output buffers can hold `max_splats` entries.
     pub fn ensure_size(&mut self, max_splats: usize) {
         if self.keys.len() < max_splats {
             self.keys.resize(max_splats, 0);
@@ -117,14 +121,24 @@ impl Sort32Buffers {
         if self.ordering.len() < max_splats {
             self.ordering.resize(max_splats, 0);
         }
-        if self.scratch.len() < max_splats {
-            self.scratch.resize(max_splats, 0);
-        }
-        if self.buckets16lo.len() < RADIX_BASE {
-            self.buckets16lo.resize(RADIX_BASE, 0);
-        }
-        if self.buckets16hi.len() < RADIX_BASE {
-            self.buckets16hi.resize(RADIX_BASE, 0);
+    }
+
+    fn prepare_buckets<const FAST: bool>(&mut self) {
+        let bits = if FAST {
+            FAST_RADIX_BITS
+        } else {
+            FULL_RADIX_BITS
+        };
+        self.buckets_lo.resize(1 << bits, 0);
+        if FAST {
+            // Only the previous occupied range can contain counts or offsets.
+            self.buckets_lo[self.bucket_range.clone()].fill(0);
+            self.bucket_range = usize::MAX..0;
+        } else {
+            self.buckets_lo.fill(0);
+            self.buckets_hi.resize(1 << bits, 0);
+            self.buckets_hi.fill(0);
+            self.bucket_range = 0..1 << bits;
         }
     }
 }
@@ -141,7 +155,38 @@ pub fn sort32_centers_internal(
     camera_position: [f64; 3],
     direction: [f32; 3],
     radial: bool,
+    fast_sort: bool,
 ) -> Result<u32, String> {
+    if fast_sort {
+        sort_centers::<true>(
+            buffers,
+            max_splats,
+            num_splats,
+            camera_position,
+            direction,
+            radial,
+        )
+    } else {
+        sort_centers::<false>(
+            buffers,
+            max_splats,
+            num_splats,
+            camera_position,
+            direction,
+            radial,
+        )
+    }
+}
+
+fn sort_centers<const FAST: bool>(
+    buffers: &mut Sort32Buffers,
+    max_splats: usize,
+    num_splats: usize,
+    camera_position: [f64; 3],
+    direction: [f32; 3],
+    radial: bool,
+) -> Result<u32, String> {
+    let shift = if FAST { FAST_KEY_SHIFT } else { 0 };
     if num_splats > max_splats {
         return Err(format!(
             "Sort ordering buffer too small: {max_splats} < {num_splats}"
@@ -185,6 +230,7 @@ pub fn sort32_centers_internal(
         }
     }
     buffers.ensure_size(max_splats);
+    buffers.prepare_buckets::<FAST>();
 
     {
         let Sort32Buffers {
@@ -193,14 +239,13 @@ pub fn sort32_centers_internal(
             range_bases,
             range_counts,
             keys,
-            buckets16lo,
-            buckets16hi,
+            buckets_lo,
+            buckets_hi,
+            bucket_range,
             ..
         } = buffers;
-        buckets16lo.fill(0);
-        buckets16hi.fill(0);
 
-        let invalid_key = f32::NAN.to_bits();
+        let invalid_key = f32::NAN.to_bits() >> shift;
         let mut next_index = 0usize;
         let direction64 = direction.map(f64::from);
 
@@ -217,7 +262,7 @@ pub fn sort32_centers_internal(
                 (camera_position[1] - mesh.origin[1]) as f32,
                 (camera_position[2] - mesh.origin[2]) as f32,
             ];
-            // Generate each key and tally both radix passes while its value is
+            // Generate each key and tally its radix buckets while its value is
             // hot. Keep the invariant sort-mode branch outside the hot loop.
             // Gaps are marked invalid without a separate full key scan.
             // The validation above guarantees this mesh and range are present.
@@ -234,9 +279,9 @@ pub fn sort32_centers_internal(
                     let dy = center[1] - camera_local[1];
                     let dz = center[2] - camera_local[2];
                     let metric = dx * dx + dy * dy + dz * dz;
-                    let key = metric.to_bits();
+                    let key = metric.to_bits() >> shift;
                     *key_out = key;
-                    tally_key(key, buckets16lo, buckets16hi);
+                    tally_key::<FAST>(key, buckets_lo, buckets_hi, bucket_range);
                 }
             } else {
                 let transform = mesh.transform;
@@ -261,9 +306,9 @@ pub fn sort32_centers_internal(
                         + center[1] * local_direction[1]
                         + center[2] * local_direction[2]
                         + offset;
-                    let key = metric.to_bits();
+                    let key = metric.to_bits() >> shift;
                     *key_out = key;
-                    tally_key(key, buckets16lo, buckets16hi);
+                    tally_key::<FAST>(key, buckets_lo, buckets_hi, bucket_range);
                 }
             }
             next_index = end;
@@ -271,21 +316,39 @@ pub fn sort32_centers_internal(
         keys[next_index..num_splats].fill(invalid_key);
     }
 
-    Ok(sort32_counted_internal(buffers, num_splats))
+    Ok(sort_counted::<FAST>(buffers, num_splats))
 }
 
-/// Count a key into both radix passes without branching. Invalid keys add zero;
+/// Count a key into the selected radix passes. Invalid keys add zero;
 /// this favors the normal rendering case where nearly every splat is valid.
 #[inline(always)]
-fn tally_key(key: u32, buckets16lo: &mut [u32], buckets16hi: &mut [u32]) {
-    let valid = (key < DEPTH_INFINITY_F32) as u32;
+fn tally_key<const FAST: bool>(
+    key: u32,
+    buckets_lo: &mut [u32],
+    buckets_hi: &mut [u32],
+    bucket_range: &mut Range<usize>,
+) {
+    let bits = if FAST {
+        FAST_RADIX_BITS
+    } else {
+        FULL_RADIX_BITS
+    };
+    let shift = if FAST { FAST_KEY_SHIFT } else { 0 };
+    let valid = (key < (DEPTH_INFINITY_F32 >> shift)) as u32;
     let inverted = !key;
-    let lo = (inverted & RADIX_MASK) as usize;
-    let hi = (inverted >> RADIX_BITS) as usize;
-
+    let lo = (inverted & ((1 << bits) - 1)) as usize;
+    if FAST {
+        bucket_range.start = bucket_range
+            .start
+            .min(if valid != 0 { lo } else { usize::MAX });
+        bucket_range.end = bucket_range.end.max(if valid != 0 { lo + 1 } else { 0 });
+    }
     // The mask and shift guarantee both bucket indices are in bounds.
-    unsafe { *buckets16lo.get_unchecked_mut(lo) += valid };
-    unsafe { *buckets16hi.get_unchecked_mut(hi) += valid };
+    unsafe { *buckets_lo.get_unchecked_mut(lo) += valid };
+    if !FAST {
+        let hi = (inverted >> FULL_RADIX_BITS) as usize;
+        unsafe { *buckets_hi.get_unchecked_mut(hi) += valid };
+    }
 }
 
 fn prefix_sum_exclusive(buckets: &mut [u32]) -> u32 {
@@ -298,77 +361,58 @@ fn prefix_sum_exclusive(buckets: &mut [u32]) -> u32 {
     sum
 }
 
-/// Two-pass radix sort (base 2^16) of 32-bit float bit-patterns,
-/// descending order (largest keys first).
-#[cfg(test)]
-pub fn sort32_internal(buffers: &mut Sort32Buffers, max_splats: usize, num_splats: usize) -> u32 {
-    buffers.ensure_size(max_splats);
-
-    {
-        let Sort32Buffers {
-            keys,
-            buckets16lo,
-            buckets16hi,
-            ..
-        } = buffers;
-        let keys = &keys[..num_splats];
-
-        buckets16lo.fill(0);
-        buckets16hi.fill(0);
-
-        let mut chunks = keys.chunks_exact(8);
-        for chunk in chunks.by_ref() {
-            tally_key(chunk[0], buckets16lo, buckets16hi);
-            tally_key(chunk[1], buckets16lo, buckets16hi);
-            tally_key(chunk[2], buckets16lo, buckets16hi);
-            tally_key(chunk[3], buckets16lo, buckets16hi);
-            tally_key(chunk[4], buckets16lo, buckets16hi);
-            tally_key(chunk[5], buckets16lo, buckets16hi);
-            tally_key(chunk[6], buckets16lo, buckets16hi);
-            tally_key(chunk[7], buckets16lo, buckets16hi);
-        }
-        for &key in chunks.remainder() {
-            tally_key(key, buckets16lo, buckets16hi);
-        }
-    }
-
-    sort32_counted_internal(buffers, num_splats)
-}
-
-/// Finish the radix sort after `buckets16lo` and `buckets16hi` have already
+/// Finish the radix sort after `buckets_lo` and `buckets_hi` have already
 /// been tallied for `keys[..num_splats]`.
-fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> u32 {
+fn sort_counted<const FAST: bool>(buffers: &mut Sort32Buffers, num_splats: usize) -> u32 {
+    let bits = if FAST {
+        FAST_RADIX_BITS
+    } else {
+        FULL_RADIX_BITS
+    };
+    let shift = if FAST { FAST_KEY_SHIFT } else { 0 };
     let Sort32Buffers {
         keys,
         ordering,
-        buckets16lo,
-        buckets16hi,
+        buckets_lo,
+        buckets_hi,
         scratch,
+        bucket_range,
         ..
     } = buffers;
     let keys = &keys[..num_splats];
 
-    let active_splats = prefix_sum_exclusive(buckets16lo);
-    prefix_sum_exclusive(buckets16hi);
+    // All-invalid input leaves the range inverted; normalize it to empty.
+    bucket_range.start = bucket_range.start.min(bucket_range.end);
+    let active_splats = prefix_sum_exclusive(&mut buckets_lo[bucket_range.clone()]);
+    if !FAST {
+        prefix_sum_exclusive(buckets_hi);
+    }
 
     if active_splats == 0 {
         return 0;
     }
 
-    // Pass 1: bucket by the low 16 bits of the inverted key. Keep the key
-    // alongside the index so pass 2 can scan sequentially instead of gathering.
+    if !FAST && scratch.len() < num_splats {
+        scratch.resize(num_splats, 0);
+    }
+
+    // Fast mode writes the final indices directly. Full precision keeps keys
+    // alongside indices so pass 2 can scan sequentially instead of gathering.
     macro_rules! place {
         ($key:expr, $index:expr) => {{
-            if $key < DEPTH_INFINITY_F32 {
+            if $key < (DEPTH_INFINITY_F32 >> shift) {
                 let inv = !$key;
-                let lo = (inv & RADIX_MASK) as usize;
-                let bucket = unsafe { buckets16lo.get_unchecked_mut(lo) };
+                let lo = (inv & ((1 << bits) - 1)) as usize;
+                let bucket = unsafe { buckets_lo.get_unchecked_mut(lo) };
                 let pos = *bucket as usize;
                 *bucket += 1;
-                let inv_index = ((inv as u64) << 32) | ($index as u64);
-
-                // pos < active_splats <= max_splats <= scratch.len().
-                unsafe { *scratch.get_unchecked_mut(pos) = inv_index };
+                // pos < active_splats <= num_splats; both targets are sized above.
+                if FAST {
+                    unsafe { *ordering.get_unchecked_mut(pos) = $index as u32 };
+                } else {
+                    let inv_index = ((inv as u64) << 32) | ($index as u64);
+                    unsafe { *scratch.get_unchecked_mut(pos) = inv_index };
+                }
             }
         }};
     }
@@ -391,12 +435,16 @@ fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> u3
         index += 1;
     }
 
-    // Pass 2: bucket by the high 16 bits of the inverted key.
+    if FAST {
+        return active_splats;
+    }
+
+    // Only full precision reaches pass 2: use the high 16 bits of the inverted key.
     macro_rules! place2 {
         ($inv_index:expr) => {{
             let index = $inv_index as u32;
-            let hi = (($inv_index >> 48) & RADIX_MASK as u64) as usize;
-            let bucket = unsafe { buckets16hi.get_unchecked_mut(hi) };
+            let hi = ($inv_index >> (32 + FULL_RADIX_BITS)) as usize;
+            let bucket = unsafe { buckets_hi.get_unchecked_mut(hi) };
             let pos = *bucket as usize;
             *bucket += 1;
 
@@ -420,7 +468,7 @@ fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> u3
         place2!(inv_index);
     }
 
-    debug_assert_eq!(buckets16hi[RADIX_BASE - 1], active_splats);
+    debug_assert_eq!(buckets_hi[(1 << FULL_RADIX_BITS) - 1], active_splats);
     active_splats
 }
 
@@ -428,13 +476,33 @@ fn sort32_counted_internal(buffers: &mut Sort32Buffers, num_splats: usize) -> u3
 mod tests {
     use super::*;
 
+    fn sort_internal<const FAST: bool>(
+        buffers: &mut Sort32Buffers,
+        max_splats: usize,
+        num_splats: usize,
+    ) -> u32 {
+        buffers.ensure_size(max_splats);
+        buffers.prepare_buckets::<FAST>();
+
+        for &key in &buffers.keys[..num_splats] {
+            tally_key::<FAST>(
+                key,
+                &mut buffers.buckets_lo,
+                &mut buffers.buckets_hi,
+                &mut buffers.bucket_range,
+            );
+        }
+
+        sort_counted::<FAST>(buffers, num_splats)
+    }
+
     #[test]
     fn returns_early_when_every_key_is_invalid() {
         let mut buffers = Sort32Buffers::default();
         buffers.keys = vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000];
         buffers.ordering = vec![7, 7, 7, 7];
 
-        assert_eq!(sort32_internal(&mut buffers, 4, 4), 0);
+        assert_eq!(sort_internal::<false>(&mut buffers, 4, 4), 0);
         assert_eq!(buffers.ordering, [7, 7, 7, 7]);
     }
 
@@ -451,7 +519,7 @@ mod tests {
             0x7fc00000, // NaN, excluded
         ];
 
-        let active = sort32_internal(&mut buffers, 7, 7);
+        let active = sort_internal::<false>(&mut buffers, 7, 7);
 
         assert_eq!(active, 4);
         assert_eq!(&buffers.ordering[..active as usize], &[4, 0, 3, 2]);
@@ -466,7 +534,7 @@ mod tests {
             *dst = value.to_bits();
         }
 
-        let active = sort32_internal(&mut buffers, values.len(), values.len());
+        let active = sort_internal::<false>(&mut buffers, values.len(), values.len());
 
         assert_eq!(active, 4);
         assert_eq!(&buffers.ordering[..active as usize], &[1, 3, 0, 5]);
@@ -477,22 +545,36 @@ mod tests {
         let mut buffers = Sort32Buffers::default();
         let mut state = 0x1234_5678_u32;
 
-        for len in [1_usize, 7, 8, 9, 257, 4097] {
-            buffers.ensure_size(len);
-            let mut expected = Vec::with_capacity(len);
-            for index in 0..len {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let value = (state % 10_000) as f32 / 100.0;
-                buffers.keys[index] = value.to_bits();
-                expected.push((index as u32, value));
+        for len in [0_usize, 1, 7, 8, 9, 257, 4097, 0, 9] {
+            for fast in [true, true, false, true, false] {
+                buffers.ensure_size(len);
+                let mut expected = Vec::with_capacity(len);
+                for index in 0..len {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let bits = match index % 31 {
+                        0 => f32::NAN.to_bits(),
+                        1 => f32::INFINITY.to_bits(),
+                        2 => (-0.0_f32).to_bits(),
+                        3 => (-1.0_f32).to_bits(),
+                        _ => {
+                            let base = [0, 0x00800000, 0x3f800000, 0x6f800000, 0x7f7f8000]
+                                [(state >> 24) as usize % 5];
+                            base | (state & 0x7fff)
+                        }
+                    };
+                    buffers.keys[index] = if fast { bits >> FAST_KEY_SHIFT } else { bits };
+                    if bits < DEPTH_INFINITY_F32 {
+                        expected.push(index as u32);
+                    }
+                }
+                expected.sort_by_key(|&index| std::cmp::Reverse(buffers.keys[index as usize]));
+                let active = if fast {
+                    sort_internal::<true>(&mut buffers, len, len)
+                } else {
+                    sort_internal::<false>(&mut buffers, len, len)
+                };
+                assert_eq!(&buffers.ordering[..active as usize], expected.as_slice());
             }
-            expected.sort_by(|left, right| right.1.total_cmp(&left.1));
-
-            let active = sort32_internal(&mut buffers, len, len);
-            let expected_indices: Vec<u32> = expected.into_iter().map(|(index, _)| index).collect();
-
-            assert_eq!(active as usize, len);
-            assert_eq!(&buffers.ordering[..len], expected_indices.as_slice());
         }
     }
 
@@ -514,9 +596,16 @@ mod tests {
             0.0,
         ]);
 
-        let active =
-            sort32_centers_internal(&mut buffers, 4, 4, [0.0, 0.0, 0.0], [0.0, 0.0, -1.0], true)
-                .unwrap();
+        let active = sort32_centers_internal(
+            &mut buffers,
+            4,
+            4,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            true,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(active, 3);
         assert_eq!(&buffers.ordering[..active as usize], &[1, 3, 0]);
@@ -527,9 +616,16 @@ mod tests {
         let mut buffers = Sort32Buffers::default();
         buffers.set_centers(&[0.0, 0.0, -1.0, 0.0, 0.0, -3.0, 0.0, 0.0, -2.0]);
 
-        let active =
-            sort32_centers_internal(&mut buffers, 3, 3, [0.0, 0.0, 0.0], [0.0, 0.0, -1.0], false)
-                .unwrap();
+        let active = sort32_centers_internal(
+            &mut buffers,
+            3,
+            3,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            false,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(active, 3);
         assert_eq!(&buffers.ordering[..active as usize], &[1, 2, 0]);
@@ -540,9 +636,16 @@ mod tests {
         let mut buffers = Sort32Buffers::default();
         buffers.set_centers(&[0.0; 6]);
 
-        let error =
-            sort32_centers_internal(&mut buffers, 1, 2, [0.0, 0.0, 0.0], [0.0, 0.0, -1.0], true)
-                .unwrap_err();
+        let error = sort32_centers_internal(
+            &mut buffers,
+            1,
+            2,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            true,
+            false,
+        )
+        .unwrap_err();
 
         assert!(error.contains("ordering buffer too small"));
     }

@@ -9,12 +9,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Highlights
 
+- **Faster rendering:** Fast sorting and Morton spatial reordering improve WebGPU and WebGL rendering performance by **5–20%**, with more noticeable gains on large models. Results vary by model and rendering mode.
 - **Faster bounds queries:** Splat bounds are precomputed during loading and reused, avoiding a full model scan whenever its bounding box is requested.
 - **Faster picking:** Raycasting is approximately **10–15× faster** with cached spatial bounds. Gains vary by model and ray.
-- **Faster stochastic rendering:** Spatial reordering groups nearby Splats together during loading, improving rendering performance, especially for large models.
 
 ### Added
 
+- Added `GaussianSplatRenderer.fastSort` (default `true`) for faster sorting with a small loss of blending accuracy on WebGPU and WebGL. It can be changed at runtime and has no effect on stochastic rendering.
 - Added `Splats.getSourceIndex()`, raycast hit `sourceIndex`, and the exported `SplatIntersection` type to identify original Splats after reordering. RAD IDs are file-global node indices; streamed SOG IDs are local to the source chunk.
 - Added an optional `Box3` target to `SplatMesh.getBoundingBox(centersOnly, target)` to reuse an existing box.
 - Added a viewer control to adjust the RAD/SOG streaming Splat budget from 1 to 5 million without reloading.

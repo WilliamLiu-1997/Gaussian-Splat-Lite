@@ -46,12 +46,14 @@ function sortCenters32({
   cameraPosition,
   direction,
   radial,
+  fastSort,
   ordering,
 }: {
   numSplats: number;
   cameraPosition: [number, number, number];
   direction: [number, number, number];
   radial: boolean;
+  fastSort: boolean;
   ordering: Uint32Array;
 }) {
   const activeSplats = sort32_centers(
@@ -63,6 +65,7 @@ function sortCenters32({
     direction[1],
     direction[2],
     radial,
+    fastSort,
     ordering,
   );
   return { activeSplats, ordering };

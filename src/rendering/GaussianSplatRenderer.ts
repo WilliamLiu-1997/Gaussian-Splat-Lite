@@ -143,8 +143,8 @@ export interface GaussianSplatRendererOptions {
    */
   sortRadial?: boolean;
   /**
-   * Lower-precision sorting on native WebGPU for faster sorted rendering.
-   * Has no effect on WebGL or stochastic rendering.
+   * Lower-precision sorting for faster sorted rendering.
+   * Has no effect on stochastic rendering.
    * @default true
    */
   fastSort?: boolean;
@@ -300,6 +300,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   sortedCenter = new THREE.Vector3().setScalar(Number.NEGATIVE_INFINITY);
   sortedDir = new THREE.Vector3().setScalar(0);
   private sortedRadial: boolean | undefined;
+  private sortedFastSort: boolean | undefined;
   private sortCenterCache = new SortCenterCache();
   private sortStateRevision = 0;
   private uploadedSortStateRevision = -1;
@@ -991,7 +992,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       center.distanceTo(this.sortedCenter) >
         0.001 * getCameraWorldScale(camera) ||
       dir.dot(this.sortedDir) < 0.999 ||
-      this.sortRadial !== this.sortedRadial;
+      this.sortRadial !== this.sortedRadial ||
+      this.fastSort !== this.sortedFastSort;
 
     const previousVersion = this.current.version;
     let preparation: ReturnType<SplatAccumulator["prepareGenerate"]>;
@@ -1115,6 +1117,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     try {
       const sortRadial = this.sortRadial;
+      const fastSort = this.fastSort;
       if (shrinkOrdering || this.sortWorker?.disposed) this.resetSortWorker();
       this.sortWorker ??= new SplatWorker();
       const sortWorker = this.sortWorker;
@@ -1151,6 +1154,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
           current.viewDirection.z,
         ],
         radial: sortRadial,
+        fastSort,
         ordering: this.orderingBuffer,
       });
       if (this.disposed) return;
@@ -1174,6 +1178,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.sortedCenter.copy(current.viewOrigin);
       this.sortedDir.copy(current.viewDirection);
       this.sortedRadial = sortRadial;
+      this.sortedFastSort = fastSort;
       if (this.display !== current) {
         this.releaseAccumulator(this.display);
         this.display = current;
@@ -1376,6 +1381,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (nextValue === this._fastSort) return;
     this._fastSort = nextValue;
+    if (this.backend.kind !== "webgpu") this.sortDirty = true;
     this.setDirty();
   }
 

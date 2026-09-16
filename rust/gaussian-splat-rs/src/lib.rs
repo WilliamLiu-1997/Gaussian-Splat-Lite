@@ -125,6 +125,7 @@ pub fn sort32_centers(
     direction_y: f32,
     direction_z: f32,
     radial: bool,
+    fast_sort: bool,
     ordering: Uint32Array,
 ) -> u32 {
     let max_splats = ordering.length() as usize;
@@ -137,6 +138,7 @@ pub fn sort32_centers(
             [camera_x, camera_y, camera_z],
             [direction_x, direction_y, direction_z],
             radial,
+            fast_sort,
         )?;
 
         if active_splats > 0 {

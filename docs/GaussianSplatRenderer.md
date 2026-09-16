@@ -100,7 +100,7 @@ Disabling manual `stochastic` waits for a sorted replacement when `autoUpdate` i
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `sortRadial` | `boolean` | `false` | Sort by distance when `true`, or by camera depth when `false` |
-| `fastSort` | `boolean` | `true` | Faster, lower-precision sorting on native WebGPU; no effect on WebGL or stochastic rendering |
+| `fastSort` | `boolean` | `true` | Lower-precision sorting on WebGPU and WebGL; no effect on stochastic rendering |
 | `minSortIntervalMs` | `number` | `0` | Minimum time between WebGL sorts; unused on native WebGPU |
 | `transparent` | `boolean` | `true` | Enable transparent blending in sorted rendering |
 | `depthTest` | `boolean` | `true` | Respect depth from other geometry |
