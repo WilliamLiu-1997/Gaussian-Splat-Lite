@@ -105,6 +105,7 @@ export class ProjectedSplats {
       sortDirection: { value: new THREE.Vector3() },
       sortOffset: { value: new THREE.Vector3() },
       sortRadial: { value: false },
+      fastSort: { value: false },
     };
     const viewBase = uniformBinding(this.state, "viewBase", "uint");
     const multiView = uniformBinding(this.state, "multiView", "bool");
@@ -119,6 +120,7 @@ export class ProjectedSplats {
     const seeds = bindBuffer(this.seeds).toReadOnly();
     this.sorter = new WebGPURadixSort(1, this.keys, {
       count,
+      fastSort: uniformBinding(this.state, "fastSort", "bool"),
       storeOrder: (index, value) => {
         N.If(multiView, () => {
           // Sorted color uses x; stochastic/depth draws use direct slots and y.
@@ -222,6 +224,7 @@ export class ProjectedSplats {
     const direction = u("sortDirection", "vec3");
     const sortOffset = u("sortOffset", "vec3");
     const radial = u("sortRadial", "bool");
+    const fastSort = u("fastSort", "bool");
     const stochastic = u("stochastic", "bool");
     const centerRange = u("clipXY", "float").abs().max(1).mul(1.000001);
     const pixelScale = u("renderSize", "vec2")
@@ -275,7 +278,9 @@ export class ProjectedSplats {
               );
             },
           );
-          keys.element(slot).assign(key);
+          // Discard low mantissa bits before storing the key. Projection/depth
+          // cache precision is independent of this sorting approximation.
+          keys.element(slot).assign(N.select(fastSort, key.shiftRight(8), key));
         });
       });
     })()
@@ -413,6 +418,7 @@ export class ProjectedSplats {
     camera: THREE.Camera,
     geometry: SplatGeometry,
     radial: boolean,
+    fastSort: boolean,
     shrink = false,
   ) {
     if (this.error) throw this.error;
@@ -425,6 +431,7 @@ export class ProjectedSplats {
     const cameras = multiView ? array.cameras : [camera];
     this.resize(accumulator.numSplats, cameras.length, shrink);
     this.state.multiView.value = multiView;
+    this.state.fastSort.value = fastSort;
     this.finish.count =
       multiView && this.uniforms.stochastic.value
         ? Math.max(1, accumulator.numSplats)
@@ -479,7 +486,7 @@ export class ProjectedSplats {
       }
       pending.push(this.finish);
       if (!this.uniforms.stochastic.value) {
-        pending.push(...this.sorter.prepare(accumulator.numSplats));
+        pending.push(...this.sorter.prepare(accumulator.numSplats, fastSort));
       }
       this.renderer.compute(pending);
     }

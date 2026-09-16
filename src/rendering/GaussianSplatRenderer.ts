@@ -143,6 +143,12 @@ export interface GaussianSplatRendererOptions {
    */
   sortRadial?: boolean;
   /**
+   * Lower-precision sorting on native WebGPU for faster sorted rendering.
+   * Has no effect on WebGL or stochastic rendering.
+   * @default true
+   */
+  fastSort?: boolean;
+  /**
    * Minimum interval between WebGL sort calls in milliseconds. Native WebGPU
    * projects and sorts each draw without CPU throttling.
    * @default 0
@@ -258,6 +264,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   clipXY: number;
   focalAdjustment: number;
   sortRadial: boolean;
+  private _fastSort: boolean;
   minSortIntervalMs: number;
   private _autoStochastic: boolean;
   private _stochastic: boolean;
@@ -394,6 +401,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.clipXY = options.clipXY ?? 1.25;
     this.focalAdjustment = options.focalAdjustment ?? 2.0;
     this.sortRadial = options.sortRadial ?? false;
+    this._fastSort = options.fastSort ?? true;
     this.minSortIntervalMs = options.minSortIntervalMs ?? 0;
 
     const { timer, ownsTimer } = resolveTimer(options.timer);
@@ -796,6 +804,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
           camera,
           geometry,
           gaussianSplatRenderer.sortRadial,
+          gaussianSplatRenderer.fastSort,
           gaussianSplatRenderer.pendingProjectionShrink,
         );
         gaussianSplatRenderer.pendingProjectionShrink = false;
@@ -1357,6 +1366,17 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this._transparent = nextValue;
       this.applyStochasticMaterialState(this.stochasticFrame);
     }
+  }
+
+  get fastSort(): boolean {
+    return this._fastSort;
+  }
+
+  set fastSort(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._fastSort) return;
+    this._fastSort = nextValue;
+    this.setDirty();
   }
 
   get autoStochastic(): boolean {

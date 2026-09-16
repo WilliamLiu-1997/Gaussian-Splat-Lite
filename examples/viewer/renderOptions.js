@@ -90,6 +90,15 @@ export const renderOptionGroups = [
         trueLabel: "Radial",
       },
       {
+        property: "fastSort",
+        label: "Fast sort",
+        description:
+          "Speeds up sorted rendering with a small loss of blending accuracy.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
         property: "minSortIntervalMs",
         description:
           "Limits asynchronous WebGL sorting. Higher values save work but may lag while moving.",

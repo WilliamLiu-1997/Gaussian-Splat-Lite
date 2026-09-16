@@ -12,6 +12,7 @@ const RADIX_BITS = 4;
 const RADIX_BUCKETS = 1 << RADIX_BITS;
 const WEBGPU_SORT_KEY_BITS = 32;
 const RADIX_PASSES = WEBGPU_SORT_KEY_BITS / RADIX_BITS;
+const FAST_RADIX_PASSES = 24 / RADIX_BITS;
 const WORKGROUP_SIZE = 256;
 const ELEMENTS_PER_THREAD = 8;
 const ELEMENTS_PER_WORKGROUP = WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
@@ -23,6 +24,8 @@ type BufferRef = { value: StorageBufferAttribute };
 type WebGPURadixSortOptions = {
   /** GPU count of compact input records. */
   count: Node<"uint">;
+  /** Matches the input key encoding for this draw. */
+  fastSort: Node<"bool">;
   /** Final-pass write, compiled once with the persistent sort graph. */
   storeOrder: (index: Node<"uint">, value: Node<"uint">) => void;
   maxComputeWorkgroupsPerDimension: number;
@@ -248,17 +251,15 @@ function makeReorderTask({
   elementCount: Node<"uint">;
   bitOffset: number;
   firstPass: boolean;
-  lastPass: boolean;
+  lastPass: boolean | Node<"bool">;
   workgroupCount: Node<"uint">;
-  storeOrder?: (index: Node<"uint">, value: Node<"uint">) => void;
+  storeOrder: (index: Node<"uint">, value: Node<"uint">) => void;
 }) {
   const inputKeys = storage(
     inputKeysAttribute,
     "gslRadixInputKeys",
   ).toReadOnly();
-  const outputKeys = lastPass
-    ? null
-    : storage(outputKeysAttribute, "gslRadixOutputKeys");
+  const outputKeys = storage(outputKeysAttribute, "gslRadixOutputKeys");
   const inputValues = storage(
     inputValuesAttribute,
     "gslRadixInputValues",
@@ -345,9 +346,22 @@ function makeReorderTask({
           );
           const prefixIndex = digit.mul(workgroupCount).add(workgroup);
           const sortedIndex = prefix.element(prefixIndex).add(localPrefix);
-          outputKeys?.element(sortedIndex).assign(key);
+          // Boolean cases are resolved while building the shader.
+          if (lastPass === false) {
+            outputKeys.element(sortedIndex).assign(key);
+          } else if (lastPass !== true) {
+            N.If(lastPass.not(), () => {
+              outputKeys.element(sortedIndex).assign(key);
+            });
+          }
           outputValues.element(sortedIndex).assign(value);
-          storeOrder?.(sortedIndex, value);
+          if (lastPass === true) {
+            storeOrder(sortedIndex, value);
+          } else if (lastPass !== false) {
+            N.If(lastPass, () => {
+              storeOrder(sortedIndex, value);
+            });
+          }
         });
 
         N.If(round.lessThan(ELEMENTS_PER_THREAD - 1), () => {
@@ -380,7 +394,7 @@ function makeReorderTask({
     .setName("Splat radix reorder");
 }
 
-/** Stable 32-bit radix sort. Borrows and overwrites input keys; their owner manages storage. */
+/** Stable 24/32-bit radix sort. Borrows and overwrites input keys; their owner manages storage. */
 export class WebGPURadixSort {
   capacity: number;
   readonly maxCapacity: number;
@@ -399,6 +413,7 @@ export class WebGPURadixSort {
   private readonly prefixLevels: PrefixLevel[] = [];
   private readonly maxWorkgroups: number;
   private readonly dispatchNodes: ComputeNode[][];
+  private readonly fastDispatchNodes: ComputeNode[][];
 
   constructor(
     capacity: number,
@@ -438,6 +453,7 @@ export class WebGPURadixSort {
     });
     this.nodes = [setup, ...prefixNodes[PREFIX_LEVELS - 1]];
     this.dispatchNodes = prefixNodes.map(() => [setup]);
+    this.fastDispatchNodes = prefixNodes.map(() => [setup]);
     for (let pass = 0; pass < RADIX_PASSES; pass++) {
       const firstPass = pass === 0;
       const inputIndex = pass & 1;
@@ -459,18 +475,22 @@ export class WebGPURadixSort {
         workgroupCount: counts.element(1),
         bitOffset: pass * RADIX_BITS,
         firstPass,
-        lastPass: pass === RADIX_PASSES - 1,
-        storeOrder: pass === RADIX_PASSES - 1 ? options.storeOrder : undefined,
+        lastPass:
+          pass === RADIX_PASSES - 1
+            ? true
+            : pass === FAST_RADIX_PASSES - 1
+              ? options.fastSort
+              : false,
+        storeOrder: options.storeOrder,
       });
       setIndirectDispatch(histogram, this.sortDispatch);
       setIndirectDispatch(reorder, this.sortDispatch);
       this.nodes.push(histogram, reorder);
       for (let level = 0; level < PREFIX_LEVELS; level++) {
-        this.dispatchNodes[level].push(
-          histogram,
-          ...prefixNodes[level],
-          reorder,
-        );
+        const nodes = [histogram, ...prefixNodes[level], reorder];
+        this.dispatchNodes[level].push(...nodes);
+        if (pass < FAST_RADIX_PASSES)
+          this.fastDispatchNodes[level].push(...nodes);
       }
     }
   }
@@ -601,7 +621,7 @@ export class WebGPURadixSort {
   }
 
   /** Prepare the persistent graph; GPU count is clamped to this input bound. */
-  prepare(elementCount: number): ComputeNode[] {
+  prepare(elementCount: number, fastSort = false): ComputeNode[] {
     if (
       !Number.isSafeInteger(elementCount) ||
       elementCount < 0 ||
@@ -625,7 +645,7 @@ export class WebGPURadixSort {
       if (items === 1) break;
       lastLevel++;
     }
-    return this.dispatchNodes[lastLevel];
+    return (fastSort ? this.fastDispatchNodes : this.dispatchNodes)[lastLevel];
   }
 
   dispose() {
