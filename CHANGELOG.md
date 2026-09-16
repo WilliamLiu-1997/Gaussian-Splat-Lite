@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-17
+
 ### Highlights
 
 - **Faster rendering:** Fast sorting and Morton spatial reordering improve WebGPU and WebGL rendering performance by **5–20%**, with more noticeable gains on large models. Results vary by model and rendering mode.
@@ -346,7 +348,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.4...v1.1.0
 [1.0.4]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.0.1...v1.0.2
