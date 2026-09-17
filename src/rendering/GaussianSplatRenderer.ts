@@ -4,6 +4,7 @@ import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
 import { SplatCapture } from "./SplatCapture";
+import { SplatDepthPass } from "./SplatDepthPass";
 import { SplatGeometry, WEBGPU_SPLATS_PER_INSTANCE } from "./SplatGeometry";
 import {
   type SplatBackend,
@@ -285,6 +286,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   private readonly backend: SplatBackend;
   private readonly capture: SplatCapture;
+  private readonly depthPass: SplatDepthPass;
   private orderingBuffer: Uint32Array = new Uint32Array(0);
   maxSplats = 0;
   activeSplats = 0;
@@ -314,8 +316,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   private requestMotionFollowup = false;
   private forceSortedRenderDepth = 0;
   private stochasticResolveMarkerUsers = 0;
-  private stochasticPreviousRenderOrder: number | null = null;
-  private _depthMesh: THREE.Mesh<SplatGeometry, SplatMaterial> | null = null;
+  private previousRenderOrder: number | null = null;
   private pendingProjectionShrink = false;
 
   target?: THREE.WebGLRenderTarget;
@@ -368,6 +369,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.capture = new SplatCapture(this, backend, () => this.beginCapture());
     this.material = material;
     this.uniforms = uniforms;
+    this.depthPass = new SplatDepthPass(
+      this,
+      backend,
+      () => GaussianSplatRenderer.gaussianSplatOverride ?? this,
+    );
     this.supportsStochasticShaders = supportsStochasticShaders;
     this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
@@ -378,8 +384,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this._stochastic = stochastic;
     this._renderDepth = renderDepth;
     this.stochasticPhase = stochastic ? "forced" : null;
-    this.applyStochasticRenderOrder();
-    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.applyRenderOrder();
+    this.applyMaterialState(this.stochasticFrame);
     // Disable frustum culling because we want to always draw them all
     // and cull Gsplats individually in the shader
     this.frustumCulled = false;
@@ -441,9 +447,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     this.capture.dispose();
     this.backend.dispose();
-    this._depthMesh?.removeFromParent();
-    this._depthMesh?.material.dispose();
-    this._depthMesh = null;
+    this.depthPass.dispose();
     this.stochasticMotion.reset();
 
     const accumulators = new Set<SplatAccumulator>();
@@ -515,8 +519,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.stochasticWasForced = false;
       this.requestMotionFollowup = false;
       if (wasActive && !this.stochasticModeEnabled) {
-        this.applyStochasticRenderOrder();
-        this.applyStochasticMaterialState(false);
+        this.applyRenderOrder();
+        this.applyMaterialState(false);
       }
       return;
     }
@@ -540,14 +544,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     return this._autoStochastic || this._stochastic;
   }
 
-  private get renderDepthEnabled() {
-    return this._autoStochastic || this._renderDepth;
-  }
-
-  private get managedRenderPipeline() {
+  private get usesManagedRenderState() {
     return (
       this.stochasticModeEnabled ||
-      (this.renderDepthEnabled && !this._depthWrite) ||
+      this.depthPass.enabled ||
       this.stochasticFrame
     );
   }
@@ -579,45 +579,21 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       : settling || this._autoStochastic;
   }
 
-  private ensureDepthMesh() {
-    if (this.disposed) throw new Error("GaussianSplatRenderer is disposed");
-    if (this._depthMesh) return this._depthMesh;
-
-    const depthUniforms = {
-      ...this.uniforms,
-      stochastic: { value: false },
-      stochasticResolve: { value: false },
-      depthOnly: { value: true },
-    };
-    const material = this.backend.createDepthMaterial(depthUniforms);
-    material.blending = THREE.NoBlending;
-    material.colorWrite = false;
-
-    const mesh = new THREE.Mesh(this.geometry, material);
-    mesh.frustumCulled = false;
-    mesh.matrixAutoUpdate = false;
-    mesh.layers = this.layers;
-    mesh.renderOrder = Number.POSITIVE_INFINITY;
-    mesh.visible = this.renderDepthEnabled && !this._depthWrite;
-    mesh.onBeforeRender = () => {
-      const owner = GaussianSplatRenderer.gaussianSplatOverride ?? this;
-      const compiling =
-        this.backend.kind === "webgpu" && this.backend.precompile !== null;
-      mesh.geometry.setSplatCount(
-        compiling || owner.stochasticFrame || owner.activeSplats === 0
-          ? 0
-          : owner.display.numSplats,
-      );
-    };
-    this._depthMesh = mesh;
-    this.add(mesh);
-    return mesh;
+  private completeStochasticSettle(revision: number): boolean {
+    // An async sort may finish after the camera starts moving again. Only the
+    // matching revision can end motion mode and restore sorted rendering.
+    if (!this.stochasticMotion.complete(revision)) return false;
+    this.stochasticPhase = null;
+    this.stochasticWasForced = false;
+    this.applyRenderOrder();
+    this.applyMaterialState(false);
+    return true;
   }
 
-  private applyStochasticRenderOrder() {
-    if (this.managedRenderPipeline) {
-      if (this.stochasticPreviousRenderOrder === null) {
-        this.stochasticPreviousRenderOrder = this.renderOrder;
+  private applyRenderOrder() {
+    if (this.usesManagedRenderState) {
+      if (this.previousRenderOrder === null) {
+        this.previousRenderOrder = this.renderOrder;
       }
       // Managed modes keep the Splat in the opaque list so blend/depth state
       // can change in onBeforeRender without rebuilding the render list.
@@ -627,21 +603,21 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       return;
     }
 
-    if (this.stochasticPreviousRenderOrder !== null) {
+    if (this.previousRenderOrder !== null) {
       if (this.renderOrder === Number.MAX_SAFE_INTEGER) {
-        this.renderOrder = this.stochasticPreviousRenderOrder;
+        this.renderOrder = this.previousRenderOrder;
       }
-      this.stochasticPreviousRenderOrder = null;
+      this.previousRenderOrder = null;
     }
   }
 
-  private applyStochasticMaterialState(active: boolean) {
+  private applyMaterialState(stochasticActive: boolean) {
     // Keep stochastic-enabled Splats in a stable render list. onBeforeRender is
     // early enough to change GPU blend/depth state, but too late to move an
     // object between Three.js's opaque and transparent lists.
-    const managedAsOpaque = this.managedRenderPipeline;
+    const managedAsOpaque = this.usesManagedRenderState;
     const transparent = managedAsOpaque ? false : this._transparent;
-    const blending = active
+    const blending = stochasticActive
       ? THREE.NoBlending
       : managedAsOpaque && this._transparent
         ? THREE.CustomBlending
@@ -659,13 +635,9 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.material.blendSrcAlpha = THREE.OneFactor;
       this.material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
     }
-    this.material.depthTest = active ? true : this._depthTest;
-    this.material.depthWrite = active ? true : this._depthWrite;
-    if (this.renderDepthEnabled && !this._depthWrite) {
-      this.ensureDepthMesh().visible = true;
-    } else if (this._depthMesh) {
-      this._depthMesh.visible = false;
-    }
+    this.material.depthTest = stochasticActive ? true : this._depthTest;
+    this.material.depthWrite = stochasticActive ? true : this._depthWrite;
+    this.depthPass.updateVisibility();
     if (wasOpaque !== isOpaqueMaterial(this.material)) {
       this.material.needsUpdate = true;
     }
@@ -789,7 +761,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.stochasticResolveMarkerUsers,
     );
     if (this.stochasticModeEnabled) {
-      this.applyStochasticMaterialState(gaussianSplatRenderer.stochasticFrame);
+      this.applyMaterialState(gaussianSplatRenderer.stochasticFrame);
     }
 
     this.uniforms.time.value = display.time;
@@ -915,15 +887,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.activeSplats = this.current.numSplats;
       this.maxSplats = requiredMaxSplats;
       this.sortDirty = false;
-      if (
-        !skipSort &&
-        settleRevision !== null &&
-        this.stochasticMotion.complete(settleRevision)
-      ) {
-        this.stochasticPhase = null;
-        this.stochasticWasForced = false;
-        this.applyStochasticRenderOrder();
-        this.applyStochasticMaterialState(false);
+      if (!skipSort && settleRevision !== null) {
+        this.completeStochasticSettle(settleRevision);
       }
       if (
         shrinkResources ||
@@ -1080,14 +1045,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       settleRevision !== null &&
       !this.sortDirty &&
       this.current === this.display &&
-      this.stochasticMotion.complete(settleRevision)
+      this.completeStochasticSettle(settleRevision)
     ) {
-      // An async sort may finish after the camera starts moving again. The
-      // revision check above keeps that stale result from ending motion mode.
-      this.stochasticPhase = null;
-      this.stochasticWasForced = false;
-      this.applyStochasticRenderOrder();
-      this.applyStochasticMaterialState(false);
       this.setDirty();
     }
     if (shrinkResources) {
@@ -1317,7 +1276,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   /** Depth-only companion mesh, created lazily and owned by this renderer. */
   get depthMesh(): THREE.Mesh {
-    return this.ensureDepthMesh();
+    return this.depthPass.mesh;
   }
 
   private assertBuiltInSplatShaders(enabled: boolean) {
@@ -1341,8 +1300,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.stochasticPhase = null;
       this.stochasticWasForced = false;
     }
-    this.applyStochasticRenderOrder();
-    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.applyRenderOrder();
+    this.applyMaterialState(this.stochasticFrame);
     this.setDirty();
   }
 
@@ -1356,7 +1315,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this._premultipliedAlpha = nextValue;
       this.uniforms.premultipliedAlpha.value = nextValue;
       this.material.premultipliedAlpha = nextValue;
-      this.applyStochasticMaterialState(this.stochasticFrame);
+      this.applyMaterialState(this.stochasticFrame);
       this.material.needsUpdate = true;
     }
   }
@@ -1369,7 +1328,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (this._transparent !== nextValue) {
       this._transparent = nextValue;
-      this.applyStochasticMaterialState(this.stochasticFrame);
+      this.applyMaterialState(this.stochasticFrame);
     }
   }
 
@@ -1441,8 +1400,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     if (nextValue === this._renderDepth) return;
     this.assertBuiltInSplatShaders(nextValue);
     this._renderDepth = nextValue;
-    this.applyStochasticRenderOrder();
-    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.applyRenderOrder();
+    this.applyMaterialState(this.stochasticFrame);
     this.setDirty();
   }
 
@@ -1452,7 +1411,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   set depthTest(value: boolean) {
     this._depthTest = Boolean(value);
-    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.applyMaterialState(this.stochasticFrame);
   }
 
   get depthWrite(): boolean {
@@ -1461,8 +1420,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   set depthWrite(value: boolean) {
     this._depthWrite = Boolean(value);
-    this.applyStochasticRenderOrder();
-    this.applyStochasticMaterialState(this.stochasticFrame);
+    this.applyRenderOrder();
+    this.applyMaterialState(this.stochasticFrame);
   }
 }
 

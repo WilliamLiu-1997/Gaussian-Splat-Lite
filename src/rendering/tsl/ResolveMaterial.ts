@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { Node } from "three/webgpu";
-import { NodeMaterial, type WebGPURenderer } from "three/webgpu";
+import { NodeMaterial } from "three/webgpu";
 import type { ResolveState } from "../StochasticResolvePass";
 import { N, load2D } from "./shaderUtils";
 import { type ResolveOutputNode, materialCamera } from "./tslCompat";
@@ -136,14 +136,10 @@ export function createNodeResolveMaterial(state: ResolveState) {
 
 export function configureNodeResolveOutput(
   material: NodeMaterial,
-  renderer: WebGPURenderer,
-  xrOutput: boolean,
+  toneMapping: THREE.ToneMapping,
+  colorSpace: string,
 ) {
-  // Convert in the resolve shader so Three's output blit does not drop
-  // the per-eye depth or allocate another full-resolution intermediate.
   const output = material.outputNode as ResolveOutputNode;
-  const toneMapping = xrOutput ? renderer.toneMapping : THREE.NoToneMapping;
-  const colorSpace = xrOutput ? renderer.outputColorSpace : THREE.NoColorSpace;
   if (
     output.getToneMapping() !== toneMapping ||
     output.outputColorSpace !== colorSpace
@@ -151,9 +147,5 @@ export function configureNodeResolveOutput(
     output.setToneMapping(toneMapping);
     output.outputColorSpace = colorSpace;
     material.needsUpdate = true;
-  }
-  if (xrOutput) {
-    renderer.toneMapping = THREE.NoToneMapping;
-    renderer.outputColorSpace = THREE.ColorManagement.workingColorSpace;
   }
 }

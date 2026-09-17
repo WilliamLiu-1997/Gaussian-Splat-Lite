@@ -201,6 +201,39 @@ export class StochasticResolvePass {
     this.drawingBufferSize.set(width, height);
   }
 
+  private prepareComposeTarget(
+    renderer: GaussianSplatCompatibleRenderer,
+    needsDepthTexture: boolean,
+  ) {
+    const { x: width, y: height } = this.drawingBufferSize;
+    if (!this.composeTarget) {
+      this.composeTarget = new THREE.RenderTarget(width, height, {
+        type: THREE.HalfFloatType,
+        depthBuffer: true,
+      });
+      this.composeTarget.texture.name = "StochasticResolvePass.composeColor";
+    } else {
+      this.composeTarget.setSize(width, height);
+    }
+    const target = this.composeTarget;
+    if (needsDepthTexture && !target.depthTexture) {
+      target.depthTexture = new THREE.DepthTexture(width, height);
+      target.dispose();
+    }
+
+    // WebGL's canvas applies its sRGB conversion before fixed-function
+    // blending. Marking this float target as an output target reproduces
+    // that ordering, so transparent objects over Splats do not brighten.
+    const sourceEncoded =
+      !isWebGPURenderer(renderer) &&
+      renderer.outputColorSpace === THREE.SRGBColorSpace;
+    setXRRenderTargetFlag(target, sourceEncoded);
+    target.texture.colorSpace = sourceEncoded
+      ? THREE.SRGBColorSpace
+      : THREE.NoColorSpace;
+    return target;
+  }
+
   /** Renders a complete scene, then resolves its marked Splat pixels. */
   compose(
     renderer: GaussianSplatCompatibleRenderer,
@@ -224,72 +257,46 @@ export class StochasticResolvePass {
     try {
       if (!this._enabled) {
         renderer.render(scene, camera);
-      } else {
-        // A WebGL canvas blends the library's stored sRGB Splat colors in the
-        // output domain, while a regular offscreen target blends in working
-        // linear space. Avoid that visible color change on already-sorted
-        // frames, where there is nothing for this pass to resolve.
-        camera.updateWorldMatrix(true, false);
-        if (!this.requiresResolve(camera, renderer)) {
-          renderer.render(scene, camera);
-          return;
-        }
-
-        let renderCamera = camera;
-        if (xrTarget) {
-          if (renderer.xr.cameraAutoUpdate)
-            renderer.xr.updateCamera(camera as THREE.PerspectiveCamera);
-          const xrCamera = renderer.xr.getCamera();
-          if (xrCamera.cameras.length === 0) return;
-          this.prepareXRViews(xrCamera, this.xrCamera);
-          renderCamera = this.xrCamera;
-          // Render the packed eyes without Three replacing them with the XR views.
-          renderer.xr.enabled = false;
-        } else {
-          renderer.getDrawingBufferSize(this.drawingBufferSize);
-        }
-        const width = this.drawingBufferSize.x;
-        const height = this.drawingBufferSize.y;
-        if (!this.composeTarget) {
-          this.composeTarget = new THREE.RenderTarget(width, height, {
-            type: THREE.HalfFloatType,
-            depthBuffer: true,
-          });
-          this.composeTarget.texture.name =
-            "StochasticResolvePass.composeColor";
-        } else {
-          this.composeTarget.setSize(width, height);
-        }
-        if (xrTarget && !this.composeTarget.depthTexture) {
-          this.composeTarget.depthTexture = new THREE.DepthTexture(
-            width,
-            height,
-          );
-          this.composeTarget.dispose();
-        }
-
-        // WebGL's canvas applies its sRGB conversion before fixed-function
-        // blending. Marking this float target as an output target reproduces
-        // that ordering, so transparent objects over Splats do not brighten.
-        const sourceEncoded =
-          !isWebGPURenderer(renderer) &&
-          renderer.outputColorSpace === THREE.SRGBColorSpace;
-        const composeTarget = this.composeTarget;
-        setXRRenderTargetFlag(composeTarget, sourceEncoded);
-        composeTarget.texture.colorSpace = sourceEncoded
-          ? THREE.SRGBColorSpace
-          : THREE.NoColorSpace;
-
-        renderer.autoClear = false;
-        setRendererRenderTarget(renderer, this.composeTarget);
-        renderer.clear(
-          renderer.autoClearColor,
-          renderer.autoClearDepth,
-          renderer.autoClearStencil,
-        );
-        renderer.render(scene, renderCamera);
-        this.resolve(renderer, this.composeTarget, xrTarget);
+        return;
       }
+
+      // A WebGL canvas blends the library's stored sRGB Splat colors in the
+      // output domain, while a regular offscreen target blends in working
+      // linear space. Avoid that visible color change on already-sorted
+      // frames, where there is nothing for this pass to resolve.
+      camera.updateWorldMatrix(true, false);
+      if (!this.requiresResolve(camera, renderer)) {
+        renderer.render(scene, camera);
+        return;
+      }
+
+      let renderCamera = camera;
+      if (xrTarget) {
+        if (renderer.xr.cameraAutoUpdate)
+          renderer.xr.updateCamera(camera as THREE.PerspectiveCamera);
+        const xrCamera = renderer.xr.getCamera();
+        if (xrCamera.cameras.length === 0) return;
+        this.prepareXRViews(xrCamera, this.xrCamera);
+        renderCamera = this.xrCamera;
+        // Render the packed eyes without Three replacing them with the XR views.
+        renderer.xr.enabled = false;
+      } else {
+        renderer.getDrawingBufferSize(this.drawingBufferSize);
+      }
+      const composeTarget = this.prepareComposeTarget(
+        renderer,
+        xrTarget !== null,
+      );
+
+      renderer.autoClear = false;
+      setRendererRenderTarget(renderer, composeTarget);
+      renderer.clear(
+        renderer.autoClearColor,
+        renderer.autoClearDepth,
+        renderer.autoClearStencil,
+      );
+      renderer.render(scene, renderCamera);
+      this.resolve(renderer, composeTarget, xrTarget);
     } finally {
       setRendererRenderTarget(
         renderer,
@@ -409,7 +416,17 @@ export class StochasticResolvePass {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
       if (webGPU) {
-        configureNodeResolveOutput(this.webGPUMaterial, renderer, xrOutput);
+        configureNodeResolveOutput(
+          this.webGPUMaterial,
+          xrOutput ? previousToneMapping : THREE.NoToneMapping,
+          xrOutput ? previousColorSpace : THREE.NoColorSpace,
+        );
+        if (xrOutput) {
+          // Convert in the resolve shader so Three's output blit does not drop
+          // the per-eye depth or allocate another full-resolution intermediate.
+          renderer.toneMapping = THREE.NoToneMapping;
+          renderer.outputColorSpace = THREE.ColorManagement.workingColorSpace;
+        }
       }
       setRendererRenderTarget(renderer, outputTarget);
       if (this.clear) {
@@ -437,11 +454,7 @@ export class StochasticResolvePass {
 
   dispose() {
     if (this.disposed) return;
-    if (this._enabled) {
-      for (const splat of this.splats) {
-        splat[stochasticResolveMarker](false);
-      }
-    }
+    this.enabled = false;
     this.splats.clear();
     this.webGLMaterial.dispose();
     this.webGPUMaterial.dispose();

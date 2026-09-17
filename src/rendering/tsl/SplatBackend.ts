@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import type * as THREE from "three";
 import { PMREMGenerator, type WebGPURenderer } from "three/webgpu";
 import type { SplatMaterialOptions } from "../backend";
 import { usesNativeWebGPU } from "../rendererUtils";
@@ -10,30 +10,6 @@ import {
   createSplatNodeMaterial,
 } from "./SplatMaterial";
 
-export function configureNodeSplatOutput(
-  renderer: WebGPURenderer,
-  target: THREE.RenderTarget | null,
-  uniforms: Uniforms,
-  markerUsers: number,
-) {
-  const xrOutput =
-    target === renderer.getOutputRenderTarget() ||
-    (
-      target as
-        | (THREE.RenderTarget & { isPostProcessingRenderTarget?: boolean })
-        | null
-    )?.isPostProcessingRenderTarget;
-  // Alpha-2 markers must not escape through Three's XR output intermediate.
-  uniforms.stochasticResolve.value =
-    markerUsers > 0 &&
-    (!renderer.xr.isPresenting ||
-      (!xrOutput &&
-        (target?.texture.type === THREE.HalfFloatType ||
-          target?.texture.type === THREE.FloatType)));
-  uniforms.encodeLinear.value =
-    THREE.ColorManagement.workingColorSpace !== THREE.SRGBColorSpace;
-}
-
 /** Drawing and readback shared by both WebGPURenderer backends. */
 export class NodeSplatBackend {
   readonly material: SplatNodeMaterial;
@@ -43,7 +19,7 @@ export class NodeSplatBackend {
     uniforms: Uniforms,
     options: SplatMaterialOptions,
     orderingNode?: OrderingNode,
-    private readonly vertexData?: (camera: THREE.Camera) => ProjectedVertexData,
+    vertexData?: (camera: THREE.Camera) => ProjectedVertexData,
   ) {
     this.material = createSplatNodeMaterial({
       uniforms,
@@ -61,7 +37,6 @@ export class NodeSplatBackend {
       transparent: false,
       depthTest: true,
       depthWrite: true,
-      vertexData: this.vertexData,
     });
   }
 

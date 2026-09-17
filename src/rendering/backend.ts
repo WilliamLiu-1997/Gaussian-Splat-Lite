@@ -1,17 +1,14 @@
-import type * as THREE from "three";
+import * as THREE from "three";
 import {
   type GaussianSplatCompatibleRenderer,
   isWebGPURenderer,
+  isXRRenderTarget,
   usesNativeWebGPU,
 } from "./rendererUtils";
-import { configureNodeSplatOutput } from "./tsl/SplatBackend";
 import type { SplatNodeMaterial } from "./tsl/SplatMaterial";
 import type { Uniforms } from "./uniforms";
 import { WebGLFallbackSplatBackend } from "./webgl-fallback/SplatBackend";
-import {
-  WebGLSplatBackend,
-  configureWebGLSplatOutput,
-} from "./webgl/SplatBackend";
+import { WebGLSplatBackend } from "./webgl/SplatBackend";
 import { WebGPUSplatBackend } from "./webgpu/SplatBackend";
 
 export type SplatBackend =
@@ -41,11 +38,31 @@ export function configureSplatOutput(
   uniforms: Uniforms,
   markerUsers: number,
 ) {
+  let xrOutput: boolean;
+  let blendSpace = THREE.ColorManagement.workingColorSpace;
   if (isWebGPURenderer(renderer)) {
-    configureNodeSplatOutput(renderer, target, uniforms, markerUsers);
+    xrOutput =
+      target === renderer.getOutputRenderTarget() ||
+      (
+        target as
+          | (THREE.RenderTarget & { isPostProcessingRenderTarget?: boolean })
+          | null
+      )?.isPostProcessingRenderTarget === true;
   } else {
-    configureWebGLSplatOutput(renderer, target, uniforms, markerUsers);
+    const xrTarget = isXRRenderTarget(target);
+    // A compose target may carry the XR flag for output-space blending only.
+    xrOutput = xrTarget && renderer.xr.enabled;
+    if (target === null) blendSpace = renderer.outputColorSpace;
+    else if (xrTarget) blendSpace = target.texture.colorSpace;
   }
+  // Alpha-2 markers must not escape through Three's XR output intermediate.
+  uniforms.stochasticResolve.value =
+    markerUsers > 0 &&
+    (!renderer.xr.isPresenting ||
+      (!xrOutput &&
+        (target?.texture.type === THREE.HalfFloatType ||
+          target?.texture.type === THREE.FloatType)));
+  uniforms.encodeLinear.value = blendSpace !== THREE.SRGBColorSpace;
 }
 
 export type CPUOrderingUpdate = {

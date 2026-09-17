@@ -107,15 +107,13 @@ function createSplatFragment({
         .mul(0.25);
       randomValue.greaterThanEqual(rgba.a).discard();
     });
-    N.If(depthOnly.not(), () => {
-      N.If(stochastic, () => {
-        // NodeMaterial premultiplies its output when requested. Cancel the
-        // alpha-2 marker here so the stored stochastic RGB remains straight.
-        N.If(premultipliedAlpha.and(stochasticResolve), () => {
-          rgba.rgb.mulAssign(0.5);
-        });
-        rgba.a.assign(N.select(stochasticResolve, 2, 1));
+    N.If(stochastic.and(depthOnly.not()), () => {
+      // NodeMaterial premultiplies its output when requested. Cancel the
+      // alpha-2 marker here so the stored stochastic RGB remains straight.
+      N.If(premultipliedAlpha.and(stochasticResolve), () => {
+        rgba.rgb.mulAssign(0.5);
       });
+      rgba.a.assign(N.select(stochasticResolve, 2, 1));
     });
     return rgba;
   })();
