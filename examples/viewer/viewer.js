@@ -65,6 +65,34 @@ const rendererParameters = {
 let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = outputColorSpace;
 
+const orbitingCubes = new THREE.Group();
+const cubeGeometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+const cubeColors = [0xff8833, 0x33bbff];
+const cubeMaterials = [
+  new THREE.MeshBasicMaterial({ color: cubeColors[0] }),
+  new THREE.MeshBasicMaterial({
+    color: cubeColors[1],
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,
+  }),
+];
+for (const material of cubeMaterials) {
+  orbitingCubes.add(new THREE.Mesh(cubeGeometry, material));
+}
+orbitingCubes.visible = false;
+scene.add(orbitingCubes);
+let rotateCubes = true;
+let cubeOrbitRadius = 1;
+let cubeAngle = 0;
+let cubeAnimationTime = performance.now();
+
+function syncCubeColors() {
+  cubeMaterials.forEach((material, index) =>
+    material.color.setHex(cubeColors[index]),
+  );
+}
+
 function configureRenderer(value) {
   value.setClearColor(0x000000, 0);
   value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -197,6 +225,7 @@ function mountRendererState(state, attachInspector = true) {
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  syncCubeColors();
   renderer.outputColorSpace = outputColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
@@ -245,6 +274,9 @@ function requestRender() {
 }
 
 function renderFrame(time) {
+  const cubesAnimating = rotateCubes && orbitingCubes.visible;
+  if (cubesAnimating) cubeAngle += (time - cubeAnimationTime) * 0.0005;
+  cubeAnimationTime = time;
   controls.update(time);
   activeStream?.update(camera, {
     width: renderer.domElement.width,
@@ -255,9 +287,21 @@ function renderFrame(time) {
     updateStats(time, false);
     return;
   }
-  if (renderOnDemand && !needsRender) {
+  if (renderOnDemand && !needsRender && !cubesAnimating) {
     updateStats(time, false);
     return;
+  }
+
+  if (orbitingCubes.visible) {
+    for (const [index, cube] of orbitingCubes.children.entries()) {
+      const phase = cubeAngle + index * Math.PI;
+      cube.position.set(
+        Math.cos(phase) * cubeOrbitRadius,
+        0,
+        Math.sin(phase) * cubeOrbitRadius,
+      );
+      cube.rotation.set(cubeAngle * 0.7, cubeAngle, 0);
+    }
   }
 
   // Synchronous preparation is consumed by this draw; worker completion can
@@ -280,11 +324,15 @@ function renderFrame(time) {
 }
 
 const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
+stochasticResolvePass.temporalEnabled = true;
 
 const renderOptionActions = {
   stochasticMode: (mode) => {
     splatRenderer.autoStochastic = mode === "auto";
     splatRenderer.stochastic = mode === "on";
+  },
+  temporalResolve: (enabled) => {
+    stochasticResolvePass.temporalEnabled = enabled;
   },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
@@ -298,9 +346,17 @@ const renderOptionActions = {
       THREE.ColorManagement.workingColorSpace = outputColorSpace;
     }
     referenceHelpers.syncColors();
+    syncCubeColors();
   },
   renderOnDemand: (value) => {
     renderOnDemand = value;
+  },
+  rotateCubes: (value) => {
+    rotateCubes = value;
+    cubeAnimationTime = performance.now();
+  },
+  cubeOrbitRadius: (value) => {
+    cubeOrbitRadius = value;
   },
   splatBudget: (value) => {
     if (activeStream) activeStream.splatBudget = value;
@@ -450,6 +506,7 @@ async function waitForCanvasPaint(switchToken) {
 }
 
 function applyRenderOption(property, value) {
+  stochasticResolvePass.resetHistory();
   const apply = renderOptionActions[property];
   if (apply) {
     apply(value);
@@ -500,6 +557,7 @@ function clearActiveModel() {
   disposeActiveSource = null;
   activeSplat = null;
   activeStream = null;
+  orbitingCubes.visible = false;
   optionsPanel.setHidden("splatBudget", true);
   ui.clearModelInfo();
   requestRender();
@@ -526,6 +584,11 @@ function frameSplat(splat) {
   splat.updateWorldMatrix(true, false);
   bounds.applyMatrix4(splat.matrixWorld);
   bounds.getSize(frameSize);
+  orbitingCubes.visible = !bounds.isEmpty();
+  bounds.getCenter(orbitingCubes.position);
+  orbitingCubes.scale.setScalar(
+    Math.max(frameSize.x, frameSize.z, 0.01) * 0.65,
+  );
   if (streamed && !bounds.isEmpty()) bounds.getCenter(frameCenter);
   else frameCenter.set(0, 0, 0);
   const referenceSize =
@@ -630,6 +693,7 @@ async function loadFile(
   file,
   { credit = "", url, button, resolveFile, manager, dispose } = {},
 ) {
+  stochasticResolvePass.resetHistory();
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
   clearActiveModel();
@@ -848,6 +912,8 @@ window.addEventListener("beforeunload", () => {
   clearActiveModel();
   stochasticResolvePass.dispose();
   referenceHelpers.dispose();
+  cubeGeometry.dispose();
+  for (const material of cubeMaterials) material.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);
   ui.dispose();

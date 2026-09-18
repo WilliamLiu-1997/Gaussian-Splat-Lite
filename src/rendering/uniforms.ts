@@ -73,6 +73,7 @@ export function makeSplatUniforms() {
     stochastic: { value: false },
     // Tags accepted samples for an attached StochasticResolvePass.
     stochasticResolve: { value: false },
+    stochasticSampleIndex: { value: 0 },
     // Depth-only companion draw after sorted frames.
     depthOnly: { value: false },
   };

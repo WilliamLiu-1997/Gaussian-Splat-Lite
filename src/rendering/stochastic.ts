@@ -64,3 +64,5 @@ export class StochasticMotionState {
 export const stochasticResolveMarker = Symbol("stochasticResolveMarker");
 
 export const stochasticResolveRequired = Symbol("stochasticResolveRequired");
+/** Varies coverage only while a stationary compose frame accumulates. */
+export const stochasticSampleIndex = Symbol("stochasticSampleIndex");

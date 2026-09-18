@@ -13,6 +13,7 @@ uniform float time;
 uniform float minAlpha;
 uniform bool stochastic;
 uniform bool stochasticResolve;
+uniform uint stochasticSampleIndex;
 uniform bool depthOnly;
 uniform vec2 viewportOrigin;
 
@@ -64,7 +65,8 @@ void main() {
         uint hash = hashU32(
             (quad.x * 1973u) ^
             (quad.y * 9277u) ^
-            ((vStochasticSeed + 1u) * 26699u)
+            ((vStochasticSeed + 1u) * 26699u) ^
+            (stochasticSampleIndex * 747796405u)
         );
         uint stratum = (((pixel.y & 1u) * 2u) + (pixel.x & 1u)) ^ (hash & 3u);
         float randomValue = (

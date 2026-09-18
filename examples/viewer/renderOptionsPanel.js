@@ -28,6 +28,10 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
       if (getValue("renderDepth")) setValue("renderDepth", false, { emit });
     }
     setHidden("renderDepth", stochasticEnabled);
+    setHidden(
+      "temporalResolve",
+      !stochasticEnabled && !getValue("renderDepth"),
+    );
     const nativeWebGPU = getValue("rendererBackend") === "webgpu";
     setHidden("minSortIntervalMs", nativeWebGPU);
   }

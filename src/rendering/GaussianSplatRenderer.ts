@@ -22,6 +22,7 @@ import {
   StochasticMotionState,
   stochasticResolveMarker,
   stochasticResolveRequired,
+  stochasticSampleIndex,
 } from "./stochastic";
 import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms";
 
@@ -1368,6 +1369,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.stochasticResolveMarkerUsers += enabled ? 1 : -1;
     this.uniforms.stochasticResolve.value =
       this.stochasticResolveMarkerUsers > 0;
+  }
+
+  [stochasticSampleIndex](sample: number) {
+    this.uniforms.stochasticSampleIndex.value = sample;
   }
 
   [stochasticResolveRequired](

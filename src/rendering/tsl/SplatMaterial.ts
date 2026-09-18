@@ -57,12 +57,14 @@ function createSplatFragment({
   minAlpha,
   stochastic,
   stochasticResolve,
+  stochasticSampleIndex,
   depthOnly,
   premultipliedAlpha,
 }: {
   minAlpha: Node<"float">;
   stochastic: Node<"bool">;
   stochasticResolve: Node<"bool">;
+  stochasticSampleIndex: Node<"uint">;
   depthOnly: Node<"bool">;
   premultipliedAlpha: Node<"bool">;
 }) {
@@ -95,7 +97,8 @@ function createSplatFragment({
         quad.x
           .mul(N.uint(1973))
           .bitXor(quad.y.mul(N.uint(9277)))
-          .bitXor(vStochasticSeed.add(1).mul(N.uint(26699))),
+          .bitXor(vStochasticSeed.add(1).mul(N.uint(26699)))
+          .bitXor(stochasticSampleIndex.mul(N.uint(747796405))),
       );
       const stratum = pixel.y
         .bitAnd(1)
@@ -176,6 +179,11 @@ export function createSplatNodeMaterial({
     minAlpha,
     stochastic,
     stochasticResolve,
+    stochasticSampleIndex: uniformBinding(
+      uniforms,
+      "stochasticSampleIndex",
+      "uint",
+    ),
     depthOnly,
     premultipliedAlpha: premultipliedAlphaNode,
   });

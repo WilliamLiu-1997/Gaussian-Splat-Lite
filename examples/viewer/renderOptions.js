@@ -42,6 +42,24 @@ export const renderOptionGroups = [
         falseLabel: "Continuous",
         trueLabel: "On demand",
       },
+      {
+        property: "rotateCubes",
+        label: "Rotate cubes",
+        description: "Pauses or resumes the cubes' orbit and spin.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "cubeOrbitRadius",
+        label: "Cube orbit radius",
+        description: "Scales the orbit radius relative to the model size.",
+        min: 0,
+        max: 3,
+        step: 0.05,
+        defaultValue: 1,
+        format: (value) => `${value.toFixed(2)}×`,
+      },
     ],
   },
   {
@@ -66,6 +84,15 @@ export const renderOptionGroups = [
         description:
           "Enables the depth-only companion draw when Stochastic is Off.",
         defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "temporalResolve",
+        label: "Temporal smoothing",
+        description:
+          "Reuses up to 16 samples while moving. After stopping, fades smoothing out over 16 frames and refines up to 64 samples. Not used in XR.",
+        defaultValue: true,
         falseLabel: "Off",
         trueLabel: "On",
       },

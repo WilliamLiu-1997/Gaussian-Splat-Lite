@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 import type { GaussianSplatRenderer } from "./GaussianSplatRenderer";
+import { StochasticHistory } from "./StochasticHistory";
 import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
@@ -12,6 +13,7 @@ import {
 import {
   stochasticResolveMarker,
   stochasticResolveRequired,
+  stochasticSampleIndex,
 } from "./stochastic";
 
 import {
@@ -21,7 +23,10 @@ import {
 import { createWebGLResolveMaterial } from "./webgl/ResolveMaterial";
 
 export type ResolveState = {
+  history: StochasticHistory;
   sourceTexture: { value: THREE.Texture };
+  splatMask: { value: THREE.Texture };
+  spatialStrength: { value: number };
   sourceDepth: { value: THREE.DepthTexture };
   sourceRect: THREE.Vector4;
   sourceViews: THREE.Vector4[];
@@ -29,11 +34,13 @@ export type ResolveState = {
   outputOrigin: THREE.Vector2;
   copyDepth: { value: boolean };
   resolve: { value: boolean };
+  resolveDepth: { value: boolean };
   sourceEncoded: { value: boolean };
+  presentHistory: { value: boolean };
 };
 
 /**
- * Optional stochastic spatial filter bound to one Splat renderer. It is
+ * Optional stochastic spatial and temporal filter bound to one Splat renderer. It is
  * structurally compatible with Three.js EffectComposer and can also be called
  * explicitly from a render graph.
  */
@@ -45,6 +52,8 @@ export class StochasticResolvePass {
   renderToScreen = false;
 
   private _enabled = true;
+  private _temporalEnabled = false;
+  private historyVersion: number;
   private disposed = false;
   private readonly sourceFallback = new THREE.DataTexture(
     new Float32Array([0, 0, 0, 0]),
@@ -54,6 +63,7 @@ export class StochasticResolvePass {
     THREE.FloatType,
   );
   private readonly state: ResolveState;
+  private readonly maskFallback = this.sourceFallback.clone();
   private readonly depthFallback = new THREE.DepthTexture(1, 1);
   private readonly xrCamera = new THREE.ArrayCamera();
   private outputCamera: THREE.ArrayCamera | null = null;
@@ -61,14 +71,22 @@ export class StochasticResolvePass {
   private readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private readonly webGLMaterial: THREE.ShaderMaterial;
   private readonly webGPUMaterial: ReturnType<typeof createNodeResolveMaterial>;
+  private readonly webGLHistoryMaterial: THREE.ShaderMaterial;
+  private readonly webGPUHistoryMaterial: ReturnType<
+    typeof createNodeResolveMaterial
+  >;
   private readonly mesh: THREE.Mesh;
   private readonly drawingBufferSize = new THREE.Vector2();
   private composeTarget: THREE.RenderTarget | null = null;
 
   constructor(private _splatRenderer: GaussianSplatRenderer) {
+    this.historyVersion = _splatRenderer.display.version;
     this.sourceFallback.needsUpdate = true;
     this.state = {
+      history: new StochasticHistory(this.sourceFallback, this.depthFallback),
       sourceTexture: { value: this.sourceFallback },
+      splatMask: { value: this.maskFallback },
+      spatialStrength: { value: 1 },
       sourceDepth: { value: this.depthFallback },
       sourceRect: new THREE.Vector4(0, 0, 1, 1),
       sourceViews: [],
@@ -76,11 +94,15 @@ export class StochasticResolvePass {
       outputOrigin: new THREE.Vector2(),
       copyDepth: { value: false },
       resolve: { value: false },
+      resolveDepth: { value: false },
       sourceEncoded: { value: false },
+      presentHistory: { value: false },
     };
 
     this.webGLMaterial = createWebGLResolveMaterial(this.state);
     this.webGPUMaterial = createNodeResolveMaterial(this.state);
+    this.webGLHistoryMaterial = createWebGLResolveMaterial(this.state, true);
+    this.webGPUHistoryMaterial = createNodeResolveMaterial(this.state, true);
 
     this.geometry.setAttribute(
       "position",
@@ -112,6 +134,8 @@ export class StochasticResolvePass {
     if (value === this._splatRenderer || this.disposed) return;
     if (this._enabled) this._splatRenderer[stochasticResolveMarker](false);
     this._splatRenderer = value;
+    this.historyVersion = value.display.version;
+    this.resetHistory();
     if (this._enabled) this._splatRenderer[stochasticResolveMarker](true);
   }
 
@@ -119,14 +143,58 @@ export class StochasticResolvePass {
     return this._enabled;
   }
 
+  /** Experimental camera-reprojected history for non-XR compose(). */
+  get temporalEnabled(): boolean {
+    return this._temporalEnabled;
+  }
+
+  set temporalEnabled(value: boolean) {
+    const enabled = Boolean(value);
+    if (enabled === this._temporalEnabled || this.disposed) return;
+    this._temporalEnabled = enabled;
+    this.state.history.reset();
+    if (!enabled) this.state.history.dispose();
+    this.splatRenderer.setDirty();
+  }
+
+  /** Also requests accumulation frames through the Splat renderer's onDirty. */
+  get needsHistoryFrame(): boolean {
+    return (
+      this._enabled && this._temporalEnabled && this.state.history.needsFrame
+    );
+  }
+
+  /** Call after a camera cut or changes to other scene objects or lighting. */
+  resetHistory() {
+    this.state.history.reset();
+    if (this._enabled && this._temporalEnabled && !this.disposed)
+      this.splatRenderer.setDirty();
+  }
+
   set enabled(value: boolean) {
     const enabled = Boolean(value);
     if (enabled === this._enabled || this.disposed) return;
     this._enabled = enabled;
+    this.resetHistory();
     this.splatRenderer[stochasticResolveMarker](enabled);
   }
 
   setSize(_width: number, _height: number) {}
+
+  private hasDepthCompanion() {
+    const splat = this.splatRenderer;
+    return (splat.autoStochastic || splat.renderDepth) && !splat.depthWrite;
+  }
+
+  private refreshHistorySource() {
+    const version = this.splatRenderer.display.version;
+    if (version !== this.historyVersion) {
+      // Camera-dependent SH changes during movement; only stationary samples
+      // require an unchanged source. Recheck after native preparation too.
+      if (this.state.history.stationary.value) this.state.history.reset();
+      this.historyVersion = version;
+    }
+  }
 
   private xrTarget(
     renderer: GaussianSplatCompatibleRenderer,
@@ -227,8 +295,10 @@ export class StochasticResolvePass {
     const previousXREnabled = renderer.xr.enabled;
     const previousCubeFace = renderer.getActiveCubeFace();
     const previousMipmapLevel = renderer.getActiveMipmapLevel();
+    const temporal = this._temporalEnabled && !renderer.xr.isPresenting;
     try {
       if (!this._enabled) {
+        this.state.history.reset();
         renderer.render(scene, camera);
         return;
       }
@@ -238,7 +308,11 @@ export class StochasticResolvePass {
       // linear space. Avoid that visible color change on already-sorted
       // frames, where there is nothing for this pass to resolve.
       camera.updateWorldMatrix(true, false);
-      if (!this.splatRenderer[stochasticResolveRequired](camera, renderer)) {
+      if (
+        !this.splatRenderer[stochasticResolveRequired](camera, renderer) &&
+        !(temporal && this.hasDepthCompanion())
+      ) {
+        this.state.history.reset();
         renderer.render(scene, camera);
         return;
       }
@@ -258,8 +332,17 @@ export class StochasticResolvePass {
       }
       const composeTarget = this.prepareComposeTarget(
         renderer,
-        xrTarget !== null,
+        xrTarget !== null || temporal,
       );
+
+      if (temporal) {
+        this.refreshHistorySource();
+        // Wait for auto mode's sorted replacement before stationary averaging.
+        const settling =
+          !this.splatRenderer.stochastic && this.splatRenderer.stochasticActive;
+        const sample = this.state.history.prepare(camera, settling);
+        this.splatRenderer[stochasticSampleIndex](sample);
+      }
 
       renderer.autoClear = false;
       setRendererRenderTarget(renderer, composeTarget);
@@ -269,8 +352,18 @@ export class StochasticResolvePass {
         renderer.autoClearStencil,
       );
       renderer.render(scene, renderCamera);
-      this.resolve(renderer, composeTarget, xrTarget);
+      if (
+        temporal &&
+        (this.splatRenderer.stochasticActive || this.hasDepthCompanion())
+      ) {
+        this.refreshHistorySource();
+        this.composeHistory(renderer, composeTarget, camera);
+      } else {
+        this.state.history.reset();
+        this.resolve(renderer, composeTarget, xrTarget);
+      }
     } finally {
+      this.splatRenderer[stochasticSampleIndex](0);
       setRendererRenderTarget(
         renderer,
         previousTarget,
@@ -279,6 +372,44 @@ export class StochasticResolvePass {
       );
       renderer.xr.enabled = previousXREnabled;
       renderer.autoClear = previousAutoClear;
+    }
+    if (this.needsHistoryFrame) this.splatRenderer.setDirty();
+  }
+
+  private composeHistory(
+    renderer: GaussianSplatCompatibleRenderer,
+    input: THREE.RenderTarget,
+    camera: THREE.Camera,
+  ) {
+    const { history } = this.state;
+    const target = history.begin(renderer, camera, input);
+    const toneMapping = renderer.toneMapping;
+    const sourceEncoded =
+      !isWebGPURenderer(renderer) &&
+      THREE.ColorManagement.getTransfer(
+        isXRRenderTarget(input)
+          ? input.texture.colorSpace
+          : THREE.ColorManagement.workingColorSpace,
+      ) === THREE.SRGBTransfer;
+    try {
+      this.resolve(renderer, input, target);
+      history.active.value = false;
+      this.state.presentHistory.value = true;
+      // Presentation smoothing follows the counts just written by this frame.
+      history.samples.value = target.textures[1];
+      this.state.sourceEncoded.value = sourceEncoded;
+      this.state.splatMask.value = input.texture;
+      // Encoded WebGL scene colors already include tone mapping.
+      if (sourceEncoded) renderer.toneMapping = THREE.NoToneMapping;
+      this.resolve(renderer, target, null);
+      history.commit(camera);
+    } catch (error) {
+      history.reset();
+      throw error;
+    } finally {
+      history.active.value = false;
+      this.state.presentHistory.value = false;
+      renderer.toneMapping = toneMapping;
     }
   }
 
@@ -357,25 +488,54 @@ export class StochasticResolvePass {
     this.state.sourceTexture.value = input.texture;
     this.state.sourceRect.set(0, 0, width, height);
     this.state.outputOrigin.set(0, 0);
-    this.state.sourceDepth.value = input.depthTexture ?? this.depthFallback;
+    this.state.sourceDepth.value =
+      (this.state.presentHistory.value
+        ? this.composeTarget?.depthTexture
+        : input.depthTexture) ?? this.depthFallback;
     this.state.copyDepth.value =
-      xrOutput && !!outputTarget?.depthBuffer && input.depthTexture !== null;
+      input.depthTexture !== null &&
+      (this.state.history.active.value ||
+        this.state.presentHistory.value ||
+        (xrOutput && !!outputTarget?.depthBuffer));
+    this.state.resolveDepth.value =
+      this._enabled &&
+      this.hasDepthCompanion() &&
+      !this.splatRenderer.stochasticActive &&
+      (this.state.history.active.value || this.state.presentHistory.value);
     this.state.resolve.value =
-      this._enabled && this.splatRenderer.stochasticActive;
+      this._enabled &&
+      !this.state.presentHistory.value &&
+      (this.splatRenderer.stochasticActive || this.state.resolveDepth.value);
+    this.state.spatialStrength.value = this.state.presentHistory.value
+      ? this.state.history.spatialWeight.value
+      : 1;
 
     const webGPU = isWebGPURenderer(renderer);
     const sourceColorSpace =
       !webGPU && isXRRenderTarget(input)
         ? input.texture.colorSpace
         : THREE.ColorManagement.workingColorSpace;
-    this.state.sourceEncoded.value =
-      !webGPU &&
-      THREE.ColorManagement.getTransfer(sourceColorSpace) ===
-        THREE.SRGBTransfer;
+    if (!this.state.presentHistory.value)
+      this.state.sourceEncoded.value =
+        !webGPU &&
+        THREE.ColorManagement.getTransfer(sourceColorSpace) ===
+          THREE.SRGBTransfer;
 
-    const material = webGPU ? this.webGPUMaterial : this.webGLMaterial;
+    const material = this.state.history.active.value
+      ? webGPU
+        ? this.webGPUHistoryMaterial
+        : this.webGLHistoryMaterial
+      : webGPU
+        ? this.webGPUMaterial
+        : this.webGLMaterial;
     material.depthTest = this.state.copyDepth.value;
     material.depthWrite = this.state.copyDepth.value;
+    // r186 reverses AlwaysDepth to NeverDepth along with ordered comparisons.
+    // Resolve must overwrite depth unconditionally on both depth conventions.
+    const reversedDepth = webGPU
+      ? renderer.reversedDepthBuffer
+      : renderer.capabilities.reversedDepthBuffer;
+    material.depthFunc = reversedDepth ? THREE.NeverDepth : THREE.AlwaysDepth;
     this.mesh.material = material;
 
     const previousTarget = renderer.getRenderTarget();
@@ -389,7 +549,7 @@ export class StochasticResolvePass {
       this.outputCamera = outputCamera;
       renderer.xr.enabled = false;
       renderer.autoClear = false;
-      if (webGPU) {
+      if (webGPU && !this.state.history.active.value) {
         configureNodeResolveOutput(
           this.webGPUMaterial,
           xrOutput ? previousToneMapping : THREE.NoToneMapping,
@@ -431,8 +591,12 @@ export class StochasticResolvePass {
     this.enabled = false;
     this.webGLMaterial.dispose();
     this.webGPUMaterial.dispose();
+    this.webGLHistoryMaterial.dispose();
+    this.webGPUHistoryMaterial.dispose();
+    this.state.history.dispose();
     this.geometry.dispose();
     this.sourceFallback.dispose();
+    this.maskFallback.dispose();
     this.depthFallback.dispose();
     this.composeTarget?.dispose();
     this.composeTarget = null;
