@@ -749,6 +749,7 @@ button {
   background: #171b21;
   color: #d4d8df;
   font: inherit;
+  /* biome-ignore lint/correctness/noUnknownProperty: CSS anchor positioning property not recognized by Biome 1.9.4. */
   position-try-fallbacks: none;
 }
 
