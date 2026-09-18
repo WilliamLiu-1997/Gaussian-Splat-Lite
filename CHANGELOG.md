@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `StochasticResolvePass` now binds to one `GaussianSplatRenderer` at a time. Pass it to the constructor or assign `pass.splatRenderer` to switch renderers.
+
+### Removed
+
+- Removed iterable constructor input and `StochasticResolvePass.addSplatRenderer()` / `removeSplatRenderer()`.
+
 ## [1.1.0] - 2026-09-17
 
 ### Highlights

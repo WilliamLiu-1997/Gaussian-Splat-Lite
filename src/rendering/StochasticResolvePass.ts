@@ -33,8 +33,9 @@ export type ResolveState = {
 };
 
 /**
- * Optional stochastic spatial filter. It is structurally compatible with
- * Three.js EffectComposer and can also be called explicitly from a render graph.
+ * Optional stochastic spatial filter bound to one Splat renderer. It is
+ * structurally compatible with Three.js EffectComposer and can also be called
+ * explicitly from a render graph.
  */
 export class StochasticResolvePass {
   isPass = true;
@@ -45,7 +46,6 @@ export class StochasticResolvePass {
 
   private _enabled = true;
   private disposed = false;
-  private readonly splats = new Set<GaussianSplatRenderer>();
   private readonly sourceFallback = new THREE.DataTexture(
     new Float32Array([0, 0, 0, 0]),
     1,
@@ -65,7 +65,7 @@ export class StochasticResolvePass {
   private readonly drawingBufferSize = new THREE.Vector2();
   private composeTarget: THREE.RenderTarget | null = null;
 
-  constructor(splats: GaussianSplatRenderer | Iterable<GaussianSplatRenderer>) {
+  constructor(private _splatRenderer: GaussianSplatRenderer) {
     this.sourceFallback.needsUpdate = true;
     this.state = {
       sourceTexture: { value: this.sourceFallback },
@@ -101,13 +101,18 @@ export class StochasticResolvePass {
       }
     };
 
-    if (Symbol.iterator in splats) {
-      for (const splat of splats) {
-        this.addSplatRenderer(splat);
-      }
-    } else {
-      this.addSplatRenderer(splats);
-    }
+    this.splatRenderer[stochasticResolveMarker](true);
+  }
+
+  get splatRenderer(): GaussianSplatRenderer {
+    return this._splatRenderer;
+  }
+
+  set splatRenderer(value: GaussianSplatRenderer) {
+    if (value === this._splatRenderer || this.disposed) return;
+    if (this._enabled) this._splatRenderer[stochasticResolveMarker](false);
+    this._splatRenderer = value;
+    if (this._enabled) this._splatRenderer[stochasticResolveMarker](true);
   }
 
   get enabled(): boolean {
@@ -116,44 +121,12 @@ export class StochasticResolvePass {
 
   set enabled(value: boolean) {
     const enabled = Boolean(value);
-    if (enabled === this._enabled) return;
+    if (enabled === this._enabled || this.disposed) return;
     this._enabled = enabled;
-    for (const splat of this.splats) {
-      splat[stochasticResolveMarker](enabled);
-    }
-  }
-
-  addSplatRenderer(splat: GaussianSplatRenderer) {
-    if (this.disposed) throw new Error("StochasticResolvePass is disposed");
-    if (this.splats.has(splat)) return;
-    this.splats.add(splat);
-    if (this._enabled) splat[stochasticResolveMarker](true);
-  }
-
-  removeSplatRenderer(splat: GaussianSplatRenderer): boolean {
-    if (!this.splats.delete(splat)) return false;
-    if (this._enabled) splat[stochasticResolveMarker](false);
-    return true;
+    this.splatRenderer[stochasticResolveMarker](enabled);
   }
 
   setSize(_width: number, _height: number) {}
-
-  private requiresResolve(
-    camera: THREE.Camera,
-    renderer: GaussianSplatCompatibleRenderer,
-  ) {
-    for (const splat of this.splats) {
-      if (splat[stochasticResolveRequired](camera, renderer)) return true;
-    }
-    return false;
-  }
-
-  private hasActiveStochasticSplat() {
-    for (const splat of this.splats) {
-      if (splat.stochasticActive) return true;
-    }
-    return false;
-  }
 
   private xrTarget(
     renderer: GaussianSplatCompatibleRenderer,
@@ -265,7 +238,7 @@ export class StochasticResolvePass {
       // linear space. Avoid that visible color change on already-sorted
       // frames, where there is nothing for this pass to resolve.
       camera.updateWorldMatrix(true, false);
-      if (!this.requiresResolve(camera, renderer)) {
+      if (!this.splatRenderer[stochasticResolveRequired](camera, renderer)) {
         renderer.render(scene, camera);
         return;
       }
@@ -387,7 +360,8 @@ export class StochasticResolvePass {
     this.state.sourceDepth.value = input.depthTexture ?? this.depthFallback;
     this.state.copyDepth.value =
       xrOutput && !!outputTarget?.depthBuffer && input.depthTexture !== null;
-    this.state.resolve.value = this._enabled && this.hasActiveStochasticSplat();
+    this.state.resolve.value =
+      this._enabled && this.splatRenderer.stochasticActive;
 
     const webGPU = isWebGPURenderer(renderer);
     const sourceColorSpace =
@@ -455,7 +429,6 @@ export class StochasticResolvePass {
   dispose() {
     if (this.disposed) return;
     this.enabled = false;
-    this.splats.clear();
     this.webGLMaterial.dispose();
     this.webGPUMaterial.dispose();
     this.geometry.dispose();

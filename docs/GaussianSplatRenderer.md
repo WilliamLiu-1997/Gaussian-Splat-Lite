@@ -33,54 +33,7 @@ These options require the built-in materials. Stochastic rendering can look nois
 
 ### Stochastic resolve
 
-Reduce stochastic noise on WebGL or WebGPU:
-
-```js
-import { StochasticResolvePass } from "gaussian-splat-lite";
-
-splatRenderer.autoStochastic = true;
-const resolvePass = new StochasticResolvePass(splatRenderer);
-renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
-```
-
-With a WebGL `EffectComposer` (non-XR), add the pass after scene rendering:
-
-```js
-import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-
-composer.addPass(new RenderPass(scene, camera));
-composer.addPass(resolvePass);
-composer.addPass(new OutputPass());
-renderer.setAnimationLoop(() => composer.render());
-```
-
-For custom post-processing:
-
-```js
-resolvePass.resolve(renderer, inputTarget, outputTarget);
-```
-
-Use a `HalfFloatType` or `FloatType` input after the complete scene render. Input and output must be different targets. Outside XR, input dimensions must match the output target, or the canvas drawing buffer when output is `null`. For XR output, use the eye layout described below. The pass is enabled by default; call `dispose()` when finished.
-
-### WebXR
-
-Use the same `compose()` loop with manual stochastic rendering:
-
-```js
-splatRenderer.autoStochastic = false;
-splatRenderer.stochastic = true;
-```
-
-Use `compose()` to handle both eyes automatically. Disabling the resolve pass leaves the original stochastic noise visible.
-
-For a custom XR render graph using `resolve()`:
-
-- Restore the XR output target before calling `resolve(renderer, input, null)`.
-- Pack eyes horizontally without gaps in `renderer.xr.getCamera().cameras` order, with eye-local viewports at y = 0. Input width is the sum of eye widths; height is their maximum.
-- Attach a `DepthTexture` to the input to copy scene depth when the XR output has a depth buffer.
-
-Disabling manual `stochastic` waits for a sorted replacement when `autoUpdate` is enabled.
+See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduction, renderer binding, post-processing, and XR usage.
 
 ## Quality and appearance options
 

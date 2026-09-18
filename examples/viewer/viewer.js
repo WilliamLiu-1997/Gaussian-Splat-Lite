@@ -280,7 +280,6 @@ function renderFrame(time) {
 }
 
 const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
-stochasticResolvePass.enabled = true;
 
 const renderOptionActions = {
   stochasticMode: (mode) => {
@@ -342,13 +341,12 @@ function detachRendererState(state) {
   state.controls.removeEventListener("update", requestRender);
   state.controls.indicator.removeFromParent();
   state.splatRenderer.removeFromParent();
-  stochasticResolvePass.removeSplatRenderer(state.splatRenderer);
 }
 
 function activateRendererState(state, attachInspector = true) {
   rendererState = state;
   ({ renderer, controls, splatRenderer, frameGate } = state);
-  stochasticResolvePass.addSplatRenderer(splatRenderer);
+  stochasticResolvePass.splatRenderer = splatRenderer;
   mountRendererState(state, attachInspector);
 }
 
