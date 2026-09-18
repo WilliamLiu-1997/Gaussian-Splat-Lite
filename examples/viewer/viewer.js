@@ -144,7 +144,8 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     state.splatRenderer = new GaussianSplatRenderer({
       renderer: state.renderer,
       onDirty: requestRender,
-      autoStochastic: false,
+      autoStochastic: previous?.splatRenderer.autoStochastic ?? false,
+      stochastic: previous?.splatRenderer.stochastic ?? false,
     });
     if (previous) {
       for (const group of renderOptionGroups) {
@@ -282,6 +283,10 @@ const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
 stochasticResolvePass.enabled = true;
 
 const renderOptionActions = {
+  stochasticMode: (mode) => {
+    splatRenderer.autoStochastic = mode === "auto";
+    splatRenderer.stochastic = mode === "on";
+  },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
   },
@@ -474,10 +479,10 @@ const optionsPanel = createRenderOptionsPanel({
   onChange: applyRenderOption,
 });
 document
-  .querySelector("#auto-stochastic-control")
+  .querySelector("#stochastic-control")
   .append(
     document
-      .querySelector("#render-option-autoStochastic")
+      .querySelector("#render-option-stochasticMode")
       .closest(".option-row"),
   );
 optionsPanel.setHidden("splatBudget", true);

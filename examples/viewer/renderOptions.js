@@ -49,28 +49,22 @@ export const renderOptionGroups = [
     description: "Stochastic transparency and depth output.",
     options: [
       {
-        property: "autoStochastic",
-        label: "Auto stochastic",
+        property: "stochasticMode",
+        label: "Stochastic",
         description:
-          "Uses sorting-free rendering while the camera moves and until a fresh sort is ready.",
-        defaultValue: false,
-        falseLabel: "Disabled",
-        trueLabel: "Enabled",
-      },
-      {
-        property: "stochastic",
-        label: "Force stochastic",
-        description:
-          "Keeps the sorting-free stochastic path active independently of camera motion.",
-        defaultValue: false,
-        falseLabel: "Off",
-        trueLabel: "On",
+          "Auto uses stochastic rendering during camera motion until a fresh sort is ready; On keeps it active; Off uses sorted rendering.",
+        defaultValue: "off",
+        choices: [
+          ["auto", "Auto"],
+          ["on", "On"],
+          ["off", "Off"],
+        ],
       },
       {
         property: "renderDepth",
         label: "Force Splat depth",
         description:
-          "Keeps the depth-only companion draw enabled when automatic stochastic is off.",
+          "Enables the depth-only companion draw when Stochastic is Off.",
         defaultValue: false,
         falseLabel: "Off",
         trueLabel: "On",

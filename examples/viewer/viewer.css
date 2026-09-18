@@ -697,13 +697,13 @@ button {
   outline-offset: 2px;
 }
 
-.toolbar-toggle {
+.toolbar-select {
   flex-shrink: 0;
   padding-left: 0.8rem;
   border-left: 1px solid rgb(255 255 255 / 12%);
 }
 
-.toolbar-toggle .option-row {
+.toolbar-select .option-row {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -711,7 +711,7 @@ button {
   border: 0;
 }
 
-.toolbar-toggle .option-copy label {
+.toolbar-select .option-copy label {
   color: #c4c9d2;
   cursor: pointer;
   font-size: 0.75rem;
@@ -719,13 +719,47 @@ button {
   white-space: nowrap;
 }
 
-.toolbar-toggle .option-copy p,
-.toolbar-toggle .toggle-value {
+.toolbar-select .option-copy p {
   display: none;
 }
 
-.toolbar-toggle .option-control {
+.toolbar-select .option-control {
   display: flex;
+}
+
+.toolbar-select .select-input {
+  width: auto;
+  font-size: 0.75rem;
+}
+
+.toolbar-select .select-input,
+.toolbar-select .select-input::picker(select) {
+  appearance: base-select;
+}
+
+.toolbar-select .select-input::picker(select) {
+  inset: auto;
+  top: calc(anchor(bottom) + 4px);
+  right: anchor(right);
+  min-width: anchor-size(width);
+  margin: 0;
+  padding: 0.2rem;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 0.35rem;
+  background: #171b21;
+  color: #d4d8df;
+  font: inherit;
+  position-try-fallbacks: none;
+}
+
+.toolbar-select option {
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.2rem;
+}
+
+.toolbar-select option:hover,
+.toolbar-select option:focus-visible {
+  background: #303640;
 }
 
 .options-footer {

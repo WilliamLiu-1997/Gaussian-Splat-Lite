@@ -1032,7 +1032,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       // stops. Padding in a WebGL accumulator is zero-alpha and safe to visit.
       this.sortDirty = true;
       this.activeSplats = this.display.numSplats;
-      this.setDirty();
       return;
     }
 

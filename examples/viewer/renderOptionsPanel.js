@@ -23,17 +23,11 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   }
 
   function syncDependencies(changedProperty, emit = false) {
-    const autoStochastic = getValue("autoStochastic") === true;
-    if (changedProperty === "autoStochastic" && autoStochastic) {
-      for (const property of ["stochastic", "renderDepth"]) {
-        if (getValue(property) === true) setValue(property, false, { emit });
-      }
+    const stochasticEnabled = getValue("stochasticMode") !== "off";
+    if (changedProperty === "stochasticMode" && stochasticEnabled) {
+      if (getValue("renderDepth")) setValue("renderDepth", false, { emit });
     }
-    setHidden("stochastic", autoStochastic);
-    setHidden("renderDepth", autoStochastic);
-    // Automatic stochastic lives in the toolbar; this group holds its overrides.
-    entries.get("stochastic").row.closest(".option-group").hidden =
-      autoStochastic;
+    setHidden("renderDepth", stochasticEnabled);
     const nativeWebGPU = getValue("rendererBackend") === "webgpu";
     setHidden("minSortIntervalMs", nativeWebGPU);
   }
