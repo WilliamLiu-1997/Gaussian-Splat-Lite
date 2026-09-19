@@ -133,11 +133,11 @@ export class StochasticResolvePass {
     target = renderer.getRenderTarget(),
   ) {
     if (!renderer.xr.isPresenting) return null;
-    return isWebGPURenderer(renderer)
-      ? renderer.getOutputRenderTarget()
-      : isXRRenderTarget(target)
-        ? target
-        : null;
+    if (isWebGPURenderer(renderer)) {
+      const output = renderer.getOutputRenderTarget();
+      return target === null || target === output ? output : null;
+    }
+    return isXRRenderTarget(target) ? target : null;
   }
 
   /** Pack the eyes into one reusable 2D input, independent of XR layer layout. */
@@ -176,7 +176,7 @@ export class StochasticResolvePass {
 
   private prepareComposeTarget(
     renderer: GaussianSplatCompatibleRenderer,
-    needsDepthTexture: boolean,
+    destination: THREE.RenderTarget | null,
   ) {
     const { x: width, y: height } = this.drawingBufferSize;
     if (!this.composeTarget) {
@@ -189,7 +189,7 @@ export class StochasticResolvePass {
       this.composeTarget.setSize(width, height);
     }
     const target = this.composeTarget;
-    if (needsDepthTexture && !target.depthTexture) {
+    if (destination?.depthBuffer && !target.depthTexture) {
       target.depthTexture = new THREE.DepthTexture(width, height);
       target.dispose();
     }
@@ -199,6 +199,7 @@ export class StochasticResolvePass {
     // that ordering, so transparent objects over Splats do not brighten.
     const sourceEncoded =
       !isWebGPURenderer(renderer) &&
+      (destination === null || isXRRenderTarget(destination)) &&
       renderer.outputColorSpace === THREE.SRGBColorSpace;
     setXRRenderTargetFlag(target, sourceEncoded);
     target.texture.colorSpace = sourceEncoded
@@ -217,11 +218,7 @@ export class StochasticResolvePass {
     assertSupportedRenderer(renderer);
     const previousTarget = renderer.getRenderTarget();
     const xrTarget = this.xrTarget(renderer);
-    if (previousTarget !== null && previousTarget !== xrTarget) {
-      throw new Error(
-        "StochasticResolvePass.compose() renders to the canvas; use resolve() inside a custom render graph",
-      );
-    }
+    const destination = xrTarget ?? previousTarget;
 
     const previousAutoClear = renderer.autoClear;
     const previousXREnabled = renderer.xr.enabled;
@@ -253,13 +250,12 @@ export class StochasticResolvePass {
         renderCamera = this.xrCamera;
         // Render the packed eyes without Three replacing them with the XR views.
         renderer.xr.enabled = false;
+      } else if (destination) {
+        this.drawingBufferSize.set(destination.width, destination.height);
       } else {
         renderer.getDrawingBufferSize(this.drawingBufferSize);
       }
-      const composeTarget = this.prepareComposeTarget(
-        renderer,
-        xrTarget !== null,
-      );
+      const composeTarget = this.prepareComposeTarget(renderer, destination);
 
       renderer.autoClear = false;
       setRendererRenderTarget(renderer, composeTarget);
@@ -269,7 +265,7 @@ export class StochasticResolvePass {
         renderer.autoClearStencil,
       );
       renderer.render(scene, renderCamera);
-      this.resolve(renderer, composeTarget, xrTarget);
+      this.resolve(renderer, composeTarget, destination);
     } finally {
       setRendererRenderTarget(
         renderer,
@@ -301,7 +297,7 @@ export class StochasticResolvePass {
   resolve(
     renderer: GaussianSplatCompatibleRenderer,
     input: THREE.RenderTarget,
-    destination: THREE.RenderTarget | null,
+    destination: THREE.RenderTarget | null = null,
   ) {
     if (this.disposed) throw new Error("StochasticResolvePass is disposed");
     assertSupportedRenderer(renderer);
@@ -316,10 +312,9 @@ export class StochasticResolvePass {
     const width = input.width;
     const height = input.height;
     const xrTarget = this.xrTarget(renderer, destination ?? undefined);
-    const xrOutput =
-      xrTarget !== null && (destination === null || destination === xrTarget);
+    const xrOutput = xrTarget !== null;
     const outputCamera = xrOutput ? renderer.xr.getCamera() : null;
-    const outputTarget = xrOutput ? xrTarget : destination;
+    const outputTarget = xrTarget ?? destination;
     if (outputTarget?.texture === input.texture) {
       throw new Error(
         "StochasticResolvePass input and destination must differ",
@@ -357,9 +352,12 @@ export class StochasticResolvePass {
     this.state.sourceTexture.value = input.texture;
     this.state.sourceRect.set(0, 0, width, height);
     this.state.outputOrigin.set(0, 0);
-    this.state.sourceDepth.value = input.depthTexture ?? this.depthFallback;
-    this.state.copyDepth.value =
-      xrOutput && !!outputTarget?.depthBuffer && input.depthTexture !== null;
+    const sourceDepth =
+      (xrOutput || input === this.composeTarget) && outputTarget?.depthBuffer
+        ? input.depthTexture
+        : null;
+    this.state.copyDepth.value = sourceDepth !== null;
+    this.state.sourceDepth.value = sourceDepth ?? this.depthFallback;
     this.state.resolve.value =
       this._enabled && this.splatRenderer.stochasticActive;
 
@@ -374,8 +372,14 @@ export class StochasticResolvePass {
         THREE.SRGBTransfer;
 
     const material = webGPU ? this.webGPUMaterial : this.webGLMaterial;
+    if (material.depthWrite !== this.state.copyDepth.value)
+      material.needsUpdate = true;
     material.depthTest = this.state.copyDepth.value;
     material.depthWrite = this.state.copyDepth.value;
+    const reversed = webGPU
+      ? renderer.reversedDepthBuffer
+      : renderer.capabilities.reversedDepthBuffer;
+    material.depthFunc = reversed ? THREE.NeverDepth : THREE.AlwaysDepth;
     this.mesh.material = material;
 
     const previousTarget = renderer.getRenderTarget();

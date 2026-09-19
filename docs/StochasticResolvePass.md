@@ -18,8 +18,8 @@ renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
 | --- | --- |
 | `splatRenderer` | Bound Splat renderer; assign another renderer to switch the binding |
 | `enabled` | Enable noise reduction; defaults to `true`. Does not change the renderer's stochastic mode |
-| `compose(renderer, scene, camera)` | Render the scene to the canvas or XR output, managing the intermediate target when needed. Render directly when resolve is unnecessary |
-| `resolve(renderer, inputTarget, outputTarget)` | Process an already-rendered target. Use `null` as the output for the canvas or active XR output |
+| `compose(renderer, scene, camera)` | Render the scene to the current target, managing the intermediate target when needed. Render directly when resolve is unnecessary |
+| `resolve(renderer, inputTarget, outputTarget = null)` | Process an already-rendered target. Defaults to the canvas or active XR output |
 | `clear` | Clear the resolve output before drawing; defaults to `false` |
 | `renderToScreen` | Output to the canvas when used with EffectComposer; defaults to `false` |
 | `dispose()` | Release the pass's resources and binding without disposing the Splat renderer |
@@ -30,7 +30,7 @@ Reuse the pass when replacing a renderer. Switch before rendering the next frame
 resolvePass.splatRenderer = nextRenderer;
 ```
 
-`compose()` requires the canvas or XR output to be active. For a custom render target, render the scene yourself and use `resolve()`. When the pass is disabled, `compose()` renders directly, explicit `resolve()` calls copy the input, and EffectComposer skips the pass.
+When the pass is disabled, `compose()` renders directly, explicit `resolve()` calls copy the input, and EffectComposer skips the pass.
 
 ## EffectComposer
 
@@ -52,7 +52,7 @@ renderer.setAnimationLoop(() => composer.render());
 renderer.setRenderTarget(inputTarget);
 renderer.render(scene, camera);
 renderer.setRenderTarget(null);
-resolvePass.resolve(renderer, inputTarget, outputTarget);
+resolvePass.resolve(renderer, inputTarget);
 ```
 
 Use a `HalfFloatType` or `FloatType` input after the complete scene render, including the bound Splat renderer. Input and output must use different textures. Outside XR, input dimensions must match the output target, or the canvas drawing buffer when output is `null`. For XR output, use the eye layout described below. Call `dispose()` when finished.

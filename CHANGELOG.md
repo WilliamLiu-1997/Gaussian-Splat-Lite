@@ -10,6 +10,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `StochasticResolvePass` now binds to one `GaussianSplatRenderer` at a time. Pass it to the constructor or assign `pass.splatRenderer` to switch renderers.
+- `StochasticResolvePass.compose()` now supports the currently bound 2D render target, matching its dimensions and writing back color and depth when the target has a depth buffer.
+- `StochasticResolvePass.resolve()` now defaults its output target to `null` for canvas or active XR output.
 
 ### Removed
 
