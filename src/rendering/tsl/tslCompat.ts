@@ -1,4 +1,4 @@
-import type { Camera, Texture, ToneMapping } from "three";
+import type { Camera, Texture } from "three";
 import * as TSL from "three/tsl";
 import type {
   ComputeNode,
@@ -100,11 +100,6 @@ export function uintTexture(texture: Texture): TextureNode<"uvec4"> {
 export function materialCamera(builder: NodeBuilder): Camera {
   return (builder as NodeBuilder & { camera: Camera }).camera;
 }
-
-export type ResolveOutputNode = ReturnType<typeof TSL.renderOutput> & {
-  getToneMapping(): ToneMapping;
-  setToneMapping(value: ToneMapping): void;
-};
 
 /** r186 supports an indirect attribute, but its declaration lists only counts. */
 export function setIndirectDispatch(

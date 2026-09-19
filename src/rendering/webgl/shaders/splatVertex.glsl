@@ -7,7 +7,7 @@ precision highp usampler2DArray;
 
 out vec4 vRgba;
 out vec2 vSplatUv;
-flat out uint vStochasticSeed;
+flat out uint vStochasticHash;
 flat out float vSupportRadiusSquared;
 flat out float vKernelPower;
 
@@ -43,6 +43,16 @@ bool isPerspectiveMatrix( mat4 m ) {
 }
 
 #include <logdepthbuf_pars_vertex>
+
+// Chris Wellons' "prospector" mix, constant across each Splat's fragments.
+uint hashU32(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
 
 float gaussianSupportRadius(float alpha, float maximumRadius) {
     if (minAlpha <= 0.0) return maximumRadius;
@@ -233,9 +243,9 @@ void main() {
 
     // Fetch stable coverage seeds only after all projection cutoffs pass.
     // Sorted color draws do not sample the seed texture.
-    vStochasticSeed = splatIndex;
+    vStochasticHash = 0u;
     if (stochastic || depthOnly) {
-        vStochasticSeed = texelFetch(stochasticSeeds, texCoord, 0).r;
+        vStochasticHash = hashU32(texelFetch(stochasticSeeds, texCoord, 0).r);
     }
 
     // RGB is constant across the quad, so convert before rasterization.

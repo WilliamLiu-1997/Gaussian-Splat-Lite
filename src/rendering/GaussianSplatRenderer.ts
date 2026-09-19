@@ -448,6 +448,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.capture.dispose();
     this.backend.dispose();
     this.depthPass.dispose();
+    this.uniforms.stochasticNoise.value.dispose();
     this.stochasticMotion.reset();
 
     const accumulators = new Set<SplatAccumulator>();

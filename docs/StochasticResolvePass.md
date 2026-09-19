@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-`StochasticResolvePass` reduces stochastic noise on WebGL or WebGPU. It binds to one [GaussianSplatRenderer](GaussianSplatRenderer.md) at a time; enable stochastic rendering on that renderer separately:
+Reduces stochastic noise on WebGL and WebGPU for one [GaussianSplatRenderer](GaussianSplatRenderer.md):
 
 ```js
 import { StochasticResolvePass } from "gaussian-splat-lite";
@@ -16,62 +16,55 @@ renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
 
 | API | Description |
 | --- | --- |
-| `splatRenderer` | Bound Splat renderer; assign another renderer to switch the binding |
-| `enabled` | Enable noise reduction; defaults to `true`. Does not change the renderer's stochastic mode |
-| `compose(renderer, scene, camera)` | Render the scene to the current target, managing the intermediate target when needed. Render directly when resolve is unnecessary |
-| `resolve(renderer, inputTarget, outputTarget = null)` | Process an already-rendered target. Defaults to the canvas or active XR output |
-| `clear` | Clear the resolve output before drawing; defaults to `false` |
-| `renderToScreen` | Output to the canvas when used with EffectComposer; defaults to `false` |
+| `splatRenderer` | Assign another renderer to switch the binding; preserves `enabled` |
+| `enabled` | Enable noise reduction; default `true`. Does not change stochastic mode |
+| `temporalEnabled` | Enable camera-motion history; default `true` |
+| `resetHistory()` | Discard motion history after camera cuts or scene changes and request a redraw |
+| `compose(renderer, scene, camera)` | Render to the current target or canvas; render directly when disabled or filtering is unnecessary |
 | `dispose()` | Release the pass's resources and binding without disposing the Splat renderer |
 
-Reuse the pass when replacing a renderer. Switch before rendering the next frame; the pass keeps its `enabled` state:
+## Camera motion
 
-```js
-resolvePass.splatRenderer = nextRenderer;
-```
+Moving stochastic frames combine spatial filtering with depth-reprojected history, capped at 8 effective samples per pixel. Depth checks reject stale history. Small color excursions outside the current neighborhood range are clamped and gradually reduce history weight; larger excursions reject history. Faster motion also reduces its weight. WebGL and WebGPU support logarithmic depth.
 
-When the pass is disabled, `compose()` renders directly, explicit `resolve()` calls copy the input, and EffectComposer skips the pass.
+Stochastic coverage uses fixed spatial blue noise, shifted per Splat; the noise does not change each frame.
+
+The 64×64 tile is generated locally by `node scripts/generate-blue-noise.js`. The fixed-seed void-and-cluster generator combines two Gaussian scales to control local clustering and broader density variation. It uses periodic boundaries and assigns each rank from 0 to 4095 exactly once, giving a uniform threshold distribution and spatially dispersed coverage.
+
+The first stochastic frame initializes history. Stationary frames discard it; Auto mode returns to sorted rendering when sorting completes. Each `compose()` call renders the scene once, with no stationary accumulation or extra redraw requests.
+
+Set `temporalEnabled = false` for spatial filtering only. Call `resetHistory()` after camera cuts or scene changes. Size, camera, renderer, projection, and color-configuration changes invalidate history automatically.
+
+The spatial kernel defaults to 4×4 on both backends. Source builds can change `SPATIAL_FILTER_SIZE` in `src/resolve/StochasticResolvePass.ts`.
 
 ## EffectComposer
 
-With a WebGL `EffectComposer` (non-XR), add the pass after scene rendering:
+For WebGL post-processing (non-XR), compose into `composer.readBuffer` first:
 
 ```js
-import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
-composer.addPass(new RenderPass(scene, camera));
-composer.addPass(resolvePass);
+const composer = new EffectComposer(renderer);
+// Add post-processing effects here, before OutputPass.
 composer.addPass(new OutputPass());
-renderer.setAnimationLoop(() => composer.render());
+renderer.setAnimationLoop(() => {
+  renderer.setRenderTarget(composer.readBuffer);
+  resolvePass.compose(renderer, scene, camera);
+  renderer.setRenderTarget(null);
+  composer.render();
+});
 ```
 
-## Custom post-processing
-
-```js
-renderer.setRenderTarget(inputTarget);
-renderer.render(scene, camera);
-renderer.setRenderTarget(null);
-resolvePass.resolve(renderer, inputTarget);
-```
-
-Use a `HalfFloatType` or `FloatType` input after the complete scene render, including the bound Splat renderer. Input and output must use different textures. Outside XR, input dimensions must match the output target, or the canvas drawing buffer when output is `null`. For XR output, use the eye layout described below. Call `dispose()` when finished.
+Keep only post-processing passes in the composer; omit `RenderPass` and `StochasticResolvePass`. Read `composer.readBuffer` each frame because the buffers swap.
 
 ## WebXR
 
-Use the same `compose()` loop with manual stochastic rendering:
+Use the same `compose()` loop with manual stochastic mode. Both eyes have independent motion history:
 
 ```js
 splatRenderer.autoStochastic = false;
 splatRenderer.stochastic = true;
 ```
-
-Use `compose()` to handle both eyes automatically. Disabling the resolve pass leaves the original stochastic noise visible.
-
-For a custom XR render graph using `resolve()`:
-
-- Restore the XR output target before calling `resolve(renderer, input, null)`.
-- Pack eyes horizontally without gaps in `renderer.xr.getCamera().cameras` order, with eye-local viewports at y = 0. Input width is the sum of eye widths; height is their maximum.
-- Attach a `DepthTexture` to the input to copy scene depth when the XR output has a depth buffer.
 
 Disabling manual `stochastic` waits for a sorted replacement when `autoUpdate` is enabled.

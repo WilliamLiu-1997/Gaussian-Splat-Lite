@@ -6,6 +6,7 @@ import {
 } from "../data/defines";
 import { emptySplatTexture } from "../data/textureLayout";
 import { SplatEdits } from "../scene/SplatEdit";
+import { createBlueNoiseTexture } from "./blueNoise";
 
 export type Uniforms = Record<string, THREE.IUniform>;
 
@@ -65,6 +66,7 @@ export function makeSplatUniforms() {
     splats: { type: "t", value: emptySplats },
     splats2: { type: "t", value: emptySplats },
     stochasticSeeds: { type: "t", value: emptySplats },
+    stochasticNoise: { value: createBlueNoiseTexture() },
     // Time in seconds for time-based effects
     time: { value: 0 },
     // Delta time in seconds since last frame

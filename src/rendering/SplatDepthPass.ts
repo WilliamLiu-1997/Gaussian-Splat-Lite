@@ -54,6 +54,14 @@ export class SplatDepthPass {
           : activeRenderer.display.numSplats,
       );
     };
+    if (backend.kind === "webgl-fallback") {
+      // Three's fallback clear does not restore the color mask after a
+      // depth-only draw, leaving the next frame's color buffer uncleared.
+      const glBackend = backend.renderer.backend as unknown as {
+        state: { setColorMask(enabled: boolean): void };
+      };
+      mesh.onAfterRender = () => glBackend.state.setColorMask(true);
+    }
     this._mesh = mesh;
     host.add(mesh);
     return mesh;

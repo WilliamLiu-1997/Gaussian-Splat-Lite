@@ -53,12 +53,21 @@ export const renderOptionGroups = [
         label: "Stochastic",
         description:
           "Auto uses stochastic rendering during camera motion until a fresh sort is ready; On keeps it active; Off uses sorted rendering.",
-        defaultValue: "off",
+        defaultValue: "auto",
         choices: [
           ["auto", "Auto"],
           ["on", "On"],
           ["off", "Off"],
         ],
+      },
+      {
+        property: "temporalEnabled",
+        label: "Temporal accumulation",
+        description:
+          "Reduces stochastic noise during camera movement using frame history. Off keeps spatial filtering only.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
       },
       {
         property: "renderDepth",

@@ -14,28 +14,18 @@ uniform float minAlpha;
 uniform bool stochastic;
 uniform bool stochasticResolve;
 uniform bool depthOnly;
+uniform highp usampler2D stochasticNoise;
 uniform vec2 viewportOrigin;
 
 out vec4 fragColor;
 
 in vec4 vRgba;
 in vec2 vSplatUv;
-flat in uint vStochasticSeed;
+flat in uint vStochasticHash;
 flat in float vSupportRadiusSquared;
 flat in float vKernelPower;
 
 #include <logdepthbuf_pars_fragment>
-
-// Chris Wellons' "prospector" integer mix. The stable splat id is part of the
-// seed so overlapping Gaussians do not share the same coverage decision.
-uint hashU32(uint value) {
-    value ^= value >> 16u;
-    value *= 0x7feb352du;
-    value ^= value >> 15u;
-    value *= 0x846ca68bu;
-    value ^= value >> 16u;
-    return value;
-}
 
 void main() {
     vec4 rgba = vRgba;
@@ -55,21 +45,12 @@ void main() {
         discard;
     }
     if (stochastic || depthOnly) {
-        // One stochastic transparency sample per pixel. The four pixels in
-        // each 2x2 quad use a scrambled set of four strata to decorrelate
-        // adjacent coverage decisions. The companion depth-only pass reuses it
-        // so transparent edges do not become solid.
+        // Fixed blue noise, shifted per stable Splat ID. Color and depth use
+        // the same coverage, with no frame-dependent noise or history.
         uvec2 pixel = uvec2(gl_FragCoord.xy - viewportOrigin);
-        uvec2 quad = pixel >> 1u;
-        uint hash = hashU32(
-            (quad.x * 1973u) ^
-            (quad.y * 9277u) ^
-            ((vStochasticSeed + 1u) * 26699u)
-        );
-        uint stratum = (((pixel.y & 1u) * 2u) + (pixel.x & 1u)) ^ (hash & 3u);
-        float randomValue = (
-            float(stratum) + float(hash >> 8u) * (1.0 / 16777216.0)
-        ) * 0.25;
+        uvec2 offset = uvec2(vStochasticHash, vStochasticHash >> 6u);
+        ivec2 coord = ivec2((pixel + offset) & uvec2(63u));
+        float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 4096.0;
         if (randomValue >= rgba.a) {
             discard;
         }

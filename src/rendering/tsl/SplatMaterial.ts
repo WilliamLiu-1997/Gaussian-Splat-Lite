@@ -57,18 +57,20 @@ function createSplatFragment({
   minAlpha,
   stochastic,
   stochasticResolve,
+  stochasticNoise,
   depthOnly,
   premultipliedAlpha,
 }: {
   minAlpha: Node<"float">;
   stochastic: Node<"bool">;
   stochasticResolve: Node<"bool">;
+  stochasticNoise: TextureNode<"uvec4">;
   depthOnly: Node<"bool">;
   premultipliedAlpha: Node<"bool">;
 }) {
   const vRgba = N.varyingProperty("vec4", "gslRgba");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
-  const vStochasticSeed = N.varyingProperty("uint", "gslStochasticSeed");
+  const vStochasticHash = N.varyingProperty("uint", "gslStochasticHash");
   const vSupportRadiusSquared = N.varyingProperty(
     "float",
     "gslSupportRadiusSquared",
@@ -90,21 +92,15 @@ function createSplatFragment({
     rgba.a.lessThan(minAlpha).discard();
     N.If(stochastic.or(depthOnly), () => {
       const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
-      const quad = pixel.shiftRight(N.uvec2(1));
-      const hash = stochasticHash(
-        quad.x
-          .mul(N.uint(1973))
-          .bitXor(quad.y.mul(N.uint(9277)))
-          .bitXor(vStochasticSeed.add(1).mul(N.uint(26699))),
+      // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
+      const offset = N.uvec2(vStochasticHash, vStochasticHash.shiftRight(6));
+      const coord = N.ivec2(
+        pixel.x.add(offset.x).bitAnd(63),
+        pixel.y.add(offset.y).bitAnd(63),
       );
-      const stratum = pixel.y
-        .bitAnd(1)
-        .mul(2)
-        .add(pixel.x.bitAnd(1))
-        .bitXor(hash.bitAnd(3));
-      const randomValue = N.float(stratum)
-        .add(N.float(hash.shiftRight(8)).mul(1 / 16777216))
-        .mul(0.25);
+      const randomValue = N.float(load2D(stochasticNoise, coord).r)
+        .add(0.5)
+        .div(4096);
       randomValue.greaterThanEqual(rgba.a).discard();
     });
     N.If(stochastic.and(depthOnly.not()), () => {
@@ -121,7 +117,7 @@ function createSplatFragment({
   return {
     vRgba,
     vSplatUv,
-    vStochasticSeed,
+    vStochasticHash,
     vSupportRadiusSquared,
     vKernelPower,
     vViewportOrigin,
@@ -150,6 +146,7 @@ export function createSplatNodeMaterial({
   const splats = textureBinding(uniforms, "splats", true);
   const splats2 = textureBinding(uniforms, "splats2", true);
   const stochasticSeeds = textureBinding(uniforms, "stochasticSeeds", true);
+  const stochasticNoise = textureBinding(uniforms, "stochasticNoise");
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
   const premultipliedAlphaNode = uniformBinding(
@@ -167,7 +164,7 @@ export function createSplatNodeMaterial({
   const {
     vRgba,
     vSplatUv,
-    vStochasticSeed,
+    vStochasticHash,
     vSupportRadiusSquared,
     vKernelPower,
     vViewportOrigin,
@@ -176,6 +173,7 @@ export function createSplatNodeMaterial({
     minAlpha,
     stochastic,
     stochasticResolve,
+    stochasticNoise,
     depthOnly,
     premultipliedAlpha: premultipliedAlphaNode,
   });
@@ -185,7 +183,7 @@ export function createSplatNodeMaterial({
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
     vSplatUv.assign(N.vec2(0));
-    vStochasticSeed.assign(N.uint(0));
+    vStochasticHash.assign(N.uint(0));
     vSupportRadiusSquared.assign(0);
     vKernelPower.assign(0);
 
@@ -199,7 +197,10 @@ export function createSplatNodeMaterial({
       clipPosition.assign(data.clipPosition);
       vRgba.assign(rgba);
       vSplatUv.assign(data.splatUv);
-      vStochasticSeed.assign(data.stochasticSeed);
+      // Coverage uses the same hash across every fragment of this Splat.
+      N.If(stochastic.or(depthOnly), () => {
+        vStochasticHash.assign(stochasticHash(data.stochasticSeed));
+      });
       vSupportRadiusSquared.assign(data.supportRadiusSquared);
       vKernelPower.assign(data.kernelPower);
       vViewportOrigin.assign(data.viewportOrigin);

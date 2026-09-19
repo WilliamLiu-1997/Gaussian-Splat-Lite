@@ -9,12 +9,19 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Stochastic color and depth sampling now use a fixed 64×64 spatial blue-noise texture, shifted by stable Splat identity without per-frame noise changes.
+
 - `StochasticResolvePass` now binds to one `GaussianSplatRenderer` at a time. Pass it to the constructor or assign `pass.splatRenderer` to switch renderers.
 - `StochasticResolvePass.compose()` now supports the currently bound 2D render target, matching its dimensions and writing back color and depth when the target has a depth buffer.
-- `StochasticResolvePass.resolve()` now defaults its output target to `null` for canvas or active XR output.
+- `StochasticResolvePass.compose()` now reprojects history during stochastic camera movement, with depth/color rejection and up to 8 valid samples. The first stochastic frame initializes history without an extra scene render. Spatial filtering uses the fixed `SPATIAL_FILTER_SIZE` source constant, defaulting to 4×4. Stationary frames are not accumulated. Set `temporalEnabled = false` for spatial filtering only.
+
+### Fixed
+
+- Restored color writes after Splat depth-only rendering on the WebGL fallback, allowing the next frame's color clear to take effect.
 
 ### Removed
 
+- Removed the public `StochasticResolvePass.resolve()` method and the EffectComposer pass interface (`render()`, `setSize()`, `isPass`, `needsSwap`, `clear`, `renderToScreen`, and the constructor's camera argument/property). Use `compose()` for scene composition; for post-processing, compose into `composer.readBuffer` before calling `composer.render()`.
 - Removed iterable constructor input and `StochasticResolvePass.addSplatRenderer()` / `removeSplatRenderer()`.
 
 ## [1.1.0] - 2026-09-17

@@ -6,7 +6,7 @@ export {
   SplatAccumulator,
   type SplatMapping,
 } from "./rendering/SplatAccumulator";
-export { StochasticResolvePass } from "./rendering/StochasticResolvePass";
+export { StochasticResolvePass } from "./resolve/StochasticResolvePass";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {

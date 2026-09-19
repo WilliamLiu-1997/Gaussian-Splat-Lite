@@ -144,7 +144,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     state.splatRenderer = new GaussianSplatRenderer({
       renderer: state.renderer,
       onDirty: requestRender,
-      autoStochastic: previous?.splatRenderer.autoStochastic ?? false,
+      autoStochastic: previous?.splatRenderer.autoStochastic ?? true,
       stochastic: previous?.splatRenderer.stochastic ?? false,
     });
     if (previous) {
@@ -285,6 +285,9 @@ const renderOptionActions = {
   stochasticMode: (mode) => {
     splatRenderer.autoStochastic = mode === "auto";
     splatRenderer.stochastic = mode === "on";
+  },
+  temporalEnabled: (enabled) => {
+    stochasticResolvePass.temporalEnabled = enabled;
   },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
