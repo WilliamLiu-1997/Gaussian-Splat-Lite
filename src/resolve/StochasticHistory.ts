@@ -18,11 +18,14 @@ type HistoryView = {
   logDepth: THREE.Vector3;
   depthProjection: THREE.Vector2;
   weight: number;
+  reversed: boolean;
 };
 
 /** Camera-reprojected history, with independent views in a packed XR target. */
 export class StochasticHistory {
   readonly weight = { value: 0 };
+  readonly sorted = { value: false };
+  readonly reversed = { value: false };
   readonly color: { value: THREE.Texture };
   readonly depth: { value: THREE.DepthTexture };
   readonly samples: { value: THREE.Texture };
@@ -64,12 +67,14 @@ export class StochasticHistory {
   reset() {
     this.valid = false;
     this.weight.value = 0;
+    this.sorted.value = false;
   }
 
   begin(
     renderer: GaussianSplatCompatibleRenderer,
     camera: THREE.Camera,
     input: THREE.RenderTarget,
+    sorted: boolean,
     rects?: readonly THREE.Vector4[],
   ) {
     if (renderer !== this.renderer) {
@@ -119,6 +124,7 @@ export class StochasticHistory {
         logDepth: new THREE.Vector3(),
         depthProjection: new THREE.Vector2(),
         weight: 0,
+        reversed: false,
       };
       const view = this.views[i];
       const projectionChanged = !viewCamera.projectionMatrix.equals(
@@ -131,17 +137,22 @@ export class StochasticHistory {
         !viewCamera.matrixWorld.equals(view.previousWorld);
       moving ||= viewMoving;
       view.weight =
-        this.valid && !cameraChanged && !projectionChanged && viewMoving
+        this.valid &&
+        !sorted &&
+        !cameraChanged &&
+        !projectionChanged &&
+        viewMoving
           ? 1
           : 0;
       view.camera = viewCamera;
+      view.reversed = viewCamera.reversedDepth;
       view.previousProjection.copy(viewCamera.projectionMatrix);
       view.previousWorld.copy(viewCamera.matrixWorld);
       if (rects) view.rect.copy(rects[i]);
       else view.rect.set(0, 0, input.width, input.height);
     });
     // Static eyes use only the current frame, even if another eye is moving.
-    if (!moving) {
+    if (!moving && !sorted) {
       this.reset();
       return null;
     }
@@ -236,6 +247,7 @@ export class StochasticHistory {
   selectView(index: number) {
     const view = this.views[index];
     this.weight.value = view.weight;
+    this.reversed.value = view.reversed;
     this.reproject.copy(view.reproject);
     this.depthToView.copy(view.depthToView);
     this.logDepth.copy(view.logDepth);
@@ -243,11 +255,12 @@ export class StochasticHistory {
     return view.rect;
   }
 
-  commit() {
+  commit(sorted: boolean) {
     for (const view of this.views)
       view.previousViewProjection.copy(view.viewProjection);
     this.index = 1 - this.index;
     this.valid = true;
+    this.sorted.value = sorted;
   }
 
   dispose() {

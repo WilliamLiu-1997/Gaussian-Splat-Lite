@@ -27,6 +27,7 @@ uniform float preBlurAmount;
 uniform float clipXY;
 uniform float focalAdjustment;
 uniform bool stochastic;
+uniform vec4 stochasticTemporalSample;
 #ifdef GSL_COLOR_IN_VERTEX
 uniform bool encodeLinear;
 #endif
@@ -264,6 +265,9 @@ void main() {
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
+    if (stochastic && !depthOnly) {
+        gl_Position.xy += stochasticTemporalSample.xy * gl_Position.w;
+    }
 
     #include <logdepthbuf_vertex>
 }

@@ -74,6 +74,7 @@ export class StochasticResolvePass {
   private readonly mesh: THREE.Mesh;
   private readonly drawingBufferSize = new THREE.Vector2();
   private composeTarget: THREE.RenderTarget | null = null;
+  private scene: THREE.Scene | null = null;
 
   constructor(private _splatRenderer: GaussianSplatRenderer) {
     this.sourceFallback.needsUpdate = true;
@@ -268,18 +269,23 @@ export class StochasticResolvePass {
     const previousCubeFace = renderer.getActiveCubeFace();
     const previousMipmapLevel = renderer.getActiveMipmapLevel();
     try {
+      if (scene !== this.scene) {
+        this.state.history.reset();
+        this.scene = scene;
+      }
       if (!this._enabled) {
         this.state.history.reset();
         renderer.render(scene, camera);
         return;
       }
 
-      // A WebGL canvas blends the library's stored sRGB Splat colors in the
-      // output domain, while a regular offscreen target blends in working
-      // linear space. Avoid that visible color change on already-sorted
-      // frames, where there is nothing for this pass to resolve.
+      // Auto mode keeps the latest sorted image as a clean history seed.
+      // prepareComposeTarget preserves the canvas's blend space during capture.
       camera.updateWorldMatrix(true, false);
-      if (!this.splatRenderer[stochasticResolveRequired](camera, renderer)) {
+      if (
+        !this.splatRenderer[stochasticResolveRequired](camera, renderer) &&
+        !(this._temporalEnabled && this.splatRenderer.autoStochastic)
+      ) {
         this.state.history.reset();
         renderer.render(scene, camera);
         return;
@@ -344,13 +350,18 @@ export class StochasticResolvePass {
     const copyDepth =
       !!outputTarget?.depthBuffer && input.depthTexture !== null;
     const { history } = this.state;
+    const sorted = !this.splatRenderer.stochasticActive;
     let historyTarget: THREE.RenderTarget | null = null;
-    if (this.splatRenderer.stochasticActive && this._temporalEnabled) {
+    if (
+      this._temporalEnabled &&
+      (!sorted || this.splatRenderer.autoStochastic)
+    ) {
       // compose() owns the input target and attaches its depth texture.
       historyTarget = history.begin(
         renderer,
         camera,
         input,
+        sorted,
         outputCamera ? this.state.sourceViews : undefined,
       );
     } else {
@@ -366,7 +377,7 @@ export class StochasticResolvePass {
       copyDepth,
       historyTarget ? "present" : "resolve",
     );
-    if (historyTarget) history.commit();
+    if (historyTarget) history.commit(sorted);
   }
 
   private writeHistory(
@@ -502,6 +513,7 @@ export class StochasticResolvePass {
     this.depthFallback.dispose();
     this.composeTarget?.dispose();
     this.composeTarget = null;
+    this.scene = null;
     this.disposed = true;
   }
 }

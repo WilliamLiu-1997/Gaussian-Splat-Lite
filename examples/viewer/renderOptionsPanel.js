@@ -27,8 +27,8 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     if (changedProperty === "stochasticMode" && stochasticEnabled) {
       if (getValue("renderDepth")) setValue("renderDepth", false, { emit });
     }
-    setHidden("renderDepth", stochasticEnabled);
     const nativeWebGPU = getValue("rendererBackend") === "webgpu";
+    setHidden("renderDepth", stochasticEnabled);
     setHidden("minSortIntervalMs", nativeWebGPU);
   }
 

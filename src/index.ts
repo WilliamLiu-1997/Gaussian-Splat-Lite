@@ -7,6 +7,7 @@ export {
   type SplatMapping,
 } from "./rendering/SplatAccumulator";
 export { StochasticResolvePass } from "./resolve/StochasticResolvePass";
+export { StochasticTAAPass } from "./taa/StochasticTAAPass";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {

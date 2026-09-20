@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 // Ulichney's void-and-cluster method:
 // https://cv.ulichney.com/papers/1993-void-cluster.pdf
 // Run: node scripts/generate-blue-noise.js
-const SIZE = 64;
+const SIZE = 32;
 const COUNT = SIZE * SIZE;
 const SIGMA = 1.1;
 const BROAD_SIGMA = 2.8;
@@ -112,11 +112,11 @@ for (let rank = COUNT / 2; rank < COUNT; rank++) {
   setPixel(pixel, 0);
 }
 
-// Each rank 0–4095 occurs once; preserve the renderer's uint16 LE format.
+// Each rank 0–1023 occurs once; preserve the renderer's uint16 LE format.
 const output = Buffer.alloc(COUNT * 2);
 for (let i = 0; i < COUNT; i++) output.writeUInt16LE(ranks[i], i * 2);
 await writeFile(
-  new URL("../src/rendering/blueNoise64.bin", import.meta.url),
+  new URL("../src/rendering/blueNoise32.bin", import.meta.url),
   output,
 );
 console.log(`Generated ${SIZE}×${SIZE} blue noise (${output.length} bytes).`);

@@ -73,6 +73,8 @@ export function makeSplatUniforms() {
     deltaTime: { value: 0 },
     // Sorting-free stochastic transparency for automatic or forced frames
     stochastic: { value: false },
+    // NDC jitter (xy) and blue-noise offset (zw), owned by StochasticTAAPass.
+    stochasticTemporalSample: { value: new THREE.Vector4() },
     // Tags accepted samples for an attached StochasticResolvePass.
     stochasticResolve: { value: false },
     // Depth-only companion draw after sorted frames.

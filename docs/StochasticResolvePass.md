@@ -18,24 +18,22 @@ renderer.setAnimationLoop(() => resolvePass.compose(renderer, scene, camera));
 | --- | --- |
 | `splatRenderer` | Assign another renderer to switch the binding; preserves `enabled` |
 | `enabled` | Enable noise reduction; default `true`. Does not change stochastic mode |
-| `temporalEnabled` | Enable camera-motion history; default `true` |
+| `temporalEnabled` | Enable camera-motion history and Auto sorted-frame capture; default `true` |
 | `resetHistory()` | Discard motion history after camera cuts or scene changes and request a redraw |
 | `compose(renderer, scene, camera)` | Render to the current target or canvas; render directly when disabled or filtering is unnecessary |
 | `dispose()` | Release the pass's resources and binding without disposing the Splat renderer |
 
 ## Camera motion
 
-Moving stochastic frames combine spatial filtering with depth-reprojected history, capped at 8 effective samples per pixel. Depth checks reject stale history. Small color excursions outside the current neighborhood range are clamped and gradually reduce history weight; larger excursions reject history. Faster motion also reduces its weight. WebGL and WebGPU support logarithmic depth.
+Moving stochastic frames combine spatial smoothing with up to 8 effective history samples. Stationary frames use spatial smoothing only, without accumulation or extra redraws. For temporal anti-aliasing that also accumulates while stationary, use [StochasticTAAPass](StochasticTAAPass.md) instead.
 
-Stochastic coverage uses fixed spatial blue noise, shifted per Splat; the noise does not change each frame.
+In Auto mode, sorted frames display immediately and refresh history for the next camera movement. This adds offscreen capture work and can produce small differences from direct canvas rendering. The pass does not change `splatRenderer.renderDepth`.
 
-The 64×64 tile is generated locally by `node scripts/generate-blue-noise.js`. The fixed-seed void-and-cluster generator combines two Gaussian scales to control local clustering and broader density variation. It uses periodic boundaries and assigns each rank from 0 to 4095 exactly once, giving a uniform threshold distribution and spatially dispersed coverage.
+Set `temporalEnabled = false` for spatial smoothing only, without sorted-frame capture. Call `resetHistory()` after camera cuts or scene edits; moving or transparent objects can otherwise leave stale color. Scene, size, camera, renderer, projection, and color-configuration changes reset history automatically.
 
-The first stochastic frame initializes history. Stationary frames discard it; Auto mode returns to sorted rendering when sorting completes. Each `compose()` call renders the scene once, with no stationary accumulation or extra redraw requests.
+## Render targets and depth
 
-Set `temporalEnabled = false` for spatial filtering only. Call `resetHistory()` after camera cuts or scene changes. Size, camera, renderer, projection, and color-configuration changes invalidate history automatically.
-
-The spatial kernel defaults to 4×4 on both backends. Source builds can change `SPATIAL_FILTER_SIZE` in `src/resolve/StochasticResolvePass.ts`.
+`compose()` writes to the current render target or canvas. Targets with `depthBuffer` also receive the current scene depth for later geometry to depth-test against. Canvas output does not receive scene depth; include depth-tested geometry in the composed scene.
 
 ## EffectComposer
 

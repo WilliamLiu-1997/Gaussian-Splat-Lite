@@ -5,6 +5,7 @@ import {
   SplatFileType,
   SplatMesh,
   StochasticResolvePass,
+  StochasticTAAPass,
 } from "gaussian-splat-lite";
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
@@ -217,6 +218,7 @@ function mountRendererState(state, attachInspector = true) {
 
 let needsRender = true;
 let renderOnDemand = true;
+let taaEnabled = true;
 let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
 mountRendererState(rendererState);
@@ -255,15 +257,26 @@ function renderFrame(time) {
     updateStats(time, false);
     return;
   }
-  if (renderOnDemand && !needsRender) {
+  if (
+    renderOnDemand &&
+    !needsRender &&
+    !(taaEnabled && stochasticTAAPass.needsRender)
+  ) {
     updateStats(time, false);
     return;
   }
 
   // Synchronous preparation is consumed by this draw; worker completion can
   // still request a later frame through onDirty.
+  if (needsRender && taaEnabled) stochasticTAAPass.requestRender();
   needsRender = false;
-  stochasticResolvePass.compose(renderer, scene, camera);
+  stochasticResolvePass.enabled = !taaEnabled;
+  stochasticTAAPass.enabled = taaEnabled;
+  if (taaEnabled) {
+    stochasticTAAPass.compose(renderer, scene, camera);
+  } else {
+    stochasticResolvePass.compose(renderer, scene, camera);
+  }
   // Draw the anchor after resolve so stochastic filtering cannot blur it.
   // Its material disables depth testing/writes, so no depth clear is needed.
   if (controls.indicator.visible) {
@@ -280,14 +293,15 @@ function renderFrame(time) {
 }
 
 const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
+const stochasticTAAPass = new StochasticTAAPass(splatRenderer);
 
 const renderOptionActions = {
+  taaEnabled: (enabled) => {
+    taaEnabled = enabled;
+  },
   stochasticMode: (mode) => {
     splatRenderer.autoStochastic = mode === "auto";
     splatRenderer.stochastic = mode === "on";
-  },
-  temporalEnabled: (enabled) => {
-    stochasticResolvePass.temporalEnabled = enabled;
   },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
@@ -350,6 +364,7 @@ function activateRendererState(state, attachInspector = true) {
   rendererState = state;
   ({ renderer, controls, splatRenderer, frameGate } = state);
   stochasticResolvePass.splatRenderer = splatRenderer;
+  stochasticTAAPass.splatRenderer = splatRenderer;
   mountRendererState(state, attachInspector);
 }
 
@@ -460,6 +475,7 @@ function applyRenderOption(property, value) {
     splatRenderer[property] = value;
     splatRenderer.setDirty();
   }
+  stochasticTAAPass.resetHistory();
   requestRender();
 }
 
@@ -496,6 +512,7 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  stochasticTAAPass.resetHistory();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
   else activeSplat?.dispose();
@@ -515,6 +532,7 @@ function cancelLoading() {
 }
 
 function applyModelOrientation(splat, streamed) {
+  stochasticTAAPass.resetHistory();
   // Transform the stream group so rendering and LOD culling share the same
   // rotation; the decoded splats and index bounds remain in source space.
   splat.rotation.set(getModelRotationX(modelUpAxis, streamed), 0, 0);
@@ -522,6 +540,7 @@ function applyModelOrientation(splat, streamed) {
 }
 
 function frameSplat(splat) {
+  stochasticTAAPass.resetHistory();
   const streamed = activeStream?.group === splat;
   const bounds = streamed
     ? activeStream.getBoundingBox()
@@ -850,6 +869,7 @@ window.addEventListener("beforeunload", () => {
   cancelActiveLoad?.();
   clearActiveModel();
   stochasticResolvePass.dispose();
+  stochasticTAAPass.dispose();
   referenceHelpers.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);

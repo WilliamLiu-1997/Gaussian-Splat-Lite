@@ -155,6 +155,7 @@ Draw order and depth testing in other materials still matter. Stochastic renderi
 
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, depth, and captures.
 - [StochasticResolvePass](docs/StochasticResolvePass.md) — Stochastic noise reduction, post-processing, and XR.
+- [StochasticTAAPass](docs/StochasticTAAPass.md) — Temporal anti-aliasing limited to stochastic splat regions.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.

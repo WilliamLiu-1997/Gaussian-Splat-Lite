@@ -58,6 +58,7 @@ function createSplatFragment({
   stochastic,
   stochasticResolve,
   stochasticNoise,
+  temporalSample,
   depthOnly,
   premultipliedAlpha,
 }: {
@@ -65,6 +66,7 @@ function createSplatFragment({
   stochastic: Node<"bool">;
   stochasticResolve: Node<"bool">;
   stochasticNoise: TextureNode<"uvec4">;
+  temporalSample: Node<"vec4">;
   depthOnly: Node<"bool">;
   premultipliedAlpha: Node<"bool">;
 }) {
@@ -93,14 +95,23 @@ function createSplatFragment({
     N.If(stochastic.or(depthOnly), () => {
       const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
       // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
-      const offset = N.uvec2(vStochasticHash, vStochasticHash.shiftRight(6));
+      const offset = N.uvec2(
+        vStochasticHash,
+        vStochasticHash.shiftRight(5),
+      ).add(
+        N.select(
+          stochastic.and(depthOnly.not()),
+          N.uvec2(temporalSample.zw),
+          N.uvec2(0),
+        ),
+      );
       const coord = N.ivec2(
-        pixel.x.add(offset.x).bitAnd(63),
-        pixel.y.add(offset.y).bitAnd(63),
+        pixel.x.add(offset.x).bitAnd(31),
+        pixel.y.add(offset.y).bitAnd(31),
       );
       const randomValue = N.float(load2D(stochasticNoise, coord).r)
         .add(0.5)
-        .div(4096);
+        .div(1024);
       randomValue.greaterThanEqual(rgba.a).discard();
     });
     N.If(stochastic.and(depthOnly.not()), () => {
@@ -155,6 +166,11 @@ export function createSplatNodeMaterial({
     "bool",
   );
   const stochastic = uniformBinding(uniforms, "stochastic", "bool");
+  const temporalSample = uniformBinding(
+    uniforms,
+    "stochasticTemporalSample",
+    "vec4",
+  );
   const stochasticResolve = uniformBinding(
     uniforms,
     "stochasticResolve",
@@ -174,6 +190,7 @@ export function createSplatNodeMaterial({
     stochastic,
     stochasticResolve,
     stochasticNoise,
+    temporalSample,
     depthOnly,
     premultipliedAlpha: premultipliedAlphaNode,
   });
@@ -267,6 +284,9 @@ export function createSplatNodeMaterial({
       });
     }
 
+    N.If(stochastic.and(depthOnly.not()), () => {
+      clipPosition.xy.addAssign(temporalSample.xy.mul(clipPosition.w));
+    });
     return clipPosition;
   })();
 

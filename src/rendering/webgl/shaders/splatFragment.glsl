@@ -12,6 +12,7 @@ uniform bool encodeLinear;
 uniform float time;
 uniform float minAlpha;
 uniform bool stochastic;
+uniform vec4 stochasticTemporalSample;
 uniform bool stochasticResolve;
 uniform bool depthOnly;
 uniform highp usampler2D stochasticNoise;
@@ -45,12 +46,12 @@ void main() {
         discard;
     }
     if (stochastic || depthOnly) {
-        // Fixed blue noise, shifted per stable Splat ID. Color and depth use
-        // the same coverage, with no frame-dependent noise or history.
+        // Stable coverage unless StochasticTAAPass supplies a temporal sample.
         uvec2 pixel = uvec2(gl_FragCoord.xy - viewportOrigin);
-        uvec2 offset = uvec2(vStochasticHash, vStochasticHash >> 6u);
-        ivec2 coord = ivec2((pixel + offset) & uvec2(63u));
-        float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 4096.0;
+        uvec2 offset = uvec2(vStochasticHash, vStochasticHash >> 5u);
+        if (stochastic && !depthOnly) offset += uvec2(stochasticTemporalSample.zw);
+        ivec2 coord = ivec2((pixel + offset) & uvec2(31u));
+        float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 1024.0;
         if (randomValue >= rgba.a) {
             discard;
         }

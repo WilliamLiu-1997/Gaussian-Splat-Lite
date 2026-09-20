@@ -37,6 +37,7 @@ The renderer combines visible models using Three.js transforms, visibility, and 
 | `SplatCapture` | Offscreen targets, supersampled readback, cube captures, and environment-map filtering |
 | `SplatAccumulator` | Scene mappings, versions, camera-relative origin, and WebGL texture generation |
 | `StochasticResolvePass` | Scene composition, noise reduction, XR eye layout, and renderer-state restoration |
+| `StochasticTAAPass` | Stochastic-only sampling jitter, selective temporal filtering, and on-demand convergence |
 | WebGL backend | GLSL materials, ordering textures, texture generation, readback, and PMREM |
 | WebGPU backend | Compute projection, caches, GPU sorting, and indirect drawing |
 | WebGL fallback backend | Raster generation and CPU-sorted ordering textures |

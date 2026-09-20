@@ -49,6 +49,15 @@ export const renderOptionGroups = [
     description: "Stochastic transparency and depth output.",
     options: [
       {
+        property: "taaEnabled",
+        label: "TAA",
+        description:
+          "TAA accumulates stochastic samples across frames, even when the camera is still. Resolve smooths each frame and uses history only during camera motion.",
+        defaultValue: true,
+        falseLabel: "Resolve",
+        trueLabel: "TAA",
+      },
+      {
         property: "stochasticMode",
         label: "Stochastic",
         description:
@@ -59,15 +68,6 @@ export const renderOptionGroups = [
           ["on", "On"],
           ["off", "Off"],
         ],
-      },
-      {
-        property: "temporalEnabled",
-        label: "Temporal accumulation",
-        description:
-          "Reduces stochastic noise during camera movement using frame history. Off keeps spatial filtering only.",
-        defaultValue: true,
-        falseLabel: "Off",
-        trueLabel: "On",
       },
       {
         property: "renderDepth",

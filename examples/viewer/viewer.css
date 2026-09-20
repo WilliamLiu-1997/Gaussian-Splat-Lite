@@ -729,6 +729,7 @@ button {
 
 .toolbar-select .select-input {
   width: auto;
+  background: transparent;
   font-size: 0.75rem;
 }
 

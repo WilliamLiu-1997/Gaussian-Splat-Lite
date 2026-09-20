@@ -49,6 +49,12 @@ export function createNodeResolveMaterial(
   const historyWeight = N.uniform(0).onObjectUpdate(
     () => state.history.weight.value,
   );
+  const historySorted = N.uniform(false, "bool").onObjectUpdate(
+    () => state.history.sorted.value,
+  );
+  const historyReversed = N.uniform(false, "bool").onObjectUpdate(
+    () => state.history.reversed.value,
+  );
   const historyColor = N.textureLoad(state.history.color.value).onObjectUpdate(
     () => state.history.color.value,
   );
@@ -111,15 +117,28 @@ export function createNodeResolveMaterial(
     result: Node<"vec4">,
     neighborhoodMin: Node<"vec4">,
     neighborhoodMax: Node<"vec4">,
+    depthSource: Node<"ivec2">,
   ) => {
-    N.If(historyWeight.greaterThan(0), () => {
-      const uv = N.vec2(sourceCoord).add(0.5).div(N.vec2(sourceRect.zw));
-      const currentDepth = hardwareDepth(
-        load2D(depth, sourceRect.xy.add(sourceCoord)).r,
-      );
-      const projected = reproject.mul(N.vec4(uv, currentDepth, 1)).toVar();
+    const uv = N.vec2(sourceCoord).add(0.5).div(N.vec2(sourceRect.zw));
+    const currentDepth = hardwareDepth(
+      load2D(depth, sourceRect.xy.add(depthSource)).r,
+    );
+    const centerDepth = hardwareDepth(
+      load2D(depth, sourceRect.xy.add(sourceCoord)).r,
+    );
+    const foreground = historySorted.and(
+      N.select(
+        historyReversed,
+        centerDepth.greaterThan(currentDepth),
+        centerDepth.lessThan(currentDepth),
+      ),
+    );
+    N.If(historyWeight.greaterThan(0).and(foreground.not()), () => {
+      const depthUV = N.vec2(depthSource).add(0.5).div(N.vec2(sourceRect.zw));
+      const projected = reproject.mul(N.vec4(depthUV, currentDepth, 1)).toVar();
       N.If(projected.w.greaterThan(0), () => {
         const previous = projected.xyz.div(projected.w).toVar();
+        previous.xy.addAssign(uv.sub(depthUV));
         N.If(
           N.all(previous.greaterThanEqual(N.vec3(0))).and(
             N.all(previous.lessThanEqual(N.vec3(1))),
@@ -164,25 +183,34 @@ export function createNodeResolveMaterial(
                       const actual = depthToView
                         .mul(N.vec4(tapUv, oldDepth, 1))
                         .toVar();
-                      N.If(actual.w.abs().greaterThan(1e-8), () => {
-                        N.If(
-                          actual.z
-                            .div(actual.w)
-                            .sub(viewZ)
-                            .abs()
-                            .lessThan(viewZ.abs().mul(0.02).max(0.01)),
-                          () => {
-                            historySum.addAssign(
-                              load2D(historyColor, historyCoord).mul(tapWeight),
-                            );
-                            sampleSum.addAssign(
-                              load2D(historySamples, historyCoord).r.mul(
-                                tapWeight,
-                              ),
-                            );
-                            validWeight.addAssign(tapWeight);
-                          },
+                      // Sorted splats may leave background depth in the seed.
+                      const disocclusion = N.select(
+                        historyReversed,
+                        oldDepth.sub(previous.z),
+                        previous.z.sub(oldDepth),
+                      );
+                      const depthMatches = N.select(
+                        historySorted,
+                        disocclusion.lessThanEqual(0.0005),
+                        actual.w
+                          .abs()
+                          .greaterThan(1e-8)
+                          .and(
+                            actual.z
+                              .div(actual.w)
+                              .sub(viewZ)
+                              .abs()
+                              .lessThan(viewZ.abs().mul(0.02).max(0.01)),
+                          ),
+                      );
+                      N.If(depthMatches, () => {
+                        historySum.addAssign(
+                          load2D(historyColor, historyCoord).mul(tapWeight),
                         );
+                        sampleSum.addAssign(
+                          load2D(historySamples, historyCoord).r.mul(tapWeight),
+                        );
+                        validWeight.addAssign(tapWeight);
                       });
                     },
                   );
@@ -233,7 +261,8 @@ export function createNodeResolveMaterial(
     });
   };
   const fragmentNode = N.Fn(() => {
-    if (writeHistory) sampleCount.assign(1);
+    if (writeHistory)
+      sampleCount.assign(N.select(resolve, 1, MOVING_HISTORY_SAMPLES));
     const result = N.vec4(0).toVar();
     const copySource = () => {
       result.assign(physicalSource(load(sourceCoord)));
@@ -255,6 +284,8 @@ export function createNodeResolveMaterial(
       const accumulated = N.vec4(0).toVar();
       const neighborhoodMin = N.vec4(1e20).toVar();
       const neighborhoodMax = N.vec4(-1e20).toVar();
+      const depthSource = sourceCoord.toVar();
+      const closestDepth = N.select(historyReversed, 0, 1).toVar();
 
       for (let y = 0; y < filterSize; y += 1) {
         const weightY = y < nearSize ? nearWeights.y : farWeights.y;
@@ -274,6 +305,25 @@ export function createNodeResolveMaterial(
               const physical = physicalSource(sourceTexel);
               neighborhoodMin.assign(neighborhoodMin.min(physical));
               neighborhoodMax.assign(neighborhoodMax.max(physical));
+              N.If(historySorted.and(sourceTexel.a.greaterThan(1)), () => {
+                const coord = base
+                  .add(N.ivec2(x, y))
+                  .clamp(N.ivec2(0), sourceRect.zw.sub(1));
+                const z = hardwareDepth(
+                  load2D(depth, sourceRect.xy.add(coord)).r,
+                );
+                N.If(
+                  N.select(
+                    historyReversed,
+                    z.greaterThan(closestDepth),
+                    z.lessThan(closestDepth),
+                  ),
+                  () => {
+                    closestDepth.assign(z);
+                    depthSource.assign(coord);
+                  },
+                );
+              });
             }
           });
         }
@@ -282,7 +332,12 @@ export function createNodeResolveMaterial(
       N.If(hasSplat, () => {
         result.assign(convertPremultiplied(accumulated, 2.2, perceptual));
         if (writeHistory)
-          reprojectHistory(result, neighborhoodMin, neighborhoodMax);
+          reprojectHistory(
+            result,
+            neighborhoodMin,
+            neighborhoodMax,
+            depthSource,
+          );
       }).Else(copySource);
     }).Else(copySource);
 

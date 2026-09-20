@@ -26,6 +26,8 @@ layout(location = 0) out vec4 fragColor;
 #ifdef WRITE_HISTORY
 layout(location = 1) out float fragSamples;
 uniform float historyWeight;
+uniform bool historySorted;
+uniform bool historyReversed;
 uniform sampler2D historyColor;
 uniform sampler2D historyDepth;
 uniform sampler2D historySamples;
@@ -41,13 +43,17 @@ float hardwareDepth(float depth) {
     return historyDepthProjection.x + historyDepthProjection.y / viewZ;
 }
 
-vec4 reprojectHistory(ivec2 source, vec4 current, vec4 neighborhoodMin, vec4 neighborhoodMax) {
+vec4 reprojectHistory(ivec2 source, ivec2 depthSource, vec4 current, vec4 neighborhoodMin, vec4 neighborhoodMax) {
     if (historyWeight == 0.0) return current;
     vec2 uv = (vec2(source) + 0.5) / vec2(sourceRect.zw);
-    float depth = hardwareDepth(texelFetch(sourceDepth, sourceRect.xy + source, 0).r);
-    vec4 projected = historyReproject * vec4(uv, depth, 1.0);
+    float depth = hardwareDepth(texelFetch(sourceDepth, sourceRect.xy + depthSource, 0).r);
+    float centerDepth = hardwareDepth(texelFetch(sourceDepth, sourceRect.xy + source, 0).r);
+    if (historySorted && (historyReversed ? centerDepth > depth : centerDepth < depth)) return current;
+    vec2 depthUV = (vec2(depthSource) + 0.5) / vec2(sourceRect.zw);
+    vec4 projected = historyReproject * vec4(depthUV, depth, 1.0);
     if (projected.w <= 0.0) return current;
     vec3 previous = projected.xyz / projected.w;
+    previous.xy += uv - depthUV;
     if (any(lessThan(previous, vec3(0.0))) || any(greaterThan(previous, vec3(1.0)))) return current;
     vec4 expected = historyDepthToView * vec4(previous, 1.0);
     if (abs(expected.w) <= 1e-8) return current;
@@ -69,7 +75,13 @@ vec4 reprojectHistory(ivec2 source, vec4 current, vec4 neighborhoodMin, vec4 nei
                 vec2 tapUv = (vec2(coord) + 0.5) / vec2(sourceRect.zw);
                 float oldDepth = hardwareDepth(texelFetch(historyDepth, sourceRect.xy + coord, 0).r);
                 vec4 actual = historyDepthToView * vec4(tapUv, oldDepth, 1.0);
-                if (abs(actual.w) > 1e-8 && abs(actual.z / actual.w - viewZ) < max(0.01, abs(viewZ) * 0.02)) {
+                // Sorted splats need not write depth. Keep farther taps, but
+                // reject old foreground before interpolating the clean seed.
+                float disocclusion = historyReversed ? oldDepth - previous.z : previous.z - oldDepth;
+                bool depthMatches = historySorted
+                    ? disocclusion <= 0.0005
+                    : abs(actual.w) > 1e-8 && abs(actual.z / actual.w - viewZ) < max(0.01, abs(viewZ) * 0.02);
+                if (depthMatches) {
                     historySum += texelFetch(historyColor, sourceRect.xy + coord, 0) * weight;
                     sampleSum += texelFetch(historySamples, sourceRect.xy + coord, 0).r * weight;
                     validWeight += weight;
@@ -123,6 +135,8 @@ vec4 resolveStochasticFrame(ivec2 source) {
     #ifdef WRITE_HISTORY
         vec4 neighborhoodMin = vec4(1e20);
         vec4 neighborhoodMax = vec4(-1e20);
+        ivec2 depthSource = source;
+        float closestDepth = historyReversed ? 0.0 : 1.0;
     #endif
 
     for (int y = 0; y < filterSize; ++y) {
@@ -139,13 +153,21 @@ vec4 resolveStochasticFrame(ivec2 source) {
             #ifdef WRITE_HISTORY
                 neighborhoodMin = min(neighborhoodMin, texel);
                 neighborhoodMax = max(neighborhoodMax, texel);
+                if (historySorted && sourceTexel.a > 1.0) {
+                    ivec2 coord = clamp(base + ivec2(x, y), ivec2(0), sourceRect.zw - 1);
+                    float depth = hardwareDepth(texelFetch(sourceDepth, sourceRect.xy + coord, 0).r);
+                    if (historyReversed ? depth > closestDepth : depth < closestDepth) {
+                        closestDepth = depth;
+                        depthSource = coord;
+                    }
+                }
             #endif
         }
     }
 
     if (!hasSplat) return sourceColor(loadSource(source));
     #ifdef WRITE_HISTORY
-        return reprojectHistory(source, accumulated, neighborhoodMin, neighborhoodMax);
+        return reprojectHistory(source, depthSource, accumulated, neighborhoodMin, neighborhoodMax);
     #else
         return accumulated;
     #endif
@@ -172,7 +194,7 @@ void main() {
         : sourceColor(loadSource(source));
     #ifdef WRITE_HISTORY
         fragColor = result;
-        fragSamples = sampleCount;
+        fragSamples = resolveStochastic ? sampleCount : float(${MOVING_HISTORY_SAMPLES});
     #else
         fragColor = sourceToOutput(result);
     #endif
@@ -205,6 +227,8 @@ export function createWebGLResolveMaterial(
       resolveStochastic: state.resolve,
       sourceEncoded: state.sourceEncoded,
       historyWeight: state.history.weight,
+      historySorted: state.history.sorted,
+      historyReversed: state.history.reversed,
       historyColor: state.history.color,
       historyDepth: state.history.depth,
       historySamples: state.history.samples,
