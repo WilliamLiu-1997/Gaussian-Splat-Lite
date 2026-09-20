@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `StochasticTAAPass` for selective temporal anti-aliasing on WebGL, WebGPU, and WebGPURenderer's WebGL2 fallback. It jitters stochastic Splats and filters their pixels and immediate edges, accumulating up to 8 effective samples, including while stationary in manual stochastic mode. Camera view offsets and `renderDepth` remain unchanged.
+- Added `StochasticTAAPass.compose()`, `resetHistory()`, `requestRender()`, and `needsRender` for scene composition and on-demand accumulation. The pass supports canvas and render-target output, with independent histories for ArrayCamera views and manual stochastic WebXR rendering.
+
+### Changed
+
+- `StochasticResolvePass` now captures sorted frames in Auto mode to seed history for subsequent camera movement. This adds offscreen capture work while temporal filtering is enabled; set `temporalEnabled = false` for spatial filtering only. Stationary stochastic frames still do not accumulate.
+- Replaced the 64×64 stochastic blue-noise tile with a locally generated 32×32 tile. Coverage remains stable per Splat unless `StochasticTAAPass` supplies a temporal sample.
+
+### Fixed
+
+- Reset `StochasticResolvePass` history when the composed scene changes, preventing reuse of another scene's history.
+
+### Removed
+
+- Removed `maxUploadBytesPerUpdate` from `RadStreamScheduler` and `SogStreamScheduler`, including the default 8 MiB per-update allowance for ready data. Loading concurrency and pending-copy memory limits remain in place.
+
 ## [1.1.1] - 2026-09-20
 
 ### Changed

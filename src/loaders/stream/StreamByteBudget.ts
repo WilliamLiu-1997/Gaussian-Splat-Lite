@@ -1,4 +1,4 @@
-/** Shared admission rule for uploads and pending copies. */
+/** Bound pending copies while allowing one oversized item to make progress. */
 export class StreamByteBudget {
   constructor(
     readonly limit: number,

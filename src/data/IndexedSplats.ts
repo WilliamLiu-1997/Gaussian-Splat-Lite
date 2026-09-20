@@ -9,7 +9,7 @@ import {
 } from "./defines";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast";
 import { decodeShRgbToArray } from "./splatCodec";
-import { SH_ARRAY_COUNTS, SH_KEYS, getSplatTextureBytes } from "./splatData";
+import { SH_ARRAY_COUNTS, SH_KEYS } from "./splatData";
 import { getTextureSize } from "./textureLayout";
 import { decodeSplat } from "./unpack";
 
@@ -51,8 +51,6 @@ export abstract class IndexedSplats extends Splats {
   private sourceTextures: THREE.DataArrayTexture[];
   private indexTexture = Splats.emptyTexture;
   private readonly blockBits: number;
-  private readonly dirtyLayers = new Set<number>();
-  private uploadCharged = false;
   private disposed = false;
   private readonly spatialChunks = new Map<
     number,
@@ -139,26 +137,6 @@ export abstract class IndexedSplats extends Splats {
     return this.sourceIndices;
   }
 
-  beginUpdate() {
-    this.dirtyLayers.clear();
-  }
-
-  /** The first write accounts for a complete GPU allocation on either backend. */
-  uploadBytes(start: number, count: number) {
-    if (!this.uploadCharged) return this.initialUploadBytes;
-    let layers = 0;
-    for (
-      let layer = Math.floor(start / this.layerSize);
-      layer < Math.ceil((start + count) / this.layerSize);
-      layer++
-    )
-      if (!this.dirtyLayers.has(layer)) layers++;
-    return (
-      getSplatTextureBytes(layers * this.layerSize, this.numSh) +
-      ((layers * this.layerSize) / 2 ** this.blockBits) * 4
-    );
-  }
-
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
   protected writeRecords(
     start: number,
@@ -216,9 +194,6 @@ export abstract class IndexedSplats extends Splats {
         this.sourceTextures[index].addLayerUpdate(layer);
       this.sourceTextures[index].needsUpdate = true;
     }
-    for (let layer = firstLayer; layer < lastLayer; layer++)
-      this.dirtyLayers.add(layer);
-    this.uploadCharged = true;
     this.needsUpdate = true;
   }
 
@@ -269,13 +244,6 @@ export abstract class IndexedSplats extends Splats {
 
   get residentBytes() {
     return this.getByteLength() + this.textureByteLength;
-  }
-
-  get initialUploadBytes() {
-    return (
-      getSplatTextureBytes(this.maxSplats, this.numSh) +
-      this.opacities.byteLength
-    );
   }
 
   private center(source: number, axis: number) {
@@ -483,7 +451,6 @@ export abstract class IndexedSplats extends Splats {
     this.sourceIndices = new Uint32Array(0);
     this.visibleIndices = new Uint32Array(0);
     this.indexTexture = Splats.emptyTexture;
-    this.dirtyLayers.clear();
     this.spatialChunks.clear();
     this.spatialBoundsBytes = 0;
     this.disposed = true;

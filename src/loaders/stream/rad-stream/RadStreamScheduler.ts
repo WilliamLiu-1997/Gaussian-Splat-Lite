@@ -106,7 +106,6 @@ export class RadStreamScheduler {
   readonly cooldownMs: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
-  readonly maxUploadBytesPerUpdate: number;
   private _splatBudget: number;
   private readonly loader: RadStreamLoader;
   private readonly abort = new AbortController();
@@ -142,7 +141,6 @@ export class RadStreamScheduler {
     this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
-    this.maxUploadBytesPerUpdate = settings.maxUploadBytesPerUpdate;
     this.loader = new RadStreamLoader(options, this.maxConcurrentLoads);
     this.firstRenderable = new Promise((resolve, reject) => {
       this.resolveFirst = resolve;
@@ -273,7 +271,6 @@ export class RadStreamScheduler {
       !Number.isFinite(viewport.width + viewport.height)
     )
       throw new Error("RAD viewport dimensions must be positive and finite");
-    for (const { batch } of this.pools) batch.source.beginUpdate();
     const now = performance.now();
     camera.updateWorldMatrix(true, false);
     this.group.updateWorldMatrix(true, false);
@@ -684,11 +681,7 @@ export class RadStreamScheduler {
       pendingBytes += pendingPageBytes(page);
     }
     const pending = new StreamByteBudget(
-      streamPendingLimit(
-        this.maxConcurrentLoads,
-        this.maxUploadBytesPerUpdate,
-        this.maxPagePendingBytes,
-      ),
+      streamPendingLimit(this.maxConcurrentLoads, this.maxPagePendingBytes),
       pendingBytes,
     );
     const now = performance.now();
@@ -761,13 +754,7 @@ export class RadStreamScheduler {
     );
     // Each chunk owns at most one slot. An unallocated page therefore leaves
     // room below pageBudget, which is the dataset's total chunk count.
-    const pageBytes =
-      getSplatTextureBytes(this.pageStride, this.numSh) + this.pageStride * 4;
-    const uploadPages = Math.max(
-      1,
-      Math.floor(this.maxUploadBytesPerUpdate / pageBytes),
-    );
-    const count = Math.min(8, uploadPages, this.pageBudget - capacity);
+    const count = Math.min(8, this.pageBudget - capacity);
     const batch = new RadStreamBatch({
       pageSize: this.pageSize,
       pageCount: count,
@@ -795,7 +782,6 @@ export class RadStreamScheduler {
   }
 
   private uploadPages() {
-    const uploads = new StreamByteBudget(this.maxUploadBytesPerUpdate);
     let changed = false;
     const pages = new Set([...(this.ready?.pages ?? []), ...this.wanted]);
     for (const index of pages) {
@@ -804,11 +790,6 @@ export class RadStreamScheduler {
       if (!page || storage?.phase !== "decoded" || !storage.allocation)
         continue;
       const { pool, slot } = storage.allocation;
-      const uploadBytes = pool.batch.source.uploadBytes(
-        pool.batch.source.pageStart(slot),
-        this.pageStride,
-      );
-      if (!uploads.reserve(uploadBytes)) break;
       pool.batch.source.writePage(slot, storage.data);
       page.storage = { phase: "resident", allocation: storage.allocation };
       page.expiresAt = undefined;

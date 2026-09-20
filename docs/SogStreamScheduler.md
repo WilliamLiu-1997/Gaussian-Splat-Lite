@@ -37,7 +37,6 @@ For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#rayca
 | `cooldownMs` | `2000` | Milliseconds to retain unused data after fade-out; `0` releases eligible data immediately |
 | `fadeDurationMs` | `200` | Visibility and LOD fade duration in milliseconds; `0` disables fades |
 | `maxConcurrentLoads` | `4` | Maximum simultaneous loads |
-| `maxUploadBytesPerUpdate` | `8 MiB` | Estimated data upload allowance per update; a large item may proceed alone |
 | `manager` | `THREE.DefaultLoadingManager` | Loading manager and URL modifiers |
 | `requestHeader` / `withCredentials` | `{}` / `false` | Fetch settings; headers and credentials are not forwarded to cross-origin chunks |
 | `onChange` | — | Request a redraw when data or visibility changes |
@@ -48,7 +47,7 @@ The Splat budget is a target: available detail levels, fades, and the environmen
 
 Regions that disappear at coarser LODs can remain empty until selected for more detail. Empty levels do not load files; visible data fades out when a region returns to an empty level.
 
-The upload allowance spreads loading work across updates. A large item may exceed it; it does not strictly cap every GPU upload in a frame.
+Ready regions are attached during `update()` once their previous fade completes, without a per-update byte limit. Loading concurrency and pending extraction memory remain bounded.
 
 ## Common properties and methods
 

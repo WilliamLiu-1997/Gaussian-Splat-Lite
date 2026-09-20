@@ -1,8 +1,5 @@
 import * as THREE from "three";
-import {
-  sogBatchAllocationSize,
-  sogBatchTextureLayout,
-} from "../../../data/SogRegionSplats";
+import { sogBatchAllocationSize } from "../../../data/SogRegionSplats";
 import type { ReorderedSplatResult } from "../../../data/defines";
 import {
   getSplatByteLength,
@@ -87,7 +84,6 @@ export class SogStreamScheduler {
   readonly cooldownMs: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
-  readonly maxUploadBytesPerUpdate: number;
 
   private _splatBudget: number;
   private readonly options: SogStreamSchedulerOptions;
@@ -122,7 +118,6 @@ export class SogStreamScheduler {
     this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
-    this.maxUploadBytesPerUpdate = settings.maxUploadBytesPerUpdate;
     this.loader = new SogStreamLoader(
       this.options,
       this.maxConcurrentLoads,
@@ -254,7 +249,7 @@ export class SogStreamScheduler {
     if (this.disposed || !this.manifest) return false;
     for (const chunk of this.activeChunks) {
       this.pruneChunk(chunk);
-      chunk.batch?.beginUpdate();
+      if (chunk.batch) chunk.batch.layers.mask = this.group.layers.mask;
     }
     this.view = captureSogView(camera, this.group);
     const { shown } = this.view;
@@ -426,7 +421,6 @@ export class SogStreamScheduler {
 
   private attachPendingRegions(selected: LeafState[], now: number) {
     let changed = false;
-    const uploads = new StreamByteBudget(this.maxUploadBytesPerUpdate);
     for (const leaf of selected) {
       const { current, pending, target: range } = leaf;
       // Finish a crossfade before admitting another LOD for this region.
@@ -442,17 +436,8 @@ export class SogStreamScheduler {
       const { data, chunk } = pending;
       const start = chunk.batchSlots.get(range.offset);
       if (start === undefined) throw new Error("Missing chunk region slot");
-      const count = data.numSplats;
       const numSh = getSplatShDegree(data.extra);
       let batch = chunk.batch;
-      let bytes: number;
-      if (batch) bytes = batch.uploadBytes(start, count);
-      else {
-        const { capacity } = sogBatchTextureLayout(chunk.batchCapacity);
-        bytes =
-          getSplatTextureBytes(capacity, numSh) + (capacity / 64) * 4 + 16;
-      }
-      if (!uploads.reserve(bytes)) continue;
       if (!batch) {
         batch = new SogStreamBatch(
           chunk.batchCapacity,
@@ -488,7 +473,7 @@ export class SogStreamScheduler {
     for (const leaf of this.leaves.values())
       pendingBytes += leaf.pending?.bytes ?? 0;
     const budget = new StreamByteBudget(
-      streamPendingLimit(this.maxConcurrentLoads, this.maxUploadBytesPerUpdate),
+      streamPendingLimit(this.maxConcurrentLoads),
       pendingBytes,
     );
     const batches = new Map<

@@ -85,10 +85,10 @@ Decode workers import runtime and protocol modules directly, keeping expression 
 Loaders own transport and parsing; schedulers own selection, fades, publication, and retirement.
 
 - `StreamWorkerPool.run()` queues worker leases, assigns task IDs, links cancellation, counts downloads, and balances loading-manager notifications. Each loader has its own pool; format-specific callbacks retain SOG caches or release RAD decoder slots.
-- `IndexedSplats` shares texture storage, selected-index reads, and upload accounting between `RadPagedSplats` and `SogRegionSplats`. Slot assignment and scene attachment remain with the format-specific scheduler and batch classes.
-- `streamOptions.ts` owns shared defaults, validation, and statistics. `StreamByteBudget` accounts for pending copies and per-update uploads separately from active loads.
+- `IndexedSplats` shares texture storage and selected-index reads between `RadPagedSplats` and `SogRegionSplats`. Slot assignment and scene attachment remain with the format-specific scheduler and batch classes.
+- `streamOptions.ts` owns shared defaults, validation, and statistics. `StreamByteBudget` bounds pending copies separately from active loads; ready data has no per-update byte allowance.
 
-`splatBudget` controls selected detail, not total memory. Resident-byte estimates exclude pending copies and WASM memory, which are reported separately; resident storage has no byte cap. Upload allowance is an estimate and can admit one oversized item, so it is not a strict per-frame GPU upload limit.
+`splatBudget` controls selected detail, not total memory. Resident-byte estimates exclude pending copies and WASM memory, which are reported separately; resident storage has no byte cap. Pending copies allow 8 MiB per concurrent load (32 MiB by default), enlarged for an indivisible RAD page; one oversized item can proceed alone. This bounds the waiting queue, not the bytes published or uploaded per frame.
 
 Applications must keep calling `update()` while waiting for `firstRenderable` and while loading, fades, retries, or retirement need to advance. `onChange` requests redraws; it does not drive scheduler updates.
 

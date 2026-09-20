@@ -45,7 +45,6 @@ For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#rayca
 | `cooldownMs` | `2000` | Milliseconds to retain unused pages after fade-out; `0` releases eligible pages immediately |
 | `fadeDurationMs` | `200` | Initial visibility and LOD fade duration in milliseconds; `0` switches immediately |
 | `maxConcurrentLoads` | `4` | Maximum simultaneous loads |
-| `maxUploadBytesPerUpdate` | `8 MiB` | Estimated data upload allowance per update; a large item may proceed alone |
 | `manager` | `THREE.DefaultLoadingManager` | Loading manager and URL modifiers |
 | `requestHeader` / `withCredentials` | `{}` / `false` | Request settings; sensitive settings are not forwarded to other origins |
 | `onChange` | — | Request a redraw when data or visibility changes |
@@ -53,7 +52,7 @@ For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#rayca
 
 Existing detail stays visible while replacement detail loads. Fades can temporarily exceed `splatBudget`; use `fadeDurationMs: 0` to switch immediately. Cached data also uses memory, so the budget is not a total memory limit.
 
-The upload allowance spreads loading work across updates. A large item may exceed it; it does not strictly cap every GPU upload in a frame.
+Ready pages are written during `update()` without a per-update byte limit. Loading concurrency and pending decode memory remain bounded.
 
 ## Common properties and methods
 

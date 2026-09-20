@@ -14,8 +14,6 @@ export type StreamSchedulerOptions = {
   fadeDurationMs?: number;
   /** Active downloads/decodes. Ready copies use a separate bounded byte queue. */
   maxConcurrentLoads?: number;
-  /** Source upload allowance per update; an oversized unit may proceed alone. */
-  maxUploadBytesPerUpdate?: number;
   onChange?: () => void;
   onError?: (error: unknown, url: string) => void;
 };
@@ -56,26 +54,18 @@ export function streamSettings(options: StreamSchedulerOptions) {
     options.maxConcurrentLoads ?? 4,
     "maxConcurrentLoads",
   );
-  const maxUploadBytesPerUpdate = positiveInteger(
-    options.maxUploadBytesPerUpdate ?? 8 * 1024 * 1024,
-    "maxUploadBytesPerUpdate",
-  );
   return {
     splatBudget,
     cooldownMs,
     fadeDurationMs,
     maxConcurrentLoads,
-    maxUploadBytesPerUpdate,
   };
 }
 
-/** One upload window per possible active load; oversized indivisible units still progress. */
-export function streamPendingLimit(
-  concurrency: number,
-  uploadBytes: number,
-  unitBytes = 0,
-) {
-  return concurrency * Math.max(uploadBytes, unitBytes);
+/** Bound queued decode/extraction copies independently of per-update publication. */
+export function streamPendingLimit(concurrency: number, unitBytes = 0) {
+  const pendingBytesPerLoad = 8 * 1024 * 1024;
+  return concurrency * Math.max(pendingBytesPerLoad, unitBytes);
 }
 
 export function retryDelay(failures: number) {
