@@ -53,7 +53,7 @@ export const renderOptionGroups = [
         label: "Stochastic",
         description:
           "Auto uses stochastic rendering during camera motion until a fresh sort is ready; On keeps it active; Off uses sorted rendering.",
-        defaultValue: "auto",
+        defaultValue: "off",
         choices: [
           ["auto", "Auto"],
           ["on", "On"],

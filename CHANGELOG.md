@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The viewer now defaults Stochastic to Off instead of Auto, including when resetting render options.
 - Stochastic color and depth sampling now use a fixed 64×64 spatial blue-noise texture, shifted by stable Splat identity without per-frame noise changes.
 
 - `StochasticResolvePass` now binds to one `GaussianSplatRenderer` at a time. Pass it to the constructor or assign `pass.splatRenderer` to switch renderers.
