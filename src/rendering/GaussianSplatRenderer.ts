@@ -712,7 +712,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         gaussianSplatRenderer.updateTimeoutId = setTimeout(() => {
           gaussianSplatRenderer.updateTimeoutId = -1;
           gaussianSplatRenderer.updateInternal(updateRequest);
-        }, 1);
+        }, 0);
       }
     }
 

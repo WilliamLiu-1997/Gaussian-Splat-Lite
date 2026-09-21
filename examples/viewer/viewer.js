@@ -167,6 +167,11 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
       state.renderer,
       previous ? undefined : requestRender,
     );
+    state.drawPendingFrame = () => {
+      if (rendererState === state && !state.disposed) {
+        drawFrame(performance.now());
+      }
+    };
     return state;
   } catch (error) {
     disposeRendererState(state);
@@ -247,20 +252,22 @@ function requestRender() {
 }
 
 function renderFrame(time) {
+  // Keep camera and LOD updates running while the GPU is busy.
   controls.update(time);
   activeStream?.update(camera, {
     width: renderer.domElement.width,
     height: renderer.domElement.height,
   });
-  // Keep LOD requests current while GPU draws wait, retaining pending redraws.
-  if (!frameGate.isReady()) {
-    updateStats(time, false);
-    return;
-  }
+  drawFrame(time);
+}
+
+function drawFrame(time) {
+  // Replay a blocked draw without waiting for another animation tick.
   if (
-    renderOnDemand &&
-    !needsRender &&
-    !(taaEnabled && stochasticTAAPass.needsRender)
+    !frameGate.isReady(rendererState.drawPendingFrame) ||
+    (renderOnDemand &&
+      !needsRender &&
+      !(taaEnabled && stochasticTAAPass.needsRender))
   ) {
     updateStats(time, false);
     return;
