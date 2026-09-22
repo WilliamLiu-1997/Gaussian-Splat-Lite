@@ -383,8 +383,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this._stochastic = stochastic;
     this._renderDepth = renderDepth;
     this.stochasticPhase = stochastic ? "forced" : null;
-    this.applyRenderOrder();
-    this.applyMaterialState(this.stochasticFrame);
+    this.refreshRenderConfiguration();
     // Disable frustum culling because we want to always draw them all
     // and cull Gsplats individually in the shader
     this.frustumCulled = false;
@@ -1299,6 +1298,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
   }
 
+  private refreshRenderConfiguration() {
+    this.applyRenderOrder();
+    this.applyMaterialState(this.stochasticFrame);
+  }
+
   private refreshStochasticConfiguration() {
     this.requestMotionFollowup = false;
     if (this._stochastic) {
@@ -1312,11 +1316,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.stochasticPhase = null;
       this.stochasticWasForced = false;
     }
-    this.applyRenderOrder();
     this.material = this.backend.selectMaterial(
       this.stochasticModeEnabled || this.stochasticFrame,
     );
-    this.applyMaterialState(this.stochasticFrame);
+    this.refreshRenderConfiguration();
     this.setDirty();
   }
 
@@ -1417,8 +1420,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     if (nextValue === this._renderDepth) return;
     this.assertBuiltInSplatShaders(nextValue);
     this._renderDepth = nextValue;
-    this.applyRenderOrder();
-    this.applyMaterialState(this.stochasticFrame);
+    this.refreshRenderConfiguration();
     this.setDirty();
   }
 
@@ -1437,8 +1439,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   set depthWrite(value: boolean) {
     this._depthWrite = Boolean(value);
-    this.applyRenderOrder();
-    this.applyMaterialState(this.stochasticFrame);
+    this.refreshRenderConfiguration();
   }
 }
 
