@@ -452,7 +452,6 @@ export class ProjectedSplats {
       radial,
       fastSort,
       uniforms.stochastic.value,
-      ...uniforms.renderSize.value.toArray(),
       uniforms.maxStdDev.value,
       uniforms.minPixelRadius.value,
       uniforms.maxPixelRadius.value,
