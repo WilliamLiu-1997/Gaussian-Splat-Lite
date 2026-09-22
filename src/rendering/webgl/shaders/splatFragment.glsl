@@ -45,6 +45,7 @@ void main() {
     if (rgba.a < minAlpha) {
         discard;
     }
+    #if !GSL_SORTED_FRAGMENT
     if (stochastic || depthOnly) {
         // Stable coverage unless StochasticTAAPass supplies a temporal sample.
         uvec2 pixel = uvec2(gl_FragCoord.xy - viewportOrigin);
@@ -75,6 +76,7 @@ void main() {
         #include <logdepthbuf_fragment>
         return;
     }
+    #endif
 
     #ifdef PREMULTIPLIED_ALPHA
         fragColor = vec4(rgba.rgb * rgba.a, rgba.a);

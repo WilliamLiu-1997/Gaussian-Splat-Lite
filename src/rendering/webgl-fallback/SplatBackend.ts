@@ -44,7 +44,7 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   }
 
   setCPUOrdering(update: CPUOrderingUpdate) {
-    this.material.orderingNode.value = this.ordering.update(
+    this.sortedMaterial.orderingNode.value = this.ordering.update(
       update,
       (texture, rows) => {
         // Finish any pending allocation before uploading only active rows.
@@ -63,6 +63,7 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   }
 
   dispose() {
+    super.dispose();
     this.ordering.dispose();
   }
 

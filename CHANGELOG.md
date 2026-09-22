@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Optimized manual sorted rendering across WebGL, WebGPU, and WebGL fallback by removing unused stochastic and depth branches from the color fragment shader. Auto and stochastic modes retain uniform-based switching; custom GLSL shaders are unchanged.
+
 ## [1.1.2] - 2026-09-21
 
 ### Added

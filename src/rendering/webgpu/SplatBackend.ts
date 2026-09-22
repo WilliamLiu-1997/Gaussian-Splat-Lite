@@ -47,6 +47,7 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
   bindOrdering(_material: SplatMaterial, _uniforms: Uniforms) {}
 
   dispose() {
+    super.dispose();
     this.projection.dispose();
   }
 }

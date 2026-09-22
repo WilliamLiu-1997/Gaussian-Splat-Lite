@@ -249,7 +249,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   SplatMaterial
 > {
   readonly renderer: GaussianSplatCompatibleRenderer;
-  readonly material: SplatMaterial;
   readonly uniforms: ReturnType<typeof GaussianSplatRenderer.makeUniforms>;
 
   autoUpdate: boolean;
@@ -362,13 +361,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const geometry = new SplatGeometry(
       backend.kind === "webgpu" ? WEBGPU_SPLATS_PER_INSTANCE : 1,
     );
-    const material = backend.material;
+    const material = backend.selectMaterial(autoStochastic || stochastic);
 
     super(geometry, material);
     this.renderer = options.renderer;
     this.backend = backend;
     this.capture = new SplatCapture(this, backend, () => this.beginCapture());
-    this.material = material;
     this.uniforms = uniforms;
     this.depthPass = new SplatDepthPass(
       this,
@@ -470,7 +468,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.activeSplats = 0;
 
     this.geometry.dispose();
-    this.material.dispose();
   }
 
   /** Native WebGPU sorts on the GPU before drawing; WebGL sorts in a worker. */
@@ -614,6 +611,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   }
 
   private applyMaterialState(stochasticActive: boolean) {
+    const { material } = this;
     // Keep stochastic-enabled Splats in a stable render list. onBeforeRender is
     // early enough to change GPU blend/depth state, but too late to move an
     // object between Three.js's opaque and transparent lists.
@@ -624,24 +622,28 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       : managedAsOpaque && this._transparent
         ? THREE.CustomBlending
         : this.sortedBlending;
-    const wasOpaque = isOpaqueMaterial(this.material);
-    this.material.transparent = transparent;
-    this.material.blending = blending;
+    const wasOpaque = isOpaqueMaterial(material);
+    material.transparent = transparent;
+    material.blending = blending;
     if (managedAsOpaque && this._transparent) {
-      this.material.blendEquation = THREE.AddEquation;
-      this.material.blendSrc = this._premultipliedAlpha
+      material.blendEquation = THREE.AddEquation;
+      material.blendSrc = this._premultipliedAlpha
         ? THREE.OneFactor
         : THREE.SrcAlphaFactor;
-      this.material.blendDst = THREE.OneMinusSrcAlphaFactor;
-      this.material.blendEquationAlpha = THREE.AddEquation;
-      this.material.blendSrcAlpha = THREE.OneFactor;
-      this.material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+      material.blendDst = THREE.OneMinusSrcAlphaFactor;
+      material.blendEquationAlpha = THREE.AddEquation;
+      material.blendSrcAlpha = THREE.OneFactor;
+      material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
     }
-    this.material.depthTest = stochasticActive ? true : this._depthTest;
-    this.material.depthWrite = stochasticActive ? true : this._depthWrite;
+    material.depthTest = stochasticActive ? true : this._depthTest;
+    material.depthWrite = stochasticActive ? true : this._depthWrite;
     this.depthPass.updateVisibility();
-    if (wasOpaque !== isOpaqueMaterial(this.material)) {
-      this.material.needsUpdate = true;
+    if (
+      material.premultipliedAlpha !== this._premultipliedAlpha ||
+      wasOpaque !== isOpaqueMaterial(material)
+    ) {
+      material.premultipliedAlpha = this._premultipliedAlpha;
+      material.needsUpdate = true;
     }
   }
 
@@ -801,6 +803,15 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     if (gaussianSplatRenderer.requestMotionFollowup) {
       gaussianSplatRenderer.requestMotionFollowup = false;
       gaussianSplatRenderer.setDirty();
+    }
+    // A pending sort can settle during onBeforeRender. Finish that draw with
+    // its captured uniform material before selecting the sorted variant.
+    if (!this.stochasticModeEnabled && !this.stochasticFrame) {
+      const material = this.backend.selectMaterial(false);
+      if (this.material !== material) {
+        this.material = material;
+        this.applyMaterialState(false);
+      }
     }
   }
 
@@ -1302,6 +1313,9 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.stochasticWasForced = false;
     }
     this.applyRenderOrder();
+    this.material = this.backend.selectMaterial(
+      this.stochasticModeEnabled || this.stochasticFrame,
+    );
     this.applyMaterialState(this.stochasticFrame);
     this.setDirty();
   }
@@ -1315,9 +1329,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     if (this._premultipliedAlpha !== nextValue) {
       this._premultipliedAlpha = nextValue;
       this.uniforms.premultipliedAlpha.value = nextValue;
-      this.material.premultipliedAlpha = nextValue;
       this.applyMaterialState(this.stochasticFrame);
-      this.material.needsUpdate = true;
     }
   }
 

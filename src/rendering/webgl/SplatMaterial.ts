@@ -14,6 +14,7 @@ export function createWebGLSplatMaterial(
     options.fragmentShader === undefined
   ) {
     defines.GSL_COLOR_IN_VERTEX = 1;
+    defines.GSL_SORTED_FRAGMENT = 0;
   }
   return new THREE.ShaderMaterial({
     ...options,

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Node } from "three/webgpu";
+import type { Node, NodeBuilder } from "three/webgpu";
 import {
   NodeMaterial,
   StorageBufferAttribute,
@@ -35,6 +35,7 @@ export type OrderingNode = StorageBufferNode<"uint"> | TextureNode<"uvec4">;
 export type SplatNodeMaterial = NodeMaterial & {
   uniforms: Uniforms;
   orderingNode: OrderingNode;
+  vertexNode: Node<"vec4">;
 };
 
 function createDefaultOrderingNode() {
@@ -54,6 +55,7 @@ const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
 });
 
 function createSplatFragment({
+  sorted,
   minAlpha,
   stochastic,
   stochasticResolve,
@@ -62,6 +64,7 @@ function createSplatFragment({
   depthOnly,
   premultipliedAlpha,
 }: {
+  sorted: boolean;
   minAlpha: Node<"float">;
   stochastic: Node<"bool">;
   stochasticResolve: Node<"bool">;
@@ -92,6 +95,8 @@ function createSplatFragment({
     });
     rgba.a.mulAssign(kernelAlpha);
     rgba.a.lessThan(minAlpha).discard();
+    // Auto, stochastic and depth draws keep the uniform graph.
+    if (sorted) return rgba;
     N.If(stochastic.or(depthOnly), () => {
       const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
       // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
@@ -144,6 +149,8 @@ export function createSplatNodeMaterial({
   transparent,
   depthTest,
   depthWrite,
+  sorted = false,
+  vertexNode: sharedVertexNode,
 }: {
   uniforms: Uniforms;
   orderingNode?: OrderingNode;
@@ -152,6 +159,8 @@ export function createSplatNodeMaterial({
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
+  sorted?: boolean;
+  vertexNode?: Node<"vec4">;
 }): SplatNodeMaterial {
   const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
@@ -186,6 +195,7 @@ export function createSplatNodeMaterial({
     vViewportOrigin,
     fragmentNode,
   } = createSplatFragment({
+    sorted,
     minAlpha,
     stochastic,
     stochasticResolve,
@@ -195,7 +205,7 @@ export function createSplatNodeMaterial({
     premultipliedAlpha: premultipliedAlphaNode,
   });
 
-  const vertexNode = N.Fn((builder) => {
+  function buildVertex(builder: NodeBuilder) {
     const camera = materialCamera(builder);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vRgba.assign(N.vec4(0));
@@ -288,18 +298,22 @@ export function createSplatNodeMaterial({
       clipPosition.xy.addAssign(temporalSample.xy.mul(clipPosition.w));
     });
     return clipPosition;
-  })();
+  }
 
-  const material = new NodeMaterial();
-  material.vertexNode = vertexNode;
-  material.colorNode = fragmentNode;
-  material.premultipliedAlpha = premultipliedAlpha;
-  material.transparent = transparent;
-  material.depthTest = depthTest;
-  material.depthWrite = depthWrite;
-  material.side = THREE.FrontSide;
-  material.allowOverride = false;
-  material.fog = false;
-  material.toneMapped = false;
-  return Object.assign(material, { uniforms, orderingNode });
+  const vertexNode = sharedVertexNode ?? N.Fn(buildVertex)();
+
+  return Object.assign(new NodeMaterial(), {
+    uniforms,
+    orderingNode,
+    vertexNode,
+    colorNode: fragmentNode,
+    premultipliedAlpha,
+    transparent,
+    depthTest,
+    depthWrite,
+    side: THREE.FrontSide,
+    allowOverride: false,
+    fog: false,
+    toneMapped: false,
+  });
 }

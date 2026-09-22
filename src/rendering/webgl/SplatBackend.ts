@@ -27,6 +27,18 @@ export class WebGLSplatBackend {
     extension?.provokingVertexWEBGL(extension.FIRST_VERTEX_CONVENTION_WEBGL);
   }
 
+  selectMaterial(useUniform: boolean) {
+    const { material } = this;
+    const currentSorted = material.defines.GSL_SORTED_FRAGMENT;
+    const sorted = Number(!useUniform);
+    // Custom shaders keep their defines; built-in variants share the program cache.
+    if (currentSorted !== undefined && currentSorted !== sorted) {
+      material.defines.GSL_SORTED_FRAGMENT = sorted;
+      material.needsUpdate = true;
+    }
+    return material;
+  }
+
   createDepthMaterial(uniforms: Uniforms) {
     return createWebGLSplatMaterial(uniforms, {
       premultipliedAlpha: false,
@@ -82,5 +94,6 @@ export class WebGLSplatBackend {
 
   dispose() {
     this.ordering.dispose();
+    this.material.dispose();
   }
 }
