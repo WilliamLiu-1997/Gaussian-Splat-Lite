@@ -82,6 +82,7 @@ export class ProjectedSplats {
   private capacity = 0;
   private viewCapacity = 0;
   private disposed = false;
+  private projectedInputs: unknown[] = [];
 
   constructor(
     private readonly renderer: WebGPURenderer,
@@ -439,6 +440,48 @@ export class ProjectedSplats {
     this.cache.ensureOrder(multiView, shrink);
     geometry.setIndirect(this.indirect);
     geometry.setSplatCount(Math.max(1, accumulator.numSplats));
+    // The accumulator version covers source, mapping, transform, animation and
+    // edit changes. Jitter and output color settings are draw-only.
+    const { uniforms } = this;
+    const inputs = [
+      accumulator,
+      accumulator.version,
+      ...accumulator.viewOrigin.toArray(),
+      multiView,
+      cameras.length,
+      radial,
+      fastSort,
+      uniforms.stochastic.value,
+      ...uniforms.renderSize.value.toArray(),
+      uniforms.maxStdDev.value,
+      uniforms.minPixelRadius.value,
+      uniforms.maxPixelRadius.value,
+      uniforms.minAlpha.value,
+      uniforms.preBlurAmount.value,
+      uniforms.blurAmount.value,
+      uniforms.clipXY.value,
+      uniforms.focalAdjustment.value,
+    ];
+    for (const { node } of accumulator.mapping) inputs.push(node.layers.mask);
+    for (const view of cameras as THREE.PerspectiveCamera[]) {
+      inputs.push(
+        ...view.matrixWorld.elements,
+        ...view.projectionMatrix.elements,
+        view.near,
+        view.far,
+        view.layers.mask,
+        view.viewport?.z ?? uniforms.renderSize.value.x,
+        view.viewport?.w ?? uniforms.renderSize.value.y,
+      );
+    }
+    if (
+      !shrink &&
+      inputs.length === this.projectedInputs.length &&
+      inputs.every((value, index) => value === this.projectedInputs[index])
+    )
+      return;
+    // A failed or partially submitted update must not reuse the old snapshot.
+    this.projectedInputs = [];
     for (let eye = 0; eye < cameras.length; eye++) {
       const view = cameras[eye] as THREE.PerspectiveCamera;
       this.state.viewIndex.value = eye;
@@ -490,11 +533,13 @@ export class ProjectedSplats {
       }
       this.renderer.compute(pending);
     }
+    this.projectedInputs = inputs;
   }
 
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.projectedInputs = [];
     void this.compilation.then(() => this.disposeResources());
   }
 
