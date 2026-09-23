@@ -296,10 +296,9 @@ fn sort_centers<const FAST: bool>(
                         + transform[7] * direction64[1]
                         + transform[8] * direction64[2]) as f32,
                 ];
-                let offset = 100.0
-                    - (camera_local[0] * direction[0]
-                        + camera_local[1] * direction[1]
-                        + camera_local[2] * direction[2]);
+                let offset = -(camera_local[0] * direction[0]
+                    + camera_local[1] * direction[1]
+                    + camera_local[2] * direction[2]);
                 let center_slice = &mesh.raw_centers[..count as usize * 3];
                 for (center, key_out) in center_slice.chunks_exact(3).zip(key_slice.iter_mut()) {
                     let metric = center[0] * local_direction[0]
@@ -319,8 +318,7 @@ fn sort_centers<const FAST: bool>(
     Ok(sort_counted::<FAST>(buffers, num_splats))
 }
 
-/// Count a key into the selected radix passes. Invalid keys add zero;
-/// this favors the normal rendering case where nearly every splat is valid.
+/// Count valid keys without touching buckets for centers behind the camera.
 #[inline(always)]
 fn tally_key<const FAST: bool>(
     key: u32,
@@ -334,20 +332,20 @@ fn tally_key<const FAST: bool>(
         FULL_RADIX_BITS
     };
     let shift = if FAST { FAST_KEY_SHIFT } else { 0 };
-    let valid = (key < (DEPTH_INFINITY_F32 >> shift)) as u32;
+    if key >= (DEPTH_INFINITY_F32 >> shift) {
+        return;
+    }
     let inverted = !key;
     let lo = (inverted & ((1 << bits) - 1)) as usize;
     if FAST {
-        bucket_range.start = bucket_range
-            .start
-            .min(if valid != 0 { lo } else { usize::MAX });
-        bucket_range.end = bucket_range.end.max(if valid != 0 { lo + 1 } else { 0 });
+        bucket_range.start = bucket_range.start.min(lo);
+        bucket_range.end = bucket_range.end.max(lo + 1);
     }
     // The mask and shift guarantee both bucket indices are in bounds.
-    unsafe { *buckets_lo.get_unchecked_mut(lo) += valid };
+    unsafe { *buckets_lo.get_unchecked_mut(lo) += 1 };
     if !FAST {
         let hi = (inverted >> FULL_RADIX_BITS) as usize;
-        unsafe { *buckets_hi.get_unchecked_mut(hi) += valid };
+        unsafe { *buckets_hi.get_unchecked_mut(hi) += 1 };
     }
 }
 
@@ -614,21 +612,28 @@ mod tests {
     #[test]
     fn builds_axial_keys_from_camera_direction() {
         let mut buffers = Sort32Buffers::default();
-        buffers.set_centers(&[0.0, 0.0, -1.0, 0.0, 0.0, -3.0, 0.0, 0.0, -2.0]);
+        // Preserve nearby depth differences and exclude centers behind the camera.
+        let depths = [1.0_f32, 1.0001, -1.0, -200.0];
+        let centers: Vec<_> = depths.iter().flat_map(|&d| [0.0, 0.0, -d]).collect();
+        buffers.set_centers(&centers);
 
-        let active = sort32_centers_internal(
-            &mut buffers,
-            3,
-            3,
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0],
-            false,
-            false,
-        )
-        .unwrap();
+        for fast in [false, true] {
+            let active = sort32_centers_internal(
+                &mut buffers,
+                depths.len(),
+                depths.len(),
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                false,
+                fast,
+            )
+            .unwrap();
 
-        assert_eq!(active, 3);
-        assert_eq!(&buffers.ordering[..active as usize], &[1, 2, 0]);
+            assert_eq!(active, 2);
+            assert_eq!(&buffers.ordering[..active as usize], &[1, 0]);
+            let shift = if fast { FAST_KEY_SHIFT } else { 0 };
+            assert_eq!(buffers.keys[0], 1.0_f32.to_bits() >> shift);
+        }
     }
 
     #[test]
