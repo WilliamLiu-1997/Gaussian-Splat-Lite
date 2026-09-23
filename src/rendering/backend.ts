@@ -24,9 +24,6 @@ export function createSplatBackend(
   if (!isWebGPURenderer(renderer)) {
     return new WebGLSplatBackend(renderer, uniforms, options);
   }
-  if (options.vertexShader || options.fragmentShader) {
-    throw new Error("Custom GLSL shaders are only supported by WebGLRenderer");
-  }
   return usesNativeWebGPU(renderer)
     ? new WebGPUSplatBackend(renderer, uniforms, options)
     : new WebGLFallbackSplatBackend(renderer, uniforms, options);
@@ -79,6 +76,4 @@ export type SplatMaterialOptions = {
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
-  vertexShader?: string;
-  fragmentShader?: string;
 };

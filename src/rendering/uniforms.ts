@@ -60,6 +60,8 @@ export function makeSplatUniforms() {
     encodeLinear: { value: false },
     // Mirrors the material flag for WebGPU's output premultiplication.
     premultipliedAlpha: { value: true },
+    // Exact draw count; the final instance may contain unused quads.
+    splatCount: { value: 0 },
     // Back-to-front sort ordering of splat indices
     ordering: { type: "t", value: emptyOrdering },
     // Gsplat collection to render
@@ -67,10 +69,6 @@ export function makeSplatUniforms() {
     splats2: { type: "t", value: emptySplats },
     stochasticSeeds: { type: "t", value: emptySplats },
     stochasticNoise: { value: createBlueNoiseTexture() },
-    // Time in seconds for time-based effects
-    time: { value: 0 },
-    // Delta time in seconds since last frame
-    deltaTime: { value: 0 },
     // Sorting-free stochastic transparency for automatic or forced frames
     stochastic: { value: false },
     // NDC jitter (xy) and blue-noise offset (zw), owned by StochasticTAAPass.

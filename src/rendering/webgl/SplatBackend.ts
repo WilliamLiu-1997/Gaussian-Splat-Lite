@@ -29,10 +29,8 @@ export class WebGLSplatBackend {
 
   selectMaterial(useUniform: boolean) {
     const { material } = this;
-    const currentSorted = material.defines.GSL_SORTED_FRAGMENT;
     const sorted = Number(!useUniform);
-    // Custom shaders keep their defines; built-in variants share the program cache.
-    if (currentSorted !== undefined && currentSorted !== sorted) {
+    if (material.defines.GSL_SORTED_FRAGMENT !== sorted) {
       material.defines.GSL_SORTED_FRAGMENT = sorted;
       material.needsUpdate = true;
     }

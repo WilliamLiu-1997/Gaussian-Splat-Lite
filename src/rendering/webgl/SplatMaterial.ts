@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { SPLATS_PER_INSTANCE } from "../SplatGeometry";
 import type { SplatMaterialOptions } from "../backend";
 import type { Uniforms } from "../uniforms";
 import { getShaders } from "./shaders";
@@ -8,20 +9,15 @@ export function createWebGLSplatMaterial(
   options: SplatMaterialOptions,
 ) {
   const shaders = getShaders();
-  const defines: Record<string, number> = {};
-  if (
-    options.vertexShader === undefined &&
-    options.fragmentShader === undefined
-  ) {
-    defines.GSL_COLOR_IN_VERTEX = 1;
-    defines.GSL_SORTED_FRAGMENT = 0;
-  }
   return new THREE.ShaderMaterial({
     ...options,
-    defines,
+    defines: {
+      SPLATS_PER_INSTANCE,
+      GSL_SORTED_FRAGMENT: 0,
+    },
     glslVersion: THREE.GLSL3,
-    vertexShader: options.vertexShader ?? shaders.splatVertex,
-    fragmentShader: options.fragmentShader ?? shaders.splatFragment,
+    vertexShader: shaders.splatVertex,
+    fragmentShader: shaders.splatFragment,
     uniforms,
     side: THREE.FrontSide,
     allowOverride: false,

@@ -1,14 +1,14 @@
 import * as THREE from "three";
 
-export const WEBGPU_SPLATS_PER_INSTANCE = 128;
+export const SPLATS_PER_INSTANCE = 128;
 
 /** Repeated quads; position.z identifies the Splat within each instance. */
 export class SplatGeometry extends THREE.InstancedBufferGeometry {
-  constructor(readonly splatsPerInstance = 1) {
+  constructor() {
     super();
-    const vertices = new Float32Array(splatsPerInstance * 12);
-    const indices = new Uint16Array(splatsPerInstance * 6);
-    for (let splat = 0; splat < splatsPerInstance; splat++) {
+    const vertices = new Float32Array(SPLATS_PER_INSTANCE * 12);
+    const indices = new Uint16Array(SPLATS_PER_INSTANCE * 6);
+    for (let splat = 0; splat < SPLATS_PER_INSTANCE; splat++) {
       for (let vertex = 0; vertex < 4; vertex++) {
         const offset = splat * 12 + vertex * 3;
         vertices[offset] = QUAD_VERTICES[vertex * 3];
@@ -23,7 +23,7 @@ export class SplatGeometry extends THREE.InstancedBufferGeometry {
   }
 
   setSplatCount(count: number) {
-    this.instanceCount = Math.ceil(count / this.splatsPerInstance);
+    this.instanceCount = Math.ceil(count / SPLATS_PER_INSTANCE);
   }
 }
 

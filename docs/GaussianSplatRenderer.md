@@ -58,9 +58,6 @@ See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduc
 | `transparent` | `boolean` | `true` | Enable transparent blending in sorted rendering |
 | `depthTest` | `boolean` | `true` | Respect depth from other geometry |
 | `depthWrite` | `boolean` | `false` | Write depth directly; normally leave off for transparent Splats |
-| `extraUniforms` | `Record<string, unknown>` | `undefined` | Additional shader values |
-| `vertexShader` | `string` | Built in | Custom vertex shader for WebGLRenderer only |
-| `fragmentShader` | `string` | Built in | Custom fragment shader for WebGLRenderer only |
 | `target` | `TargetOptions` | `undefined` | Set the size and options for offscreen captures |
 
 On WebGL, the current sort order stays in use until a new sort is ready. Native WebGPU sorts before drawing. Use stochastic rendering for more responsive movement, with some visible noise.

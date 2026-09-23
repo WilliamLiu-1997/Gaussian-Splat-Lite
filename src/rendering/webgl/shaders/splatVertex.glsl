@@ -19,8 +19,6 @@ uniform float renderToViewScale;
 uniform float maxStdDev;
 uniform float minPixelRadius;
 uniform float maxPixelRadius;
-uniform float time;
-uniform float deltaTime;
 uniform float minAlpha;
 uniform float blurAmount;
 uniform float preBlurAmount;
@@ -28,10 +26,9 @@ uniform float clipXY;
 uniform float focalAdjustment;
 uniform bool stochastic;
 uniform vec4 stochasticTemporalSample;
-#ifdef GSL_COLOR_IN_VERTEX
 uniform bool encodeLinear;
-#endif
 uniform bool depthOnly;
+uniform uint splatCount;
 
 uniform usampler2D ordering;
 uniform usampler2DArray splats;
@@ -73,13 +70,16 @@ void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 
+    uint index = uint(gl_InstanceID) * uint(SPLATS_PER_INSTANCE) + uint(position.z);
+    if (index >= splatCount) return;
+
     uint splatIndex;
     if (stochastic || depthOnly) {
         // Motion and depth-only rendering do not need sorted indices.
-        splatIndex = uint(gl_InstanceID);
+        splatIndex = index;
     } else {
-        ivec2 orderingCoord = ivec2((gl_InstanceID >> 2) & 4095, gl_InstanceID >> 14);
-        splatIndex = texelFetch(ordering, orderingCoord, 0)[gl_InstanceID & 3];
+        ivec2 orderingCoord = ivec2(int((index >> 2u) & 4095u), int(index >> 14u));
+        splatIndex = texelFetch(ordering, orderingCoord, 0)[index & 3u];
     }
     if (splatIndex == 0xffffffffu) {
         // Special value reserved for "no splat"
@@ -250,11 +250,9 @@ void main() {
     }
 
     // RGB is constant across the quad, so convert before rasterization.
-    #ifdef GSL_COLOR_IN_VERTEX
     if (encodeLinear && !depthOnly) {
         vRgba.rgb = srgbToLinear(vRgba.rgb);
     }
-    #endif
 
     // Compute the NDC coordinates for the ellipsoid's diagonal axes.
     vec2 pixelOffset = position.x * eigenVec1 * scale1 + position.y * eigenVec2 * scale2;

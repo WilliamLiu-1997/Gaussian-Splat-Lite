@@ -2,14 +2,6 @@
 precision highp float;
 precision highp int;
 
-#include <splatDefines>
-
-uniform float near;
-uniform float far;
-#ifndef GSL_COLOR_IN_VERTEX
-uniform bool encodeLinear;
-#endif
-uniform float time;
 uniform float minAlpha;
 uniform bool stochastic;
 uniform vec4 stochasticTemporalSample;
@@ -63,12 +55,6 @@ void main() {
             return;
         }
     }
-    #ifndef GSL_COLOR_IN_VERTEX
-    if (encodeLinear) {
-        rgba.rgb = srgbToLinear(rgba.rgb);
-    }
-    #endif
-
     if (stochastic) {
         // Alpha 2 marks accepted stochastic samples for the optional resolve
         // pass. Without an attached pass, keep regular opaque output.

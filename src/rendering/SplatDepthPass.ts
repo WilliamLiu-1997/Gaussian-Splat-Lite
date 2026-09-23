@@ -31,6 +31,7 @@ export class SplatDepthPass {
       stochastic: { value: false },
       stochasticResolve: { value: false },
       depthOnly: { value: true },
+      splatCount: { value: 0 },
     };
     const material = backend.createDepthMaterial(uniforms);
     material.blending = THREE.NoBlending;
@@ -46,13 +47,14 @@ export class SplatDepthPass {
       const activeRenderer = this.getActiveRenderer();
       const compiling =
         backend.kind === "webgpu" && backend.precompile !== null;
-      mesh.geometry.setSplatCount(
+      const splatCount =
         compiling ||
-          activeRenderer.stochasticActive ||
-          activeRenderer.activeSplats === 0
+        activeRenderer.stochasticActive ||
+        activeRenderer.activeSplats === 0
           ? 0
-          : activeRenderer.display.numSplats,
-      );
+          : activeRenderer.display.numSplats;
+      mesh.geometry.setSplatCount(splatCount);
+      uniforms.splatCount.value = splatCount;
     };
     if (backend.kind === "webgl-fallback") {
       // Three's fallback clear does not restore the color mask after a

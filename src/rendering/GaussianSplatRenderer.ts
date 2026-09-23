@@ -5,7 +5,7 @@ import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
 import { SplatCapture } from "./SplatCapture";
 import { SplatDepthPass } from "./SplatDepthPass";
-import { SplatGeometry, WEBGPU_SPLATS_PER_INSTANCE } from "./SplatGeometry";
+import { SplatGeometry } from "./SplatGeometry";
 import {
   type SplatBackend,
   type SplatMaterial,
@@ -207,21 +207,6 @@ export interface GaussianSplatRendererOptions {
     superXY?: number;
   } & THREE.RenderTargetOptions;
   /**
-   * Extra uniform values to pass to the shader.
-   * @default undefined = no extra uniforms
-   */
-  extraUniforms?: Record<string, unknown>;
-  /**
-   * Replace the default `splatVertex.glsl` splat shader with a custom one.
-   * @default undefined = use the default `splatVertex.glsl` shader
-   */
-  vertexShader?: string;
-  /**
-   * Replace the default `splatFragment.glsl` splat shader with a custom one.
-   * @default undefined = use the default `splatFragment.glsl` shader
-   */
-  fragmentShader?: string;
-  /**
    * Set the splat shader material to be transparent which determines if the
    * splats are rendered during the first opaque THREE.js render pass or the
    * second transparent render pass. Stochastic/depth companion modes keep the
@@ -272,7 +257,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   private _renderDepth: boolean;
   private _premultipliedAlpha: boolean;
   private _transparent: boolean;
-  private readonly supportsStochasticShaders: boolean;
   private readonly sortedBlending: THREE.Blending;
   private _depthTest: boolean;
   private _depthWrite: boolean;
@@ -332,35 +316,19 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     assertSupportedRenderer(options.renderer);
 
     const uniforms = GaussianSplatRenderer.makeUniforms();
-    Object.assign(uniforms, options.extraUniforms);
 
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
     uniforms.premultipliedAlpha.value = premultipliedAlpha;
     const autoStochastic = options.autoStochastic ?? false;
     const stochastic = options.stochastic ?? false;
     const renderDepth = options.renderDepth ?? false;
-    const supportsStochasticShaders =
-      options.vertexShader === undefined &&
-      options.fragmentShader === undefined;
-    if (
-      (autoStochastic || stochastic || renderDepth) &&
-      !supportsStochasticShaders
-    ) {
-      throw new Error(
-        "Stochastic and renderDepth modes require the built-in Splat shaders",
-      );
-    }
     const backend = createSplatBackend(options.renderer, uniforms, {
       premultipliedAlpha,
       transparent: options.transparent ?? true,
       depthTest: options.depthTest ?? true,
       depthWrite: options.depthWrite ?? false,
-      vertexShader: options.vertexShader,
-      fragmentShader: options.fragmentShader,
     });
-    const geometry = new SplatGeometry(
-      backend.kind === "webgpu" ? WEBGPU_SPLATS_PER_INSTANCE : 1,
-    );
+    const geometry = new SplatGeometry();
     const material = backend.selectMaterial(autoStochastic || stochastic);
 
     super(geometry, material);
@@ -373,7 +341,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       backend,
       () => GaussianSplatRenderer.gaussianSplatOverride ?? this,
     );
-    this.supportsStochasticShaders = supportsStochasticShaders;
     this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
     this._depthWrite = options.depthWrite ?? false;
@@ -727,11 +694,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const display = gaussianSplatRenderer.display;
     this.uniforms.renderOrigin.value.copy(display.viewOrigin);
     const geometry = this.geometry;
-    geometry.setSplatCount(
-      gaussianSplatRenderer.stochasticFrame
-        ? display.numSplats
-        : gaussianSplatRenderer.activeSplats,
-    );
+    const splatCount = gaussianSplatRenderer.stochasticFrame
+      ? display.numSplats
+      : gaussianSplatRenderer.activeSplats;
+    geometry.setSplatCount(splatCount);
+    this.uniforms.splatCount.value = splatCount;
 
     // Keep rig scale: Camera.matrixWorldInverse can strip it in Three.js.
     renderToViewMatrixTmp
@@ -766,9 +733,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     if (this.stochasticModeEnabled) {
       this.applyMaterialState(gaussianSplatRenderer.stochasticFrame);
     }
-
-    this.uniforms.time.value = display.time;
-    this.uniforms.deltaTime.value = display.deltaTime;
 
     if (this.backend.kind === "webgpu") {
       if (this.backend.sortError) throw this.backend.sortError;
@@ -1290,14 +1254,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     return this.depthPass.mesh;
   }
 
-  private assertBuiltInSplatShaders(enabled: boolean) {
-    if (enabled && !this.supportsStochasticShaders) {
-      throw new Error(
-        "Stochastic and renderDepth modes require the built-in Splat shaders",
-      );
-    }
-  }
-
   private refreshRenderConfiguration() {
     this.applyRenderOrder();
     this.applyMaterialState(this.stochasticFrame);
@@ -1367,7 +1323,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   set autoStochastic(value: boolean) {
     const nextValue = Boolean(value);
     if (nextValue === this._autoStochastic) return;
-    this.assertBuiltInSplatShaders(nextValue);
     this._autoStochastic = nextValue;
     this.refreshStochasticConfiguration();
   }
@@ -1406,7 +1361,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   set stochastic(value: boolean) {
     const nextValue = Boolean(value);
     if (nextValue === this._stochastic) return;
-    this.assertBuiltInSplatShaders(nextValue);
     this._stochastic = nextValue;
     this.refreshStochasticConfiguration();
   }
@@ -1418,7 +1372,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   set renderDepth(value: boolean) {
     const nextValue = Boolean(value);
     if (nextValue === this._renderDepth) return;
-    this.assertBuiltInSplatShaders(nextValue);
     this._renderDepth = nextValue;
     this.refreshRenderConfiguration();
     this.setDirty();

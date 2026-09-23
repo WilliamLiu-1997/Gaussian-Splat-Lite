@@ -6,6 +6,7 @@ import {
   type StorageBufferNode,
   type TextureNode,
 } from "three/webgpu";
+import { SPLATS_PER_INSTANCE } from "../SplatGeometry";
 import { ORDERING_TEXTURE_WIDTH, type Uniforms } from "../uniforms";
 import { createProjectionProgram } from "./ProjectionProgram";
 import {
@@ -242,21 +243,28 @@ export function createSplatNodeMaterial({
         ...view,
         projectionMatrix: N.cameraProjectionMatrix,
       });
-      const splatIndex = N.uint(N.instanceIndex).toVar();
-      N.If(stochastic.or(depthOnly).not(), () => {
-        const index = N.uint(N.instanceIndex);
-        if ("isTextureNode" in orderingNode) {
-          const texel = index.shiftRight(2);
-          const coord = N.ivec2(
-            texel.mod(ORDERING_TEXTURE_WIDTH),
-            texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
-          );
-          splatIndex.assign(
-            load2D(orderingNode, coord).element(index.bitAnd(3)),
-          );
-        } else {
-          splatIndex.assign(orderingNode.element(index));
-        }
+      const index = N.uint(N.instanceIndex)
+        .mul(SPLATS_PER_INSTANCE)
+        .add(N.uint(N.positionGeometry.z))
+        .toVar();
+      const splatIndex = N.uint(0xffffffff).toVar();
+      const splatCount = uniformBinding(uniforms, "splatCount", "uint");
+      N.If(index.lessThan(splatCount), () => {
+        splatIndex.assign(index);
+        N.If(stochastic.or(depthOnly).not(), () => {
+          if ("isTextureNode" in orderingNode) {
+            const texel = index.shiftRight(2);
+            const coord = N.ivec2(
+              texel.mod(ORDERING_TEXTURE_WIDTH),
+              texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
+            );
+            splatIndex.assign(
+              load2D(orderingNode, coord).element(index.bitAnd(3)),
+            );
+          } else {
+            splatIndex.assign(orderingNode.element(index));
+          }
+        });
       });
 
       N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {

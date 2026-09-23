@@ -7,10 +7,7 @@ import {
 } from "three/webgpu";
 
 import type { SplatAccumulator } from "../SplatAccumulator";
-import {
-  type SplatGeometry,
-  WEBGPU_SPLATS_PER_INSTANCE,
-} from "../SplatGeometry";
+import { SPLATS_PER_INSTANCE, type SplatGeometry } from "../SplatGeometry";
 import { createGenerateProgram } from "../tsl/GenerateProgram";
 import { createProjectionProgram } from "../tsl/ProjectionProgram";
 import type { ProjectedVertexData } from "../tsl/SplatMaterial";
@@ -52,7 +49,7 @@ function bindBuffer(ref: BufferRef) {
 export class ProjectedSplats {
   // Only the instance count changes; the other indirect draw arguments are fixed.
   readonly indirect = new IndirectStorageBufferAttribute(
-    new Uint32Array([WEBGPU_SPLATS_PER_INSTANCE * 6, 0, 0, 0, 0]),
+    new Uint32Array([SPLATS_PER_INSTANCE * 6, 0, 0, 0, 0]),
     1,
   );
   /** Common kernels, the full sorter and the first slot are ready; remaining slots warm automatically. */
@@ -156,8 +153,8 @@ export class ProjectedSplats {
       N.If(index.equal(0), () => {
         counts.element(viewIndex).assign(count);
         const instances = count
-          .add(WEBGPU_SPLATS_PER_INSTANCE - 1)
-          .div(N.uint(WEBGPU_SPLATS_PER_INSTANCE));
+          .add(SPLATS_PER_INSTANCE - 1)
+          .div(N.uint(SPLATS_PER_INSTANCE));
         // The first eye resets the count; later eyes extend it to their maximum.
         drawCount.assign(
           N.select(viewIndex.equal(0), instances, drawCount.max(instances)),
@@ -298,7 +295,7 @@ export class ProjectedSplats {
     // Both coverage branches need the eye offset before any order lookup.
     const base = eye.mul(stride).toVar();
     const i = N.uint(N.instanceIndex)
-      .mul(WEBGPU_SPLATS_PER_INSTANCE)
+      .mul(SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z));
     const counts = bindBuffer(this.counts).toReadOnly();
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
