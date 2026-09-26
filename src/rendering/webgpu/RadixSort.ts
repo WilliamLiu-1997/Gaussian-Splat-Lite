@@ -86,6 +86,9 @@ function makeHistogramTask({
     });
     N.workgroupBarrier();
 
+    // Combine consecutive equal digits in each thread's strided input.
+    const previousDigit = N.uint(0).toVar();
+    const runLength = N.uint(0).toVar();
     N.Loop(
       {
         start: N.uint(0),
@@ -101,11 +104,21 @@ function makeHistogramTask({
         N.If(index.lessThan(elementCount), () => {
           const key = inputKeys.element(index).toVar();
           const digit = key.shiftRight(bit).bitAnd(RADIX_BUCKETS - 1);
-          N.atomicAdd(histogram.element(digit), N.uint(1));
+          N.If(digit.notEqual(previousDigit), () => {
+            N.If(runLength.greaterThan(0), () => {
+              N.atomicAdd(histogram.element(previousDigit), runLength);
+            });
+            runLength.assign(0);
+            previousDigit.assign(digit);
+          });
+          runLength.addAssign(1);
         });
       },
     );
 
+    N.If(runLength.greaterThan(0), () => {
+      N.atomicAdd(histogram.element(previousDigit), runLength);
+    });
     N.workgroupBarrier();
     N.If(tid.lessThan(RADIX_BUCKETS), () => {
       sums
@@ -143,25 +156,19 @@ function makePrefixScanTask(
       temp.element(tid.mul(2).add(1)).assign(items.element(second));
     });
 
-    const offset = N.uint(1).toVar();
-    N.Loop(
-      {
-        start: N.uint(PREFIX_ITEMS_PER_WORKGROUP >> 1),
-        end: N.uint(0),
-        type: "uint",
-        condition: ">",
-        update: ">>= 1",
-      },
-      ({ i: distance }) => {
-        N.workgroupBarrier();
-        N.If(tid.lessThan(distance), () => {
-          const a = offset.mul(tid.mul(2).add(1)).sub(1);
-          const b = offset.mul(tid.mul(2).add(2)).sub(1);
-          temp.element(b).addAssign(temp.element(a));
-        });
-        offset.mulAssign(2);
-      },
-    );
+    // Expand the fixed scan levels while building the shader.
+    for (
+      let distance = PREFIX_ITEMS_PER_WORKGROUP >> 1, offset = 1;
+      distance > 0;
+      distance >>= 1, offset <<= 1
+    ) {
+      N.workgroupBarrier();
+      N.If(tid.lessThan(distance), () => {
+        const a = tid.mul(2).add(1).mul(offset).sub(1);
+        const b = tid.mul(2).add(2).mul(offset).sub(1);
+        temp.element(b).addAssign(temp.element(a));
+      });
+    }
     N.workgroupBarrier();
 
     N.If(tid.equal(0), () => {
@@ -171,26 +178,20 @@ function makePrefixScanTask(
       temp.element(N.uint(PREFIX_ITEMS_PER_WORKGROUP - 1)).assign(0);
     });
 
-    N.Loop(
-      {
-        start: N.uint(1),
-        end: N.uint(PREFIX_ITEMS_PER_WORKGROUP),
-        type: "uint",
-        condition: "<",
-        update: "<<= 1",
-      },
-      ({ i: distance }) => {
-        offset.shiftRightAssign(1);
-        N.workgroupBarrier();
-        N.If(tid.lessThan(distance), () => {
-          const a = offset.mul(tid.mul(2).add(1)).sub(1);
-          const b = offset.mul(tid.mul(2).add(2)).sub(1);
-          const value = temp.element(a).toVar();
-          temp.element(a).assign(temp.element(b));
-          temp.element(b).addAssign(value);
-        });
-      },
-    );
+    for (
+      let distance = 1, offset = PREFIX_ITEMS_PER_WORKGROUP >> 1;
+      distance < PREFIX_ITEMS_PER_WORKGROUP;
+      distance <<= 1, offset >>= 1
+    ) {
+      N.workgroupBarrier();
+      N.If(tid.lessThan(distance), () => {
+        const a = tid.mul(2).add(1).mul(offset).sub(1);
+        const b = tid.mul(2).add(2).mul(offset).sub(1);
+        const value = temp.element(a).toVar();
+        temp.element(a).assign(temp.element(b));
+        temp.element(b).addAssign(value);
+      });
+    }
 
     N.workgroupBarrier();
     N.If(first.lessThan(elementCount), () => {
@@ -267,6 +268,7 @@ function makeReorderTask({
   const outputValues = storage(outputValuesAttribute, "gslRadixOutputValues");
   const prefix = storage(prefixAttribute, "gslRadixPrefix").toReadOnly();
   const bitOffsetNode = N.uint(bitOffset);
+  // Shared masks use [word][bucket] for the parallel bucket scan.
   const digitMasks = N.workgroupArray("uint", RADIX_BUCKETS * 8)
     .toAtomic()
     .setName("gslRadixDigitMasks");
@@ -281,7 +283,9 @@ function makeReorderTask({
     const bit = tid.bitAnd(31);
 
     N.If(tid.lessThan(RADIX_BUCKETS), () => {
-      digitOffsets.element(tid).assign(0);
+      digitOffsets
+        .element(tid)
+        .assign(prefix.element(tid.mul(workgroupCount).add(workgroup)));
     });
     N.If(tid.lessThan(RADIX_BUCKETS * 8), () => {
       N.atomicStore(digitMasks.element(tid), N.uint(0));
@@ -309,18 +313,14 @@ function makeReorderTask({
           digit.assign(key.shiftRight(bitOffsetNode).bitAnd(RADIX_BUCKETS - 1));
           if (!firstPass) value.assign(inputValues.element(index));
           N.atomicOr(
-            digitMasks.element(digit.mul(8).add(word)),
+            digitMasks.element(word.mul(RADIX_BUCKETS).add(digit)),
             N.uint(1).shiftLeft(bit),
           );
         });
 
         N.workgroupBarrier();
         N.If(valid, () => {
-          // Materialize this before the loop. Without toVar(), TSL emits the
-          // expression only at its first use inside the loop, leaving the
-          // zero-word path with a stale/uninitialized base.
-          const base = digit.mul(8).toVar();
-          const localPrefix = digitOffsets.element(digit).toVar();
+          const sortedIndex = digitOffsets.element(digit).toVar();
           N.Loop(
             {
               start: N.uint(0),
@@ -329,23 +329,25 @@ function makeReorderTask({
               condition: "<",
             },
             ({ i: precedingWord }) => {
-              localPrefix.addAssign(
+              sortedIndex.addAssign(
                 N.countOneBits(
-                  N.atomicLoad(digitMasks.element(base.add(precedingWord))),
+                  N.atomicLoad(
+                    digitMasks.element(
+                      precedingWord.mul(RADIX_BUCKETS).add(digit),
+                    ),
+                  ),
                 ),
               );
             },
           );
           const lowerBits = N.uint(1).shiftLeft(bit).sub(1);
-          localPrefix.addAssign(
+          sortedIndex.addAssign(
             N.countOneBits(
-              N.atomicLoad(digitMasks.element(base.add(word))).bitAnd(
-                lowerBits,
-              ),
+              N.atomicLoad(
+                digitMasks.element(word.mul(RADIX_BUCKETS).add(digit)),
+              ).bitAnd(lowerBits),
             ),
           );
-          const prefixIndex = digit.mul(workgroupCount).add(workgroup);
-          const sortedIndex = prefix.element(prefixIndex).add(localPrefix);
           // Boolean cases are resolved while building the shader.
           if (lastPass === false) {
             outputKeys.element(sortedIndex).assign(key);
@@ -365,6 +367,7 @@ function makeReorderTask({
         });
 
         N.If(round.lessThan(ELEMENTS_PER_THREAD - 1), () => {
+          // Finish all rank reads before updating offsets and clearing masks.
           N.workgroupBarrier();
           N.If(tid.lessThan(RADIX_BUCKETS), () => {
             const count = N.uint(0).toVar();
@@ -376,11 +379,12 @@ function makeReorderTask({
                 condition: "<",
               },
               ({ i: maskWord }) => {
-                const maskIndex = tid.mul(8).add(maskWord);
+                const maskIndex = maskWord.mul(RADIX_BUCKETS).add(tid);
                 count.addAssign(
-                  N.countOneBits(N.atomicLoad(digitMasks.element(maskIndex))),
+                  N.countOneBits(
+                    N.atomicAnd(digitMasks.element(maskIndex), N.uint(0)),
+                  ),
                 );
-                N.atomicStore(digitMasks.element(maskIndex), N.uint(0));
               },
             );
             digitOffsets.element(tid).addAssign(count);

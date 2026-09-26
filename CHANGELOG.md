@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Optimized native WebGPU radix sorting by combining consecutive histogram updates, unrolling prefix scans, and reducing shared-mask and prefix-buffer accesses. Sort order and GPU buffer sizes are unchanged.
+
 ## [1.1.5] - 2026-09-23
 
 ### Changed
