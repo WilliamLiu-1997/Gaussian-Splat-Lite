@@ -27,6 +27,34 @@ impl Default for MeshSortState {
     }
 }
 
+impl MeshSortState {
+    // Shared by both axial sorting paths; evaluated once per mesh, not per Splat.
+    #[inline(always)]
+    fn axial_projection(
+        &self,
+        camera_local: [f32; 3],
+        direction: [f32; 3],
+        direction64: [f64; 3],
+    ) -> ([f32; 3], f32) {
+        let transform = self.transform;
+        let local_direction = [
+            (transform[0] * direction64[0]
+                + transform[1] * direction64[1]
+                + transform[2] * direction64[2]) as f32,
+            (transform[3] * direction64[0]
+                + transform[4] * direction64[1]
+                + transform[5] * direction64[2]) as f32,
+            (transform[6] * direction64[0]
+                + transform[7] * direction64[1]
+                + transform[8] * direction64[2]) as f32,
+        ];
+        let offset = -(camera_local[0] * direction[0]
+            + camera_local[1] * direction[1]
+            + camera_local[2] * direction[2]);
+        (local_direction, offset)
+    }
+}
+
 #[derive(Default)]
 pub struct Sort32Buffers {
     /// persistent sort state indexed by the renderer-assigned mesh ID
@@ -187,42 +215,7 @@ fn sort_centers<const FAST: bool>(
     radial: bool,
 ) -> Result<u32, String> {
     let shift = if FAST { FAST_KEY_SHIFT } else { 0 };
-    if num_splats > max_splats {
-        return Err(format!(
-            "Sort ordering buffer too small: {max_splats} < {num_splats}"
-        ));
-    }
-    // The WASM setter validates the parallel arrays and creates every mesh.
-    let mut previous_end = 0usize;
-    for (range_index, (&base, &count)) in buffers
-        .range_bases
-        .iter()
-        .zip(&buffers.range_counts)
-        .enumerate()
-    {
-        let base = base as usize;
-        let end = base
-            .checked_add(count as usize)
-            .ok_or_else(|| "Sort range overflow".to_string())?;
-        if base < previous_end {
-            return Err("Sort ranges must be ordered and non-overlapping".to_string());
-        }
-        if end > num_splats {
-            return Err(format!(
-                "Sort range [{base}, {end}) exceeds splat count {num_splats}"
-            ));
-        }
-        let mesh_id = buffers.range_mesh_ids[range_index] as usize;
-        let center_values = (count as usize).saturating_mul(3);
-        let mesh_center_values = buffers.meshes[mesh_id].raw_centers.len();
-        if mesh_center_values < center_values {
-            return Err(format!(
-                "Sort center buffer for mesh {} too small: {} < {}",
-                mesh_id, mesh_center_values, center_values
-            ));
-        }
-        previous_end = end;
-    }
+    validate_ranges(buffers, max_splats, num_splats)?;
     if radial {
         for range_index in 0..buffers.range_mesh_ids.len() {
             let mesh_id = buffers.range_mesh_ids[range_index] as usize;
@@ -284,21 +277,8 @@ fn sort_centers<const FAST: bool>(
                     tally_key::<FAST>(key, buckets_lo, buckets_hi, bucket_range);
                 }
             } else {
-                let transform = mesh.transform;
-                let local_direction = [
-                    (transform[0] * direction64[0]
-                        + transform[1] * direction64[1]
-                        + transform[2] * direction64[2]) as f32,
-                    (transform[3] * direction64[0]
-                        + transform[4] * direction64[1]
-                        + transform[5] * direction64[2]) as f32,
-                    (transform[6] * direction64[0]
-                        + transform[7] * direction64[1]
-                        + transform[8] * direction64[2]) as f32,
-                ];
-                let offset = -(camera_local[0] * direction[0]
-                    + camera_local[1] * direction[1]
-                    + camera_local[2] * direction[2]);
+                let (local_direction, offset) =
+                    mesh.axial_projection(camera_local, direction, direction64);
                 let center_slice = &mesh.raw_centers[..count as usize * 3];
                 for (center, key_out) in center_slice.chunks_exact(3).zip(key_slice.iter_mut()) {
                     let metric = center[0] * local_direction[0]
@@ -316,6 +296,114 @@ fn sort_centers<const FAST: bool>(
     }
 
     Ok(sort_counted::<FAST>(buffers, num_splats))
+}
+
+fn validate_ranges(
+    buffers: &Sort32Buffers,
+    max_splats: usize,
+    num_splats: usize,
+) -> Result<(), String> {
+    if num_splats > max_splats {
+        return Err(format!(
+            "Sort ordering buffer too small: {max_splats} < {num_splats}"
+        ));
+    }
+    // The WASM setter validates the parallel arrays and creates every mesh.
+    let mut previous_end = 0usize;
+    for (range_index, (&base, &count)) in buffers
+        .range_bases
+        .iter()
+        .zip(&buffers.range_counts)
+        .enumerate()
+    {
+        let base = base as usize;
+        let end = base
+            .checked_add(count as usize)
+            .ok_or_else(|| "Sort range overflow".to_string())?;
+        if base < previous_end {
+            return Err("Sort ranges must be ordered and non-overlapping".to_string());
+        }
+        if end > num_splats {
+            return Err(format!(
+                "Sort range [{base}, {end}) exceeds splat count {num_splats}"
+            ));
+        }
+        let mesh_id = buffers.range_mesh_ids[range_index] as usize;
+        let center_values = (count as usize).saturating_mul(3);
+        let mesh_center_values = buffers.meshes[mesh_id].raw_centers.len();
+        if mesh_center_values < center_values {
+            return Err(format!(
+                "Sort center buffer for mesh {} too small: {} < {}",
+                mesh_id, mesh_center_values, center_values
+            ));
+        }
+        previous_end = end;
+    }
+    Ok(())
+}
+
+/// Stable near-to-far ordering by the high 16 bits of signed float depth.
+/// Keep finite negative depths: stochastic visibility is decided by the shader.
+pub fn sort16_centers_front_internal(
+    buffers: &mut Sort32Buffers,
+    max_splats: usize,
+    num_splats: usize,
+    camera_position: [f64; 3],
+    direction: [f32; 3],
+) -> Result<u32, String> {
+    validate_ranges(buffers, max_splats, num_splats)?;
+
+    buffers.ensure_size(max_splats);
+    buffers.buckets_lo.resize(65536, 0);
+    buffers.buckets_lo.fill(0);
+    buffers.bucket_range = 0..65536;
+    let direction64 = direction.map(f64::from);
+    let mut next_index = 0;
+    for range in 0..buffers.range_bases.len() {
+        let base = buffers.range_bases[range] as usize;
+        let count = buffers.range_counts[range] as usize;
+        let end = base + count;
+        buffers.keys[next_index..base].fill(0xffff);
+        next_index = end;
+        let mesh = &buffers.meshes[buffers.range_mesh_ids[range] as usize];
+        let camera_local = [
+            (camera_position[0] - mesh.origin[0]) as f32,
+            (camera_position[1] - mesh.origin[1]) as f32,
+            (camera_position[2] - mesh.origin[2]) as f32,
+        ];
+        let (local_direction, offset) = mesh.axial_projection(camera_local, direction, direction64);
+        for (center, key_out) in mesh.raw_centers[..count * 3]
+            .chunks_exact(3)
+            .zip(buffers.keys[base..end].iter_mut())
+        {
+            let metric = center[0] * local_direction[0]
+                + center[1] * local_direction[1]
+                + center[2] * local_direction[2]
+                + offset;
+            let bits = metric.to_bits();
+            if bits & 0x7fffffff < 0x7f800000 {
+                let key = (if bits & 0x80000000 != 0 {
+                    !bits
+                } else {
+                    bits ^ 0x80000000
+                }) >> 16;
+                *key_out = key;
+                buffers.buckets_lo[key as usize] += 1;
+            } else {
+                *key_out = 0xffff;
+            }
+        }
+    }
+    buffers.keys[next_index..num_splats].fill(0xffff);
+    let active = prefix_sum_exclusive(&mut buffers.buckets_lo);
+    for (i, &key) in buffers.keys[..num_splats].iter().enumerate() {
+        if key != 0xffff {
+            let offset = &mut buffers.buckets_lo[key as usize];
+            buffers.ordering[*offset as usize] = i as u32;
+            *offset += 1;
+        }
+    }
+    Ok(active)
 }
 
 /// Count valid keys without touching buckets for centers behind the camera.

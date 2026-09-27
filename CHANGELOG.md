@@ -7,8 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-09-27
+
 ### Changed
 
+- Native WebGPU stochastic and Auto motion frames now use 16-bit front-to-back sorting with four GPU radix passes in single-view rendering, helping reduce overdraw. Controlled by `stochasticSort` (default `true`).
+- WebGL and WebGL fallback stochastic and Auto motion frames now use asynchronous 16-bit front-to-back Worker/WASM sorting. Rendering keeps the previous matching data and indices until the new ordering is ready; Auto restores normal back-to-front sorting after motion stops. Controlled by `stochasticSort` (default `true`).
 - Optimized native WebGPU radix sorting by unrolling prefix scans and reducing shared-mask and prefix-buffer accesses. Sort order and GPU buffer sizes are unchanged.
 
 ## [1.1.5] - 2026-09-23
@@ -416,7 +420,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.6...HEAD
+[1.1.6]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.2...v1.1.3

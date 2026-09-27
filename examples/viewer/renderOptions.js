@@ -102,6 +102,15 @@ export const renderOptionGroups = [
         trueLabel: "On",
       },
       {
+        property: "stochasticSort",
+        label: "Stochastic front sort",
+        description:
+          "Orders stochastic Splats from near to far to reduce overdraw. Off draws in source or compacted order.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
         property: "minSortIntervalMs",
         description:
           "Limits asynchronous WebGL sorting. Higher values save work but may lag while moving.",

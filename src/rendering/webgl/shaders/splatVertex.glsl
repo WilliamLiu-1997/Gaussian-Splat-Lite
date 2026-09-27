@@ -25,6 +25,7 @@ uniform float preBlurAmount;
 uniform float clipXY;
 uniform float focalAdjustment;
 uniform bool stochastic;
+uniform bool stochasticOrdering;
 uniform vec4 stochasticTemporalSample;
 uniform bool encodeLinear;
 uniform bool depthOnly;
@@ -74,8 +75,8 @@ void main() {
     if (index >= splatCount) return;
 
     uint splatIndex;
-    if (stochastic || depthOnly) {
-        // Motion and depth-only rendering do not need sorted indices.
+    if ((stochastic && !stochasticOrdering) || depthOnly) {
+        // Use source indices before the first ordering and for depth-only draws.
         splatIndex = index;
     } else {
         ivec2 orderingCoord = ivec2(int((index >> 2u) & 4095u), int(index >> 14u));

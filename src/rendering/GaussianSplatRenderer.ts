@@ -30,6 +30,7 @@ const renderToViewScaleTmp = new THREE.Vector3();
 const renderToViewMatrixTmp = new THREE.Matrix4();
 const renderTranslationTmp = new THREE.Matrix4();
 type UpdateRequest = {
+  frontSort?: boolean;
   scene: THREE.Scene;
   camera: THREE.Camera;
   layerCamera?: THREE.Camera;
@@ -157,18 +158,25 @@ export interface GaussianSplatRendererOptions {
    */
   minSortIntervalMs?: number;
   /**
-   * Automatically uses sorting-free stochastic transparency while the camera
+   * Automatically uses stochastic transparency while the camera
    * is moving, then requests one clean sorted frame after it settles. Sorted
    * frames use the depth-only companion draw when depthWrite is disabled.
    * @default false
    */
   autoStochastic?: boolean;
   /**
-   * Forces sorting-free stochastic transparency independently of camera motion.
+   * Forces stochastic transparency independently of camera motion.
    * Supported in WebXR; dedicated capture paths still use sorted rendering.
    * @default false
    */
   stochastic?: boolean;
+  /**
+   * 16-bit front-to-back ordering for stochastic and Auto motion frames.
+   * WebGL and WebGL fallback sort asynchronously; native WebGPU sorts single-view draws on the GPU.
+   * Disable to draw in source/compacted order.
+   * @default true
+   */
+  stochasticSort?: boolean;
   /**
    * Forces the depth-only companion draw after non-stochastic color frames,
    * even when autoStochastic is disabled. It has no effect when depthWrite is
@@ -254,6 +262,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   minSortIntervalMs: number;
   private _autoStochastic: boolean;
   private _stochastic: boolean;
+  private _stochasticSort: boolean;
+  private stochasticOrderingReady = false;
   private _renderDepth: boolean;
   private _premultipliedAlpha: boolean;
   private _transparent: boolean;
@@ -287,6 +297,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   sortedDir = new THREE.Vector3().setScalar(0);
   private sortedRadial: boolean | undefined;
   private sortedFastSort: boolean | undefined;
+  private sortedFrontSort = false;
   private sortCenterCache = new SortCenterCache();
   private sortStateRevision = 0;
   private uploadedSortStateRevision = -1;
@@ -348,6 +359,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this._transparent = options.transparent ?? true;
     this._autoStochastic = autoStochastic;
     this._stochastic = stochastic;
+    this._stochasticSort = options.stochasticSort ?? true;
     this._renderDepth = renderDepth;
     this.stochasticPhase = stochastic ? "forced" : null;
     this.refreshRenderConfiguration();
@@ -694,9 +706,16 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const display = gaussianSplatRenderer.display;
     this.uniforms.renderOrigin.value.copy(display.viewOrigin);
     const geometry = this.geometry;
-    const splatCount = gaussianSplatRenderer.stochasticFrame
-      ? display.numSplats
-      : gaussianSplatRenderer.activeSplats;
+    this.uniforms.stochasticOrdering.value =
+      gaussianSplatRenderer.backend.kind === "webgpu"
+        ? gaussianSplatRenderer.stochasticSort
+        : gaussianSplatRenderer.stochasticSort &&
+          gaussianSplatRenderer.stochasticOrderingReady;
+    const splatCount =
+      gaussianSplatRenderer.stochasticFrame &&
+      !this.uniforms.stochasticOrdering.value
+        ? display.numSplats
+        : gaussianSplatRenderer.activeSplats;
     geometry.setSplatCount(splatCount);
     this.uniforms.splatCount.value = splatCount;
 
@@ -881,10 +900,18 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const shrinkResources =
       request.shrinkResources || (pending?.shrinkResources ?? false);
     this.queuedUpdate = {
+      // Keep drawing the matching display/order pair while the worker sorts.
+      // Settling and captures still need the normal back-to-front ordering.
+      frontSort:
+        this.stochasticSort &&
+        this.frameSkipSort &&
+        this.forceSortedRenderDepth === 0 &&
+        request.settleRevision === null,
       scene: request.scene,
       camera: request.camera,
       shrinkResources,
-      skipSort: shrinkResources ? false : request.skipSort,
+      skipSort:
+        shrinkResources || this.stochasticSort ? false : request.skipSort,
       settleRevision: shrinkResources ? null : request.settleRevision,
     };
 
@@ -909,6 +936,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   }
 
   private async performUpdate({
+    frontSort = false,
     scene,
     camera,
     shrinkResources,
@@ -934,7 +962,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         0.001 * getCameraWorldScale(camera) ||
       dir.dot(this.sortedDir) < 0.999 ||
       this.sortRadial !== this.sortedRadial ||
-      this.fastSort !== this.sortedFastSort;
+      this.fastSort !== this.sortedFastSort ||
+      frontSort !== this.sortedFrontSort;
 
     const previousVersion = this.current.version;
     let preparation: ReturnType<SplatAccumulator["prepareGenerate"]>;
@@ -1008,12 +1037,14 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       // stops. Padding in a WebGL accumulator is zero-alpha and safe to visit.
       this.sortDirty = true;
       this.activeSplats = this.display.numSplats;
+      this.stochasticOrderingReady = false;
       return;
     }
 
     await this.driveSort(
       orderingNeedsShrink,
       shrinkResources || settleRevision !== null,
+      frontSort,
     );
 
     if (
@@ -1029,7 +1060,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
   }
 
-  private async driveSort(shrinkOrdering = false, forceSort = false) {
+  private async driveSort(
+    shrinkOrdering = false,
+    forceSort = false,
+    frontSort = false,
+  ) {
     // WebGL updates await each sort before draining the next queued update.
     if (this.disposed || this.backend.kind === "webgpu" || !this.sortDirty)
       return;
@@ -1089,6 +1124,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         ],
         radial: sortRadial,
         fastSort,
+        frontSort,
         ordering: this.orderingBuffer,
       });
       if (this.disposed) return;
@@ -1113,6 +1149,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.sortedDir.copy(current.viewDirection);
       this.sortedRadial = sortRadial;
       this.sortedFastSort = fastSort;
+      this.sortedFrontSort = frontSort;
+      this.stochasticOrderingReady = true;
       if (this.display !== current) {
         this.releaseAccumulator(this.display);
         this.display = current;
@@ -1316,6 +1354,22 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.setDirty();
   }
 
+  get stochasticSort(): boolean {
+    return this._stochasticSort;
+  }
+
+  set stochasticSort(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._stochasticSort) return;
+    this._stochasticSort = nextValue;
+    if (this.backend.kind !== "webgpu") {
+      // Identity draws may have changed the mapping since the last ordering.
+      this.stochasticOrderingReady = false;
+      this.sortDirty = true;
+    }
+    this.setDirty();
+  }
+
   get autoStochastic(): boolean {
     return this._autoStochastic;
   }
@@ -1331,7 +1385,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     return this._stochastic;
   }
 
-  /** Whether the current frame uses sorting-free stochastic transparency. */
+  /** Whether the current frame uses stochastic transparency. */
   get stochasticActive(): boolean {
     return this.stochasticFrame;
   }

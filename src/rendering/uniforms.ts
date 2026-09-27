@@ -69,8 +69,9 @@ export function makeSplatUniforms() {
     splats2: { type: "t", value: emptySplats },
     stochasticSeeds: { type: "t", value: emptySplats },
     stochasticNoise: { value: createBlueNoiseTexture() },
-    // Sorting-free stochastic transparency for automatic or forced frames
+    // Stochastic transparency for automatic or forced frames
     stochastic: { value: false },
+    stochasticOrdering: { value: false },
     // NDC jitter (xy) and blue-noise offset (zw), owned by StochasticTAAPass.
     stochasticTemporalSample: { value: new THREE.Vector4() },
     // Tags accepted samples for an attached StochasticResolvePass.

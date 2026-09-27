@@ -249,22 +249,30 @@ export function createSplatNodeMaterial({
         .toVar();
       const splatIndex = N.uint(0xffffffff).toVar();
       const splatCount = uniformBinding(uniforms, "splatCount", "uint");
+      const stochasticOrdering = uniformBinding(
+        uniforms,
+        "stochasticOrdering",
+        "bool",
+      );
       N.If(index.lessThan(splatCount), () => {
         splatIndex.assign(index);
-        N.If(stochastic.or(depthOnly).not(), () => {
-          if ("isTextureNode" in orderingNode) {
-            const texel = index.shiftRight(2);
-            const coord = N.ivec2(
-              texel.mod(ORDERING_TEXTURE_WIDTH),
-              texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
-            );
-            splatIndex.assign(
-              load2D(orderingNode, coord).element(index.bitAnd(3)),
-            );
-          } else {
-            splatIndex.assign(orderingNode.element(index));
-          }
-        });
+        N.If(
+          depthOnly.not().and(stochastic.not().or(stochasticOrdering)),
+          () => {
+            if ("isTextureNode" in orderingNode) {
+              const texel = index.shiftRight(2);
+              const coord = N.ivec2(
+                texel.mod(ORDERING_TEXTURE_WIDTH),
+                texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
+              );
+              splatIndex.assign(
+                load2D(orderingNode, coord).element(index.bitAnd(3)),
+              );
+            } else {
+              splatIndex.assign(orderingNode.element(index));
+            }
+          },
+        );
       });
 
       N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {

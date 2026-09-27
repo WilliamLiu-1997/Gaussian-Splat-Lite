@@ -25,6 +25,7 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | --- | --- | --- | --- |
 | `autoStochastic` | `boolean` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
 | `stochastic` | `boolean` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
+| `stochasticSort` | `boolean` | `true` | 16-bit front-to-back ordering for stochastic/Auto motion frames: async on WebGL and WebGL fallback, GPU sorting on native WebGPU single-view draws. Disable for source/compacted order |
 | `renderDepth` | `boolean` | `false` | Let Splats occlude later geometry on sorted frames when `depthWrite` is off |
 
 These options require the built-in materials. Stochastic rendering can look noisy while active. Automatic switching requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; captures use sorted rendering.
@@ -110,7 +111,7 @@ Built-in materials handle model color conversion. Use your Three.js renderer's o
 | `synchronousSort` | Read whether sorting finishes before drawing: `true` on native WebGPU |
 | `depthMesh` | Depth-only mesh used by depth rendering |
 
-`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, and `renderDepth` are also writable properties with the behavior listed above.
+`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, `stochasticSort`, and `renderDepth` are also writable properties with the behavior listed above.
 
 For manual updates after scene or camera changes:
 

@@ -118,6 +118,7 @@ export class ProjectedSplats {
     const seeds = bindBuffer(this.seeds).toReadOnly();
     this.sorter = new WebGPURadixSort(1, this.keys, {
       count,
+      stochastic,
       fastSort: uniformBinding(this.state, "fastSort", "bool"),
       storeOrder: (index, value) => {
         N.If(multiView, () => {
@@ -254,7 +255,25 @@ export class ProjectedSplats {
           centerRange,
         );
         seeds.element(slot).assign(generated.stochasticSeed);
-        N.If(stochastic.not(), () => {
+        N.If(stochastic.and(u("stochasticOrdering", "bool")), () => {
+          // Keep the high 16 bits of a front-to-back signed float key.
+          const metric = generated.center.add(sortOffset).dot(direction);
+          const bits = N.floatBitsToUint(metric);
+          const key = N.uint(0xffffffff).toVar();
+          N.If(
+            bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
+            () => {
+              key.assign(
+                N.select(
+                  bits.bitAnd(N.uint(0x80000000)).notEqual(0),
+                  bits.bitXor(N.uint(0xffffffff)),
+                  bits.bitXor(N.uint(0x80000000)),
+                ),
+              );
+            },
+          );
+          keys.element(slot).assign(key.shiftRight(16));
+        }).ElseIf(stochastic.not(), () => {
           // Signed float keys preserve back-to-front order across negative view depths.
           const center = generated.center.add(sortOffset);
           const metric = N.select(
@@ -321,17 +340,13 @@ export class ProjectedSplats {
     // index or cache load, including the unused tail of the final instance.
     N.If(i.lessThan(counts.element(eye)), () => {
       const cacheIndex = i.toVar();
-      const assignSeed = () => {
-        stochasticSeed.assign(
-          multiView
-            ? this.cache.readOrder(base.add(i)).y
-            : bindBuffer(this.seeds).toReadOnly().element(i),
-        );
-      };
-      if (depthOnly) {
-        assignSeed();
-      } else {
-        N.If(stochastic, assignSeed).Else(() => {
+      if (!depthOnly) {
+        const ordered = multiView
+          ? stochastic.not()
+          : stochastic
+              .not()
+              .or(uniformBinding(this.uniforms, "stochasticOrdering", "bool"));
+        N.If(ordered, () => {
           cacheIndex.assign(
             multiView
               ? this.cache.readOrder(base.add(i)).x
@@ -342,6 +357,15 @@ export class ProjectedSplats {
           );
         });
       }
+      const assignSeed = () => {
+        stochasticSeed.assign(
+          multiView
+            ? this.cache.readOrder(base.add(i)).y
+            : bindBuffer(this.seeds).toReadOnly().element(cacheIndex),
+        );
+      };
+      if (depthOnly) assignSeed();
+      else N.If(stochastic, assignSeed);
       const projected = this.cache.read(
         base.add(cacheIndex),
         pixelScale,
@@ -449,6 +473,7 @@ export class ProjectedSplats {
       radial,
       fastSort,
       uniforms.stochastic.value,
+      uniforms.stochasticOrdering.value,
       uniforms.maxStdDev.value,
       uniforms.minPixelRadius.value,
       uniforms.maxPixelRadius.value,
@@ -526,6 +551,10 @@ export class ProjectedSplats {
       pending.push(this.finish);
       if (!this.uniforms.stochastic.value) {
         pending.push(...this.sorter.prepare(accumulator.numSplats, fastSort));
+      } else if (!multiView && this.uniforms.stochasticOrdering.value) {
+        pending.push(
+          ...this.sorter.prepare(accumulator.numSplats, false, true),
+        );
       }
       this.renderer.compute(pending);
     }
