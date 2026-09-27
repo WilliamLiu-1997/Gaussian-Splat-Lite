@@ -8,15 +8,21 @@
 
 **Three.js Gaussian Splatting · WebGPU · Depth Rendering · Streaming**
 
-**[Try Live Demo](https://gaussian-splat-lite.vercel.app/)**
+Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD models, combine them with regular 3D objects, and explore large scenes as detail loads around the camera.
 
-<p align="center">
-  <img src="./Gaussian-Splat-Lite.svg" alt="Gaussian Splat Lite" width="1000">
-</p>
+<div align="center">
+
+**[Try Live Demo](https://gaussian-splat-lite.vercel.app/)**
 
 </div>
 
-Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD models, combine them with regular 3D objects, and explore large scenes as detail loads around the camera.
+<p align="center">
+  <a href="https://gaussian-splat-lite.vercel.app/">
+    <img src="./.github/assets/default-demo.gif" alt="Gaussian Splat Lite — default example with a seamless 90-degree camera orbit" width="800">
+  </a>
+</p>
+
+</div>
 
 ## Features
 
@@ -183,6 +189,8 @@ See [Contributing](CONTRIBUTING.md#validation) for validation commands. `npm run
 ## Acknowledgements
 
 The overall architecture of Gaussian Splat Lite draws on [Spark](https://github.com/sparkjsdev/spark) and [SuperSplat](https://github.com/playcanvas/supersplat).
+
+Example model adapted from [shehabmekky](https://superspl.at/scene/c1e6297e) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)).
 
 ## License
 
