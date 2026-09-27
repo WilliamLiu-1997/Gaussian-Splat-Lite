@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- TAA now reconstructs positions in view space on all backends, reducing small-near-plane numerical error and preserving logarithmic depth precision. History acceptance and accumulation rules are unchanged.
+- TAA selects the nearest sample directly from logarithmic depth, and its node backends match Three.js's minimum near plane when decoding it.
+
 ## [1.1.7] - 2026-09-27
 
 ### Fixed

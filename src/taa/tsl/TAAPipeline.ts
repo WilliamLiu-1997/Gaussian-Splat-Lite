@@ -43,9 +43,9 @@ export function createNodeTAAPipeline(
     () => history[1 - index].textures[1],
   );
   const targets = [sourceTarget, ...history];
-  const currentVP = new THREE.Matrix4();
-  const previousVP = N.uniform(new THREE.Matrix4());
-  const inverseVP = N.uniform(new THREE.Matrix4());
+  const previousVP = new THREE.Matrix4();
+  const projectionMatrix = N.uniform(camera.projectionMatrix);
+  const viewToPreviousClip = N.uniform(new THREE.Matrix4());
   const jitter = N.uniform(sample);
   const size = N.uniform(renderSize);
   const useHistory = N.uniform(false, "bool");
@@ -53,17 +53,13 @@ export function createNodeTAAPipeline(
   const sampleCount = N.property("float", "taaHistorySamples");
   const logDepth = N.uniform(new THREE.Vector2());
   const depthProjection = N.uniform(new THREE.Vector2());
+  const logarithmic = logDepth.x.greaterThan(0);
   const reversed = renderer.reversedDepthBuffer;
   const zeroToOne =
     reversed || renderer.coordinateSystem === THREE.WebGPUCoordinateSystem;
-  const hardwareDepth = N.Fn(([encoded]: [Node<"float">]) => {
-    const value = encoded.toVar();
-    N.If(logDepth.x.greaterThan(0), () => {
-      const viewZ = logDepth.x.negate().mul(encoded.mul(logDepth.y).exp2());
-      value.assign(depthProjection.x.add(depthProjection.y.div(viewZ)));
-    });
-    return value;
-  });
+  const logarithmicViewZ = N.Fn(([encoded]: [Node<"float">]) =>
+    logDepth.x.negate().mul(encoded.mul(logDepth.y).exp2()),
+  );
   const pixel = N.ivec2(N.screenCoordinate.xy);
   const material = new NodeMaterial();
   material.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
@@ -78,7 +74,9 @@ export function createNodeTAAPipeline(
       const marked = N.bool(false).toVar();
       const low = current.toVar();
       const high = current.toVar();
-      const closest = N.float(reversed ? 0 : 1).toVar();
+      // Log depth increases with distance; compare it before any conversion.
+      const reverseSelection = reversed ? logarithmic.not() : N.bool(false);
+      const closest = N.select(reverseSelection, 0, 1).toVar();
       const closestPixel = pixel.toVar();
       for (let y = -1; y <= 1; y++) {
         for (let x = -1; x <= 1; x++) {
@@ -91,11 +89,18 @@ export function createNodeTAAPipeline(
           const bounded = x !== 0 || y !== 0 ? color.max(0) : color;
           low.assign(low.min(bounded));
           high.assign(high.max(bounded));
-          const z = hardwareDepth(load2D(depth, p).r).toVar();
-          N.If(reversed ? z.greaterThan(closest) : z.lessThan(closest), () => {
-            closest.assign(z);
-            closestPixel.assign(p);
-          });
+          const z = load2D(depth, p).r.toVar();
+          N.If(
+            N.select(
+              reverseSelection,
+              z.greaterThan(closest),
+              z.lessThan(closest),
+            ),
+            () => {
+              closest.assign(z);
+              closestPixel.assign(p);
+            },
+          );
         }
       }
       N.If(marked, () => {
@@ -106,10 +111,29 @@ export function createNodeTAAPipeline(
         N.If(load2D(source, closestPixel).a.greaterThan(1), () => {
           ndc.subAssign(jitter.xy);
         });
-        const world = inverseVP.mul(
-          N.vec4(ndc, zeroToOne ? closest : closest.mul(2).sub(1), 1),
-        );
-        const projected = previousVP.mul(world).toVar();
+        // Reconstruct homogeneous view coordinates without inverse VP cancellation.
+        const p = projectionMatrix;
+        const pz = p.element(2);
+        const pw = p.element(3);
+        const z = zeroToOne ? closest : closest.mul(2).sub(1);
+        // Keep W positive in both depth modes; W = 0 represents a point at infinity.
+        const orientation = reversed ? -1 : 1;
+        const viewZ = pw.z.sub(z.mul(pw.w)).mul(orientation).toVar();
+        const viewW = z.mul(pz.w).sub(pz.z).mul(orientation).toVar();
+        N.If(logarithmic, () => {
+          // Decode log depth directly to retain its precision.
+          viewZ.assign(logarithmicViewZ(closest));
+          viewW.assign(1);
+        });
+        const clipW = pz.w.mul(viewZ).add(pw.w.mul(viewW));
+        const viewXY = ndc
+          .mul(clipW)
+          .sub(pz.xy.mul(viewZ))
+          .sub(pw.xy.mul(viewW))
+          .div(N.vec2(p.element(0).x, p.element(1).y));
+        const projected = viewToPreviousClip
+          .mul(N.vec4(viewXY, viewZ, viewW))
+          .toVar();
         N.If(projected.w.greaterThan(0), () => {
           const previous = projected.xyz.div(projected.w);
           const previousUV = uv
@@ -145,7 +169,14 @@ export function createNodeTAAPipeline(
                       .and(p.x.lessThan(N.int(size.x)))
                       .and(p.y.lessThan(N.int(size.y))),
                     () => {
-                      const oldDepth = hardwareDepth(load2D(historyDepth, p).r);
+                      const oldDepth = load2D(historyDepth, p).r.toVar();
+                      N.If(logarithmic, () => {
+                        oldDepth.assign(
+                          depthProjection.x.add(
+                            depthProjection.y.div(logarithmicViewZ(oldDepth)),
+                          ),
+                        );
+                      });
                       const disocclusion = reversed
                         ? oldDepth.sub(expectedDepth)
                         : expectedDepth.sub(oldDepth);
@@ -247,20 +278,19 @@ export function createNodeTAAPipeline(
         renderer.autoClearStencil,
       );
       renderer.render(scene, camera);
-      currentVP.multiplyMatrices(
-        camera.projectionMatrix,
-        camera.matrixWorldInverse,
-      );
-      inverseVP.value.copy(currentVP).invert();
+      // Compose on the CPU to avoid a large world-space round trip in float32.
+      viewToPreviousClip.value.multiplyMatrices(previousVP, camera.matrixWorld);
       // The renderer may finish sorting during capture, after compose's prediction.
       stochasticFrame.value = isStochastic();
       useHistory.value = stochasticFrame.value && valid;
       const perspective = camera as THREE.PerspectiveCamera;
+      // Match Three's viewZToLogarithmicDepth encoding.
+      const near = Math.max(perspective.near, 1e-6);
       logDepth.value.set(
         renderer.logarithmicDepthBuffer && perspective.isPerspectiveCamera
-          ? perspective.near
+          ? near
           : 0,
-        Math.log2(perspective.far / perspective.near),
+        Math.log2(perspective.far / near),
       );
       const projection = camera.projectionMatrix.elements;
       const scale = zeroToOne ? 1 : 0.5;
@@ -270,7 +300,10 @@ export function createNodeTAAPipeline(
       );
       renderer.setRenderTarget(history[index]);
       renderer.render(mesh, fullscreenCamera);
-      previousVP.value.copy(currentVP);
+      previousVP.multiplyMatrices(
+        camera.projectionMatrix,
+        camera.matrixWorldInverse,
+      );
       index = 1 - index;
       valid = true;
     },

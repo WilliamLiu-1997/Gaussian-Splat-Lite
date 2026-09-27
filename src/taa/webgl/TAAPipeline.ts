@@ -18,8 +18,8 @@ uniform sampler2D historyDepth;
 uniform sampler2D historySamples;
 uniform vec2 renderSize;
 uniform vec4 sampleOffset;
-uniform mat4 inverseVP;
-uniform mat4 previousVP;
+uniform mat4 projection;
+uniform mat4 viewToPreviousClip;
 uniform bool valid;
 uniform bool stochasticFrame;
 uniform bool reversed;
@@ -28,13 +28,10 @@ uniform vec2 depthProjection;
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out float fragSamples;
 
-float hardwareDepth(float encoded) {
-    if (logDepth.x == 0.0) return encoded;
-    float viewZ = -exp2(encoded * logDepth.y) + 1.0;
-    return depthProjection.x + depthProjection.y / viewZ;
+float logarithmicViewZ(float encoded) {
+    return -exp2(encoded * logDepth.y) + 1.0;
 }
 
-float clipZ(float depth) { return reversed ? depth : depth * 2.0 - 1.0; }
 ivec2 bounded(ivec2 p) { return clamp(p, ivec2(0), ivec2(renderSize) - 1); }
 vec4 colorAt(ivec2 p) {
     vec4 color = texelFetch(source, bounded(p), 0);
@@ -53,7 +50,10 @@ void main() {
     bool marked = false;
     vec4 low = current;
     vec4 high = current;
-    float closest = reversed ? 0.0 : 1.0;
+    // Log depth increases with distance; compare it before any conversion.
+    bool logarithmic = logDepth.x > 0.0;
+    bool reverseSelection = reversed && !logarithmic;
+    float closest = reverseSelection ? 0.0 : 1.0;
     ivec2 closestPixel = pixel;
     // Match the node backend's top-left traversal when depths are equal.
     for (int y = 1; y >= -1; --y) {
@@ -65,8 +65,8 @@ void main() {
             if (x != 0 || y != 0) color = max(color, vec4(0.0));
             low = min(low, color);
             high = max(high, color);
-            float z = hardwareDepth(texelFetch(sourceDepth, p, 0).r);
-            if (reversed ? z > closest : z < closest) {
+            float z = texelFetch(sourceDepth, p, 0).r;
+            if (reverseSelection ? z > closest : z < closest) {
                 closest = z;
                 closestPixel = p;
             }
@@ -77,8 +77,21 @@ void main() {
     vec2 closestUV = (vec2(closestPixel) + 0.5) / renderSize;
     vec2 ndc = closestUV * 2.0 - 1.0;
     if (texelFetch(source, closestPixel, 0).a > 1.0) ndc -= sampleOffset.xy;
-    vec4 world = inverseVP * vec4(ndc, clipZ(closest), 1.0);
-    vec4 projected = previousVP * world;
+    // Reconstruct homogeneous view coordinates without inverse VP cancellation.
+    float z = reversed ? closest : closest * 2.0 - 1.0;
+    // Keep W positive in both depth modes; W = 0 represents a point at infinity.
+    float orientation = reversed ? -1.0 : 1.0;
+    float viewZ = (projection[3][2] - z * projection[3][3]) * orientation;
+    float viewW = (z * projection[2][3] - projection[2][2]) * orientation;
+    if (logarithmic) {
+        // Decode log depth directly to retain its precision.
+        viewZ = logarithmicViewZ(closest);
+        viewW = 1.0;
+    }
+    float clipW = projection[2][3] * viewZ + projection[3][3] * viewW;
+    vec2 viewXY = (ndc * clipW - projection[2].xy * viewZ
+        - projection[3].xy * viewW) / vec2(projection[0][0], projection[1][1]);
+    vec4 projected = viewToPreviousClip * vec4(viewXY, viewZ, viewW);
     if (projected.w <= 0.0) return;
     vec3 previous = projected.xyz / projected.w;
     vec2 previousUV = uv + (previous.xy - ndc) * 0.5;
@@ -98,7 +111,8 @@ void main() {
             float weight = (x == 0 ? 1.0 - fraction.x : fraction.x)
                 * (y == 0 ? 1.0 - fraction.y : fraction.y);
             if (weight > 0.0 && all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, ivec2(renderSize)))) {
-                float oldDepth = hardwareDepth(texelFetch(historyDepth, p, 0).r);
+                float oldDepth = texelFetch(historyDepth, p, 0).r;
+                if (logarithmic) oldDepth = depthProjection.x + depthProjection.y / logarithmicViewZ(oldDepth);
                 float disocclusion = reversed ? oldDepth - expectedDepth : expectedDepth - oldDepth;
                 if (disocclusion <= 0.0005) {
                     historySum += texelFetch(history, p, 0) * weight;
@@ -153,8 +167,7 @@ export function createWebGLTAAPipeline(
     target.textures.push(samples);
   });
   const targets = [source, ...history];
-  const currentVP = new THREE.Matrix4();
-  const previousVP = { value: new THREE.Matrix4() };
+  const previousVP = new THREE.Matrix4();
   const reversed = renderer.capabilities.reversedDepthBuffer;
   const uniforms = {
     source: { value: source.texture },
@@ -164,8 +177,8 @@ export function createWebGLTAAPipeline(
     historySamples: { value: history[0].textures[1] },
     renderSize: { value: renderSize },
     sampleOffset: { value: sample },
-    inverseVP: { value: new THREE.Matrix4() },
-    previousVP,
+    projection: { value: camera.projectionMatrix },
+    viewToPreviousClip: { value: new THREE.Matrix4() },
     valid: { value: false },
     stochasticFrame: { value: false },
     reversed: { value: reversed },
@@ -224,16 +237,16 @@ export function createWebGLTAAPipeline(
         renderer.autoClearStencil,
       );
       renderer.render(scene, camera);
-      currentVP.multiplyMatrices(
-        camera.projectionMatrix,
-        camera.matrixWorldInverse,
-      );
       const input = history[1 - index];
       const output = history[index];
       uniforms.history.value = input.texture;
       uniforms.historyDepth.value = input.depthTexture;
       uniforms.historySamples.value = input.textures[1];
-      uniforms.inverseVP.value.copy(currentVP).invert();
+      // Compose on the CPU to avoid a large world-space round trip in float32.
+      uniforms.viewToPreviousClip.value.multiplyMatrices(
+        previousVP,
+        camera.matrixWorld,
+      );
       const stochastic = isStochastic();
       uniforms.valid.value = stochastic && valid;
       uniforms.stochasticFrame.value = stochastic;
@@ -253,7 +266,10 @@ export function createWebGLTAAPipeline(
       );
       renderer.setRenderTarget(output);
       renderer.render(mesh, fullscreenCamera);
-      previousVP.value.copy(currentVP);
+      previousVP.multiplyMatrices(
+        camera.projectionMatrix,
+        camera.matrixWorldInverse,
+      );
       index = 1 - index;
       valid = true;
     },
