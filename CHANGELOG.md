@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-09-27
+
+### Fixed
+
+- Removed the constant directional drift of stochastic noise under TAA by reordering temporal blue-noise offsets across all rendering backends.
+
 ## [1.1.6] - 2026-09-27
 
 ### Changed
@@ -420,7 +426,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.6...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.7...HEAD
+[1.1.7]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.3...v1.1.4

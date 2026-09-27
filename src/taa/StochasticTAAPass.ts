@@ -16,7 +16,10 @@ import { createTAAPresentation } from "./TAAPresentation";
 import { createNodeTAAPipeline } from "./tsl/TAAPipeline";
 import { createWebGLTAAPipeline } from "./webgl/TAAPipeline";
 
-const SAMPLES = 8;
+// Order the same offsets by thresholded blue-noise EMA error, keeping wrapped
+// steps balanced in both axes, including the loop boundary.
+const NOISE_PHASES = [0, 4, 1, 6, 2, 7, 3, 5] as const;
+const SAMPLES = NOISE_PHASES.length;
 
 function halton(index: number, base: number) {
   let result = 0;
@@ -252,6 +255,7 @@ export class StochasticTAAPass {
     const xrEnabled = renderer.xr.enabled;
     const autoClear = renderer.autoClear;
     const index = this.frame % SAMPLES;
+    const noisePhase = NOISE_PHASES[index];
     try {
       renderer.xr.enabled = false;
       for (const view of this.views) {
@@ -259,8 +263,8 @@ export class StochasticTAAPass {
         sample.set(
           (2 * (halton(index + 1, 2) - 0.5)) / size.x,
           (2 * (halton(index + 1, 3) - 0.5)) / size.y,
-          (index * 17) % 32,
-          (index * 29) % 32,
+          (noisePhase * 17) % 32,
+          (noisePhase * 29) % 32,
         );
         if (!stochastic) sample.set(0, 0, 0, 0);
         this.splatRenderer[stochasticTemporalSample](sample);
