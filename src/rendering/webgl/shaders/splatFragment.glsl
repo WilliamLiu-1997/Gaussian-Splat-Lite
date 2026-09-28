@@ -12,29 +12,27 @@ uniform vec2 viewportOrigin;
 
 out vec4 fragColor;
 
-in vec4 vRgba;
+flat in uvec4 vSplat;
 in vec2 vSplatUv;
 flat in uint vStochasticHash;
-flat in float vSupportRadiusSquared;
-flat in float vKernelPower;
 
 #include <logdepthbuf_pars_fragment>
 
 void main() {
-    vec4 rgba = vRgba;
-
     float z2 = dot(vSplatUv, vSplatUv);
-    if (z2 > vSupportRadiusSquared) {
+    if (z2 > uintBitsToFloat(vSplat.w)) {
         discard;
     }
 
+    vec2 blueKernelPower = unpackHalf2x16(vSplat.y);
+    float kernelPower = blueKernelPower.y;
     float kernelAlpha = exp(-0.5 * z2);
-    if (vKernelPower != 0.0) {
-        kernelAlpha = 1.0 - pow(1.0 - kernelAlpha, vKernelPower);
+    if (kernelPower != 0.0) {
+        kernelAlpha = 1.0 - pow(1.0 - kernelAlpha, kernelPower);
     }
-    rgba.a *= kernelAlpha;
+    float alpha = uintBitsToFloat(vSplat.z) * kernelAlpha;
 
-    if (rgba.a < minAlpha) {
+    if (alpha < minAlpha) {
         discard;
     }
     #if !GSL_SORTED_FRAGMENT
@@ -45,7 +43,7 @@ void main() {
         if (stochastic && !depthOnly) offset += uvec2(stochasticTemporalSample.zw);
         ivec2 coord = ivec2((pixel + offset) & uvec2(31u));
         float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 1024.0;
-        if (randomValue >= rgba.a) {
+        if (randomValue >= alpha) {
             discard;
         }
 
@@ -55,6 +53,11 @@ void main() {
             return;
         }
     }
+    #endif
+
+    // Decode color only after the fragment survives coverage tests.
+    vec4 rgba = vec4(unpackHalf2x16(vSplat.x), blueKernelPower.x, alpha);
+    #if !GSL_SORTED_FRAGMENT
     if (stochastic) {
         // Alpha 2 marks accepted stochastic samples for the optional resolve
         // pass. Without an attached pass, keep regular opaque output.

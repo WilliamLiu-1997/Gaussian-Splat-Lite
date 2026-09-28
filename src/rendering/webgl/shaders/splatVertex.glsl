@@ -5,11 +5,9 @@ precision highp usampler2DArray;
 
 #include <splatDefines>
 
-out vec4 vRgba;
+flat out uvec4 vSplat;
 out vec2 vSplatUv;
 flat out uint vStochasticHash;
-flat out float vSupportRadiusSquared;
-flat out float vKernelPower;
 
 uniform vec2 renderSize;
 uniform vec4 renderToViewQuat;
@@ -142,7 +140,6 @@ void main() {
             (kernelShape * kernelShape - 1.0) / 2.718281828459045
         );
     }
-    vKernelPower = kernelPower;
 
     // Expand wider shape kernels until alpha is nearly zero before clipping.
     float maximumSupportRadius = maxStdDev
@@ -150,8 +147,6 @@ void main() {
     float supportRadius = maximumSupportRadius;
 
     scales *= renderToViewScale;
-
-    vRgba = vec4(rgba.rgb, alpha);
 
     // Compute view space quaternion of splat
     vec4 viewQuaternion = quatQuat(renderToViewQuat, quaternion);
@@ -201,7 +196,6 @@ void main() {
     if (!(alpha > 0.0) || alpha < minAlpha) {
         return;
     }
-    vRgba.a = alpha;
 
     // Only cover fragments that can reach minAlpha for either kernel.
     if (kernelPower == 0.0) {
@@ -209,7 +203,6 @@ void main() {
     } else {
         supportRadius = wideSupportRadius(alpha, kernelPower, supportRadius);
     }
-    vSupportRadiusSquared = supportRadius * supportRadius;
     vSplatUv = position.xy * supportRadius;
 
     // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
@@ -252,8 +245,16 @@ void main() {
 
     // RGB is constant across the quad, so convert before rasterization.
     if (encodeLinear && !depthOnly) {
-        vRgba.rgb = srgbToLinear(vRgba.rgb);
+        rgba.rgb = srgbToLinear(rgba.rgb);
     }
+    // Match the TSL varying layout: half RGB/kernel power, float32 alpha/radius.
+    vec3 rgb = min(rgba.rgb, vec3(65504.0));
+    vSplat = uvec4(
+        packHalf2x16(rgb.rg),
+        packHalf2x16(vec2(rgb.b, kernelPower)),
+        floatBitsToUint(alpha),
+        floatBitsToUint(supportRadius * supportRadius)
+    );
 
     // Compute the NDC coordinates for the ellipsoid's diagonal axes.
     vec2 pixelOffset = position.x * eigenVec1 * scale1 + position.y * eigenVec2 * scale2;

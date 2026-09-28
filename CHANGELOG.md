@@ -11,6 +11,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - TAA now reconstructs positions in view space on all backends, reducing small-near-plane numerical error and preserving logarithmic depth precision. History acceptance and accumulation rules are unchanged.
 - TAA selects the nearest sample directly from logarithmic depth, and its node backends match Three.js's minimum near plane when decoding it.
+- Packed per-Splat color and kernel varyings from 24 to 16 bytes across WebGL, WebGPU, and WebGL fallback. RGB and kernel power use half precision; source alpha and squared support radius retain float32 precision. RGB is capped at 65504, and kernel-power rounding can slightly change wide-kernel coverage.
+- Moved fragment support-radius rejection before unpacking kernel data and deferred color assembly until after alpha and coverage rejection on all backends.
 
 ## [1.1.7] - 2026-09-27
 

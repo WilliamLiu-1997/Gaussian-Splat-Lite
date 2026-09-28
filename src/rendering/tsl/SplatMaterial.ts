@@ -74,52 +74,58 @@ function createSplatFragment({
   depthOnly: Node<"bool">;
   premultipliedAlpha: Node<"bool">;
 }) {
-  const vRgba = N.varyingProperty("vec4", "gslRgba");
+  // Per-Splat constants share one flat varying: RGB and kernel power as
+  // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
+  const vSplat = N.varyingProperty("uvec4", "gslSplat");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
   const vStochasticHash = N.varyingProperty("uint", "gslStochasticHash");
-  const vSupportRadiusSquared = N.varyingProperty(
-    "float",
-    "gslSupportRadiusSquared",
-  );
-  const vKernelPower = N.varyingProperty("float", "gslKernelPower");
   const vViewportOrigin = N.varyingProperty("vec2", "gslViewportOrigin");
 
   const fragmentNode = N.Fn(() => {
-    const rgba = vRgba.toVar();
     const z2 = vSplatUv.dot(vSplatUv);
-    z2.greaterThan(vSupportRadiusSquared).discard();
+    z2.greaterThan(N.uintBitsToFloat(vSplat.w)).discard();
+    const blueKernelPower = N.unpackHalf2x16(vSplat.y);
+    const kernelPower = blueKernelPower.y;
     const kernelAlpha = z2.mul(-0.5).exp().toVar();
-    N.If(vKernelPower.notEqual(0), () => {
+    N.If(kernelPower.notEqual(0), () => {
       kernelAlpha.assign(
-        N.float(1).sub(N.float(1).sub(kernelAlpha).pow(vKernelPower)),
+        N.float(1).sub(N.float(1).sub(kernelAlpha).pow(kernelPower)),
       );
     });
-    rgba.a.mulAssign(kernelAlpha);
-    rgba.a.lessThan(minAlpha).discard();
+    const alpha = N.uintBitsToFloat(vSplat.z).mul(kernelAlpha).toVar();
+    alpha.lessThan(minAlpha).discard();
     // Auto, stochastic and depth draws keep the uniform graph.
+    if (!sorted) {
+      N.If(stochastic.or(depthOnly), () => {
+        const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
+        // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
+        const offset = N.uvec2(
+          vStochasticHash,
+          vStochasticHash.shiftRight(5),
+        ).add(
+          N.select(
+            stochastic.and(depthOnly.not()),
+            N.uvec2(temporalSample.zw),
+            N.uvec2(0),
+          ),
+        );
+        const coord = N.ivec2(
+          pixel.x.add(offset.x).bitAnd(31),
+          pixel.y.add(offset.y).bitAnd(31),
+        );
+        const randomValue = N.float(load2D(stochasticNoise, coord).r)
+          .add(0.5)
+          .div(1024);
+        randomValue.greaterThanEqual(alpha).discard();
+      });
+    }
+    // Decode color only after the fragment survives coverage tests.
+    const rgba = N.vec4(
+      N.unpackHalf2x16(vSplat.x),
+      blueKernelPower.x,
+      alpha,
+    ).toVar();
     if (sorted) return rgba;
-    N.If(stochastic.or(depthOnly), () => {
-      const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
-      // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
-      const offset = N.uvec2(
-        vStochasticHash,
-        vStochasticHash.shiftRight(5),
-      ).add(
-        N.select(
-          stochastic.and(depthOnly.not()),
-          N.uvec2(temporalSample.zw),
-          N.uvec2(0),
-        ),
-      );
-      const coord = N.ivec2(
-        pixel.x.add(offset.x).bitAnd(31),
-        pixel.y.add(offset.y).bitAnd(31),
-      );
-      const randomValue = N.float(load2D(stochasticNoise, coord).r)
-        .add(0.5)
-        .div(1024);
-      randomValue.greaterThanEqual(rgba.a).discard();
-    });
     N.If(stochastic.and(depthOnly.not()), () => {
       // NodeMaterial premultiplies its output when requested. Cancel the
       // alpha-2 marker here so the stored stochastic RGB remains straight.
@@ -132,14 +138,29 @@ function createSplatFragment({
   })();
 
   return {
-    vRgba,
+    vSplat,
     vSplatUv,
     vStochasticHash,
-    vSupportRadiusSquared,
-    vKernelPower,
     vViewportOrigin,
     fragmentNode,
   };
+}
+
+// Half RGB saturates at its largest finite value instead of overflowing after
+// sRGB linearization. Source alpha keeps float32 bits, but half kernel power
+// can still change the final coverage of wide kernels.
+function packSplatVarying(
+  rgba: Node<"vec4">,
+  supportRadiusSquared: Node<"float">,
+  kernelPower: Node<"float">,
+) {
+  const rgb = rgba.rgb.min(65504);
+  return N.uvec4(
+    N.packHalf2x16(rgb.xy),
+    N.packHalf2x16(N.vec2(rgb.z, kernelPower)),
+    N.floatBitsToUint(rgba.a),
+    N.floatBitsToUint(supportRadiusSquared),
+  );
 }
 
 export function createSplatNodeMaterial({
@@ -187,33 +208,24 @@ export function createSplatNodeMaterial({
     "bool",
   );
   const depthOnly = uniformBinding(uniforms, "depthOnly", "bool");
-  const {
-    vRgba,
-    vSplatUv,
-    vStochasticHash,
-    vSupportRadiusSquared,
-    vKernelPower,
-    vViewportOrigin,
-    fragmentNode,
-  } = createSplatFragment({
-    sorted,
-    minAlpha,
-    stochastic,
-    stochasticResolve,
-    stochasticNoise,
-    temporalSample,
-    depthOnly,
-    premultipliedAlpha: premultipliedAlphaNode,
-  });
+  const { vSplat, vSplatUv, vStochasticHash, vViewportOrigin, fragmentNode } =
+    createSplatFragment({
+      sorted,
+      minAlpha,
+      stochastic,
+      stochasticResolve,
+      stochasticNoise,
+      temporalSample,
+      depthOnly,
+      premultipliedAlpha: premultipliedAlphaNode,
+    });
 
   function buildVertex(builder: NodeBuilder) {
     const camera = materialCamera(builder);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
-    vRgba.assign(N.vec4(0));
+    vSplat.assign(N.uvec4(0));
     vSplatUv.assign(N.vec2(0));
     vStochasticHash.assign(N.uint(0));
-    vSupportRadiusSquared.assign(0);
-    vKernelPower.assign(0);
 
     const assignVertexData = (data: ProjectedVertexData) => {
       const rgba = data.rgba.toVar();
@@ -223,14 +235,14 @@ export function createSplatNodeMaterial({
         rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));
       });
       clipPosition.assign(data.clipPosition);
-      vRgba.assign(rgba);
+      vSplat.assign(
+        packSplatVarying(rgba, data.supportRadiusSquared, data.kernelPower),
+      );
       vSplatUv.assign(data.splatUv);
       // Coverage uses the same hash across every fragment of this Splat.
       N.If(stochastic.or(depthOnly), () => {
         vStochasticHash.assign(stochasticHash(data.stochasticSeed));
       });
-      vSupportRadiusSquared.assign(data.supportRadiusSquared);
-      vKernelPower.assign(data.kernelPower);
       vViewportOrigin.assign(data.viewportOrigin);
     };
 
