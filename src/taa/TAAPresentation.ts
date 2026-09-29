@@ -52,11 +52,10 @@ export function createTAAPresentation(
     const depth = N.textureLoad(uniforms.depth.value).onObjectUpdate(
       () => uniforms.depth.value,
     );
-    material.fragmentNode = load2D(color, coord);
     material.depthNode = load2D(depth, coord).r;
     material.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
     const output = N.renderOutput(
-      N.output,
+      load2D(color, coord),
       THREE.NoToneMapping,
       THREE.NoColorSpace,
     ) as ReturnType<typeof N.renderOutput> & {
@@ -64,7 +63,7 @@ export function createTAAPresentation(
       setToneMapping(value: THREE.ToneMapping): void;
       outputColorSpace: string;
     };
-    material.outputNode = output;
+    material.fragmentNode = output;
     configureOutput = (tone, space) => {
       if (
         output.getToneMapping() !== tone ||

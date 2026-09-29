@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed TAA output color conversion and tone mapping on WebGPU and WebGL fallback when required by the renderer settings.
+
 ### Changed
 
 - TAA now reconstructs positions in view space on all backends, reducing small-near-plane numerical error and preserving logarithmic depth precision. History acceptance and accumulation rules are unchanged.
