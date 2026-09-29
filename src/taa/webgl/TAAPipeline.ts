@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { setRendererRenderTarget } from "../../rendering/rendererUtils";
-import { createTAAHistory } from "../TAAHistory";
+import { TAA_MOVING_SAMPLES, createTAAHistory } from "../TAAHistory";
 
 // Adapted from SuperSplat Viewer temporal accumulation (MIT); see THIRD_PARTY_LICENSES.md.
 const vertexShader = "void main() { gl_Position = vec4(position, 1.0); }";
@@ -115,16 +115,23 @@ void main() {
         float depthMin = 1.0, depthMax = -1.0;
         if (moving) {
             vec4 m1 = vec4(0), m2 = vec4(0);
+            vec4 spatialMin = sampleValue, spatialMax = sampleValue;
+            vec2 quadUV = (vec2((p / 2) * 2) + 1.0) / size;
             for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
                 ivec2 q = bounded(p + ivec2(x,y));
                 vec4 n = sampleAt(q); m1 += n; m2 += n*n;
+                vec4 resolved = textureLod(source, quadUV + vec2(x,y) * 2.0 / size, 0.0);
+                spatialMin = min(spatialMin, resolved);
+                spatialMax = max(spatialMax, resolved);
                 if (n.a > 0.0) {
                     float z = texelFetch(sourceDepth, q, 0).r;
                     depthMin = min(depthMin, z); depthMax = max(depthMax, z);
                 }
             }
             vec4 mu = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mu*mu, vec4(0)));
-            hist = clamp(hist, mu - sd*1.25, mu + sd*1.25);
+            // Extend the original variance bounds to the resolved coverage. Never
+            // tighten them: doing so suppresses sparse edges and temporal smoothing.
+            hist = clamp(hist, min(mu - sd*1.25, spatialMin), max(mu + sd*1.25, spatialMax));
             float speed = length((previousUV - uv) * size);
             cap = max(2.0, cap / (1.0 + speed/4.0));
         }
@@ -140,7 +147,9 @@ void main() {
             if (depthMax >= 0.0) {
                 float a = viewDepth(depthMin), b = viewDepth(depthMax);
                 mean = clamp(mean, min(a,b), max(a,b));
-            } else mean = 0.0;
+            }
+            // Keep reprojection depth across misses so the sample count survives.
+            // Color bounds still reject history outside the sampled coverage.
         }
     }
     color.a = clamp(color.a, 0.0, 1.0);
@@ -150,17 +159,28 @@ void main() {
 }
 `;
 const composeShader = `${common}
+uniform vec4 params;
 out vec4 fragColor;
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
     #ifdef TAA_TEMPORAL
     vec4 color = decodeColor(texelFetch(historyColor, p, 0).rg);
+    vec2 info = decodeInfo(texelFetch(historyInfo, p, 0).r);
+    if (params.z < 0.5 && info.y > 0.0 && info.y < ${TAA_MOVING_SAMPLES}.0) {
+        // Display-only warmup for sparse first hits; keep full-resolution history.
+        vec4 smoothColor = vec4(0.0);
+        for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+            float weight = float((2 - abs(x)) * (2 - abs(y)));
+            smoothColor += decodeColor(texelFetch(historyColor, bounded(p + ivec2(x,y)), 0).rg) * weight;
+        }
+        color = mix(smoothColor / 16.0, color, info.y / ${TAA_MOVING_SAMPLES}.0);
+    }
     #else
     vec4 color = quadSample(p);
     #endif
     bool reverseSelection = reversed && depthParams.x == 0.0;
     #ifdef TAA_TEMPORAL
-    float sampledDepth = decodeInfo(texelFetch(historyInfo, p, 0).r).x;
+    float sampledDepth = info.x;
     if (color.a <= 0.001) discard;
     #ifdef TAA_DEPTH_ONLY
     if (color.a < 0.1) discard;

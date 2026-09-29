@@ -3,7 +3,7 @@ import { type Node, NodeMaterial, type WebGPURenderer } from "three/webgpu";
 import { setRendererRenderTarget } from "../../rendering/rendererUtils";
 import { N, load2D } from "../../rendering/tsl/shaderUtils";
 import { uintTexture } from "../../rendering/tsl/tslCompat";
-import { createTAAHistory } from "../TAAHistory";
+import { TAA_MOVING_SAMPLES, createTAAHistory } from "../TAAHistory";
 
 /** SuperSplat accumulation, matching webgl/TAAPipeline.ts on native GPU and GL fallback. */
 export function createNodeTAAPipeline(
@@ -220,12 +220,21 @@ export function createNodeTAAPipeline(
       N.If(moving, () => {
         const m1 = N.vec4(0).toVar();
         const m2 = N.vec4(0).toVar();
+        const spatialMin = sample.toVar();
+        const spatialMax = sample.toVar();
+        const quadUV = N.vec2(pixel).mul(0.5).floor().mul(2).add(1).div(size);
         for (let y = -1; y <= 1; y++)
           for (let x = -1; x <= 1; x++) {
             const q = bounded(pixel.add(N.ivec2(x, y)));
             const n = sampleAt(q).toVar();
             m1.addAssign(n);
             m2.addAssign(n.mul(n));
+            const resolved = source
+              .sample(quadUV.add(N.vec2(x, y).mul(2).div(size)))
+              .level(N.float(0))
+              .toVar();
+            spatialMin.assign(spatialMin.min(resolved));
+            spatialMax.assign(spatialMax.max(resolved));
             N.If(n.a.greaterThan(0), () => {
               const z = load2D(depth, q).r;
               depthMin.assign(depthMin.min(z));
@@ -234,7 +243,14 @@ export function createNodeTAAPipeline(
           }
         const mu = m1.div(9);
         const sd = m2.div(9).sub(mu.mul(mu)).max(0).sqrt();
-        hist.assign(hist.clamp(mu.sub(sd.mul(1.25)), mu.add(sd.mul(1.25))));
+        // Extend the original variance bounds to the resolved coverage. Never
+        // tighten them: doing so suppresses sparse edges and temporal smoothing.
+        hist.assign(
+          hist.clamp(
+            mu.sub(sd.mul(1.25)).min(spatialMin),
+            mu.add(sd.mul(1.25)).max(spatialMax),
+          ),
+        );
         const speed = previousUV.sub(uv).mul(size).length();
         cap.assign(params.x.div(speed.div(4).add(1)).max(2));
       });
@@ -253,9 +269,9 @@ export function createNodeTAAPipeline(
           const a = viewDepth(depthMin);
           const b = viewDepth(depthMax);
           mean.assign(mean.clamp(a.min(b), a.max(b)));
-        }).Else(() => {
-          mean.assign(0);
         });
+        // Keep reprojection depth across misses so the sample count survives.
+        // Color bounds still reject history outside the sampled coverage.
       });
     });
     color.a.assign(color.a.clamp(0, 1));
@@ -281,13 +297,38 @@ export function createNodeTAAPipeline(
   const createCompositeMaterial = (temporal: boolean, depthOnly = false) => {
     const compositeMaterial = new NodeMaterial();
     compositeMaterial.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
-    const sampledDepth = temporal
-      ? decodeInfo(load2D(composedInfo, pixel).r).x
-      : N.float(0);
+    const info = temporal
+      ? decodeInfo(load2D(composedInfo, pixel).r)
+      : N.vec2(0);
+    const sampledDepth = info.x;
     compositeMaterial.fragmentNode = N.Fn(() => {
-      const color = temporal
-        ? decodeColor(load2D(composedColor, pixel))
-        : quadSample(pixel);
+      const color = (
+        temporal ? decodeColor(load2D(composedColor, pixel)) : quadSample(pixel)
+      ).toVar();
+      if (temporal) {
+        N.If(
+          params.z
+            .lessThan(0.5)
+            .and(info.y.greaterThan(0))
+            .and(info.y.lessThan(TAA_MOVING_SAMPLES)),
+          () => {
+            // Display-only warmup for sparse first hits; keep full-resolution history.
+            const smoothColor = N.vec4(0).toVar();
+            for (let y = -1; y <= 1; y++)
+              for (let x = -1; x <= 1; x++) {
+                const weight = (2 - Math.abs(x)) * (2 - Math.abs(y));
+                smoothColor.addAssign(
+                  decodeColor(
+                    load2D(composedColor, bounded(pixel.add(N.ivec2(x, y)))),
+                  ).mul(weight),
+                );
+              }
+            color.assign(
+              N.mix(smoothColor.div(16), color, info.y.div(TAA_MOVING_SAMPLES)),
+            );
+          },
+        );
+      }
       color.a.lessThanEqual(0.001).discard();
       if (depthOnly) color.a.lessThan(0.1).discard();
       return color;
