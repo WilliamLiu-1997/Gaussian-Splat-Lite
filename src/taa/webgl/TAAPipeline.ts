@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { setRendererRenderTarget } from "../../rendering/rendererUtils";
-import { TAA_MOVING_SAMPLES, createTAAHistory } from "../TAAHistory";
+import { TAA_DEPTH_PROBES, createTAAHistory } from "../TAAHistory";
 
 // Adapted from SuperSplat Viewer temporal accumulation (MIT); see THIRD_PARTY_LICENSES.md.
 const vertexShader = "void main() { gl_Position = vec4(position, 1.0); }";
@@ -30,10 +30,10 @@ float deviceDepth(float d) {
     return reversed ? z : z * 0.5 + 0.5;
 }
 ivec2 bounded(ivec2 p) { return clamp(p, ivec2(0), ivec2(size) - 1); }
-bool hitAt(ivec2 p) {
-    float z = texelFetch(sourceDepth, p, 0).r;
-    return texelFetch(source, p, 0).a > 0.0 && (reversed && depthParams.x == 0.0 ? z > 0.0 : z < 1.0);
+bool isHit(float alpha, float z) {
+    return alpha > 0.0 && (reversed && depthParams.x == 0.0 ? z > 0.0 : z < 1.0);
 }
+bool hitAt(ivec2 p) { return isHit(texelFetch(source, p, 0).a, texelFetch(sourceDepth, p, 0).r); }
 float spatialDepth(ivec2 p) {
     float z = texelFetch(sourceDepth, p, 0).r;
     if (!hitAt(p)) {
@@ -44,10 +44,6 @@ float spatialDepth(ivec2 p) {
         }
     }
     return z;
-}
-vec4 sampleAt(ivec2 p) {
-    p = bounded(p);
-    return hitAt(p) ? vec4(texelFetch(source, p, 0).rgb, 1.0) : vec4(0.0);
 }
 vec4 quadSample(ivec2 p) {
     vec2 u = (vec2(p) - 0.5) * 0.5;
@@ -61,6 +57,7 @@ const fragmentShader = `${common}
 uniform vec4 params;
 uniform mat4 viewToPreviousClip;
 uniform mat4 viewToPreviousView;
+const ivec2 depthProbes[${TAA_DEPTH_PROBES.length}] = ivec2[](${TAA_DEPTH_PROBES.map(([x, y]) => `ivec2(${x},${y})`).join(", ")});
 layout(location = 0) out uvec2 outColor;
 layout(location = 1) out uint outInfo;
 vec4 cubicWeights(float f) {
@@ -72,21 +69,60 @@ vec4 historyAt(vec2 uv) {
     ivec2 base = ivec2(floor(p));
     vec2 f = fract(p);
     vec4 wx = cubicWeights(f.x), wy = cubicWeights(f.y), sum = vec4(0.0);
-    for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x)
+    // Catmull-Rom without its four corner taps (each weight <= (2/27)^2 ~ 0.0055).
+    for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x) {
+        if ((x == 0 || x == 3) && (y == 0 || y == 3)) continue;
         sum += decodeColor(texelFetch(historyColor, bounded(base + ivec2(x-1, y-1)), 0).rg) * wx[x] * wy[y];
-    return sum;
+    }
+    // The corners sum to (wx.x + wx.w) * (wy.x + wy.w); renormalise without them.
+    return sum / (1.0 - (wx.x + wx.w) * (wy.x + wy.w));
 }
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    bool hit = hitAt(p), moving = params.z > 0.5;
-    float d = viewDepth(texelFetch(sourceDepth, p, 0).r);
+    vec4 center = texelFetch(source, p, 0);
+    float centerDepth = texelFetch(sourceDepth, p, 0).r;
+    bool hit = isHit(center.a, centerDepth), moving = params.z > 0.5;
+    float d = viewDepth(centerDepth);
     vec2 own = params.y > 0.5 ? decodeInfo(texelFetch(historyInfo, p, 0).r) : vec2(0.0);
-    vec4 sampleValue = moving ? quadSample(p) : sampleAt(p);
+    vec4 sampleValue = moving ? quadSample(p) : hit ? vec4(center.rgb, 1.0) : vec4(0.0);
     vec2 uv = (vec2(p) + 0.5) / size, previousUV = uv;
-    float carryDepth = hit ? d : own.x, previousDepth = carryDepth;
+    float depthMin = 1.0, depthMax = -1.0, nearDepth = 0.0, farDepth = 0.0;
+    vec4 m1 = vec4(0), m2 = vec4(0);
+    if (moving && sampleValue.a > 0.0) {
+        // Read the 4x4 block quadSample covers once (zero coverage means no hits):
+        // misses borrow its nearest depth so every covered pixel reprojects,
+        // occluders use its depth range, and the clamp its inner 3x3 moments.
+        ivec2 block = ivec2(floor((vec2(p) - 0.5) * 0.5)) * 2;
+        for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x) {
+            ivec2 o = block + ivec2(x,y), q = bounded(o);
+            vec4 s = texelFetch(source, q, 0);
+            float z = texelFetch(sourceDepth, q, 0).r;
+            if (!isHit(s.a, z)) continue;
+            depthMin = min(depthMin, z); depthMax = max(depthMax, z);
+            if (all(lessThanEqual(abs(o - p), ivec2(1)))) {
+                vec4 n = vec4(s.rgb, 1.0);
+                m1 += n; m2 += n*n;
+            }
+        }
+        if (depthMax >= 0.0) {
+            float a = viewDepth(depthMin), b = viewDepth(depthMax);
+            nearDepth = min(a,b); farDepth = max(a,b);
+        }
+    }
+    // Misses without their own depth borrow the nearest hit in that block, so
+    // sparse edges keep reprojecting instead of resetting every other frame.
+    float carryDepth = hit ? d : own.x > 0.0 ? own.x : nearDepth;
+    // A sparse edge entering empty screen has no depth here or in the block:
+    // guess from the closest surface around it in the previous history instead.
+    bool guessed = moving && params.y > 0.5 && carryDepth <= 0.0;
+    if (guessed) for (int i = 0; i < ${TAA_DEPTH_PROBES.length}; ++i) {
+        vec2 n = decodeInfo(texelFetch(historyInfo, bounded(p + depthProbes[i]), 0).r);
+        if (n.y > 0.0 && n.x > 0.0) { carryDepth = n.x; break; }
+    }
+    float previousDepth = carryDepth;
     bool valid = params.y > 0.5;
     if (moving) {
-        valid = valid && (hit || own.x > 0.0);
+        valid = valid && (hit || carryDepth > 0.0);
         vec2 ndc = uv * 2.0 - 1.0;
         float viewZ = -carryDepth;
         float clipW = projection[2][3] * viewZ + projection[3][3];
@@ -99,9 +135,21 @@ void main() {
     }
     vec4 hist = vec4(0);
     vec2 info = vec2(0);
-    if (valid) {
-        hist = moving ? historyAt(previousUV) : decodeColor(texelFetch(historyColor, p, 0).rg);
-        info = moving ? decodeInfo(texelFetch(historyInfo, bounded(ivec2(previousUV * size)), 0).r) : own;
+    if (valid && moving) {
+        hist = historyAt(previousUV);
+        // Take the most-sampled texel under the footprint: a nearest lookup lets
+        // one reset neighbour restart a sparse edge pixel's sample count.
+        ivec2 base = ivec2(floor(previousUV * size - 0.5));
+        for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
+            vec2 n = decodeInfo(texelFetch(historyInfo, bounded(base + ivec2(x,y)), 0).r);
+            if (n.y > info.y) info = n;
+        }
+        // Accept a guessed depth only where the history holds a surface at it;
+        // this also keeps trailing edges from dragging history behind them.
+        if (guessed && abs(info.x - previousDepth) > previousDepth * 0.25) info = vec2(0);
+    } else if (valid) {
+        hist = decodeColor(texelFetch(historyColor, p, 0).rg);
+        info = own;
     }
     vec4 color = sampleValue;
     float mean = hit ? d : 0.0, count = hit ? 1.0 : 0.0;
@@ -110,28 +158,23 @@ void main() {
             count = clamp(params.w, 1.0, params.x);
             color = sampleValue / count;
         }
+        // Seed covered misses as well: otherwise the quadSample rim beyond the last
+        // hit never joins the history and keeps flickering outside it.
+        if (moving && valid && !hit && sampleValue.a > 0.0) {
+            count = 1.0;
+            mean = carryDepth;
+        }
     } else {
         float cap = params.x;
-        float depthMin = 1.0, depthMax = -1.0;
         if (moving) {
-            vec4 m1 = vec4(0), m2 = vec4(0);
-            vec4 spatialMin = sampleValue, spatialMax = sampleValue;
-            vec2 quadUV = (vec2((p / 2) * 2) + 1.0) / size;
-            for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
-                ivec2 q = bounded(p + ivec2(x,y));
-                vec4 n = sampleAt(q); m1 += n; m2 += n*n;
-                vec4 resolved = textureLod(source, quadUV + vec2(x,y) * 2.0 / size, 0.0);
-                spatialMin = min(spatialMin, resolved);
-                spatialMax = max(spatialMax, resolved);
-                if (n.a > 0.0) {
-                    float z = texelFetch(sourceDepth, q, 0).r;
-                    depthMin = min(depthMin, z); depthMax = max(depthMax, z);
-                }
-            }
             vec4 mu = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mu*mu, vec4(0)));
-            // Extend the original variance bounds to the resolved coverage. Never
-            // tighten them: doing so suppresses sparse edges and temporal smoothing.
-            hist = clamp(hist, min(mu - sd*1.25, spatialMin), max(mu + sd*1.25, spatialMax));
+            // An empty 3x3 is expected where coverage is sparse and would clamp the
+            // history to zero. Let the upper bound admit the binomial noise that the
+            // history's own coverage predicts for 9 samples, so sparse edges persist
+            // while dense history keeps the tight bounds.
+            float a = clamp(hist.a, 1e-4, 1.0);
+            vec4 noise = max(hist, vec4(0)) * (1.5 * sqrt((1.0 - a) / (9.0 * a)));
+            hist = clamp(hist, mu - sd*1.25, mu + max(sd*1.25, noise));
             float speed = length((previousUV - uv) * size);
             cap = max(2.0, cap / (1.0 + speed/4.0));
         }
@@ -144,10 +187,7 @@ void main() {
         mean = hit ? mix(shifted, d, w) : shifted;
         if (moving) {
             // Old occluders must leave with the current surface, not fade through it.
-            if (depthMax >= 0.0) {
-                float a = viewDepth(depthMin), b = viewDepth(depthMax);
-                mean = clamp(mean, min(a,b), max(a,b));
-            }
+            if (depthMax >= 0.0) mean = clamp(mean, nearDepth, farDepth);
             // Keep reprojection depth across misses so the sample count survives.
             // Color bounds still reject history outside the sampled coverage.
         }
@@ -166,15 +206,6 @@ void main() {
     #ifdef TAA_TEMPORAL
     vec4 color = decodeColor(texelFetch(historyColor, p, 0).rg);
     vec2 info = decodeInfo(texelFetch(historyInfo, p, 0).r);
-    if (params.z < 0.5 && info.y > 0.0 && info.y < ${TAA_MOVING_SAMPLES}.0) {
-        // Display-only warmup for sparse first hits; keep full-resolution history.
-        vec4 smoothColor = vec4(0.0);
-        for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
-            float weight = float((2 - abs(x)) * (2 - abs(y)));
-            smoothColor += decodeColor(texelFetch(historyColor, bounded(p + ivec2(x,y)), 0).rg) * weight;
-        }
-        color = mix(smoothColor / 16.0, color, info.y / ${TAA_MOVING_SAMPLES}.0);
-    }
     #else
     vec4 color = quadSample(p);
     #endif

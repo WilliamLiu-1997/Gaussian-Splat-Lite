@@ -6,6 +6,15 @@ import {
 
 export const TAA_SAMPLES = 256;
 export const TAA_MOVING_SAMPLES = 16;
+/** Golden-angle spiral (2-32px, inner first) probing previous history for a nearby surface depth. */
+export const TAA_DEPTH_PROBES = Array.from({ length: 8 }, (_, i) => {
+  const radius = 2 + (30 * i) / 7;
+  const angle = i * 2.399963;
+  return [
+    Math.round(Math.cos(angle) * radius),
+    Math.round(Math.sin(angle) * radius),
+  ] as const;
+});
 
 /** Two 12-byte histories: RGBA unorm16 packed in RG32UI, mean depth/count in R32UI. */
 export function createTAAHistory(

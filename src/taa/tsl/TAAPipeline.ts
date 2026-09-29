@@ -3,7 +3,7 @@ import { type Node, NodeMaterial, type WebGPURenderer } from "three/webgpu";
 import { setRendererRenderTarget } from "../../rendering/rendererUtils";
 import { N, load2D } from "../../rendering/tsl/shaderUtils";
 import { uintTexture } from "../../rendering/tsl/tslCompat";
-import { TAA_MOVING_SAMPLES, createTAAHistory } from "../TAAHistory";
+import { TAA_DEPTH_PROBES, createTAAHistory } from "../TAAHistory";
 
 /** SuperSplat accumulation, matching webgl/TAAPipeline.ts on native GPU and GL fallback. */
 export function createNodeTAAPipeline(
@@ -79,12 +79,14 @@ export function createNodeTAAPipeline(
     });
     return result;
   });
-  const hitAt = N.Fn(([p]: [Node<"ivec2">]) => {
-    const z = load2D(depth, p).r;
-    return load2D(source, p)
-      .a.greaterThan(0)
-      .and(N.select(reverseSelection, z.greaterThan(0), z.lessThan(1)));
-  });
+  const isHit = N.Fn(([alpha, z]: [Node<"float">, Node<"float">]) =>
+    alpha
+      .greaterThan(0)
+      .and(N.select(reverseSelection, z.greaterThan(0), z.lessThan(1))),
+  );
+  const hitAt = N.Fn(([p]: [Node<"ivec2">]) =>
+    isHit(load2D(source, p).a, load2D(depth, p).r),
+  );
   const spatialDepth = N.Fn(([p]: [Node<"ivec2">]) => {
     const z = load2D(depth, p).r.toVar();
     N.If(hitAt(p).not(), () => {
@@ -96,10 +98,6 @@ export function createNodeTAAPipeline(
         }
     });
     return z;
-  });
-  const sampleAt = N.Fn(([coord]: [Node<"ivec2">]) => {
-    const p = bounded(coord);
-    return N.select(hitAt(p), N.vec4(load2D(source, p).rgb, 1), N.vec4(0));
   });
   const quadSample = N.Fn(([p]: [Node<"ivec2">]) => {
     const u = N.vec2(p).sub(0.5).mul(0.5);
@@ -137,8 +135,10 @@ export function createNodeTAAPipeline(
     const wx = cubicWeights(f.x);
     const wy = cubicWeights(f.y);
     const sum = N.vec4(0).toVar();
+    // Catmull-Rom without its four corner taps (each weight <= (2/27)^2 ~ 0.0055).
     for (let y = 0; y < 4; y++)
-      for (let x = 0; x < 4; x++)
+      for (let x = 0; x < 4; x++) {
+        if ((x === 0 || x === 3) && (y === 0 || y === 3)) continue;
         sum.addAssign(
           decodeColor(
             load2D(previousColor, bounded(base.add(N.ivec2(x - 1, y - 1)))),
@@ -146,27 +146,90 @@ export function createNodeTAAPipeline(
             .mul(wx.element(x))
             .mul(wy.element(y)),
         );
-    return sum;
+      }
+    // The corners sum to (wx.x + wx.w) * (wy.x + wy.w); renormalise without them.
+    return sum.div(N.float(1).sub(wx.x.add(wx.w).mul(wy.x.add(wy.w))));
   });
   const resolve = N.Fn(() => {
-    const hit = hitAt(pixel);
+    const center = load2D(source, pixel).toVar();
+    const centerDepth = load2D(depth, pixel).r.toVar();
+    const hit = isHit(center.a, centerDepth).toVar();
     const moving = params.z.greaterThan(0.5);
-    const d = viewDepth(load2D(depth, pixel).r);
+    const d = viewDepth(centerDepth);
     const own = N.vec2(0).toVar();
     N.If(params.y.greaterThan(0.5), () => {
       own.assign(decodeInfo(load2D(previousInfo, pixel).r));
     });
-    const sample = sampleAt(pixel).toVar();
+    const sample = N.select(hit, N.vec4(center.rgb, 1), N.vec4(0)).toVar();
     N.If(moving, () => {
       sample.assign(quadSample(pixel));
     });
     const uv = N.vec2(pixel).add(0.5).div(size);
     const previousUV = uv.toVar();
-    const carryDepth = N.select(hit, d, own.x);
+    const depthMin = N.float(1).toVar();
+    const depthMax = N.float(-1).toVar();
+    const nearDepth = N.float(0).toVar();
+    const farDepth = N.float(0).toVar();
+    const m1 = N.vec4(0).toVar();
+    const m2 = N.vec4(0).toVar();
+    N.If(moving.and(sample.a.greaterThan(0)), () => {
+      // Read the 4x4 block quadSample covers once (zero coverage means no hits):
+      // misses borrow its nearest depth so every covered pixel reprojects,
+      // occluders use its depth range, and the clamp its inner 3x3 moments.
+      const block = N.ivec2(N.vec2(pixel).sub(0.5).mul(0.5).floor()).mul(2);
+      for (let y = 0; y < 4; y++)
+        for (let x = 0; x < 4; x++) {
+          const o = block.add(N.ivec2(x, y));
+          const q = bounded(o);
+          const s = load2D(source, q).toVar();
+          const z = load2D(depth, q).r.toVar();
+          N.If(isHit(s.a, z), () => {
+            depthMin.assign(depthMin.min(z));
+            depthMax.assign(depthMax.max(z));
+            const offset = N.vec2(o.sub(pixel)).abs();
+            N.If(N.all(offset.lessThanEqual(N.vec2(1))), () => {
+              const n = N.vec4(s.rgb, 1);
+              m1.addAssign(n);
+              m2.addAssign(n.mul(n));
+            });
+          });
+        }
+      N.If(depthMax.greaterThanEqual(0), () => {
+        const a = viewDepth(depthMin);
+        const b = viewDepth(depthMax);
+        nearDepth.assign(a.min(b));
+        farDepth.assign(a.max(b));
+      });
+    });
+    // Misses without their own depth borrow the nearest hit in that block, so
+    // sparse edges keep reprojecting instead of resetting every other frame.
+    const carryDepth = N.select(
+      hit,
+      d,
+      N.select(own.x.greaterThan(0), own.x, nearDepth),
+    ).toVar();
+    // A sparse edge entering empty screen has no depth here or in the block:
+    // guess from the closest surface around it in the previous history instead.
+    const guessed = moving
+      .and(params.y.greaterThan(0.5))
+      .and(carryDepth.lessThanEqual(0))
+      .toVar();
+    N.If(guessed, () => {
+      // Probes run inner first; each is skipped once an earlier one found depth.
+      for (const [x, y] of TAA_DEPTH_PROBES)
+        N.If(carryDepth.lessThanEqual(0), () => {
+          const n = decodeInfo(
+            load2D(previousInfo, bounded(pixel.add(N.ivec2(x, y)))).r,
+          ).toVar();
+          N.If(n.y.greaterThan(0).and(n.x.greaterThan(0)), () => {
+            carryDepth.assign(n.x);
+          });
+        });
+    });
     const previousDepth = carryDepth.toVar();
     const valid = params.y.greaterThan(0.5).toVar();
     N.If(moving, () => {
-      valid.assign(valid.and(hit.or(own.x.greaterThan(0))));
+      valid.assign(valid.and(hit.or(carryDepth.greaterThan(0))));
       const ndc = uv.mul(N.vec2(2, -2)).add(N.vec2(-1, 1));
       const z = carryDepth.negate();
       const pz = projection.element(2);
@@ -195,10 +258,30 @@ export function createNodeTAAPipeline(
     N.If(valid, () => {
       N.If(moving, () => {
         hist.assign(historyAt(previousUV));
-        info.assign(
-          decodeInfo(
-            load2D(previousInfo, bounded(N.ivec2(previousUV.mul(size)))).r,
+        // Take the most-sampled texel under the footprint: a nearest lookup lets
+        // one reset neighbour restart a sparse edge pixel's sample count.
+        const base = N.ivec2(previousUV.mul(size).sub(0.5).floor());
+        for (let y = 0; y < 2; y++)
+          for (let x = 0; x < 2; x++) {
+            const n = decodeInfo(
+              load2D(previousInfo, bounded(base.add(N.ivec2(x, y)))).r,
+            ).toVar();
+            N.If(n.y.greaterThan(info.y), () => {
+              info.assign(n);
+            });
+          }
+        // Accept a guessed depth only where the history holds a surface at it;
+        // this also keeps trailing edges from dragging history behind them.
+        N.If(
+          guessed.and(
+            info.x
+              .sub(previousDepth)
+              .abs()
+              .greaterThan(previousDepth.mul(0.25)),
           ),
+          () => {
+            info.assign(N.vec2(0));
+          },
         );
       }).Else(() => {
         hist.assign(decodeColor(load2D(previousColor, pixel)));
@@ -213,43 +296,30 @@ export function createNodeTAAPipeline(
         count.assign(params.w.clamp(1, params.x));
         color.assign(sample.div(count));
       });
+      // Seed covered misses as well: otherwise the quadSample rim beyond the last
+      // hit never joins the history and keeps flickering outside it.
+      N.If(
+        moving.and(valid).and(hit.not()).and(sample.a.greaterThan(0)),
+        () => {
+          count.assign(N.float(1));
+          mean.assign(carryDepth);
+        },
+      );
     }).Else(() => {
       const cap = params.x.toVar();
-      const depthMin = N.float(1).toVar();
-      const depthMax = N.float(-1).toVar();
       N.If(moving, () => {
-        const m1 = N.vec4(0).toVar();
-        const m2 = N.vec4(0).toVar();
-        const spatialMin = sample.toVar();
-        const spatialMax = sample.toVar();
-        const quadUV = N.vec2(pixel).mul(0.5).floor().mul(2).add(1).div(size);
-        for (let y = -1; y <= 1; y++)
-          for (let x = -1; x <= 1; x++) {
-            const q = bounded(pixel.add(N.ivec2(x, y)));
-            const n = sampleAt(q).toVar();
-            m1.addAssign(n);
-            m2.addAssign(n.mul(n));
-            const resolved = source
-              .sample(quadUV.add(N.vec2(x, y).mul(2).div(size)))
-              .level(N.float(0))
-              .toVar();
-            spatialMin.assign(spatialMin.min(resolved));
-            spatialMax.assign(spatialMax.max(resolved));
-            N.If(n.a.greaterThan(0), () => {
-              const z = load2D(depth, q).r;
-              depthMin.assign(depthMin.min(z));
-              depthMax.assign(depthMax.max(z));
-            });
-          }
         const mu = m1.div(9);
         const sd = m2.div(9).sub(mu.mul(mu)).max(0).sqrt();
-        // Extend the original variance bounds to the resolved coverage. Never
-        // tighten them: doing so suppresses sparse edges and temporal smoothing.
+        // An empty 3x3 is expected where coverage is sparse and would clamp the
+        // history to zero. Let the upper bound admit the binomial noise that the
+        // history's own coverage predicts for 9 samples, so sparse edges persist
+        // while dense history keeps the tight bounds.
+        const a = hist.a.clamp(1e-4, 1);
+        const noise = hist
+          .max(0)
+          .mul(N.float(1).sub(a).div(a.mul(9)).sqrt().mul(1.5));
         hist.assign(
-          hist.clamp(
-            mu.sub(sd.mul(1.25)).min(spatialMin),
-            mu.add(sd.mul(1.25)).max(spatialMax),
-          ),
+          hist.clamp(mu.sub(sd.mul(1.25)), mu.add(sd.mul(1.25).max(noise))),
         );
         const speed = previousUV.sub(uv).mul(size).length();
         cap.assign(params.x.div(speed.div(4).add(1)).max(2));
@@ -266,9 +336,7 @@ export function createNodeTAAPipeline(
       N.If(moving, () => {
         // Old occluders must leave with the current surface, not fade through it.
         N.If(depthMax.greaterThanEqual(0), () => {
-          const a = viewDepth(depthMin);
-          const b = viewDepth(depthMax);
-          mean.assign(mean.clamp(a.min(b), a.max(b)));
+          mean.assign(mean.clamp(nearDepth, farDepth));
         });
         // Keep reprojection depth across misses so the sample count survives.
         // Color bounds still reject history outside the sampled coverage.
@@ -305,30 +373,6 @@ export function createNodeTAAPipeline(
       const color = (
         temporal ? decodeColor(load2D(composedColor, pixel)) : quadSample(pixel)
       ).toVar();
-      if (temporal) {
-        N.If(
-          params.z
-            .lessThan(0.5)
-            .and(info.y.greaterThan(0))
-            .and(info.y.lessThan(TAA_MOVING_SAMPLES)),
-          () => {
-            // Display-only warmup for sparse first hits; keep full-resolution history.
-            const smoothColor = N.vec4(0).toVar();
-            for (let y = -1; y <= 1; y++)
-              for (let x = -1; x <= 1; x++) {
-                const weight = (2 - Math.abs(x)) * (2 - Math.abs(y));
-                smoothColor.addAssign(
-                  decodeColor(
-                    load2D(composedColor, bounded(pixel.add(N.ivec2(x, y)))),
-                  ).mul(weight),
-                );
-              }
-            color.assign(
-              N.mix(smoothColor.div(16), color, info.y.div(TAA_MOVING_SAMPLES)),
-            );
-          },
-        );
-      }
       color.a.lessThanEqual(0.001).discard();
       if (depthOnly) color.a.lessThan(0.1).discard();
       return color;
