@@ -9,10 +9,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- TAA now reconstructs positions in view space on all backends, reducing small-near-plane numerical error and preserving logarithmic depth precision. History acceptance and accumulation rules are unchanged.
-- TAA selects the nearest sample directly from logarithmic depth, and its node backends match Three.js's minimum near plane when decoding it.
+- TAA now filters independent Splat color/depth textures using SuperSplat-style accumulation: up to 256 stationary samples, spatial resolve and up to 16 temporal samples in motion. Ordinary scene geometry stays outside history. Sorted rendering and Auto mode's return to sorting are preserved.
+- TAA reprojects in view space and supports normal, reversed, and logarithmic depth on WebGL, WebGPU, and WebGL fallback.
+- Disabling TAA in the viewer now retains quad spatial resolve with a fixed stochastic seed and no temporal accumulation. The pass exposes this mode as `temporalEnabled = false`.
 - Packed per-Splat color and kernel varyings from 24 to 16 bytes across WebGL, WebGPU, and WebGL fallback. RGB and kernel power use half precision; source alpha and squared support radius retain float32 precision. RGB is capped at 65504, and kernel-power rounding can slightly change wide-kernel coverage.
 - Moved fragment support-radius rejection before unpacking kernel data and deferred color assembly until after alpha and coverage rejection on all backends.
+
+### Removed
+
+- Removed `StochasticResolvePass` and its public export. Use `StochasticTAAPass` for stochastic filtering, including spatial resolve during motion, or `renderer.render(scene, camera)` for direct rendering.
 
 ## [1.1.7] - 2026-09-27
 

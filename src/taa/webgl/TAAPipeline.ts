@@ -1,189 +1,200 @@
 import * as THREE from "three";
-import { setXRRenderTargetFlag } from "../../rendering/rendererUtils";
+import { setRendererRenderTarget } from "../../rendering/rendererUtils";
+import { createTAAHistory } from "../TAAHistory";
 
-// Match Resolve's maximum history weight of 7/8.
-const MAX_HISTORY_SAMPLES = 8;
-
-const vertexShader = /* glsl */ `
-void main() { gl_Position = vec4(position, 1.0); }
-`;
-
-const fragmentShader = /* glsl */ `
+// Adapted from SuperSplat Viewer temporal accumulation (MIT); see THIRD_PARTY_LICENSES.md.
+const vertexShader = "void main() { gl_Position = vec4(position, 1.0); }";
+const common = /* glsl */ `
 precision highp float;
 precision highp int;
+precision highp usampler2D;
 uniform sampler2D source;
 uniform sampler2D sourceDepth;
-uniform sampler2D history;
-uniform sampler2D historyDepth;
-uniform sampler2D historySamples;
-uniform vec2 renderSize;
-uniform vec4 sampleOffset;
+uniform usampler2D historyColor;
+uniform usampler2D historyInfo;
+uniform vec2 size;
 uniform mat4 projection;
-uniform mat4 viewToPreviousClip;
-uniform bool valid;
-uniform bool stochasticFrame;
+uniform vec3 depthParams;
 uniform bool reversed;
-uniform vec2 logDepth;
-uniform vec2 depthProjection;
-layout(location = 0) out vec4 fragColor;
-layout(location = 1) out float fragSamples;
-
-float logarithmicViewZ(float encoded) {
-    return -exp2(encoded * logDepth.y) + 1.0;
+vec4 decodeColor(uvec2 v) { return vec4(unpackUnorm2x16(v.x), unpackUnorm2x16(v.y)); }
+vec2 decodeInfo(uint v) { return vec2(uintBitsToFloat((v >> 9u) << 8u), float(v & 511u)); }
+float viewDepth(float z) {
+    if (depthParams.x > 0.0) return depthParams.x * exp2(z * depthParams.z) - depthParams.y;
+    float clipZ = reversed ? z : z * 2.0 - 1.0;
+    return -(projection[3][2] - clipZ * projection[3][3]) / (clipZ * projection[2][3] - projection[2][2]);
 }
-
-ivec2 bounded(ivec2 p) { return clamp(p, ivec2(0), ivec2(renderSize) - 1); }
-vec4 colorAt(ivec2 p) {
-    vec4 color = texelFetch(source, bounded(p), 0);
-    return vec4(color.rgb, clamp(color.a, 0.0, 1.0));
+float deviceDepth(float d) {
+    if (d <= 0.0) return reversed && depthParams.x == 0.0 ? 0.0 : 1.0;
+    if (depthParams.x > 0.0) return log2((d + depthParams.y) / depthParams.x) / depthParams.z;
+    float z = (-projection[2][2] * d + projection[3][2]) / (-projection[2][3] * d + projection[3][3]);
+    return reversed ? z : z * 0.5 + 0.5;
 }
-
-void main() {
-    // Sorted output is a clean seed; rejected stochastic history restarts at one.
-    fragSamples = stochasticFrame ? 1.0 : float(${MAX_HISTORY_SAMPLES});
-    ivec2 pixel = ivec2(gl_FragCoord.xy);
-    vec4 current = colorAt(pixel);
-    fragColor = current;
-    float centerDepth = texelFetch(sourceDepth, pixel, 0).r;
-    gl_FragDepth = centerDepth;
-    if (!valid) return;
-    bool marked = false;
-    vec4 low = current;
-    vec4 high = current;
-    // Log depth increases with distance; compare it before any conversion.
-    bool logarithmic = logDepth.x > 0.0;
-    bool reverseSelection = reversed && !logarithmic;
-    float closest = reverseSelection ? 0.0 : 1.0;
-    ivec2 closestPixel = pixel;
-    // Match the node backend's top-left traversal when depths are equal.
-    for (int y = 1; y >= -1; --y) {
-        for (int x = -1; x <= 1; ++x) {
-            ivec2 p = bounded(pixel + ivec2(x, y));
-            vec4 raw = texelFetch(source, p, 0);
-            marked = marked || raw.a > 1.0;
-            vec4 color = vec4(raw.rgb, clamp(raw.a, 0.0, 1.0));
-            if (x != 0 || y != 0) color = max(color, vec4(0.0));
-            low = min(low, color);
-            high = max(high, color);
-            float z = texelFetch(sourceDepth, p, 0).r;
-            if (reverseSelection ? z > closest : z < closest) {
-                closest = z;
-                closestPixel = p;
-            }
+ivec2 bounded(ivec2 p) { return clamp(p, ivec2(0), ivec2(size) - 1); }
+bool hitAt(ivec2 p) {
+    float z = texelFetch(sourceDepth, p, 0).r;
+    return texelFetch(source, p, 0).a > 0.0 && (reversed && depthParams.x == 0.0 ? z > 0.0 : z < 1.0);
+}
+float spatialDepth(ivec2 p) {
+    float z = texelFetch(sourceDepth, p, 0).r;
+    if (!hitAt(p)) {
+        ivec2 quad = (p / 2) * 2;
+        for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
+            float n = texelFetch(sourceDepth, bounded(quad + ivec2(x,y)), 0).r;
+            z = reversed && depthParams.x == 0.0 ? max(z,n) : min(z,n);
         }
     }
-    if (!marked) return;
-    vec2 uv = (vec2(pixel) + 0.5) / renderSize;
-    vec2 closestUV = (vec2(closestPixel) + 0.5) / renderSize;
-    vec2 ndc = closestUV * 2.0 - 1.0;
-    if (texelFetch(source, closestPixel, 0).a > 1.0) ndc -= sampleOffset.xy;
-    // Reconstruct homogeneous view coordinates without inverse VP cancellation.
-    float z = reversed ? closest : closest * 2.0 - 1.0;
-    // Keep W positive in both depth modes; W = 0 represents a point at infinity.
-    float orientation = reversed ? -1.0 : 1.0;
-    float viewZ = (projection[3][2] - z * projection[3][3]) * orientation;
-    float viewW = (z * projection[2][3] - projection[2][2]) * orientation;
-    if (logarithmic) {
-        // Decode log depth directly to retain its precision.
-        viewZ = logarithmicViewZ(closest);
-        viewW = 1.0;
+    return z;
+}
+vec4 sampleAt(ivec2 p) {
+    p = bounded(p);
+    return hitAt(p) ? vec4(texelFetch(source, p, 0).rgb, 1.0) : vec4(0.0);
+}
+vec4 quadSample(ivec2 p) {
+    vec2 u = (vec2(p) - 0.5) * 0.5;
+    vec2 uv = (floor(u) * 2.0 + 1.0) / size;
+    vec2 f = fract(u), stepSize = 2.0 / size;
+    return mix(mix(textureLod(source, uv, 0.0), textureLod(source, uv + vec2(stepSize.x, 0.0), 0.0), f.x),
+        mix(textureLod(source, uv + vec2(0.0, stepSize.y), 0.0), textureLod(source, uv + stepSize, 0.0), f.x), f.y);
+}
+`;
+const fragmentShader = `${common}
+uniform vec4 params;
+uniform mat4 viewToPreviousClip;
+uniform mat4 viewToPreviousView;
+layout(location = 0) out uvec2 outColor;
+layout(location = 1) out uint outInfo;
+vec4 cubicWeights(float f) {
+    float f2 = f * f, f3 = f2 * f;
+    return vec4(-0.5*f3+f2-0.5*f, 1.5*f3-2.5*f2+1.0, -1.5*f3+2.0*f2+0.5*f, 0.5*f3-0.5*f2);
+}
+vec4 historyAt(vec2 uv) {
+    vec2 p = uv * size - 0.5;
+    ivec2 base = ivec2(floor(p));
+    vec2 f = fract(p);
+    vec4 wx = cubicWeights(f.x), wy = cubicWeights(f.y), sum = vec4(0.0);
+    for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x)
+        sum += decodeColor(texelFetch(historyColor, bounded(base + ivec2(x-1, y-1)), 0).rg) * wx[x] * wy[y];
+    return sum;
+}
+void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    bool hit = hitAt(p), moving = params.z > 0.5;
+    float d = viewDepth(texelFetch(sourceDepth, p, 0).r);
+    vec2 own = params.y > 0.5 ? decodeInfo(texelFetch(historyInfo, p, 0).r) : vec2(0.0);
+    vec4 sampleValue = moving ? quadSample(p) : sampleAt(p);
+    vec2 uv = (vec2(p) + 0.5) / size, previousUV = uv;
+    float carryDepth = hit ? d : own.x, previousDepth = carryDepth;
+    bool valid = params.y > 0.5;
+    if (moving) {
+        valid = valid && (hit || own.x > 0.0);
+        vec2 ndc = uv * 2.0 - 1.0;
+        float viewZ = -carryDepth;
+        float clipW = projection[2][3] * viewZ + projection[3][3];
+        vec2 xy = (ndc * clipW - projection[2].xy * viewZ - projection[3].xy) / vec2(projection[0][0], projection[1][1]);
+        vec4 viewPosition = vec4(xy, viewZ, 1.0);
+        previousDepth = -(viewToPreviousView * viewPosition).z;
+        vec4 previous = viewToPreviousClip * viewPosition;
+        previousUV = previous.xy / max(previous.w, 1e-9) * 0.5 + 0.5;
+        valid = valid && previous.w > 0.0 && all(greaterThanEqual(previousUV, vec2(0))) && all(lessThanEqual(previousUV, vec2(1)));
     }
-    float clipW = projection[2][3] * viewZ + projection[3][3] * viewW;
-    vec2 viewXY = (ndc * clipW - projection[2].xy * viewZ
-        - projection[3].xy * viewW) / vec2(projection[0][0], projection[1][1]);
-    vec4 projected = viewToPreviousClip * vec4(viewXY, viewZ, viewW);
-    if (projected.w <= 0.0) return;
-    vec3 previous = projected.xyz / projected.w;
-    vec2 previousUV = uv + (previous.xy - ndc) * 0.5;
-    if (any(lessThan(previousUV, vec2(0.0))) || any(greaterThanEqual(previousUV, vec2(1.0)))) return;
-    float expectedDepth = reversed ? previous.z : previous.z * 0.5 + 0.5;
-    vec2 position = previousUV * renderSize - 0.5;
-    ivec2 base = ivec2(floor(position));
-    vec2 fraction = fract(position);
-    vec4 historySum = vec4(0.0);
-    float sampleSum = 0.0;
-    float validWeight = 0.0;
-    // Check each tap before interpolation, including at depth edges.
-    // Keep the existing one-sided test for stochastic coverage layers.
-    for (int y = 0; y < 2; ++y) {
-        for (int x = 0; x < 2; ++x) {
-            ivec2 p = base + ivec2(x, y);
-            float weight = (x == 0 ? 1.0 - fraction.x : fraction.x)
-                * (y == 0 ? 1.0 - fraction.y : fraction.y);
-            if (weight > 0.0 && all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, ivec2(renderSize)))) {
-                float oldDepth = texelFetch(historyDepth, p, 0).r;
-                if (logarithmic) oldDepth = depthProjection.x + depthProjection.y / logarithmicViewZ(oldDepth);
-                float disocclusion = reversed ? oldDepth - expectedDepth : expectedDepth - oldDepth;
-                if (disocclusion <= 0.0005) {
-                    historySum += texelFetch(history, p, 0) * weight;
-                    sampleSum += texelFetch(historySamples, p, 0).r * weight;
-                    validWeight += weight;
+    vec4 hist = vec4(0);
+    vec2 info = vec2(0);
+    if (valid) {
+        hist = moving ? historyAt(previousUV) : decodeColor(texelFetch(historyColor, p, 0).rg);
+        info = moving ? decodeInfo(texelFetch(historyInfo, bounded(ivec2(previousUV * size)), 0).r) : own;
+    }
+    vec4 color = sampleValue;
+    float mean = hit ? d : 0.0, count = hit ? 1.0 : 0.0;
+    if (!valid || info.y <= 0.5) {
+        if (hit && !moving && params.y > 0.5) {
+            count = clamp(params.w, 1.0, params.x);
+            color = sampleValue / count;
+        }
+    } else {
+        float cap = params.x;
+        float depthMin = 1.0, depthMax = -1.0;
+        if (moving) {
+            vec4 m1 = vec4(0), m2 = vec4(0);
+            for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+                ivec2 q = bounded(p + ivec2(x,y));
+                vec4 n = sampleAt(q); m1 += n; m2 += n*n;
+                if (n.a > 0.0) {
+                    float z = texelFetch(sourceDepth, q, 0).r;
+                    depthMin = min(depthMin, z); depthMax = max(depthMax, z);
                 }
             }
+            vec4 mu = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mu*mu, vec4(0)));
+            hist = clamp(hist, mu - sd*1.25, mu + sd*1.25);
+            float speed = length((previousUV - uv) * size);
+            cap = max(2.0, cap / (1.0 + speed/4.0));
+        }
+        count = min(info.y + 1.0, cap);
+        float w = 1.0 / count;
+        color = mix(hist, sampleValue, w);
+        if (sampleValue.a == 0.0) color.a = min(color.a, max(hist.a - 1.0/65535.0, 0.0));
+        // Average valid hits; misses retain the depth carried into the current view.
+        float shifted = max(info.x + carryDepth - previousDepth, 0.0);
+        mean = hit ? mix(shifted, d, w) : shifted;
+        if (moving) {
+            // Old occluders must leave with the current surface, not fade through it.
+            if (depthMax >= 0.0) {
+                float a = viewDepth(depthMin), b = viewDepth(depthMax);
+                mean = clamp(mean, min(a,b), max(a,b));
+            } else mean = 0.0;
         }
     }
-    if (validWeight == 0.0) return;
-    float motion = clamp(length((previousUV - uv) * renderSize) / 128.0, 0.0, 1.0);
-    vec2 phase = fract((previousUV - uv) * renderSize);
-    vec2 coverage = max(phase, 1.0 - phase);
-    float subpixel = (1.0 - coverage.x * coverage.y) / 0.75;
-    float currentWeight = clamp(0.05 + subpixel * 0.25 + motion, 0.0, 1.0);
-    currentWeight = max(currentWeight, 1.0 / (min(sampleSum / validWeight, float(${MAX_HISTORY_SAMPLES - 1})) + 1.0));
-    // Count reflects the weight actually retained after motion attenuation.
-    fragSamples = 1.0 / currentWeight;
-    // Keep the node backend's directional clipping and accumulation weights.
-    vec4 center = (low + high) * 0.5;
-    vec4 extent = (high - low) * 0.5;
-    vec4 oldColor = historySum / validWeight;
-    vec4 delta = oldColor - center;
-    vec3 unit = abs(delta.rgb / (extent.rgb + 1e-7));
-    float maxUnit = max(unit.r, max(unit.g, unit.b));
-    if (maxUnit > 1.0) oldColor = center + delta / maxUnit;
-    fragColor = mix(oldColor, current, currentWeight);
+    color.a = clamp(color.a, 0.0, 1.0);
+    color.rgb = clamp(color.rgb, vec3(0), vec3(color.a));
+    outColor = uvec2(packUnorm2x16(color.rg), packUnorm2x16(color.ba));
+    outInfo = (((floatBitsToUint(max(mean, 0.0)) + 0x80u) >> 8u) << 9u) | min(uint(count), 511u);
+}
+`;
+const composeShader = `${common}
+out vec4 fragColor;
+void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    #ifdef TAA_TEMPORAL
+    vec4 color = decodeColor(texelFetch(historyColor, p, 0).rg);
+    #else
+    vec4 color = quadSample(p);
+    #endif
+    bool reverseSelection = reversed && depthParams.x == 0.0;
+    #ifdef TAA_TEMPORAL
+    float sampledDepth = decodeInfo(texelFetch(historyInfo, p, 0).r).x;
+    if (color.a <= 0.001) discard;
+    #ifdef TAA_DEPTH_ONLY
+    if (color.a < 0.1) discard;
+    #endif
+    float z = deviceDepth(sampledDepth);
+    gl_FragDepth = sampledDepth > 0.0 ? (reverseSelection ? max(z, 1e-7) : min(z, 1.0-1e-7)) : z;
+    #else
+    if (color.a <= 0.001) discard;
+    float z = spatialDepth(p);
+    gl_FragDepth = reverseSelection ? max(z, 1e-7) : min(z, 1.0-1e-7);
+    #endif
+    fragColor = color;
 }
 `;
 
 export function createWebGLTAAPipeline(
   renderer: THREE.WebGLRenderer,
-  scene: THREE.Scene,
   camera: THREE.Camera,
-  sample: THREE.Vector4,
-  renderSize: THREE.Vector2,
-  isStochastic: () => boolean,
+  size: THREE.Vector2,
+  source: THREE.RenderTarget,
 ) {
-  const makeTarget = () =>
-    new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.HalfFloatType,
-      depthTexture: new THREE.DepthTexture(1, 1, THREE.FloatType),
-    });
-  const source = makeTarget();
-  const history = [makeTarget(), makeTarget()];
-  source.texture.name = "TAA.source";
-  history.forEach((target, i) => {
-    target.texture.name = `TAA.history${i}`;
-    const samples = target.texture.clone();
-    samples.format = THREE.RedFormat;
-    samples.name = `TAA.samples${i}`;
-    target.textures.push(samples);
-  });
-  const targets = [source, ...history];
-  const previousVP = new THREE.Matrix4();
-  const reversed = renderer.capabilities.reversedDepthBuffer;
+  const history = createTAAHistory(renderer, camera, size);
   const uniforms = {
     source: { value: source.texture },
     sourceDepth: { value: source.depthTexture },
-    history: { value: history[0].texture },
-    historyDepth: { value: history[0].depthTexture },
-    historySamples: { value: history[0].textures[1] },
-    renderSize: { value: renderSize },
-    sampleOffset: { value: sample },
+    historyColor: { value: history.input.texture },
+    historyInfo: { value: history.input.textures[1] },
+    size: { value: size },
     projection: { value: camera.projectionMatrix },
-    viewToPreviousClip: { value: new THREE.Matrix4() },
-    valid: { value: false },
-    stochasticFrame: { value: false },
-    reversed: { value: reversed },
-    logDepth: { value: new THREE.Vector2() },
-    depthProjection: { value: new THREE.Vector2() },
+    depthParams: { value: history.depthParams },
+    params: { value: history.params },
+    reversed: { value: history.reversed },
+    viewToPreviousClip: { value: history.viewToPreviousClip },
+    viewToPreviousView: { value: history.viewToPreviousView },
   };
   const material = new THREE.ShaderMaterial({
     uniforms,
@@ -191,9 +202,8 @@ export function createWebGLTAAPipeline(
     fragmentShader,
     glslVersion: THREE.GLSL3,
     blending: THREE.NoBlending,
-    depthTest: true,
-    depthWrite: true,
-    depthFunc: reversed ? THREE.NeverDepth : THREE.AlwaysDepth,
+    depthTest: false,
+    depthWrite: false,
     toneMapped: false,
   });
   const geometry = new THREE.BufferGeometry();
@@ -203,81 +213,70 @@ export function createWebGLTAAPipeline(
   );
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
+  const composeUniforms = {
+    ...uniforms,
+    historyColor: { value: history.output.texture },
+    historyInfo: { value: history.output.textures[1] },
+  };
+  const createCompositeMaterial = (temporal: boolean, depthOnly = false) =>
+    new THREE.ShaderMaterial({
+      defines: temporal
+        ? { TAA_TEMPORAL: 1, ...(depthOnly ? { TAA_DEPTH_ONLY: 1 } : {}) }
+        : {},
+      uniforms: composeUniforms,
+      vertexShader,
+      fragmentShader: composeShader,
+      glslVersion: THREE.GLSL3,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+      depthTest: true,
+      depthWrite: !temporal || depthOnly,
+      colorWrite: !depthOnly,
+      toneMapped: false,
+    });
+  const compositeMaterial = createCompositeMaterial(true);
+  const depthMaterial = createCompositeMaterial(true, true);
+  const compositeMaterials = [compositeMaterial, depthMaterial];
+  const spatialMaterial = createCompositeMaterial(false);
+  // Keep faint color depth-tested without letting it occlude later geometry.
+  geometry.addGroup(0, 3, 0);
+  geometry.addGroup(0, 3, 1);
+  const composite: THREE.Mesh = new THREE.Mesh(geometry, compositeMaterials);
+  composite.frustumCulled = false;
   const fullscreenCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  let index = 0;
-  let valid = false;
   return {
-    reset() {
-      valid = false;
+    composite,
+    get needsRender() {
+      return history.needsRender;
     },
-    get color() {
-      return history[1 - index].texture;
-    },
-    depth: source.depthTexture as THREE.DepthTexture,
-    render(outputEncoded: boolean) {
-      const width = renderSize.x;
-      const height = renderSize.y;
-      if (!valid || source.width !== width || source.height !== height) {
-        valid = false;
-        for (const target of targets) target.setSize(width, height);
-        // Both ping-pong depths must be allocated before either is sampled.
-        for (const target of history) renderer.initRenderTarget(target);
+    reset: () => history.reset(),
+    resolve(version: number, temporalEnabled = true) {
+      composite.material = temporalEnabled
+        ? compositeMaterials
+        : spatialMaterial;
+      if (!temporalEnabled) {
+        history.updateDepthParams();
+        return;
       }
-      // Preserve the canvas's output-domain blending, including transparent
-      // ordinary meshes over splats, as StochasticResolvePass does.
-      setXRRenderTargetFlag(source, outputEncoded);
-      source.texture.colorSpace = outputEncoded
-        ? renderer.outputColorSpace
-        : THREE.NoColorSpace;
-      renderer.setRenderTarget(source);
-      renderer.autoClear = false;
-      renderer.clear(
-        renderer.autoClearColor,
-        renderer.autoClearDepth,
-        renderer.autoClearStencil,
-      );
-      renderer.render(scene, camera);
-      const input = history[1 - index];
-      const output = history[index];
-      uniforms.history.value = input.texture;
-      uniforms.historyDepth.value = input.depthTexture;
-      uniforms.historySamples.value = input.textures[1];
-      // Compose on the CPU to avoid a large world-space round trip in float32.
-      uniforms.viewToPreviousClip.value.multiplyMatrices(
-        previousVP,
-        camera.matrixWorld,
-      );
-      const stochastic = isStochastic();
-      uniforms.valid.value = stochastic && valid;
-      uniforms.stochasticFrame.value = stochastic;
-      const perspective = camera as THREE.PerspectiveCamera;
-      uniforms.logDepth.value.set(
-        renderer.capabilities.logarithmicDepthBuffer &&
-          perspective.isPerspectiveCamera
-          ? 1
-          : 0,
-        Math.log2(perspective.far + 1),
-      );
-      const projection = camera.projectionMatrix.elements;
-      const scale = reversed ? 1 : 0.5;
-      uniforms.depthProjection.value.set(
-        -projection[10] * scale + (reversed ? 0 : 0.5),
-        -projection[14] * scale,
-      );
-      renderer.setRenderTarget(output);
+      history.begin(version);
+      uniforms.historyColor.value = history.input.texture;
+      uniforms.historyInfo.value = history.input.textures[1];
+      setRendererRenderTarget(renderer, history.output);
       renderer.render(mesh, fullscreenCamera);
-      previousVP.multiplyMatrices(
-        camera.projectionMatrix,
-        camera.matrixWorldInverse,
-      );
-      index = 1 - index;
-      valid = true;
+      composeUniforms.historyColor.value = history.output.texture;
+      composeUniforms.historyInfo.value = history.output.textures[1];
+      history.commit();
     },
     dispose() {
-      source.dispose();
-      for (const target of history) target.dispose();
-      geometry.dispose();
+      history.dispose();
       material.dispose();
+      compositeMaterial.dispose();
+      depthMaterial.dispose();
+      spatialMaterial.dispose();
+      geometry.dispose();
     },
   };
 }

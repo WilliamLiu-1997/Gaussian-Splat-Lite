@@ -34,7 +34,7 @@ These options require the built-in materials. Stochastic rendering can look nois
 
 ### Stochastic resolve
 
-See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduction, renderer binding, post-processing, and XR usage.
+See [StochasticTAAPass](StochasticTAAPass.md) for stochastic noise reduction, renderer binding, post-processing, and XR usage.
 
 ## Quality and appearance options
 

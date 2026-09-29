@@ -24,7 +24,6 @@ uniform float clipXY;
 uniform float focalAdjustment;
 uniform bool stochastic;
 uniform bool stochasticOrdering;
-uniform vec4 stochasticTemporalSample;
 uniform bool encodeLinear;
 uniform bool depthOnly;
 uniform uint splatCount;
@@ -265,9 +264,6 @@ void main() {
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
-    if (stochastic && !depthOnly) {
-        gl_Position.xy += stochasticTemporalSample.xy * gl_Position.w;
-    }
 
     #include <logdepthbuf_vertex>
 }

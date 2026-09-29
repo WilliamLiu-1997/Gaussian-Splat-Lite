@@ -155,13 +155,12 @@ const streaming = new SogStreamScheduler({
 | `stochastic` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
 | `autoStochastic` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
 
-Draw order and depth testing in other materials still matter. Stochastic rendering and transparent edges may show noise; [StochasticResolvePass](docs/StochasticResolvePass.md) can reduce stochastic noise.
+Draw order and depth testing in other materials still matter. Stochastic rendering and transparent edges may show noise; [StochasticTAAPass](docs/StochasticTAAPass.md) can reduce stochastic noise.
 
 ## Documentation
 
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, depth, and captures.
-- [StochasticResolvePass](docs/StochasticResolvePass.md) — Stochastic noise reduction, post-processing, and XR.
-- [StochasticTAAPass](docs/StochasticTAAPass.md) — Temporal anti-aliasing limited to stochastic splat regions.
+- [StochasticTAAPass](docs/StochasticTAAPass.md) — Independent Splat accumulation, motion resolve, post-processing, and XR.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.

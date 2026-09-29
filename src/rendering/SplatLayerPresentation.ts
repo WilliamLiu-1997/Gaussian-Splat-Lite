@@ -1,26 +1,27 @@
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
+import type { SplatLayer } from "./SplatLayer";
 import {
   type GaussianSplatCompatibleRenderer,
   isWebGPURenderer,
   setRendererRenderTarget,
-} from "../rendering/rendererUtils";
-import { N, load2D } from "../rendering/tsl/shaderUtils";
+} from "./rendererUtils";
+import { N, load2D } from "./tsl/shaderUtils";
 
-type TAAOutputView = {
+type PresentedView = {
   rect: THREE.Vector4;
-  pipeline: { readonly color: THREE.Texture; depth: THREE.DepthTexture };
+  layer: Pick<SplatLayer, "source">;
 };
 
 /** Write each view to its viewport/layer, including current scene depth. */
-export function createTAAPresentation(
+export function createSplatLayerPresentation(
   renderer: GaussianSplatCompatibleRenderer,
-  views: TAAOutputView[],
+  views: PresentedView[],
 ) {
   const webGPU = isWebGPURenderer(renderer);
   const uniforms = {
-    color: { value: views[0].pipeline.color },
-    depth: { value: views[0].pipeline.depth },
+    color: { value: views[0].layer.source.texture },
+    depth: { value: views[0].layer.source.depthTexture as THREE.DepthTexture },
     origin: { value: new THREE.Vector2() },
   };
   const material = webGPU
@@ -52,26 +53,20 @@ export function createTAAPresentation(
     const depth = N.textureLoad(uniforms.depth.value).onObjectUpdate(
       () => uniforms.depth.value,
     );
-    material.fragmentNode = load2D(color, coord);
     material.depthNode = load2D(depth, coord).r;
     material.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
-    const output = N.renderOutput(
-      N.output,
-      THREE.NoToneMapping,
-      THREE.NoColorSpace,
-    ) as ReturnType<typeof N.renderOutput> & {
-      getToneMapping(): THREE.ToneMapping;
-      setToneMapping(value: THREE.ToneMapping): void;
-      outputColorSpace: string;
-    };
-    material.outputNode = output;
+    const input = load2D(color, coord);
+    let outputTone: THREE.ToneMapping = THREE.NoToneMapping;
+    let outputSpace: string = THREE.NoColorSpace;
+    // A custom fragmentNode bypasses NodeMaterial.outputNode.
+    material.fragmentNode = N.renderOutput(input, outputTone, outputSpace);
     configureOutput = (tone, space) => {
-      if (
-        output.getToneMapping() !== tone ||
-        output.outputColorSpace !== space
-      ) {
-        output.setToneMapping(tone);
-        output.outputColorSpace = space;
+      if (outputTone !== tone || outputSpace !== space) {
+        outputTone = tone;
+        outputSpace = space;
+        // These settings are compiled into the node, so replace it to invalidate
+        // the shader cache when the destination or tone mapping changes.
+        material.fragmentNode = N.renderOutput(input, tone, space);
         material.needsUpdate = true;
       }
     };
@@ -113,8 +108,9 @@ export function createTAAPresentation(
       renderer.autoClear = false;
       try {
         for (const [index, view] of views.entries()) {
-          uniforms.color.value = view.pipeline.color;
-          uniforms.depth.value = view.pipeline.depth;
+          uniforms.color.value = view.layer.source.texture;
+          uniforms.depth.value = view.layer.source
+            .depthTexture as THREE.DepthTexture;
           uniforms.origin.value.set(view.rect.x, view.rect.y);
           if (!webGPU)
             (material as THREE.ShaderMaterial).uniformsNeedUpdate = true;

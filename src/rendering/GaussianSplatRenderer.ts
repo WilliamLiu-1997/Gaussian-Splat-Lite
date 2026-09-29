@@ -7,6 +7,11 @@ import { SplatCapture } from "./SplatCapture";
 import { SplatDepthPass } from "./SplatDepthPass";
 import { SplatGeometry } from "./SplatGeometry";
 import {
+  type SplatLayerFrame,
+  splatLayerAttach,
+  splatLayerFrame,
+} from "./SplatLayer";
+import {
   type SplatBackend,
   type SplatMaterial,
   configureSplatOutput,
@@ -20,9 +25,8 @@ import {
 import {
   type StochasticMotionPhase,
   StochasticMotionState,
-  stochasticResolveMarker,
   stochasticResolveRequired,
-  stochasticTemporalSample,
+  stochasticTemporalFrame,
 } from "./stochastic";
 import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms";
 
@@ -310,7 +314,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   private stochasticWasForced = false;
   private requestMotionFollowup = false;
   private forceSortedRenderDepth = 0;
-  private stochasticResolveMarkerUsers = 0;
+  private splatLayerUsers = 0;
+  private layerFrame: SplatLayerFrame | null = null;
   private previousRenderOrder: number | null = null;
   private pendingProjectionShrink = false;
 
@@ -329,7 +334,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const uniforms = GaussianSplatRenderer.makeUniforms();
 
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
-    uniforms.premultipliedAlpha.value = premultipliedAlpha;
     const autoStochastic = options.autoStochastic ?? false;
     const stochastic = options.stochastic ?? false;
     const renderDepth = options.renderDepth ?? false;
@@ -351,6 +355,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this,
       backend,
       () => GaussianSplatRenderer.gaussianSplatOverride ?? this,
+      () => this.layerFrame !== null && !this.layerFrame.drawing,
     );
     this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
@@ -525,7 +530,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     return (
       this.stochasticModeEnabled ||
       this.depthPass.enabled ||
-      this.stochasticFrame
+      this.stochasticFrame ||
+      this.splatLayerUsers > 0
     );
   }
 
@@ -630,6 +636,13 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     scene: THREE.Scene,
     camera: THREE.Camera,
   ) {
+    const layerFrame = this.layerFrame;
+    if (layerFrame !== null && !layerFrame.drawing) {
+      // The temporal layer already drew Splats; its proxy composes the history.
+      this.geometry.setSplatCount(0);
+      return;
+    }
+
     const gaussianSplatRenderer =
       GaussianSplatRenderer.gaussianSplatOverride ?? this;
 
@@ -678,7 +691,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         gaussianSplatRenderer.backend.kind === "webgpu" ||
         (gaussianSplatRenderer.preUpdate && !renderer.xr.isPresenting);
       const updateRequest = {
-        scene,
+        // The layer draws this renderer alone; gather the composed scene.
+        scene: layerFrame?.scene ?? scene,
         camera: useCamera,
         layerCamera:
           gaussianSplatRenderer.backend.kind === "webgpu" ? camera : undefined,
@@ -743,12 +757,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;
     this.uniforms.focalAdjustment.value = gaussianSplatRenderer.focalAdjustment;
     this.uniforms.stochastic.value = gaussianSplatRenderer.stochasticFrame;
-    configureSplatOutput(
-      renderer,
-      currentRenderTarget,
-      this.uniforms,
-      this.stochasticResolveMarkerUsers,
-    );
+    configureSplatOutput(renderer, currentRenderTarget, this.uniforms);
     if (this.stochasticModeEnabled) {
       this.applyMaterialState(gaussianSplatRenderer.stochasticFrame);
     }
@@ -1325,7 +1334,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (this._premultipliedAlpha !== nextValue) {
       this._premultipliedAlpha = nextValue;
-      this.uniforms.premultipliedAlpha.value = nextValue;
       this.applyMaterialState(this.stochasticFrame);
     }
   }
@@ -1390,14 +1398,18 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     return this.stochasticFrame;
   }
 
-  [stochasticResolveMarker](enabled: boolean) {
-    this.stochasticResolveMarkerUsers += enabled ? 1 : -1;
-    this.uniforms.stochasticResolve.value =
-      this.stochasticResolveMarkerUsers > 0;
+  [splatLayerAttach](attached: boolean) {
+    this.splatLayerUsers += attached ? 1 : -1;
+    this.refreshRenderConfiguration();
+    this.setDirty();
   }
 
-  [stochasticTemporalSample](sample: THREE.Vector4) {
-    this.uniforms.stochasticTemporalSample.value.copy(sample);
+  [splatLayerFrame](frame: SplatLayerFrame | null) {
+    this.layerFrame = frame;
+  }
+
+  [stochasticTemporalFrame](frame: number) {
+    this.uniforms.stochasticTemporalFrame.value = frame;
   }
 
   [stochasticResolveRequired](

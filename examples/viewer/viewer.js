@@ -4,7 +4,6 @@ import {
   SogStreamScheduler,
   SplatFileType,
   SplatMesh,
-  StochasticResolvePass,
   StochasticTAAPass,
 } from "gaussian-splat-lite";
 import * as THREE from "three";
@@ -65,6 +64,40 @@ const rendererParameters = {
 };
 let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = outputColorSpace;
+
+const testBoxes = new THREE.Group();
+const testBoxGeometry = new THREE.BoxGeometry();
+const opaqueBox = new THREE.Mesh(
+  testBoxGeometry,
+  new THREE.MeshBasicMaterial({ color: 0xff8833 }),
+);
+const transparentBox = new THREE.Mesh(
+  testBoxGeometry,
+  new THREE.MeshBasicMaterial({
+    color: 0x33ccff,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  }),
+);
+testBoxes.add(opaqueBox, transparentBox);
+testBoxes.visible = false;
+scene.add(testBoxes);
+let testBoxOrbitRadius = 1;
+let rotateTestBoxes = true;
+let testBoxAngle = 0;
+let testBoxLastTime = null;
+
+function updateTestBoxes() {
+  opaqueBox.position.set(
+    Math.cos(testBoxAngle) * testBoxOrbitRadius,
+    0,
+    Math.sin(testBoxAngle) * testBoxOrbitRadius,
+  );
+  transparentBox.position.copy(opaqueBox.position).negate();
+  opaqueBox.rotation.set(testBoxAngle * 0.5, testBoxAngle, 0);
+  transparentBox.rotation.set(0, -testBoxAngle, testBoxAngle * 0.5);
+}
 
 function configureRenderer(value) {
   value.setClearColor(0x000000, 0);
@@ -203,6 +236,8 @@ function mountRendererState(state, attachInspector = true) {
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  opaqueBox.material.color.setHex(0xff8833);
+  transparentBox.material.color.setHex(0x33ccff);
   renderer.outputColorSpace = outputColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
@@ -258,6 +293,14 @@ function renderFrame(time) {
     width: renderer.domElement.width,
     height: renderer.domElement.height,
   });
+  if (testBoxes.visible && rotateTestBoxes) {
+    if (testBoxLastTime !== null) {
+      testBoxAngle += (time - testBoxLastTime) * 0.0005;
+    }
+    updateTestBoxes();
+    requestRender();
+  }
+  testBoxLastTime = time;
   drawFrame(time);
 }
 
@@ -277,14 +320,9 @@ function drawFrame(time) {
   // still request a later frame through onDirty.
   if (needsRender && taaEnabled) stochasticTAAPass.requestRender();
   needsRender = false;
-  stochasticResolvePass.enabled = !taaEnabled;
-  stochasticTAAPass.enabled = taaEnabled;
-  if (taaEnabled) {
-    stochasticTAAPass.compose(renderer, scene, camera);
-  } else {
-    stochasticResolvePass.compose(renderer, scene, camera);
-  }
-  // Draw the anchor after resolve so stochastic filtering cannot blur it.
+  stochasticTAAPass.temporalEnabled = taaEnabled;
+  stochasticTAAPass.compose(renderer, scene, camera);
+  // Draw the anchor over the composed scene.
   // Its material disables depth testing/writes, so no depth clear is needed.
   if (controls.indicator.visible) {
     const previousAutoClear = renderer.autoClear;
@@ -299,10 +337,13 @@ function drawFrame(time) {
   updateStats(time, true);
 }
 
-const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
 const stochasticTAAPass = new StochasticTAAPass(splatRenderer);
 
 const renderOptionActions = {
+  rotateTestBoxes: (enabled) => {
+    rotateTestBoxes = enabled;
+    testBoxLastTime = null;
+  },
   taaEnabled: (enabled) => {
     taaEnabled = enabled;
   },
@@ -370,7 +411,6 @@ function detachRendererState(state) {
 function activateRendererState(state, attachInspector = true) {
   rendererState = state;
   ({ renderer, controls, splatRenderer, frameGate } = state);
-  stochasticResolvePass.splatRenderer = splatRenderer;
   stochasticTAAPass.splatRenderer = splatRenderer;
   mountRendererState(state, attachInspector);
 }
@@ -519,6 +559,7 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  testBoxes.visible = false;
   stochasticTAAPass.resetHistory();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -570,6 +611,13 @@ function frameSplat(splat) {
   const distance = streamed
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
+
+  testBoxes.position.copy(frameCenter);
+  testBoxOrbitRadius = distance * 0.8;
+  opaqueBox.scale.setScalar(distance * 0.15);
+  transparentBox.scale.copy(opaqueBox.scale);
+  testBoxes.visible = true;
+  updateTestBoxes();
 
   camera.near = radius * 0.001;
   camera.far = radius * 100;
@@ -875,9 +923,11 @@ window.addEventListener("beforeunload", () => {
   renderer.setAnimationLoop(null);
   cancelActiveLoad?.();
   clearActiveModel();
-  stochasticResolvePass.dispose();
   stochasticTAAPass.dispose();
   referenceHelpers.dispose();
+  testBoxGeometry.dispose();
+  opaqueBox.material.dispose();
+  transparentBox.material.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);
   ui.dispose();

@@ -12,6 +12,8 @@ export class SplatDepthPass {
     private readonly host: GaussianSplatRenderer,
     private readonly backend: SplatBackend,
     private readonly getActiveRenderer: () => GaussianSplatRenderer,
+    /** True while a compositor draws this frame's Splats offscreen instead. */
+    private readonly suppressed: () => boolean,
   ) {}
 
   get enabled() {
@@ -29,7 +31,6 @@ export class SplatDepthPass {
     const uniforms = {
       ...host.uniforms,
       stochastic: { value: false },
-      stochasticResolve: { value: false },
       depthOnly: { value: true },
       splatCount: { value: 0 },
     };
@@ -49,6 +50,7 @@ export class SplatDepthPass {
         backend.kind === "webgpu" && backend.precompile !== null;
       const splatCount =
         compiling ||
+        this.suppressed() ||
         activeRenderer.stochasticActive ||
         activeRenderer.activeSplats === 0
           ? 0

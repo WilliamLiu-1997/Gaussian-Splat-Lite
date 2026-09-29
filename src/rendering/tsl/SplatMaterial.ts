@@ -59,20 +59,16 @@ function createSplatFragment({
   sorted,
   minAlpha,
   stochastic,
-  stochasticResolve,
   stochasticNoise,
-  temporalSample,
+  temporalFrame,
   depthOnly,
-  premultipliedAlpha,
 }: {
   sorted: boolean;
   minAlpha: Node<"float">;
   stochastic: Node<"bool">;
-  stochasticResolve: Node<"bool">;
   stochasticNoise: TextureNode<"uvec4">;
-  temporalSample: Node<"vec4">;
+  temporalFrame: Node<"int">;
   depthOnly: Node<"bool">;
-  premultipliedAlpha: Node<"bool">;
 }) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
@@ -99,23 +95,42 @@ function createSplatFragment({
       N.If(stochastic.or(depthOnly), () => {
         const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
         // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
-        const offset = N.uvec2(
-          vStochasticHash,
-          vStochasticHash.shiftRight(5),
-        ).add(
-          N.select(
-            stochastic.and(depthOnly.not()),
-            N.uvec2(temporalSample.zw),
-            N.uvec2(0),
-          ),
-        );
+        const offset = N.uvec2(vStochasticHash, vStochasticHash.shiftRight(5));
         const coord = N.ivec2(
           pixel.x.add(offset.x).bitAnd(31),
           pixel.y.add(offset.y).bitAnd(31),
         );
         const randomValue = N.float(load2D(stochasticNoise, coord).r)
           .add(0.5)
-          .div(1024);
+          .div(1024)
+          .toVar();
+        N.If(
+          stochastic
+            .and(depthOnly.not())
+            .and(temporalFrame.greaterThanEqual(0)),
+          () => {
+            const quad = pixel.shiftRight(N.uvec2(1));
+            const h = quad.x
+              .mul(N.uint(1973))
+              .bitXor(quad.y.mul(N.uint(9277)))
+              .bitXor(vStochasticHash.mul(N.uint(26699)))
+              .bitXor(N.uint(temporalFrame))
+              .toVar();
+            h.assign(h.bitXor(h.shiftRight(16)).mul(N.uint(0x7feb352d)));
+            h.assign(h.bitXor(h.shiftRight(15)).mul(N.uint(0x846ca68b)));
+            h.assign(h.bitXor(h.shiftRight(16)));
+            const stratum = pixel.y
+              .bitAnd(1)
+              .mul(N.uint(2))
+              .add(pixel.x.bitAnd(1))
+              .bitXor(h.bitAnd(3));
+            randomValue.assign(
+              N.float(stratum)
+                .add(N.float(h.shiftRight(8)).div(16777216))
+                .mul(0.25),
+            );
+          },
+        );
         randomValue.greaterThanEqual(alpha).discard();
       });
     }
@@ -126,13 +141,9 @@ function createSplatFragment({
       alpha,
     ).toVar();
     if (sorted) return rgba;
+    // Accepted stochastic samples are opaque.
     N.If(stochastic.and(depthOnly.not()), () => {
-      // NodeMaterial premultiplies its output when requested. Cancel the
-      // alpha-2 marker here so the stored stochastic RGB remains straight.
-      N.If(premultipliedAlpha.and(stochasticResolve), () => {
-        rgba.rgb.mulAssign(0.5);
-      });
-      rgba.a.assign(N.select(stochasticResolve, 2, 1));
+      rgba.a.assign(1);
     });
     return rgba;
   })();
@@ -191,21 +202,11 @@ export function createSplatNodeMaterial({
   const stochasticNoise = textureBinding(uniforms, "stochasticNoise");
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
-  const premultipliedAlphaNode = uniformBinding(
-    uniforms,
-    "premultipliedAlpha",
-    "bool",
-  );
   const stochastic = uniformBinding(uniforms, "stochastic", "bool");
-  const temporalSample = uniformBinding(
+  const temporalFrame = uniformBinding(
     uniforms,
-    "stochasticTemporalSample",
-    "vec4",
-  );
-  const stochasticResolve = uniformBinding(
-    uniforms,
-    "stochasticResolve",
-    "bool",
+    "stochasticTemporalFrame",
+    "int",
   );
   const depthOnly = uniformBinding(uniforms, "depthOnly", "bool");
   const { vSplat, vSplatUv, vStochasticHash, vViewportOrigin, fragmentNode } =
@@ -213,11 +214,9 @@ export function createSplatNodeMaterial({
       sorted,
       minAlpha,
       stochastic,
-      stochasticResolve,
       stochasticNoise,
-      temporalSample,
+      temporalFrame,
       depthOnly,
-      premultipliedAlpha: premultipliedAlphaNode,
     });
 
   function buildVertex(builder: NodeBuilder) {
@@ -322,9 +321,6 @@ export function createSplatNodeMaterial({
       });
     }
 
-    N.If(stochastic.and(depthOnly.not()), () => {
-      clipPosition.xy.addAssign(temporalSample.xy.mul(clipPosition.w));
-    });
     return clipPosition;
   }
 

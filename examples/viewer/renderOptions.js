@@ -42,6 +42,15 @@ export const renderOptionGroups = [
         falseLabel: "Continuous",
         trueLabel: "On demand",
       },
+      {
+        property: "rotateTestBoxes",
+        label: "Rotate boxes",
+        description:
+          "Rotates both test boxes around the model. Pause to keep their current positions.",
+        defaultValue: true,
+        falseLabel: "Paused",
+        trueLabel: "Rotating",
+      },
     ],
   },
   {
@@ -52,9 +61,9 @@ export const renderOptionGroups = [
         property: "taaEnabled",
         label: "TAA",
         description:
-          "TAA accumulates stochastic samples across frames, even when the camera is still. Resolve smooths each frame and uses history only during camera motion.",
+          "TAA filters stochastic Splats in a separate texture, accumulating samples at rest and resolving noise during motion. Off keeps quad spatial resolve without temporal accumulation.",
         defaultValue: true,
-        falseLabel: "Resolve",
+        falseLabel: "Off",
         trueLabel: "TAA",
       },
       {

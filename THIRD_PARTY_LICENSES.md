@@ -26,9 +26,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-## SuperSplat 3.0.0-alpha
+## SuperSplat 3.0.0-alpha and SuperSplat Viewer 1.36.0
 
-Gaussian Splat Lite includes software adapted from SuperSplat 3.0.0-alpha.
+Gaussian Splat Lite includes software adapted from SuperSplat 3.0.0-alpha
+and temporal accumulation and stratified sampling adapted from SuperSplat Viewer 1.36.0.
 
 MIT License
 

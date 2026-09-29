@@ -33,32 +33,14 @@ export function configureSplatOutput(
   renderer: GaussianSplatCompatibleRenderer,
   target: THREE.RenderTarget | null,
   uniforms: Uniforms,
-  markerUsers: number,
 ) {
-  let xrOutput: boolean;
   let blendSpace = THREE.ColorManagement.workingColorSpace;
-  if (isWebGPURenderer(renderer)) {
-    xrOutput =
-      target === renderer.getOutputRenderTarget() ||
-      (
-        target as
-          | (THREE.RenderTarget & { isPostProcessingRenderTarget?: boolean })
-          | null
-      )?.isPostProcessingRenderTarget === true;
-  } else {
-    const xrTarget = isXRRenderTarget(target);
-    // A compose target may carry the XR flag for output-space blending only.
-    xrOutput = xrTarget && renderer.xr.enabled;
+  if (!isWebGPURenderer(renderer)) {
+    // WebGL blends canvas output, and compose targets carrying the XR flag,
+    // in their encoded output space.
     if (target === null) blendSpace = renderer.outputColorSpace;
-    else if (xrTarget) blendSpace = target.texture.colorSpace;
+    else if (isXRRenderTarget(target)) blendSpace = target.texture.colorSpace;
   }
-  // Alpha-2 markers must not escape through Three's XR output intermediate.
-  uniforms.stochasticResolve.value =
-    markerUsers > 0 &&
-    (!renderer.xr.isPresenting ||
-      (!xrOutput &&
-        (target?.texture.type === THREE.HalfFloatType ||
-          target?.texture.type === THREE.FloatType)));
   uniforms.encodeLinear.value = blendSpace !== THREE.SRGBColorSpace;
 }
 

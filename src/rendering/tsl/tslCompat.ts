@@ -59,6 +59,8 @@ type Compatibility = {
   uintBitsToFloat<T extends keyof UintToFloat>(
     value: Node<T>,
   ): Node<UintToFloat[T]>;
+  packUnorm2x16(value: Node<"vec2">): Node<"uint">;
+  unpackUnorm2x16(value: Node<"uint">): Node<"vec2">;
   packHalf2x16(value: Node<"vec2">): Node<"uint">;
   unpackHalf2x16(value: Node<"uint">): Node<"vec2">;
   packSnorm2x16(value: Node<"vec2">): Node<"uint">;

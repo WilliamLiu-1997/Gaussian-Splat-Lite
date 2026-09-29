@@ -1,248 +1,319 @@
 import * as THREE from "three";
 import { type Node, NodeMaterial, type WebGPURenderer } from "three/webgpu";
+import { setRendererRenderTarget } from "../../rendering/rendererUtils";
 import { N, load2D } from "../../rendering/tsl/shaderUtils";
+import { uintTexture } from "../../rendering/tsl/tslCompat";
+import { createTAAHistory } from "../TAAHistory";
 
-// Match Resolve's maximum history weight of 7/8.
-const MAX_HISTORY_SAMPLES = 8;
-
-/** TSL counterpart of webgl/TAAPipeline.ts; keep the resolve rules in sync. */
+/** SuperSplat accumulation, matching webgl/TAAPipeline.ts on native GPU and GL fallback. */
 export function createNodeTAAPipeline(
   renderer: WebGPURenderer,
-  scene: THREE.Scene,
   camera: THREE.Camera,
-  sample: THREE.Vector4,
-  renderSize: THREE.Vector2,
-  isStochastic: () => boolean,
+  sizeValue: THREE.Vector2,
+  sourceTarget: THREE.RenderTarget,
 ) {
-  const makeTarget = () =>
-    new THREE.RenderTarget(1, 1, {
-      type: THREE.HalfFloatType,
-      depthTexture: new THREE.DepthTexture(1, 1, THREE.FloatType),
-    });
-  const sourceTarget = makeTarget();
-  const history = [makeTarget(), makeTarget()];
-  sourceTarget.texture.name = "TAA.source";
-  history.forEach((target, i) => {
-    target.texture.name = `TAA.history${i}`;
-    const samples = target.texture.clone();
-    samples.format = THREE.RedFormat;
-    samples.name = `TAA.samples${i}`;
-    target.textures.push(samples);
-  });
-  let index = 0;
-  let valid = false;
+  const history = createTAAHistory(renderer, camera, sizeValue);
   const source = N.texture(sourceTarget.texture);
   const depth = N.texture(sourceTarget.depthTexture as THREE.DepthTexture);
-  const historyColor = N.texture(history[0].texture).onObjectUpdate(
-    () => history[1 - index].texture,
+  const previousColor = uintTexture(history.input.texture).onObjectUpdate(
+    () => history.input.texture,
   );
-  const historyDepth = N.texture(
-    history[0].depthTexture as THREE.DepthTexture,
-  ).onObjectUpdate(() => history[1 - index].depthTexture as THREE.DepthTexture);
-  const historySamples = N.texture(history[0].textures[1]).onObjectUpdate(
-    () => history[1 - index].textures[1],
+  const previousInfo = uintTexture(history.input.textures[1]).onObjectUpdate(
+    () => history.input.textures[1],
   );
-  const targets = [sourceTarget, ...history];
-  const previousVP = new THREE.Matrix4();
-  const projectionMatrix = N.uniform(camera.projectionMatrix);
-  const viewToPreviousClip = N.uniform(new THREE.Matrix4());
-  const jitter = N.uniform(sample);
-  const size = N.uniform(renderSize);
-  const useHistory = N.uniform(false, "bool");
-  const stochasticFrame = N.uniform(false, "bool");
-  const sampleCount = N.property("float", "taaHistorySamples");
-  const logDepth = N.uniform(new THREE.Vector2());
-  const depthProjection = N.uniform(new THREE.Vector2());
-  const logarithmic = logDepth.x.greaterThan(0);
-  const reversed = renderer.reversedDepthBuffer;
-  const zeroToOne =
-    reversed || renderer.coordinateSystem === THREE.WebGPUCoordinateSystem;
-  const logarithmicViewZ = N.Fn(([encoded]: [Node<"float">]) =>
-    logDepth.x.negate().mul(encoded.mul(logDepth.y).exp2()),
+  let composed = history.output;
+  const composedColor = uintTexture(composed.texture).onObjectUpdate(
+    () => composed.texture,
   );
+  const composedInfo = uintTexture(composed.textures[1]).onObjectUpdate(
+    () => composed.textures[1],
+  );
+  const size = N.uniform(sizeValue);
+  const projection = N.uniform(camera.projectionMatrix);
+  const params = N.uniform(history.params);
+  const depthParams = N.uniform(history.depthParams);
+  const previousClip = N.uniform(history.viewToPreviousClip);
+  const previousView = N.uniform(history.viewToPreviousView);
   const pixel = N.ivec2(N.screenCoordinate.xy);
-  const material = new NodeMaterial();
-  material.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
-  material.depthNode = load2D(depth, pixel).r;
-  const resolve = N.Fn(() => {
-    // A sorted image is a clean seed. Unresolved stochastic pixels start at one.
-    sampleCount.assign(N.select(stochasticFrame, 1, MAX_HISTORY_SAMPLES));
-    const raw = load2D(source, pixel);
-    const current = N.vec4(raw.rgb, raw.a.clamp(0, 1)).toVar();
-    const result = current.toVar();
-    N.If(useHistory, () => {
-      const marked = N.bool(false).toVar();
-      const low = current.toVar();
-      const high = current.toVar();
-      // Log depth increases with distance; compare it before any conversion.
-      const reverseSelection = reversed ? logarithmic.not() : N.bool(false);
-      const closest = N.select(reverseSelection, 0, 1).toVar();
-      const closestPixel = pixel.toVar();
-      for (let y = -1; y <= 1; y++) {
-        for (let x = -1; x <= 1; x++) {
-          const p = pixel
-            .add(N.ivec2(x, y))
-            .clamp(N.ivec2(0), N.ivec2(size).sub(1));
-          const texel = load2D(source, p).toVar();
-          marked.assign(marked.or(texel.a.greaterThan(1)));
-          const color = N.vec4(texel.rgb, texel.a.clamp(0, 1));
-          const bounded = x !== 0 || y !== 0 ? color.max(0) : color;
-          low.assign(low.min(bounded));
-          high.assign(high.max(bounded));
-          const z = load2D(depth, p).r.toVar();
-          N.If(
-            N.select(
-              reverseSelection,
-              z.greaterThan(closest),
-              z.lessThan(closest),
-            ),
-            () => {
-              closest.assign(z);
-              closestPixel.assign(p);
-            },
-          );
-        }
-      }
-      N.If(marked, () => {
-        const uv = N.vec2(pixel).add(0.5).div(size);
-        const closestUV = N.vec2(closestPixel).add(0.5).div(size);
-        // Node textures use top-left coordinates on both native and GL backends.
-        const ndc = closestUV.mul(N.vec2(2, -2)).add(N.vec2(-1, 1)).toVar();
-        N.If(load2D(source, closestPixel).a.greaterThan(1), () => {
-          ndc.subAssign(jitter.xy);
-        });
-        // Reconstruct homogeneous view coordinates without inverse VP cancellation.
-        const p = projectionMatrix;
-        const pz = p.element(2);
-        const pw = p.element(3);
-        const z = zeroToOne ? closest : closest.mul(2).sub(1);
-        // Keep W positive in both depth modes; W = 0 represents a point at infinity.
-        const orientation = reversed ? -1 : 1;
-        const viewZ = pw.z.sub(z.mul(pw.w)).mul(orientation).toVar();
-        const viewW = z.mul(pz.w).sub(pz.z).mul(orientation).toVar();
-        N.If(logarithmic, () => {
-          // Decode log depth directly to retain its precision.
-          viewZ.assign(logarithmicViewZ(closest));
-          viewW.assign(1);
-        });
-        const clipW = pz.w.mul(viewZ).add(pw.w.mul(viewW));
-        const viewXY = ndc
-          .mul(clipW)
-          .sub(pz.xy.mul(viewZ))
-          .sub(pw.xy.mul(viewW))
-          .div(N.vec2(p.element(0).x, p.element(1).y));
-        const projected = viewToPreviousClip
-          .mul(N.vec4(viewXY, viewZ, viewW))
-          .toVar();
-        N.If(projected.w.greaterThan(0), () => {
-          const previous = projected.xyz.div(projected.w);
-          const previousUV = uv
-            .add(previous.xy.sub(ndc).mul(N.vec2(0.5, -0.5)))
-            .toVar();
-          N.If(
-            N.all(previousUV.greaterThanEqual(N.vec2(0))).and(
-              N.all(previousUV.lessThan(N.vec2(1))),
-            ),
-            () => {
-              const expectedDepth = zeroToOne
-                ? previous.z
-                : previous.z.mul(0.5).add(0.5);
-              const position = previousUV.mul(size).sub(0.5);
-              const base = N.ivec2(position.floor());
-              const fraction = position.fract();
-              const historySum = N.vec4(0).toVar();
-              const sampleSum = N.float(0).toVar();
-              const validWeight = N.float(0).toVar();
-              // Check each tap before interpolation, including at depth edges.
-              // Keep the existing one-sided test for stochastic coverage layers.
-              for (let y = 0; y < 2; y++) {
-                for (let x = 0; x < 2; x++) {
-                  const p = base.add(N.ivec2(x, y));
-                  const weight = (
-                    x === 0 ? N.float(1).sub(fraction.x) : fraction.x
-                  ).mul(y === 0 ? N.float(1).sub(fraction.y) : fraction.y);
-                  N.If(
-                    weight
-                      .greaterThan(0)
-                      .and(p.x.greaterThanEqual(0))
-                      .and(p.y.greaterThanEqual(0))
-                      .and(p.x.lessThan(N.int(size.x)))
-                      .and(p.y.lessThan(N.int(size.y))),
-                    () => {
-                      const oldDepth = load2D(historyDepth, p).r.toVar();
-                      N.If(logarithmic, () => {
-                        oldDepth.assign(
-                          depthProjection.x.add(
-                            depthProjection.y.div(logarithmicViewZ(oldDepth)),
-                          ),
-                        );
-                      });
-                      const disocclusion = reversed
-                        ? oldDepth.sub(expectedDepth)
-                        : expectedDepth.sub(oldDepth);
-                      N.If(disocclusion.lessThanEqual(0.0005), () => {
-                        historySum.addAssign(
-                          load2D(historyColor, p).mul(weight),
-                        );
-                        sampleSum.addAssign(
-                          load2D(historySamples, p).r.mul(weight),
-                        );
-                        validWeight.addAssign(weight);
-                      });
-                    },
-                  );
-                }
-              }
-              N.If(validWeight.greaterThan(0), () => {
-                const velocity = previousUV.sub(uv).mul(size);
-                const motion = velocity.length().div(128).clamp(0, 1);
-                const phase = velocity.fract();
-                const coverage = phase.max(N.vec2(1).sub(phase));
-                const subpixel = N.float(1)
-                  .sub(coverage.x.mul(coverage.y))
-                  .div(0.75);
-                const currentWeight = subpixel
-                  .mul(0.25)
-                  .add(0.05)
-                  .add(motion)
-                  .clamp(0, 1)
-                  .max(
-                    N.float(1).div(
-                      sampleSum
-                        .div(validWeight)
-                        .min(MAX_HISTORY_SAMPLES - 1)
-                        .add(1),
-                    ),
-                  )
-                  .toVar();
-                // Store the effective count after motion weighting, not just age.
-                sampleCount.assign(N.float(1).div(currentWeight));
-                // Sparse stochastic colors need their full neighborhood range,
-                // not a narrow variance box that pulls history toward dark holes.
-                const center = low.add(high).mul(0.5);
-                const extent = high.sub(low).mul(0.5);
-                const oldColor = historySum.div(validWeight).toVar();
-                const delta = oldColor.sub(center);
-                const unit = delta.rgb.div(extent.rgb.add(1e-7)).abs();
-                const maxUnit = unit.r.max(unit.g).max(unit.b);
-                N.If(maxUnit.greaterThan(1), () => {
-                  oldColor.assign(center.add(delta.div(maxUnit)));
-                });
-                // Coverage already encodes opacity; do not discount bright hits.
-                result.assign(N.mix(oldColor, current, currentWeight));
-              });
-            },
-          );
-        });
+  const logarithmic = depthParams.x.greaterThan(0);
+  const reverseSelection = history.reversed ? logarithmic.not() : N.bool(false);
+  const bounded = (p: Node<"ivec2">) =>
+    p.clamp(N.ivec2(0), N.ivec2(size).sub(1));
+  const decodeColor = N.Fn(([v]: [Node<"uvec4">]) =>
+    N.vec4(N.unpackUnorm2x16(v.x), N.unpackUnorm2x16(v.y)),
+  );
+  const decodeInfo = N.Fn(([v]: [Node<"uint">]) =>
+    N.vec2(
+      N.uintBitsToFloat(v.shiftRight(9).shiftLeft(8)),
+      N.float(v.bitAnd(511)),
+    ),
+  );
+  const viewDepth = N.Fn(([encoded]: [Node<"float">]) => {
+    const z = history.zeroToOne ? encoded : encoded.mul(2).sub(1);
+    const pz = projection.element(2);
+    const pw = projection.element(3);
+    const result = pw.z
+      .sub(z.mul(pw.w))
+      .div(z.mul(pz.w).sub(pz.z))
+      .negate()
+      .toVar();
+    N.If(logarithmic, () => {
+      result.assign(
+        depthParams.x.mul(encoded.mul(depthParams.z).exp2()).sub(depthParams.y),
+      );
+    });
+    return result;
+  });
+  const deviceDepth = N.Fn(([d]: [Node<"float">]) => {
+    const result = N.select(reverseSelection, 0, 1).toVar();
+    N.If(d.greaterThan(0), () => {
+      const pz = projection.element(2);
+      const pw = projection.element(3);
+      const clip = pw.z.sub(pz.z.mul(d)).div(pw.w.sub(pz.w.mul(d)));
+      result.assign(history.zeroToOne ? clip : clip.mul(0.5).add(0.5));
+      N.If(logarithmic, () => {
+        result.assign(
+          d.add(depthParams.y).div(depthParams.x).log2().div(depthParams.z),
+        );
       });
     });
     return result;
-  })();
-  material.fragmentNode = N.outputStruct(resolve, N.vec4(sampleCount, 0, 0, 1));
+  });
+  const hitAt = N.Fn(([p]: [Node<"ivec2">]) => {
+    const z = load2D(depth, p).r;
+    return load2D(source, p)
+      .a.greaterThan(0)
+      .and(N.select(reverseSelection, z.greaterThan(0), z.lessThan(1)));
+  });
+  const spatialDepth = N.Fn(([p]: [Node<"ivec2">]) => {
+    const z = load2D(depth, p).r.toVar();
+    N.If(hitAt(p).not(), () => {
+      const quad = p.div(2).mul(2);
+      for (let y = 0; y < 2; y++)
+        for (let x = 0; x < 2; x++) {
+          const n = load2D(depth, bounded(quad.add(N.ivec2(x, y)))).r;
+          z.assign(N.select(reverseSelection, z.max(n), z.min(n)));
+        }
+    });
+    return z;
+  });
+  const sampleAt = N.Fn(([coord]: [Node<"ivec2">]) => {
+    const p = bounded(coord);
+    return N.select(hitAt(p), N.vec4(load2D(source, p).rgb, 1), N.vec4(0));
+  });
+  const quadSample = N.Fn(([p]: [Node<"ivec2">]) => {
+    const u = N.vec2(p).sub(0.5).mul(0.5);
+    const f = u.fract();
+    const uv = u.floor().mul(2).add(1).div(size);
+    const step = N.vec2(2).div(size);
+    return N.mix(
+      N.mix(
+        source.sample(uv).level(N.float(0)),
+        source.sample(uv.add(N.vec2(step.x, 0))).level(N.float(0)),
+        f.x,
+      ),
+      N.mix(
+        source.sample(uv.add(N.vec2(0, step.y))).level(N.float(0)),
+        source.sample(uv.add(step)).level(N.float(0)),
+        f.x,
+      ),
+      f.y,
+    );
+  });
+  const cubicWeights = N.Fn(([f]: [Node<"float">]) => {
+    const f2 = f.mul(f);
+    const f3 = f2.mul(f);
+    return N.vec4(
+      f3.mul(-0.5).add(f2).sub(f.mul(0.5)),
+      f3.mul(1.5).sub(f2.mul(2.5)).add(1),
+      f3.mul(-1.5).add(f2.mul(2)).add(f.mul(0.5)),
+      f3.sub(f2).mul(0.5),
+    );
+  });
+  const historyAt = N.Fn(([uv]: [Node<"vec2">]) => {
+    const p = uv.mul(size).sub(0.5);
+    const base = N.ivec2(p.floor());
+    const f = p.fract();
+    const wx = cubicWeights(f.x);
+    const wy = cubicWeights(f.y);
+    const sum = N.vec4(0).toVar();
+    for (let y = 0; y < 4; y++)
+      for (let x = 0; x < 4; x++)
+        sum.addAssign(
+          decodeColor(
+            load2D(previousColor, bounded(base.add(N.ivec2(x - 1, y - 1)))),
+          )
+            .mul(wx.element(x))
+            .mul(wy.element(y)),
+        );
+    return sum;
+  });
+  const resolve = N.Fn(() => {
+    const hit = hitAt(pixel);
+    const moving = params.z.greaterThan(0.5);
+    const d = viewDepth(load2D(depth, pixel).r);
+    const own = N.vec2(0).toVar();
+    N.If(params.y.greaterThan(0.5), () => {
+      own.assign(decodeInfo(load2D(previousInfo, pixel).r));
+    });
+    const sample = sampleAt(pixel).toVar();
+    N.If(moving, () => {
+      sample.assign(quadSample(pixel));
+    });
+    const uv = N.vec2(pixel).add(0.5).div(size);
+    const previousUV = uv.toVar();
+    const carryDepth = N.select(hit, d, own.x);
+    const previousDepth = carryDepth.toVar();
+    const valid = params.y.greaterThan(0.5).toVar();
+    N.If(moving, () => {
+      valid.assign(valid.and(hit.or(own.x.greaterThan(0))));
+      const ndc = uv.mul(N.vec2(2, -2)).add(N.vec2(-1, 1));
+      const z = carryDepth.negate();
+      const pz = projection.element(2);
+      const pw = projection.element(3);
+      const clipW = pz.w.mul(z).add(pw.w);
+      const xy = ndc
+        .mul(clipW)
+        .sub(pz.xy.mul(z))
+        .sub(pw.xy)
+        .div(N.vec2(projection.element(0).x, projection.element(1).y));
+      const point = N.vec4(xy, z, 1);
+      previousDepth.assign(previousView.mul(point).z.negate());
+      const previous = previousClip.mul(point);
+      previousUV.assign(
+        previous.xy.div(previous.w.max(1e-9)).mul(N.vec2(0.5, -0.5)).add(0.5),
+      );
+      valid.assign(
+        valid
+          .and(previous.w.greaterThan(0))
+          .and(N.all(previousUV.greaterThanEqual(N.vec2(0))))
+          .and(N.all(previousUV.lessThanEqual(N.vec2(1)))),
+      );
+    });
+    const hist = N.vec4(0).toVar();
+    const info = N.vec2(0).toVar();
+    N.If(valid, () => {
+      N.If(moving, () => {
+        hist.assign(historyAt(previousUV));
+        info.assign(
+          decodeInfo(
+            load2D(previousInfo, bounded(N.ivec2(previousUV.mul(size)))).r,
+          ),
+        );
+      }).Else(() => {
+        hist.assign(decodeColor(load2D(previousColor, pixel)));
+        info.assign(own);
+      });
+    });
+    const color = sample.toVar();
+    const mean = N.select(hit, d, 0).toVar();
+    const count = N.select(hit, 1, 0).toVar();
+    N.If(valid.not().or(info.y.lessThanEqual(0.5)), () => {
+      N.If(hit.and(moving.not()).and(params.y.greaterThan(0.5)), () => {
+        count.assign(params.w.clamp(1, params.x));
+        color.assign(sample.div(count));
+      });
+    }).Else(() => {
+      const cap = params.x.toVar();
+      const depthMin = N.float(1).toVar();
+      const depthMax = N.float(-1).toVar();
+      N.If(moving, () => {
+        const m1 = N.vec4(0).toVar();
+        const m2 = N.vec4(0).toVar();
+        for (let y = -1; y <= 1; y++)
+          for (let x = -1; x <= 1; x++) {
+            const q = bounded(pixel.add(N.ivec2(x, y)));
+            const n = sampleAt(q).toVar();
+            m1.addAssign(n);
+            m2.addAssign(n.mul(n));
+            N.If(n.a.greaterThan(0), () => {
+              const z = load2D(depth, q).r;
+              depthMin.assign(depthMin.min(z));
+              depthMax.assign(depthMax.max(z));
+            });
+          }
+        const mu = m1.div(9);
+        const sd = m2.div(9).sub(mu.mul(mu)).max(0).sqrt();
+        hist.assign(hist.clamp(mu.sub(sd.mul(1.25)), mu.add(sd.mul(1.25))));
+        const speed = previousUV.sub(uv).mul(size).length();
+        cap.assign(params.x.div(speed.div(4).add(1)).max(2));
+      });
+      count.assign(info.y.add(1).min(cap));
+      const w = N.float(1).div(count);
+      color.assign(N.mix(hist, sample, w));
+      N.If(sample.a.equal(0), () => {
+        color.a.assign(color.a.min(hist.a.sub(1 / 65535).max(0)));
+      });
+      // Average valid hits; misses retain the depth carried into the current view.
+      const shifted = info.x.add(carryDepth).sub(previousDepth).max(0);
+      mean.assign(N.select(hit, N.mix(shifted, d, w), shifted));
+      N.If(moving, () => {
+        // Old occluders must leave with the current surface, not fade through it.
+        N.If(depthMax.greaterThanEqual(0), () => {
+          const a = viewDepth(depthMin);
+          const b = viewDepth(depthMax);
+          mean.assign(mean.clamp(a.min(b), a.max(b)));
+        }).Else(() => {
+          mean.assign(0);
+        });
+      });
+    });
+    color.a.assign(color.a.clamp(0, 1));
+    color.rgb.assign(color.rgb.clamp(N.vec3(0), N.vec3(color.a)));
+    const packedInfo = N.floatBitsToUint(mean.max(0))
+      .add(N.uint(0x80))
+      .shiftRight(8)
+      .shiftLeft(9)
+      .bitOr(N.uint(count).min(511));
+    return N.uvec3(
+      N.packUnorm2x16(color.rg),
+      N.packUnorm2x16(color.ba),
+      packedInfo,
+    );
+  });
+  const material = new NodeMaterial();
+  material.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
+  const packed = resolve();
+  material.fragmentNode = N.outputStruct(packed.xy, packed.z);
   material.blending = THREE.NoBlending;
-  material.depthTest = material.depthWrite = true;
-  material.depthFunc = reversed ? THREE.NeverDepth : THREE.AlwaysDepth;
+  material.depthTest = material.depthWrite = false;
   material.toneMapped = false;
+  const createCompositeMaterial = (temporal: boolean, depthOnly = false) => {
+    const compositeMaterial = new NodeMaterial();
+    compositeMaterial.vertexNode = N.vec4(N.positionGeometry.xy, 0, 1);
+    const sampledDepth = temporal
+      ? decodeInfo(load2D(composedInfo, pixel).r).x
+      : N.float(0);
+    compositeMaterial.fragmentNode = N.Fn(() => {
+      const color = temporal
+        ? decodeColor(load2D(composedColor, pixel))
+        : quadSample(pixel);
+      color.a.lessThanEqual(0.001).discard();
+      if (depthOnly) color.a.lessThan(0.1).discard();
+      return color;
+    })();
+    compositeMaterial.depthNode = N.Fn(() => {
+      const z = temporal ? deviceDepth(sampledDepth) : spatialDepth(pixel);
+      const clamped = N.select(reverseSelection, z.max(1e-7), z.min(1 - 1e-7));
+      return temporal
+        ? N.select(sampledDepth.greaterThan(0), clamped, z)
+        : clamped;
+    })();
+    compositeMaterial.blending = THREE.CustomBlending;
+    compositeMaterial.blendSrc = compositeMaterial.blendSrcAlpha =
+      THREE.OneFactor;
+    compositeMaterial.blendDst = compositeMaterial.blendDstAlpha =
+      THREE.OneMinusSrcAlphaFactor;
+    compositeMaterial.depthTest = true;
+    compositeMaterial.depthWrite = !temporal || depthOnly;
+    compositeMaterial.colorWrite = !depthOnly;
+    compositeMaterial.toneMapped = false;
+    return compositeMaterial;
+  };
+  const compositeMaterial = createCompositeMaterial(true);
+  const depthMaterial = createCompositeMaterial(true, true);
+  const compositeMaterials = [compositeMaterial, depthMaterial];
+  const spatialMaterial = createCompositeMaterial(false);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute(
     "position",
@@ -250,68 +321,39 @@ export function createNodeTAAPipeline(
   );
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
+  // Keep faint color depth-tested without letting it occlude later geometry.
+  geometry.addGroup(0, 3, 0);
+  geometry.addGroup(0, 3, 1);
+  const composite: THREE.Mesh = new THREE.Mesh(geometry, compositeMaterials);
+  composite.frustumCulled = false;
   const fullscreenCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   return {
-    get color() {
-      return history[1 - index].texture;
+    composite,
+    get needsRender() {
+      return history.needsRender;
     },
-    depth: sourceTarget.depthTexture as THREE.DepthTexture,
-    reset() {
-      valid = false;
-    },
-    render() {
-      const { x: width, y: height } = renderSize;
-      if (
-        !valid ||
-        sourceTarget.width !== width ||
-        sourceTarget.height !== height
-      ) {
-        valid = false;
-        for (const target of targets) target.setSize(width, height);
-        for (const target of history) renderer.initRenderTarget(target);
+    reset: () => history.reset(),
+    resolve(version: number, temporalEnabled = true) {
+      composite.material = temporalEnabled
+        ? compositeMaterials
+        : spatialMaterial;
+      if (!temporalEnabled) {
+        history.updateDepthParams();
+        return;
       }
-      renderer.setRenderTarget(sourceTarget);
-      renderer.autoClear = false;
-      renderer.clear(
-        renderer.autoClearColor,
-        renderer.autoClearDepth,
-        renderer.autoClearStencil,
-      );
-      renderer.render(scene, camera);
-      // Compose on the CPU to avoid a large world-space round trip in float32.
-      viewToPreviousClip.value.multiplyMatrices(previousVP, camera.matrixWorld);
-      // The renderer may finish sorting during capture, after compose's prediction.
-      stochasticFrame.value = isStochastic();
-      useHistory.value = stochasticFrame.value && valid;
-      const perspective = camera as THREE.PerspectiveCamera;
-      // Match Three's viewZToLogarithmicDepth encoding.
-      const near = Math.max(perspective.near, 1e-6);
-      logDepth.value.set(
-        renderer.logarithmicDepthBuffer && perspective.isPerspectiveCamera
-          ? near
-          : 0,
-        Math.log2(perspective.far / near),
-      );
-      const projection = camera.projectionMatrix.elements;
-      const scale = zeroToOne ? 1 : 0.5;
-      depthProjection.value.set(
-        -projection[10] * scale + (zeroToOne ? 0 : 0.5),
-        -projection[14] * scale,
-      );
-      renderer.setRenderTarget(history[index]);
+      history.begin(version);
+      setRendererRenderTarget(renderer, history.output);
       renderer.render(mesh, fullscreenCamera);
-      previousVP.multiplyMatrices(
-        camera.projectionMatrix,
-        camera.matrixWorldInverse,
-      );
-      index = 1 - index;
-      valid = true;
+      composed = history.output;
+      history.commit();
     },
     dispose() {
-      sourceTarget.dispose();
-      for (const target of history) target.dispose();
-      geometry.dispose();
+      history.dispose();
       material.dispose();
+      compositeMaterial.dispose();
+      depthMaterial.dispose();
+      spatialMaterial.dispose();
+      geometry.dispose();
     },
   };
 }

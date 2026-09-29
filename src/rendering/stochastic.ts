@@ -61,8 +61,6 @@ export class StochasticMotionState {
   }
 }
 
-export const stochasticResolveMarker = Symbol("stochasticResolveMarker");
-
 export const stochasticResolveRequired = Symbol("stochasticResolveRequired");
 
-export const stochasticTemporalSample = Symbol("stochasticTemporalSample");
+export const stochasticTemporalFrame = Symbol("stochasticTemporalFrame");
