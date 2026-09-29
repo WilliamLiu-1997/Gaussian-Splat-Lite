@@ -29,7 +29,7 @@ export function createTAAHistory(
     return target;
   };
   const targets = [makeTarget(), makeTarget()];
-  const previousWorld = new THREE.Matrix4();
+  const view = new THREE.Matrix4();
   const previousProjection = new THREE.Matrix4();
   const previousView = new THREE.Matrix4();
   const previousVP = new THREE.Matrix4();
@@ -81,10 +81,23 @@ export function createTAAHistory(
         // Allocate both before binding the previous history, including its second attachment.
         for (const target of targets) renderer.initRenderTarget(target);
       }
-      const moved =
-        valid &&
-        (!previousWorld.equals(camera.matrixWorld) ||
-          !previousProjection.equals(camera.projectionMatrix));
+      view.copy(camera.matrixWorld).invert();
+      let moved = false;
+      if (valid) {
+        // Ignore matrix noise while keeping camera motion and zoom reprojected.
+        for (let i = 0; i < 16; i++) {
+          if (
+            Math.abs(view.elements[i] - previousView.elements[i]) > 1e-6 ||
+            Math.abs(
+              camera.projectionMatrix.elements[i] -
+                previousProjection.elements[i],
+            ) > 1e-6
+          ) {
+            moved = true;
+            break;
+          }
+        }
+      }
       const changed = valid && version !== previousVersion;
       previousVersion = version;
       restFrames = changed ? 0 : moved || !valid ? 1 : restFrames + 1;
@@ -115,9 +128,8 @@ export function createTAAHistory(
       );
     },
     commit() {
-      previousWorld.copy(camera.matrixWorld);
       previousProjection.copy(camera.projectionMatrix);
-      previousView.copy(camera.matrixWorld).invert();
+      previousView.copy(view);
       previousVP.multiplyMatrices(camera.projectionMatrix, previousView);
       valid = true;
       index = 1 - index;

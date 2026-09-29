@@ -14,7 +14,6 @@ export type SplatLayerView<Filter> = {
   readonly camera: THREE.Camera;
   readonly rect: THREE.Vector4;
   readonly size: THREE.Vector2;
-  readonly projection: THREE.Matrix4;
   readonly layer: SplatLayer;
   readonly filter: Filter;
 };
@@ -122,7 +121,6 @@ export function createSplatLayerViews<Filter extends { dispose(): void }>(
             camera: viewCamera,
             rect: new THREE.Vector4(),
             size,
-            projection: new THREE.Matrix4(),
             layer,
             filter: createFilter(renderer, { camera: viewCamera, size, layer }),
           };
@@ -160,14 +158,10 @@ export function createSplatLayerViews<Filter extends { dispose(): void }>(
           : viewport;
         if (!rect || rect.z <= 0 || rect.w <= 0)
           throw new Error("Splat layer views require a non-empty viewport");
-        if (
-          !view.rect.equals(rect) ||
-          !view.projection.equals(view.sourceCamera.projectionMatrix)
-        )
-          reset = true;
+        // Projection changes reproject history; only a changed viewport resets it.
+        if (!view.rect.equals(rect)) reset = true;
         view.rect.copy(rect);
         view.size.set(rect.z, rect.w);
-        view.projection.copy(view.sourceCamera.projectionMatrix);
         if (eyes) {
           view.camera.copy(view.sourceCamera, false);
           view.camera.matrixWorldAutoUpdate = false;
