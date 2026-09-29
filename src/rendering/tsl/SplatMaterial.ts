@@ -1,7 +1,11 @@
 import * as THREE from "three";
 import type { Node, NodeBuilder } from "three/webgpu";
 import {
-  NodeMaterial,
+  MeshLambertNodeMaterial,
+  type NodeMaterial,
+  PhongLightingModel,
+  PointLightNode,
+  SpotLightNode,
   StorageBufferAttribute,
   type StorageBufferNode,
   type TextureNode,
@@ -29,6 +33,9 @@ export type ProjectedVertexData = {
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
+  surfaceNormal: Node<"vec3">;
+  surfaceGradient: Node<"vec2">;
+  lightFlags: Node<"uint">;
 };
 
 export type OrderingNode = StorageBufferNode<"uint"> | TextureNode<"uvec4">;
@@ -76,6 +83,8 @@ function createSplatFragment({
 }) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
+  const vNormalFlags = N.varyingProperty("vec4", "gslNormalFlags");
+  const vGradient = N.varyingProperty("vec2", "gslGradient");
   const vSplat = N.varyingProperty("uvec4", "gslSplat");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
   const vStochasticHash = N.varyingProperty("uint", "gslStochasticHash");
@@ -138,6 +147,8 @@ function createSplatFragment({
   })();
 
   return {
+    vNormalFlags,
+    vGradient,
     vSplat,
     vSplatUv,
     vStochasticHash,
@@ -208,17 +219,24 @@ export function createSplatNodeMaterial({
     "bool",
   );
   const depthOnly = uniformBinding(uniforms, "depthOnly", "bool");
-  const { vSplat, vSplatUv, vStochasticHash, vViewportOrigin, fragmentNode } =
-    createSplatFragment({
-      sorted,
-      minAlpha,
-      stochastic,
-      stochasticResolve,
-      stochasticNoise,
-      temporalSample,
-      depthOnly,
-      premultipliedAlpha: premultipliedAlphaNode,
-    });
+  const {
+    vNormalFlags,
+    vGradient,
+    vSplat,
+    vSplatUv,
+    vStochasticHash,
+    vViewportOrigin,
+    fragmentNode,
+  } = createSplatFragment({
+    sorted,
+    minAlpha,
+    stochastic,
+    stochasticResolve,
+    stochasticNoise,
+    temporalSample,
+    depthOnly,
+    premultipliedAlpha: premultipliedAlphaNode,
+  });
 
   function buildVertex(builder: NodeBuilder) {
     const camera = materialCamera(builder);
@@ -234,6 +252,10 @@ export function createSplatNodeMaterial({
       N.If(encodeLinear.and(depthOnly.not()), () => {
         rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));
       });
+      vNormalFlags.assign(N.vec4(data.surfaceNormal, N.float(data.lightFlags)));
+      vGradient.assign(
+        data.surfaceGradient.div(data.supportRadiusSquared.sqrt().max(1e-20)),
+      );
       clipPosition.assign(data.clipPosition);
       vSplat.assign(
         packSplatVarying(rgba, data.supportRadiusSquared, data.kernelPower),
@@ -317,6 +339,21 @@ export function createSplatNodeMaterial({
             ),
             kernelPower: projected.kernelPower,
             viewportOrigin: view.viewportOrigin,
+            surfaceNormal: projected.surfaceNormal,
+            surfaceGradient: projected.surfaceGradient,
+            lightFlags: N.Fn(() => {
+              const flags = N.uint(0).toVar();
+              N.If(uniformBinding(uniforms, "lightingEnabled", "bool"), () => {
+                const row = splatIndex.shiftRight(11);
+                flags.assign(
+                  load2D(
+                    textureBinding(uniforms, "splatFlags"),
+                    N.ivec2(row.bitAnd(4095), row.shiftRight(12)),
+                  ).r,
+                );
+              });
+              return flags;
+            })(),
           });
         });
       });
@@ -330,11 +367,88 @@ export function createSplatNodeMaterial({
 
   const vertexNode = sharedVertexNode ?? N.Fn(buildVertex)();
 
-  return Object.assign(new NodeMaterial(), {
+  const enabled = uniformBinding(uniforms, "lightingEnabled", "bool")
+    .and(depthOnly.not())
+    .and(N.uint(vNormalFlags.w).bitAnd(1).notEqual(0));
+  const surfaceView = N.Fn(() => {
+    const point = N.positionView.toVar();
+    const z = point.z.add(vGradient.dot(vSplatUv)).min(-1e-6);
+    return N.select(
+      N.cameraProjectionMatrix.element(2).w.equal(0),
+      N.vec3(point.xy, z),
+      point.mul(z.div(point.z)),
+    );
+  })();
+  class SplatLitMaterial extends MeshLambertNodeMaterial {
+    setupLightingModel() {
+      const model = new PhongLightingModel(false);
+      const direct = model.direct.bind(model);
+      model.direct = (input, builder) => {
+        // Declare the accumulator before conditional light branches; TSL must
+        // not initialize it inside a branch or reset it after accumulation.
+        input.reflectedLight.directDiffuse.toStack();
+        const direction = input.lightDirection as Node<"vec3">;
+        const light = input.lightNode;
+        let contributes = N.normalView.dot(direction).greaterThan(0);
+        if (light instanceof PointLightNode || light instanceof SpotLightNode) {
+          const cutoff = light.cutoffDistanceNode as Node<"float">;
+          const vector = light.getLightVector(builder) as Node<"vec3">;
+          contributes = contributes.and(
+            cutoff
+              .lessThanEqual(0)
+              .or(vector.dot(vector).lessThan(cutoff.mul(cutoff))),
+          );
+        }
+        N.If(contributes, () => direct(input, builder));
+      };
+      return model;
+    }
+
+    setupLighting(builder: NodeBuilder) {
+      if (!this.lights) return N.diffuseColor.rgb;
+      return N.Fn(() => {
+        const result = N.diffuseColor.rgb.toVar();
+        N.If(enabled, () => {
+          const surface = surfaceView.toVar();
+          N.positionView.assign(surface);
+          // The viewer may blend in sRGB. Lambert lighting still operates on
+          // linear color, as in the independent WebGL shader.
+          const markerScale = sorted
+            ? N.float(1)
+            : N.select(
+                stochastic.and(stochasticResolve).and(premultipliedAlphaNode),
+                2,
+                1,
+              );
+          N.If(encodeLinear.not(), () => {
+            // Undo alpha-2 compensation before the nonlinear color transfer.
+            N.diffuseColor.rgb.assign(
+              N.sRGBTransferEOTF(N.diffuseColor.rgb.mul(markerScale)),
+            );
+          });
+          result.assign(super.setupLighting(builder));
+          N.If(encodeLinear.not(), () => {
+            result.assign(N.sRGBTransferOETF(result));
+            result.divAssign(markerScale);
+          });
+        });
+        return result;
+      })();
+    }
+  }
+  return Object.assign(new SplatLitMaterial(), {
+    lights: false,
     uniforms,
     orderingNode,
     vertexNode,
     colorNode: fragmentNode,
+    normalNode: vNormalFlags.xyz,
+    receivedShadowPositionNode: N.cameraWorldMatrix.mul(
+      N.vec4(N.positionView, 1),
+    ).xyz,
+    receivedShadowNode: N.Fn(([shadow]: [Node<"vec3">]) =>
+      N.select(N.uint(vNormalFlags.w).bitAnd(2).notEqual(0), shadow, N.vec3(1)),
+    ),
     premultipliedAlpha,
     transparent,
     depthTest,

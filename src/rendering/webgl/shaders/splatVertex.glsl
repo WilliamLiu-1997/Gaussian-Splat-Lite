@@ -5,6 +5,12 @@ precision highp usampler2DArray;
 
 #include <splatDefines>
 
+flat out vec4 vNormalFlags;
+flat out vec2 vGradient;
+out vec3 vSurfaceView;
+uniform bool lightingEnabled;
+uniform usampler2D splatFlags;
+uniform mat4 projectionInverse;
 flat out uvec4 vSplat;
 out vec2 vSplatUv;
 flat out uint vStochasticHash;
@@ -236,6 +242,23 @@ void main() {
     scale1 *= supportScale;
     scale2 *= supportScale;
 
+    vNormalFlags = vec4(0.0, 0.0, 1.0, 0.0);
+    vGradient = vec2(0.0);
+    if (lightingEnabled && !depthOnly) {
+        vec3 axis = (scales.x <= scales.y && scales.x <= scales.z) ? vec3(1, 0, 0)
+            : (scales.y <= scales.z ? vec3(0, 1, 0) : vec3(0, 0, 1));
+        vec3 normal = quatVec(viewQuaternion, axis);
+        if (dot(normal, isOrthographic ? vec3(0, 0, 1) : -viewCenter) < 0.0) normal = -normal;
+        uint row = splatIndex >> SPLAT_TEX_WIDTH_BITS;
+        uint flags = texelFetch(splatFlags, ivec2(row & 4095u, row >> 12u), 0).r;
+        vNormalFlags = vec4(normal, float(flags));
+        vec3 rowZ = transpose(RS) * vec3(0, 0, 1);
+        vec2 crossZ = vec2(dot(rowZ, p0), dot(rowZ, p1));
+        vec2 gradient = vec2(d * crossZ.x - b * crossZ.y, a * crossZ.y - b * crossZ.x) / det;
+        if (!isOrthographic) gradient = -gradient;
+        vGradient = vec2(dot(gradient, eigenVec1) * scale1, dot(gradient, eigenVec2) * scale2) / max(supportRadius, 1e-20);
+    }
+
     // Fetch stable coverage seeds only after all projection cutoffs pass.
     // Sorted color draws do not sample the seed texture.
     vStochasticHash = 0u;
@@ -265,6 +288,8 @@ void main() {
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
+    vec4 surfaceView = projectionInverse * gl_Position;
+    vSurfaceView = surfaceView.xyz / surfaceView.w;
     if (stochastic && !depthOnly) {
         gl_Position.xy += stochasticTemporalSample.xy * gl_Position.w;
     }

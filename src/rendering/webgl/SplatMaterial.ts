@@ -14,11 +14,16 @@ export function createWebGLSplatMaterial(
     defines: {
       SPLATS_PER_INSTANCE,
       GSL_SORTED_FRAGMENT: 0,
+      GSL_LIGHTING: 0,
     },
     glslVersion: THREE.GLSL3,
     vertexShader: shaders.splatVertex,
     fragmentShader: shaders.splatFragment,
-    uniforms,
+    uniforms: {
+      ...THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
+      ...uniforms,
+    },
+    lights: false,
     side: THREE.FrontSide,
     allowOverride: false,
   });

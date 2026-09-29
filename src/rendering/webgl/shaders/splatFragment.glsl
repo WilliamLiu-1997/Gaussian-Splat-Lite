@@ -17,6 +17,13 @@ in vec2 vSplatUv;
 flat in uint vStochasticHash;
 
 #include <logdepthbuf_pars_fragment>
+#include <common>
+#if GSL_LIGHTING
+#include <packing>
+#include <lights_pars_begin>
+#include <gslShadowSampling>
+#include <splatLighting>
+#endif
 
 void main() {
     float z2 = dot(vSplatUv, vSplatUv);
@@ -57,6 +64,11 @@ void main() {
 
     // Decode color only after the fragment survives coverage tests.
     vec4 rgba = vec4(unpackHalf2x16(vSplat.x), blueKernelPower.x, alpha);
+    #if GSL_LIGHTING
+    if (lightingEnabled && (uint(vNormalFlags.w) & 1u) != 0u) {
+        rgba.rgb = splatLighting(rgba.rgb);
+    }
+    #endif
     #if !GSL_SORTED_FRAGMENT
     if (stochastic) {
         // Alpha 2 marks accepted stochastic samples for the optional resolve

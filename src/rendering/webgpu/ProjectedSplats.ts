@@ -254,6 +254,13 @@ export class ProjectedSplats {
           pixelScale,
           centerRange,
         );
+        N.If(u("lightingEnabled", "bool"), () => {
+          this.cache.writeSurface(
+            viewBase.add(slot),
+            projection,
+            u("lightFlags", "uint"),
+          );
+        });
         seeds.element(slot).assign(generated.stochasticSeed);
         N.If(stochastic.and(u("stochasticOrdering", "bool")), () => {
           // Keep the high 16 bits of a front-to-back signed float key.
@@ -319,6 +326,9 @@ export class ProjectedSplats {
     const counts = bindBuffer(this.counts).toReadOnly();
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     const rgba = N.vec4(0).toVar();
+    const surfaceNormal = N.vec3(0, 0, 1).toVar();
+    const surfaceGradient = N.vec2(0).toVar();
+    const lightFlags = N.uint(0).toVar();
     const splatUv = N.vec2(0).toVar();
     const stochasticSeed = N.uint(0).toVar();
     const stochastic = uniformBinding(this.uniforms, "stochastic", "bool");
@@ -371,6 +381,14 @@ export class ProjectedSplats {
         pixelScale,
         centerRange,
       );
+      if (!depthOnly) {
+        N.If(uniformBinding(this.uniforms, "lightingEnabled", "bool"), () => {
+          const surface = this.cache.readSurface(base.add(cacheIndex));
+          surfaceNormal.assign(surface.normal);
+          surfaceGradient.assign(surface.gradient);
+          lightFlags.assign(surface.flags);
+        });
+      }
       clipPosition.assign(projected.clipPosition);
       rgba.assign(projected.rgba);
       splatUv.assign(projected.splatUv);
@@ -385,6 +403,9 @@ export class ProjectedSplats {
       supportRadiusSquared,
       kernelPower,
       viewportOrigin: view.viewportOrigin,
+      surfaceNormal,
+      surfaceGradient,
+      lightFlags,
     };
   }
 
@@ -459,6 +480,7 @@ export class ProjectedSplats {
         ? Math.max(1, accumulator.numSplats)
         : 1;
     this.cache.ensureOrder(multiView, shrink);
+    this.cache.ensureSurface(this.uniforms.lightingEnabled.value);
     geometry.setIndirect(this.indirect);
     geometry.setSplatCount(Math.max(1, accumulator.numSplats));
     // The accumulator version covers source, mapping, transform, animation and
@@ -472,6 +494,7 @@ export class ProjectedSplats {
       cameras.length,
       radial,
       fastSort,
+      uniforms.lightingEnabled.value,
       uniforms.stochastic.value,
       uniforms.stochasticOrdering.value,
       uniforms.maxStdDev.value,
@@ -483,7 +506,8 @@ export class ProjectedSplats {
       uniforms.clipXY.value,
       uniforms.focalAdjustment.value,
     ];
-    for (const { node } of accumulator.mapping) inputs.push(node.layers.mask);
+    for (const { node } of accumulator.mapping)
+      inputs.push(node.layers.mask, node.receiveLight, node.receiveShadow);
     for (const view of cameras as THREE.PerspectiveCamera[]) {
       inputs.push(
         ...view.matrixWorld.elements,

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SplatWorker } from "../runtime/SplatWorker";
+import type { SplatMesh } from "../scene/SplatMesh";
 import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
@@ -12,6 +13,7 @@ import {
   configureSplatOutput,
   createSplatBackend,
 } from "./backend";
+import { SplatShadows } from "./lighting/SplatShadows";
 import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
@@ -61,6 +63,10 @@ export interface GaussianSplatRendererOptions {
    * for example when a splat sort completes.
    */
   onDirty?: () => void;
+  /** Enable diffuse Three.js lighting and Gaussian shadow participation. Default false. */
+  lighting?: boolean;
+  /** Select models for both the color and shadow passes. */
+  filter?: (mesh: SplatMesh) => boolean;
   /**
    * Whether to use premultiplied alpha when accumulating splat RGB
    * @default true
@@ -244,6 +250,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   readonly renderer: GaussianSplatCompatibleRenderer;
   readonly uniforms: ReturnType<typeof GaussianSplatRenderer.makeUniforms>;
 
+  private _lighting = false;
+  filter?: (mesh: SplatMesh) => boolean;
+  private readonly shadows: SplatShadows;
+  private lightingPreparedCamera: THREE.Camera | null = null;
   autoUpdate: boolean;
   preUpdate: boolean;
   static gaussianSplatOverride?: GaussianSplatRenderer;
@@ -344,6 +354,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     super(geometry, material);
     this.renderer = options.renderer;
+    this._lighting = options.lighting ?? false;
+    this.filter = options.filter;
+    this.receiveShadow = true;
+    this.shadows = new SplatShadows(this);
     this.backend = backend;
     this.capture = new SplatCapture(this, backend, () => this.beginCapture());
     this.uniforms = uniforms;
@@ -407,6 +421,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.capture.initialize(options.target);
   }
 
+  updateMatrixWorld(force?: boolean) {
+    super.updateMatrixWorld(force);
+    this.shadows?.sync();
+  }
+
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]) {}
 
   static makeUniforms() {
@@ -422,6 +441,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     super.dispose();
 
+    this.shadows.dispose();
     this.capture.dispose();
     this.backend.dispose();
     this.depthPass.dispose();
@@ -590,6 +610,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   private applyMaterialState(stochasticActive: boolean) {
     const { material } = this;
+    if (material.lights !== this.lighting) {
+      material.lights = this.lighting;
+      if (material instanceof THREE.ShaderMaterial)
+        material.defines.GSL_LIGHTING = Number(this.lighting);
+      material.needsUpdate = true;
+    }
     // Keep stochastic-enabled Splats in a stable render list. onBeforeRender is
     // early enough to change GPU blend/depth state, but too late to move an
     // object between Three.js's opaque and transparent lists.
@@ -625,11 +651,21 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
   }
 
+  prepareLightingFrame(scene: THREE.Scene, camera: THREE.Camera) {
+    this.lightingPreparedCamera = null;
+    this.onBeforeRender(this.renderer, scene, camera);
+    this.lightingPreparedCamera = camera;
+  }
+
   onBeforeRender(
     renderer: GaussianSplatCompatibleRenderer,
     scene: THREE.Scene,
     camera: THREE.Camera,
   ) {
+    if (this.lightingPreparedCamera === camera) {
+      this.lightingPreparedCamera = null;
+      return;
+    }
     const gaussianSplatRenderer =
       GaussianSplatRenderer.gaussianSplatOverride ?? this;
 
@@ -700,6 +736,9 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       | THREE.PerspectiveCamera
       | THREE.OrthographicCamera;
 
+    this.uniforms.lightingEnabled.value = gaussianSplatRenderer.lighting;
+    this.uniforms.viewToWorld.value.copy(camera.matrixWorld);
+    this.uniforms.projectionInverse.value.copy(camera.projectionMatrixInverse);
     this.uniforms.near.value = typedCamera.near;
     this.uniforms.far.value = typedCamera.far;
 
@@ -774,6 +813,9 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.uniforms.splats.value = splatTextures[0];
       this.uniforms.splats2.value = splatTextures[1];
       this.uniforms.stochasticSeeds.value = display.getStochasticSeeds();
+      if (gaussianSplatRenderer.lighting) {
+        this.uniforms.splatFlags.value = display.getLightFlags();
+      }
     }
 
     gaussianSplatRenderer.dirty = false;
@@ -874,6 +916,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         camera,
         layerCamera,
         previous: this.current,
+        filter: this.filter,
       });
       // The accumulator only carries source mappings and the camera-relative
       // origin here. Projection, compaction and ordering happen on the GPU
@@ -974,6 +1017,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         timer: this.timer,
         camera,
         previous: this.current,
+        filter: this.filter,
       });
     } catch (error) {
       this.releaseAccumulator(next);
@@ -1319,6 +1363,17 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   get premultipliedAlpha(): boolean {
     return this._premultipliedAlpha;
+  }
+
+  get lighting() {
+    return this._lighting;
+  }
+
+  set lighting(value: boolean) {
+    if (this._lighting === value) return;
+    this._lighting = value;
+    this.applyMaterialState(this.stochasticFrame);
+    this.setDirty();
   }
 
   set premultipliedAlpha(value: boolean) {

@@ -1,5 +1,57 @@
 export const renderOptionGroups = [
   {
+    title: "Lighting & shadows",
+    description:
+      "Orbiting RGB point lights illuminate the model and cast shadows.",
+    options: [
+      {
+        property: "lightingEnabled",
+        label: "Point lights",
+        description: "Illuminate the model with red, green and blue lights.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "rotateLights",
+        label: "Rotate lights",
+        description:
+          "Move the lights around the model; pause to inspect shadows.",
+        defaultValue: true,
+        falseLabel: "Paused",
+        trueLabel: "Moving",
+      },
+      {
+        property: "lightShadows",
+        label: "Cast / receive shadows",
+        description: "The model casts shadows onto itself and other surfaces.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "lightAmbient",
+        label: "Ambient brightness",
+        description: "Brightness retained in areas outside the moving lights.",
+        min: 0,
+        max: 1,
+        step: 0.01,
+        defaultValue: 0.35,
+        format: (value) => value.toFixed(2),
+      },
+      {
+        property: "lightIntensity",
+        label: "Light intensity",
+        description: "Strength of the three colored lights.",
+        min: 0,
+        max: 5,
+        step: 0.05,
+        defaultValue: 0.8,
+        format: (value) => value.toFixed(2),
+      },
+    ],
+  },
+  {
     title: "Performance & diagnostics",
     description: "Frame scheduling and live metrics.",
     options: [

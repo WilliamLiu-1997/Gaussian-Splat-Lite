@@ -76,6 +76,47 @@ export class ProjectionCache {
   // 32 bytes per compact slot and eye. RGB retains half precision; alpha,
   // support radius, kernel power and view depth retain their float32 bits.
   readonly textures = [makeTexture(), makeTexture()];
+  readonly surface = [makeTexture(), makeTexture(2)];
+
+  ensureSurface(enabled: boolean) {
+    for (const texture of this.surface) {
+      texture.setSize(
+        enabled ? this.size.x : 1,
+        enabled ? this.size.y : 1,
+        enabled ? this.size.z : 1,
+      );
+    }
+  }
+
+  writeSurface(
+    index: Node<"uint">,
+    projection: SplatProjection,
+    flags: Node<"uint">,
+  ) {
+    const coord = cacheTexCoord(index, this.dimensions);
+    store(
+      this.surface[0],
+      coord,
+      N.uvec4(N.floatBitsToUint(projection.surfaceNormal), flags),
+    );
+    store(
+      this.surface[1],
+      coord,
+      N.uvec4(N.floatBitsToUint(projection.surfaceGradient), 0, 0),
+    );
+  }
+
+  readSurface(index: Node<"uint">) {
+    const coord = cacheTexCoord(index, this.dimensions);
+    const normal = loadArray(uintTexture(this.surface[0]), coord);
+    return {
+      normal: N.uintBitsToFloat(normal.xyz),
+      flags: normal.w,
+      gradient: N.uintBitsToFloat(
+        loadArray(uintTexture(this.surface[1]), coord).xy,
+      ),
+    };
+  }
   // Per-eye sorted slot and direct-slot seed; mono draws use storage buffers.
   readonly order = makeTexture(2);
   readonly size = new THREE.Vector4(1, 1, 1, 0);
@@ -236,6 +277,7 @@ export class ProjectionCache {
   }
 
   dispose() {
-    for (const texture of [...this.textures, this.order]) texture.dispose();
+    for (const texture of [...this.textures, ...this.surface, this.order])
+      texture.dispose();
   }
 }

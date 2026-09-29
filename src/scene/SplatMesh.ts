@@ -35,6 +35,10 @@ export type SplatMeshOptions = {
   splats?: Splats;
   onProgress?: (event: SplatProgressEvent) => void;
   onLoad?: (mesh: SplatMesh) => Promise<void> | void;
+  /** Receive scene lighting when GaussianSplatRenderer.lighting is enabled. */
+  receiveLight?: boolean;
+  castShadow?: boolean;
+  receiveShadow?: boolean;
   editable?: boolean;
   raycastable?: boolean;
   minRaycastOpacity?: number;
@@ -83,6 +87,7 @@ export class SplatMesh extends THREE.Object3D {
   recolor = new THREE.Color(1, 1, 1);
   opacity = 1;
   maxSh = 3;
+  receiveLight = true;
 
   edits: SplatEdit[] | null = null;
   editable: boolean;
@@ -128,6 +133,9 @@ export class SplatMesh extends THREE.Object3D {
       });
 
     this.numSplats = this.splats.getNumSplats();
+    this.receiveLight = options.receiveLight ?? true;
+    this.castShadow = options.castShadow ?? false;
+    this.receiveShadow = options.receiveShadow ?? false;
     this.editable = options.editable ?? true;
     this.raycastable = options.raycastable ?? true;
     this.minRaycastOpacity = options.minRaycastOpacity ?? 0.15;
@@ -186,7 +194,14 @@ export class SplatMesh extends THREE.Object3D {
 
   frameUpdate({ time, deltaTime, camera, globalEdits }: SplatMeshFrameContext) {
     this.onFrame?.({ mesh: this, time, deltaTime });
+    this.updateFrameState({ camera, globalEdits });
+  }
 
+  /** @internal Refresh live geometry/edit state independently of asynchronous sorting. */
+  updateFrameState({
+    camera,
+    globalEdits,
+  }: Pick<SplatMeshFrameContext, "camera" | "globalEdits">) {
     const source = this.splats;
     if (!source) {
       return;

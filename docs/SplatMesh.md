@@ -38,6 +38,9 @@ Loaded indices may differ from file order; see [data rules](Splats.md#data-rules
 | `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Per-stage loading progress](SplatLoader.md#loading-progress) callback |
 | `onLoad` | `(mesh) => void \| Promise<void>` | `undefined` | Called after initialization completes |
 | `editable` | `boolean` | `true` | Allow scene-wide and model-specific region edits |
+| `receiveLight` | `boolean` | `true` | Receive diffuse lighting when renderer lighting is enabled |
+| `castShadow` | `boolean` | `false` | Cast Gaussian shadows when renderer lighting is enabled |
+| `receiveShadow` | `boolean` | `false` | Receive shadows with diffuse lighting |
 | `raycastable` | `boolean` | `true` | Participates in Three.js raycasting |
 | `minRaycastOpacity` | `number` | `0.15` | Ignore more transparent areas when picking; higher values narrow the hit area |
 | `onFrame` | `({ mesh, time, deltaTime }) => void` | `undefined` | Called before each model update; use for animation |
@@ -45,6 +48,8 @@ Loaded indices may differ from file order; see [data rules](Splats.md#data-rules
 Choose at most one of `url`, `file`, `fileBytes`, or `splats`; mixing inputs throws.
 
 ## Common properties
+
+`receiveLight`, `castShadow`, and `receiveShadow` can also be changed after loading. See [lighting](Lighting.md) for setup and current validation limits.
 
 | Property | Type / default | Description |
 | --- | --- | --- |

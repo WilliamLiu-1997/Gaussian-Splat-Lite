@@ -27,6 +27,10 @@ export const DEFAULT_MIN_ALPHA = 0.5 / 255;
 export function makeSplatUniforms() {
   const emptySplats: THREE.Texture = emptySplatTexture;
   const uniforms = {
+    lightingEnabled: { value: false },
+    splatFlags: { value: emptyOrdering },
+    viewToWorld: { value: new THREE.Matrix4() },
+    projectionInverse: { value: new THREE.Matrix4() },
     // Size of render viewport in pixels
     renderSize: { value: new THREE.Vector2() },
     viewportOrigin: { value: new THREE.Vector2() },
@@ -84,6 +88,7 @@ export function makeSplatUniforms() {
 
 export function makeGenerateUniforms(): Uniforms {
   return {
+    lightFlags: { value: 0 },
     targetLayer: { value: 0 },
     targetBase: { value: 0 },
     targetCount: { value: 0 },

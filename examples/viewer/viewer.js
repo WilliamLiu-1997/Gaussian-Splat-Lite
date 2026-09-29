@@ -11,6 +11,7 @@ import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
 import { createFrameGate } from "./frameGate.js";
+import { createViewerLighting } from "./lighting.js";
 import { getModelRotationX } from "./modelOrientation.js";
 import {
   detectFileType,
@@ -143,6 +144,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     }
 
     state.splatRenderer = new GaussianSplatRenderer({
+      lighting: true,
       renderer: state.renderer,
       onDirty: requestRender,
       autoStochastic: previous?.splatRenderer.autoStochastic ?? false,
@@ -157,6 +159,17 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
           }
         }
       }
+    }
+    state.lighting = createViewerLighting(
+      state.renderer,
+      scene,
+      state.splatRenderer,
+    );
+    if (previous) {
+      Object.assign(state.lighting.settings, previous.lighting.settings);
+      const frame = previous.lighting.frame;
+      if (frame) state.lighting.setFrame(frame.position, frame.radius);
+      state.lighting.group.visible = false;
     }
     state.controls = new CameraController(state.renderer, scene, camera, {
       worldUp: camera.up,
@@ -186,6 +199,7 @@ function disposeRendererState(state) {
   state.frameGate?.dispose();
   state.controls?.removeEventListener("update", requestRender);
   state.controls?.dispose();
+  state.lighting?.dispose();
   state.splatRenderer?.removeFromParent();
   state.splatRenderer?.dispose();
   // An attached Inspector is owned and disposed by the renderer.
@@ -203,6 +217,8 @@ function mountRendererState(state, attachInspector = true) {
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  state.lighting.syncColors();
+  state.lighting.update(performance.now());
   renderer.outputColorSpace = outputColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
@@ -258,6 +274,8 @@ function renderFrame(time) {
     width: renderer.domElement.width,
     height: renderer.domElement.height,
   });
+  rendererState.lighting.update(time);
+  if (rendererState.lighting.animated) requestRender();
   drawFrame(time);
 }
 
@@ -303,6 +321,21 @@ const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
 const stochasticTAAPass = new StochasticTAAPass(splatRenderer);
 
 const renderOptionActions = {
+  lightingEnabled: (value) => {
+    rendererState.lighting.settings.enabled = value;
+  },
+  rotateLights: (value) => {
+    rendererState.lighting.settings.animate = value;
+  },
+  lightShadows: (value) => {
+    rendererState.lighting.settings.shadows = value;
+  },
+  lightAmbient: (value) => {
+    rendererState.lighting.settings.ambient = value;
+  },
+  lightIntensity: (value) => {
+    rendererState.lighting.settings.intensity = value;
+  },
   taaEnabled: (enabled) => {
     taaEnabled = enabled;
   },
@@ -322,6 +355,7 @@ const renderOptionActions = {
       THREE.ColorManagement.workingColorSpace = outputColorSpace;
     }
     referenceHelpers.syncColors();
+    rendererState.lighting.syncColors();
   },
   renderOnDemand: (value) => {
     renderOnDemand = value;
@@ -365,6 +399,7 @@ function detachRendererState(state) {
   state.controls.removeEventListener("update", requestRender);
   state.controls.indicator.removeFromParent();
   state.splatRenderer.removeFromParent();
+  state.lighting.group.visible = false;
 }
 
 function activateRendererState(state, attachInspector = true) {
@@ -519,6 +554,7 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  rendererState.lighting.clear();
   stochasticTAAPass.resetHistory();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -571,6 +607,10 @@ function frameSplat(splat) {
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
 
+  rendererState.lighting.setFrame(
+    frameCenter,
+    Math.min(radius, distance * 0.35),
+  );
   camera.near = radius * 0.001;
   camera.far = radius * 100;
   camera.updateProjectionMatrix();
@@ -638,6 +678,9 @@ async function initializeModel(
     model.splat = model.stream.group;
   } else {
     model.splat = new SplatMesh({
+      receiveLight: true,
+      castShadow: true,
+      receiveShadow: true,
       ...source,
       fileName: file.name,
       fileType,

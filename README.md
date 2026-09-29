@@ -160,6 +160,7 @@ Draw order and depth testing in other materials still matter. Stochastic renderi
 ## Documentation
 
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, depth, and captures.
+- [Lighting and shadows (experimental)](docs/Lighting.md) — Three.js lights, model controls, and current validation limits.
 - [StochasticResolvePass](docs/StochasticResolvePass.md) — Stochastic noise reduction, post-processing, and XR.
 - [StochasticTAAPass](docs/StochasticTAAPass.md) — Temporal anti-aliasing limited to stochastic splat regions.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.

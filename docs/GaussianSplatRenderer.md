@@ -27,6 +27,8 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `stochastic` | `boolean` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
 | `stochasticSort` | `boolean` | `true` | 16-bit front-to-back ordering for stochastic/Auto motion frames: async on WebGL and WebGL fallback, GPU sorting on native WebGPU single-view draws. Disable for source/compacted order |
 | `renderDepth` | `boolean` | `false` | Let Splats occlude later geometry on sorted frames when `depthWrite` is off |
+| `lighting` | `boolean` | `false` | Enable experimental diffuse lighting and Gaussian shadow participation; see [lighting](Lighting.md) and its validation limits |
+| `filter` | `(mesh: SplatMesh) => boolean` | `undefined` | Select visible models for color and shadow rendering |
 
 These options require the built-in materials. Stochastic rendering can look noisy while active. Automatic switching requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; captures use sorted rendering.
 

@@ -1,5 +1,6 @@
 import type { Node } from "three/webgpu";
 import type { Uniforms } from "../uniforms";
+import { poplessDepthShift } from "./poplessDepth";
 import {
   E,
   N,
@@ -45,6 +46,9 @@ export type SplatProjection = {
   rgba: Node<"vec4">;
   supportRadius: Node<"float">;
   kernelPower: Node<"float">;
+  surfaceNormal: Node<"vec3">;
+  surfaceGradient: Node<"vec2">;
+  depthShift: Node<"vec2">;
 };
 
 const scaleQuaternionToMatrix = N.Fn(
@@ -113,6 +117,7 @@ const wideSupportRadius = N.Fn(
 export function createProjectionProgram(
   uniforms: Uniforms,
   view: ProjectionView,
+  poplessDepth = false,
 ) {
   const {
     projectionMatrix,
@@ -123,6 +128,7 @@ export function createProjectionProgram(
     far,
     renderSize,
   } = view;
+  const lighting = uniformBinding(uniforms, "lightingEnabled", "bool");
   const maxStdDev = uniformBinding(uniforms, "maxStdDev", "float");
   const minPixelRadius = uniformBinding(uniforms, "minPixelRadius", "float");
   const maxPixelRadius = uniformBinding(uniforms, "maxPixelRadius", "float");
@@ -137,6 +143,7 @@ export function createProjectionProgram(
     // packed accumulator; native compute consumes transformed float32 values.
     const packed = "first" in source;
     const valid = N.bool(false).toVar();
+    const depthShift = N.vec2(0).toVar();
     const projectedClipCenter = N.vec4(0, 0, 2, 1).toVar();
     const projectedViewDepth = N.float(0).toVar();
     const projectedAxis1 = N.vec2(0).toVar();
@@ -144,6 +151,8 @@ export function createProjectionProgram(
     const projectedRgba = N.vec4(0).toVar();
     const projectedSupportRadius = N.float(0).toVar();
     const projectedKernelPower = N.float(0).toVar();
+    const surfaceNormal = N.vec3(0, 0, 1).toVar();
+    const surfaceGradient = N.vec2(0).toVar();
     const alphaShape = packed
       ? decodeAlphaShape(source.first)
       : N.vec2(source.rgba.a, source.shapeAmount).clamp(0, 1);
@@ -312,6 +321,48 @@ export function createProjectionProgram(
                   eigenVector1.y,
                   eigenVector1.x.negate(),
                 );
+                N.If(lighting, () => {
+                  const axis = N.select(
+                    scales.x
+                      .lessThanEqual(scales.y)
+                      .and(scales.x.lessThanEqual(scales.z)),
+                    N.vec3(1, 0, 0),
+                    N.select(
+                      scales.y.lessThanEqual(scales.z),
+                      N.vec3(0, 1, 0),
+                      N.vec3(0, 0, 1),
+                    ),
+                  );
+                  const normal = quatVec(viewQuaternion, axis).toVar();
+                  const towardCamera = N.select(
+                    projectionMatrix.element(2).w.equal(0),
+                    N.vec3(0, 0, 1),
+                    viewCenter.negate(),
+                  );
+                  surfaceNormal.assign(
+                    N.select(
+                      normal.dot(towardCamera).lessThan(0),
+                      normal.negate(),
+                      normal,
+                    ),
+                  );
+                  const rowZ = transposed.mul(N.vec3(0, 0, 1));
+                  const crossZ = N.vec2(rowZ.dot(p0), rowZ.dot(p1));
+                  const gradient = N.vec2(
+                    d.mul(crossZ.x).sub(b.mul(crossZ.y)),
+                    a.mul(crossZ.y).sub(b.mul(crossZ.x)),
+                  )
+                    .div(a.mul(d).sub(b.mul(b)))
+                    .mul(
+                      N.select(projectionMatrix.element(2).w.equal(0), 1, -1),
+                    );
+                  surfaceGradient.assign(
+                    N.vec2(
+                      gradient.dot(eigenVector1).mul(scale1),
+                      gradient.dot(eigenVector2).mul(scale2),
+                    ),
+                  );
+                });
                 projectedClipCenter.assign(clipCenter);
                 projectedViewDepth.assign(viewCenter.z.negate());
                 projectedAxis1.assign(
@@ -320,6 +371,17 @@ export function createProjectionProgram(
                 projectedAxis2.assign(
                   eigenVector2.mul(scale2).mul(2).div(scaledRenderSize),
                 );
+                if (poplessDepth) {
+                  depthShift.assign(
+                    poplessDepthShift(
+                      rotationScale,
+                      viewCenter,
+                      projectedAxis1,
+                      projectedAxis2,
+                      projectionMatrix,
+                    ),
+                  );
+                }
                 projectedRgba.assign(
                   N.vec4(
                     includeColor
@@ -350,6 +412,9 @@ export function createProjectionProgram(
       rgba: projectedRgba,
       supportRadius: projectedSupportRadius,
       kernelPower: projectedKernelPower,
+      surfaceNormal,
+      surfaceGradient,
+      depthShift,
     };
   };
 }

@@ -34,6 +34,18 @@ export type SplatMapping = {
 type GenerateUniforms = Record<string, THREE.IUniform>;
 type SplatDataTextures = readonly [THREE.Texture, THREE.Texture];
 
+export function collectGlobalSplatEdits(scene: THREE.Scene) {
+  const edits: SplatEdit[] = [];
+  scene.traverseVisible((node) => {
+    if (!(node instanceof SplatEdit)) return;
+    let ancestor = node.parent;
+    while (ancestor && !(ancestor instanceof SplatMesh))
+      ancestor = ancestor.parent;
+    if (!ancestor) edits.push(node);
+  });
+  return edits;
+}
+
 export class SplatAccumulator {
   time = 0;
   deltaTime = 0;
@@ -46,6 +58,7 @@ export class SplatAccumulator {
   version = -1;
   mappingVersion = -1;
 
+  private lightFlags: THREE.DataTexture | null = null;
   private transformScale = new THREE.Vector3();
   private transformQuaternion = new THREE.Quaternion();
   private fallbackGenerator: WebGLFallbackAccumulatorGenerator | null = null;
@@ -58,6 +71,8 @@ export class SplatAccumulator {
 
   dispose() {
     this.disposeStorage();
+    this.lightFlags?.dispose();
+    this.lightFlags = null;
     this.mapping = [];
     this.numSplats = 0;
     this.version = -1;
@@ -81,6 +96,35 @@ export class SplatAccumulator {
 
   getStochasticSeeds(): THREE.Texture {
     return this.target?.textures[2] ?? SplatAccumulator.emptyTexture;
+  }
+
+  getLightFlags() {
+    const rows = Math.ceil(this.numSplats / SPLAT_TEX_WIDTH);
+    const height = Math.max(1, Math.ceil(rows / 4096));
+    if (!this.lightFlags || this.lightFlags.image.height !== height) {
+      this.lightFlags?.dispose();
+      this.lightFlags = new THREE.DataTexture(
+        new Uint32Array(4096 * height),
+        4096,
+        height,
+        THREE.RedIntegerFormat,
+        THREE.UnsignedIntType,
+      );
+    }
+    const data = this.lightFlags.image.data as Uint32Array;
+    let changed = this.lightFlags.version === 0;
+    for (const { node, base, count } of this.mapping) {
+      const flags =
+        Number(node.receiveLight) | (Number(node.receiveShadow) << 1);
+      const start = base / SPLAT_TEX_WIDTH;
+      const end = Math.ceil((base + count) / SPLAT_TEX_WIDTH);
+      for (let row = start; row < end; row++) {
+        changed ||= data[row] !== flags;
+        data[row] = flags;
+      }
+    }
+    if (changed) this.lightFlags.needsUpdate = true;
+    return this.lightFlags;
   }
 
   generateMapping(splatCounts: number[], compact = false) {
@@ -146,6 +190,8 @@ export class SplatAccumulator {
       throw new Error("SplatMesh has no source");
     }
     source.setTextureUniforms(uniforms);
+    uniforms.lightFlags.value =
+      Number(mesh.receiveLight) | (Number(mesh.receiveShadow) << 1);
     // A mesh keeps its seed when other meshes enter/leave the packed mapping.
     // Combine it on the GPU with the physical source index, before LOD compaction.
     uniforms.stochasticSeedBase.value =
@@ -231,6 +277,7 @@ export class SplatAccumulator {
     camera,
     layerCamera = camera,
     previous,
+    filter,
   }: {
     renderer: GaussianSplatCompatibleRenderer;
     scene: THREE.Scene;
@@ -238,6 +285,7 @@ export class SplatAccumulator {
     camera: THREE.Camera;
     layerCamera?: THREE.Camera;
     previous: SplatAccumulator;
+    filter?: (mesh: SplatMesh) => boolean;
   }) {
     // Preserve the previous metadata before replacing this accumulator's
     // mapping. Native WebGPU prepares this metadata in place, so reading these
@@ -268,22 +316,14 @@ export class SplatAccumulator {
       }
     });
 
-    const globalEdits = new Set<SplatEdit>();
-    scene.traverseVisible((node) => {
-      if (!(node instanceof SplatEdit)) return;
-      let ancestor = node.parent;
-      while (ancestor && !(ancestor instanceof SplatMesh)) {
-        ancestor = ancestor.parent;
-      }
-      if (!ancestor) globalEdits.add(node);
-    });
+    const globalEdits = collectGlobalSplatEdits(scene);
 
     for (const mesh of allMeshes) {
       mesh.frameUpdate({
         time: this.time,
         deltaTime: this.deltaTime,
         camera,
-        globalEdits: Array.from(globalEdits),
+        globalEdits,
       });
     }
 
@@ -294,7 +334,8 @@ export class SplatAccumulator {
       if (
         node instanceof SplatMesh &&
         (layerMask & node.layers.mask) !== 0 &&
-        node.opacity > 0
+        node.opacity > 0 &&
+        (!filter || filter(node))
       ) {
         visibleMeshes.push(node);
       }
