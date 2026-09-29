@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-09-29
+
 ### Fixed
 
 - Fixed TAA output color conversion and tone mapping on WebGPU and WebGL fallback when required by the renderer settings.
@@ -17,6 +19,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - TAA selects the nearest sample directly from logarithmic depth, and its node backends match Three.js's minimum near plane when decoding it.
 - Packed per-Splat color and kernel varyings from 24 to 16 bytes across WebGL, WebGPU, and WebGL fallback. RGB and kernel power use half precision; source alpha and squared support radius retain float32 precision. RGB is capped at 65504, and kernel-power rounding can slightly change wide-kernel coverage.
 - Moved fragment support-radius rejection before unpacking kernel data and deferred color assembly until after alpha and coverage rejection on all backends.
+
+### Security
+
+- Updated the development dependency `fast-uri` to 3.1.7 to resolve high-severity security advisories.
 
 ## [1.1.7] - 2026-09-27
 
@@ -437,7 +443,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.7...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.8...HEAD
+[1.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.4...v1.1.5
