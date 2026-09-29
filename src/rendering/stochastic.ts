@@ -65,4 +65,5 @@ export const stochasticResolveMarker = Symbol("stochasticResolveMarker");
 
 export const stochasticResolveRequired = Symbol("stochasticResolveRequired");
 
+/** XY: NDC jitter; ZW: noise-atlas offset applied after wrapping to 32×32. */
 export const stochasticTemporalSample = Symbol("stochasticTemporalSample");

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { GaussianSplatRenderer } from "../rendering/GaussianSplatRenderer";
+import { TEMPORAL_SAMPLES as SAMPLES } from "../rendering/blueNoise";
 import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
@@ -15,11 +16,6 @@ import {
 import { createTAAPresentation } from "./TAAPresentation";
 import { createNodeTAAPipeline } from "./tsl/TAAPipeline";
 import { createWebGLTAAPipeline } from "./webgl/TAAPipeline";
-
-// Order the same offsets by thresholded blue-noise EMA error, keeping wrapped
-// steps balanced in both axes, including the loop boundary.
-const NOISE_PHASES = [0, 4, 1, 6, 2, 7, 3, 5] as const;
-const SAMPLES = NOISE_PHASES.length;
 
 function halton(index: number, base: number) {
   let result = 0;
@@ -94,7 +90,7 @@ export class StochasticTAAPass {
     return this._enabled && this.framesRemaining > 0;
   }
 
-  /** Schedule another 8 samples after scene/camera updates. */
+  /** Schedule another 32 samples after scene/camera updates. */
   requestRender() {
     this.framesRemaining = SAMPLES;
   }
@@ -255,7 +251,6 @@ export class StochasticTAAPass {
     const xrEnabled = renderer.xr.enabled;
     const autoClear = renderer.autoClear;
     const index = this.frame % SAMPLES;
-    const noisePhase = NOISE_PHASES[index];
     try {
       renderer.xr.enabled = false;
       for (const view of this.views) {
@@ -263,8 +258,9 @@ export class StochasticTAAPass {
         sample.set(
           (2 * (halton(index + 1, 2) - 0.5)) / size.x,
           (2 * (halton(index + 1, 3) - 0.5)) / size.y,
-          (noisePhase * 17) % 32,
-          (noisePhase * 29) % 32,
+          0,
+          // Slice zero is reserved for fixed stochastic/depth coverage.
+          (index + 1) * 32,
         );
         if (!stochastic) sample.set(0, 0, 0, 0);
         this.splatRenderer[stochasticTemporalSample](sample);

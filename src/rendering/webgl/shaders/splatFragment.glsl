@@ -40,8 +40,9 @@ void main() {
         // Stable coverage unless StochasticTAAPass supplies a temporal sample.
         uvec2 pixel = uvec2(gl_FragCoord.xy - viewportOrigin);
         uvec2 offset = uvec2(vStochasticHash, vStochasticHash >> 5u);
-        if (stochastic && !depthOnly) offset += uvec2(stochasticTemporalSample.zw);
         ivec2 coord = ivec2((pixel + offset) & uvec2(31u));
+        // Wrap within the slice before applying the temporal atlas offset.
+        if (stochastic && !depthOnly) coord += ivec2(stochasticTemporalSample.zw);
         float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 1024.0;
         if (randomValue >= alpha) {
             discard;

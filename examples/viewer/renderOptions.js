@@ -42,6 +42,15 @@ export const renderOptionGroups = [
         falseLabel: "Continuous",
         trueLabel: "On demand",
       },
+      {
+        property: "rotateTestBoxes",
+        label: "Rotate boxes",
+        description:
+          "Rotates both test boxes around the model. Pause to keep their current positions.",
+        defaultValue: true,
+        falseLabel: "Paused",
+        trueLabel: "Rotating",
+      },
     ],
   },
   {

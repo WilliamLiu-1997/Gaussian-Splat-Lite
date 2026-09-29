@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- TAA now uses 32 spatiotemporal blue-noise slices and up to 32 effective history samples across WebGL, WebGPU, and WebGL fallback. On-demand accumulation schedules 32 frames and the minimum current-frame weight is 1/32. Motion penalties and history rejection are retained. Fixed stochastic and depth-only coverage retain the original noise pattern.
+
 ## [1.1.8] - 2026-09-29
 
 ### Fixed

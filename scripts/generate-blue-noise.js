@@ -2,12 +2,17 @@ import { writeFile } from "node:fs/promises";
 
 // Ulichney's void-and-cluster method:
 // https://cv.ulichney.com/papers/1993-void-cluster.pdf
-// Run: node scripts/generate-blue-noise.js
+// Run: node scripts/generate-blue-noise.js [--temporal]
+// STBN uses spatial interactions within a slice and temporal interactions at
+// the same pixel, not a 3D Gaussian: https://arxiv.org/abs/2112.09629
+const TEMPORAL = process.argv.includes("--temporal");
 const SIZE = 32;
-const COUNT = SIZE * SIZE;
-const SIGMA = 1.1;
+const FRAMES = TEMPORAL ? 32 : 1;
+const SLICE = SIZE * SIZE;
+const COUNT = SLICE * FRAMES;
+const SIGMA = TEMPORAL ? 1.9 : 1.1;
 const BROAD_SIGMA = 2.8;
-const BROAD_WEIGHT = 2;
+const BROAD_WEIGHT = TEMPORAL ? 0 : 2;
 const INITIAL_COUNT = Math.floor(COUNT * 0.1);
 let seed = 0x47534c;
 
@@ -18,7 +23,7 @@ function random() {
 
 // Toroidal distances keep the distribution uniform across tile boundaries.
 // Two Gaussian scales control local clustering and broader density variation.
-const kernel = new Float64Array(COUNT);
+const kernel = new Float64Array(SLICE);
 for (let y = 0; y < SIZE; y++) {
   for (let x = 0; x < SIZE; x++) {
     const dx = Math.min(x, SIZE - x);
@@ -30,6 +35,10 @@ for (let y = 0; y < SIZE; y++) {
         Math.exp(-distanceSquared / (2 * BROAD_SIGMA * BROAD_SIGMA));
   }
 }
+const temporalKernel = Float64Array.from({ length: FRAMES }, (_, t) => {
+  const distance = Math.min(t, FRAMES - t);
+  return Math.exp(-(distance * distance) / (2 * SIGMA * SIGMA));
+});
 
 const occupied = new Uint8Array(COUNT);
 const density = new Float64Array(COUNT);
@@ -38,12 +47,20 @@ function setPixel(index, value) {
   const delta = value - occupied[index];
   occupied[index] = value;
   const px = index % SIZE;
-  const py = Math.floor(index / SIZE);
+  const py = Math.floor(index / SIZE) % SIZE;
+  const frame = Math.floor(index / SLICE);
+  const start = frame * SLICE;
   for (let y = 0; y < SIZE; y++) {
     const row = ((y - py + SIZE) % SIZE) * SIZE;
     for (let x = 0; x < SIZE; x++) {
-      density[y * SIZE + x] += delta * kernel[row + ((x - px + SIZE) % SIZE)];
+      density[start + y * SIZE + x] +=
+        delta * kernel[row + ((x - px + SIZE) % SIZE)];
     }
+  }
+  // The spatial kernel already includes the current voxel's self energy.
+  for (let t = 1; t < FRAMES; t++) {
+    density[((frame + t) % FRAMES) * SLICE + py * SIZE + px] +=
+      delta * temporalKernel[t];
   }
 }
 
@@ -112,11 +129,18 @@ for (let rank = COUNT / 2; rank < COUNT; rank++) {
   setPixel(pixel, 0);
 }
 
-// Each rank 0–1023 occurs once; preserve the renderer's uint16 LE format.
+// Quantize global ranks to 0–1023, preserving the shader's threshold scale.
+// Each threshold rank occurs FRAMES times across the volume.
 const output = Buffer.alloc(COUNT * 2);
-for (let i = 0; i < COUNT; i++) output.writeUInt16LE(ranks[i], i * 2);
+for (let i = 0; i < COUNT; i++)
+  output.writeUInt16LE(Math.floor(ranks[i] / FRAMES), i * 2);
 await writeFile(
-  new URL("../src/rendering/blueNoise32.bin", import.meta.url),
+  new URL(
+    `../src/rendering/${TEMPORAL ? "blueNoise32x32" : "blueNoise32"}.bin`,
+    import.meta.url,
+  ),
   output,
 );
-console.log(`Generated ${SIZE}×${SIZE} blue noise (${output.length} bytes).`);
+console.log(
+  `Generated ${SIZE}×${SIZE}×${FRAMES} blue noise (${output.length} bytes).`,
+);

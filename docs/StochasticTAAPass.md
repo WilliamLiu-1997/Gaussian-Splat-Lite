@@ -22,7 +22,7 @@ Use this pass instead of [StochasticResolvePass](StochasticResolvePass.md) for t
 | `enabled` | Default `true`; disabling draws directly without TAA |
 | `compose(renderer, scene, camera)` | Render to the current target or canvas and selectively apply TAA |
 | `resetHistory()` | Discard history after camera cuts, model edits, or scene changes |
-| `requestRender()` | Schedule 8 more stochastic samples without discarding history |
+| `requestRender()` | Schedule 32 more stochastic samples without discarding history |
 | `needsRender` | Whether an on-demand loop should keep drawing |
 | `dispose()` | Release targets, materials, and the binding |
 
@@ -30,9 +30,9 @@ Use this pass instead of [StochasticResolvePass](StochasticResolvePass.md) for t
 
 While the pass is enabled, sorted frames display immediately and refresh history for the next camera movement. This adds offscreen capture work even on sorted frames. Starting directly in manual stochastic mode builds history from noisy frames.
 
-Accumulation uses up to 8 effective samples. Motion reduces history influence, and pixels with rejected history start accumulating again.
+Accumulation uses up to 32 effective samples with a 32-frame spatiotemporal blue-noise sequence. The minimum current-frame weight is 1/32. Motion reduces history influence, and pixels with rejected history start accumulating again.
 
-For on-demand rendering, call `requestRender()` after scene/camera updates and keep drawing while `needsRender` is true. This schedules up to 8 more frames. Auto mode stops accumulation when sorting completes; manual stochastic mode can accumulate while stationary.
+For on-demand rendering, call `requestRender()` after scene/camera updates and keep drawing while `needsRender` is true. This schedules up to 32 more frames. Auto mode stops accumulation when sorting completes; manual stochastic mode can accumulate while stationary.
 
 Call `resetHistory()` after camera cuts, object movement, or model edits. View, size, scene, renderer, and color-configuration changes reset history automatically. Some noise, softened detail, or ghosting can remain, and switching to sorted rendering may still be visible.
 

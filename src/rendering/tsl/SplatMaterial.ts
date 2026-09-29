@@ -99,19 +99,17 @@ function createSplatFragment({
       N.If(stochastic.or(depthOnly), () => {
         const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
         // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
-        const offset = N.uvec2(
-          vStochasticHash,
-          vStochasticHash.shiftRight(5),
-        ).add(
-          N.select(
-            stochastic.and(depthOnly.not()),
-            N.uvec2(temporalSample.zw),
-            N.uvec2(0),
-          ),
-        );
+        const offset = N.uvec2(vStochasticHash, vStochasticHash.shiftRight(5));
         const coord = N.ivec2(
           pixel.x.add(offset.x).bitAnd(31),
           pixel.y.add(offset.y).bitAnd(31),
+        ).add(
+          // Wrap within the slice before applying the temporal atlas offset.
+          N.select(
+            stochastic.and(depthOnly.not()),
+            N.ivec2(temporalSample.zw),
+            N.ivec2(0),
+          ),
         );
         const randomValue = N.float(load2D(stochasticNoise, coord).r)
           .add(0.5)

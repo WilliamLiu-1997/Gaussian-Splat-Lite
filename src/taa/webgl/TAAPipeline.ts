@@ -1,8 +1,6 @@
 import * as THREE from "three";
+import { TEMPORAL_SAMPLES as MAX_HISTORY_SAMPLES } from "../../rendering/blueNoise";
 import { setXRRenderTargetFlag } from "../../rendering/rendererUtils";
-
-// Match Resolve's maximum history weight of 7/8.
-const MAX_HISTORY_SAMPLES = 8;
 
 const vertexShader = /* glsl */ `
 void main() { gl_Position = vec4(position, 1.0); }
@@ -127,7 +125,7 @@ void main() {
     vec2 phase = fract((previousUV - uv) * renderSize);
     vec2 coverage = max(phase, 1.0 - phase);
     float subpixel = (1.0 - coverage.x * coverage.y) / 0.75;
-    float currentWeight = clamp(0.05 + subpixel * 0.25 + motion, 0.0, 1.0);
+    float currentWeight = clamp(1.0 / float(${MAX_HISTORY_SAMPLES}) + subpixel * 0.25 + motion, 0.0, 1.0);
     currentWeight = max(currentWeight, 1.0 / (min(sampleSum / validWeight, float(${MAX_HISTORY_SAMPLES - 1})) + 1.0));
     // Count reflects the weight actually retained after motion attenuation.
     fragSamples = 1.0 / currentWeight;

@@ -1,9 +1,7 @@
 import * as THREE from "three";
 import { type Node, NodeMaterial, type WebGPURenderer } from "three/webgpu";
+import { TEMPORAL_SAMPLES as MAX_HISTORY_SAMPLES } from "../../rendering/blueNoise";
 import { N, load2D } from "../../rendering/tsl/shaderUtils";
-
-// Match Resolve's maximum history weight of 7/8.
-const MAX_HISTORY_SAMPLES = 8;
 
 /** TSL counterpart of webgl/TAAPipeline.ts; keep the resolve rules in sync. */
 export function createNodeTAAPipeline(
@@ -203,7 +201,7 @@ export function createNodeTAAPipeline(
                   .div(0.75);
                 const currentWeight = subpixel
                   .mul(0.25)
-                  .add(0.05)
+                  .add(1 / MAX_HISTORY_SAMPLES)
                   .add(motion)
                   .clamp(0, 1)
                   .max(

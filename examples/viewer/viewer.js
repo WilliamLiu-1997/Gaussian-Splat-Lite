@@ -66,6 +66,40 @@ const rendererParameters = {
 let outputColorSpace = THREE.SRGBColorSpace;
 THREE.ColorManagement.workingColorSpace = outputColorSpace;
 
+const testBoxes = new THREE.Group();
+const testBoxGeometry = new THREE.BoxGeometry();
+const opaqueBox = new THREE.Mesh(
+  testBoxGeometry,
+  new THREE.MeshBasicMaterial({ color: 0xff8833 }),
+);
+const transparentBox = new THREE.Mesh(
+  testBoxGeometry,
+  new THREE.MeshBasicMaterial({
+    color: 0x33ccff,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+  }),
+);
+testBoxes.add(opaqueBox, transparentBox);
+testBoxes.visible = false;
+scene.add(testBoxes);
+let testBoxOrbitRadius = 1;
+let rotateTestBoxes = true;
+let testBoxAngle = 0;
+let testBoxLastTime = null;
+
+function updateTestBoxes() {
+  opaqueBox.position.set(
+    Math.cos(testBoxAngle) * testBoxOrbitRadius,
+    0,
+    Math.sin(testBoxAngle) * testBoxOrbitRadius,
+  );
+  transparentBox.position.copy(opaqueBox.position).negate();
+  opaqueBox.rotation.set(testBoxAngle * 0.5, testBoxAngle, 0);
+  transparentBox.rotation.set(0, -testBoxAngle, testBoxAngle * 0.5);
+}
+
 function configureRenderer(value) {
   value.setClearColor(0x000000, 0);
   value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -203,6 +237,8 @@ function mountRendererState(state, attachInspector = true) {
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  opaqueBox.material.color.setHex(0xff8833);
+  transparentBox.material.color.setHex(0x33ccff);
   renderer.outputColorSpace = outputColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
@@ -258,6 +294,14 @@ function renderFrame(time) {
     width: renderer.domElement.width,
     height: renderer.domElement.height,
   });
+  if (testBoxes.visible && rotateTestBoxes) {
+    if (testBoxLastTime !== null) {
+      testBoxAngle += (time - testBoxLastTime) * 0.0005;
+    }
+    updateTestBoxes();
+    requestRender();
+  }
+  testBoxLastTime = time;
   drawFrame(time);
 }
 
@@ -303,6 +347,10 @@ const stochasticResolvePass = new StochasticResolvePass(splatRenderer);
 const stochasticTAAPass = new StochasticTAAPass(splatRenderer);
 
 const renderOptionActions = {
+  rotateTestBoxes: (enabled) => {
+    rotateTestBoxes = enabled;
+    testBoxLastTime = null;
+  },
   taaEnabled: (enabled) => {
     taaEnabled = enabled;
   },
@@ -519,6 +567,7 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  testBoxes.visible = false;
   stochasticTAAPass.resetHistory();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -570,6 +619,13 @@ function frameSplat(splat) {
   const distance = streamed
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
+
+  testBoxes.position.copy(frameCenter);
+  testBoxOrbitRadius = distance * 0.8;
+  opaqueBox.scale.setScalar(distance * 0.15);
+  transparentBox.scale.copy(opaqueBox.scale);
+  testBoxes.visible = true;
+  updateTestBoxes();
 
   camera.near = radius * 0.001;
   camera.far = radius * 100;
@@ -878,6 +934,9 @@ window.addEventListener("beforeunload", () => {
   stochasticResolvePass.dispose();
   stochasticTAAPass.dispose();
   referenceHelpers.dispose();
+  testBoxGeometry.dispose();
+  opaqueBox.material.dispose();
+  transparentBox.material.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);
   ui.dispose();
