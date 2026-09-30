@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Removed stochastic rendering and the companion depth draw across WebGL2, native WebGPU, and WebGPURenderer's WebGL2 fallback. Removed `autoStochastic`, `stochastic`, `stochasticSort`, `stochasticActive`, `renderDepth`, and `depthMesh`, plus the exported `StochasticResolvePass` and `StochasticTAAPass` classes. Remove those options and imports, and use `renderer.render(scene, camera)` for scene rendering. Normal sorted rendering, `depthTest`, `depthWrite`, and captures remain available.
+- Removed the associated viewer controls, blue-noise resources, seed buffers, shader variants, and 16-bit front-to-back Worker/WASM and GPU sorting paths.
+
 ## [1.1.8] - 2026-09-29
 
 ### Fixed

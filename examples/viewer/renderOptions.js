@@ -45,42 +45,6 @@ export const renderOptionGroups = [
     ],
   },
   {
-    title: "Rendering",
-    description: "Stochastic transparency and depth output.",
-    options: [
-      {
-        property: "taaEnabled",
-        label: "TAA",
-        description:
-          "TAA accumulates stochastic samples across frames, even when the camera is still. Resolve smooths each frame and uses history only during camera motion.",
-        defaultValue: true,
-        falseLabel: "Resolve",
-        trueLabel: "TAA",
-      },
-      {
-        property: "stochasticMode",
-        label: "Stochastic",
-        description:
-          "Auto uses stochastic rendering during camera motion until a fresh sort is ready; On keeps it active; Off uses sorted rendering.",
-        defaultValue: "off",
-        choices: [
-          ["auto", "Auto"],
-          ["on", "On"],
-          ["off", "Off"],
-        ],
-      },
-      {
-        property: "renderDepth",
-        label: "Force Splat depth",
-        description:
-          "Enables the depth-only companion draw when Stochastic is Off.",
-        defaultValue: false,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
-    ],
-  },
-  {
     title: "Culling & sorting",
     description: "Trade image stability for rendering work.",
     options: [
@@ -97,15 +61,6 @@ export const renderOptionGroups = [
         label: "Fast sort",
         description:
           "Speeds up sorted rendering with a small loss of blending accuracy.",
-        defaultValue: true,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
-      {
-        property: "stochasticSort",
-        label: "Stochastic front sort",
-        description:
-          "Orders stochastic Splats from near to far to reduce overdraw. Off draws in source or compacted order.",
         defaultValue: true,
         falseLabel: "Off",
         trueLabel: "On",

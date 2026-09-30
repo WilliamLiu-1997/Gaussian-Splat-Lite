@@ -10,10 +10,9 @@ type TextureLimits = {
   maxTextureArrayLayers: number;
 };
 
-function makeTexture(channels = 4) {
+function makeTexture(format: THREE.PixelFormat = THREE.RGBAIntegerFormat) {
   const texture = new StorageArrayTexture(1, 1, 1);
-  texture.format =
-    channels === 2 ? THREE.RGIntegerFormat : THREE.RGBAIntegerFormat;
+  texture.format = format;
   texture.type = THREE.UnsignedIntType;
   texture.minFilter = THREE.NearestFilter;
   texture.magFilter = THREE.NearestFilter;
@@ -76,8 +75,8 @@ export class ProjectionCache {
   // 32 bytes per compact slot and eye. RGB retains half precision; alpha,
   // support radius, kernel power and view depth retain their float32 bits.
   readonly textures = [makeTexture(), makeTexture()];
-  // Per-eye sorted slot and direct-slot seed; mono draws use storage buffers.
-  readonly order = makeTexture(2);
+  // Per-eye sorted slot; mono draws use storage buffers.
+  readonly order = makeTexture(THREE.RedIntegerFormat);
   readonly size = new THREE.Vector4(1, 1, 1, 0);
   private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
     () => this.size,
@@ -97,15 +96,19 @@ export class ProjectionCache {
     }
   }
 
-  storeOrder(index: Node<"uint">, value: Node<"uvec4">) {
-    store(this.order, cacheTexCoord(index, this.dimensions), value);
+  storeOrder(index: Node<"uint">, value: Node<"uint">) {
+    store(
+      this.order,
+      cacheTexCoord(index, this.dimensions),
+      N.uvec4(value, 0, 0, 0),
+    );
   }
 
   readOrder(index: Node<"uint">) {
     return loadArray(
       uintTexture(this.order),
       cacheTexCoord(index, this.dimensions),
-    );
+    ).r;
   }
 
   // Call after visibility and deferred color evaluation, inside the same guard.

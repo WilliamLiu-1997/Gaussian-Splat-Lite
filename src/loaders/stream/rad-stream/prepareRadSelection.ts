@@ -111,7 +111,7 @@ function preparePool(
       }
     }
   }
-  // Traverse the Morton storage sequentially in stochastic mode. Sorted mode
+  // Traverse Morton storage sequentially. Rendering
   // still obtains its depth order from these same selected records.
   target.sort();
   let finalSelection: RadPreparedSelection["final"];

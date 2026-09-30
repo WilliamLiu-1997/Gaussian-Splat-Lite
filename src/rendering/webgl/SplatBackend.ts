@@ -27,25 +27,6 @@ export class WebGLSplatBackend {
     extension?.provokingVertexWEBGL(extension.FIRST_VERTEX_CONVENTION_WEBGL);
   }
 
-  selectMaterial(useUniform: boolean) {
-    const { material } = this;
-    const sorted = Number(!useUniform);
-    if (material.defines.GSL_SORTED_FRAGMENT !== sorted) {
-      material.defines.GSL_SORTED_FRAGMENT = sorted;
-      material.needsUpdate = true;
-    }
-    return material;
-  }
-
-  createDepthMaterial(uniforms: Uniforms) {
-    return createWebGLSplatMaterial(uniforms, {
-      premultipliedAlpha: false,
-      transparent: false,
-      depthTest: true,
-      depthWrite: true,
-    });
-  }
-
   getOrderingCapacity(count: number) {
     return this.ordering.getCapacity(count);
   }

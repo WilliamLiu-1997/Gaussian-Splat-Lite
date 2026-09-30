@@ -6,7 +6,6 @@ import {
 } from "../data/defines";
 import { emptySplatTexture } from "../data/textureLayout";
 import { SplatEdits } from "../scene/SplatEdit";
-import { createBlueNoiseTexture } from "./blueNoise";
 
 export type Uniforms = Record<string, THREE.IUniform>;
 
@@ -29,7 +28,6 @@ export function makeSplatUniforms() {
   const uniforms = {
     // Size of render viewport in pixels
     renderSize: { value: new THREE.Vector2() },
-    viewportOrigin: { value: new THREE.Vector2() },
     renderOrigin: { value: new THREE.Vector3() },
     // Near and far plane distances
     near: { value: 0.1 },
@@ -58,8 +56,6 @@ export function makeSplatUniforms() {
     focalAdjustment: { value: 2.0 },
     // Whether to decode stored sRGB Splat colors before blending
     encodeLinear: { value: false },
-    // Mirrors the material flag for WebGPU's output premultiplication.
-    premultipliedAlpha: { value: true },
     // Exact draw count; the final instance may contain unused quads.
     splatCount: { value: 0 },
     // Back-to-front sort ordering of splat indices
@@ -67,17 +63,6 @@ export function makeSplatUniforms() {
     // Gsplat collection to render
     splats: { type: "t", value: emptySplats },
     splats2: { type: "t", value: emptySplats },
-    stochasticSeeds: { type: "t", value: emptySplats },
-    stochasticNoise: { value: createBlueNoiseTexture() },
-    // Stochastic transparency for automatic or forced frames
-    stochastic: { value: false },
-    stochasticOrdering: { value: false },
-    // NDC jitter (xy) and blue-noise offset (zw), owned by StochasticTAAPass.
-    stochasticTemporalSample: { value: new THREE.Vector4() },
-    // Tags accepted samples for an attached StochasticResolvePass.
-    stochasticResolve: { value: false },
-    // Depth-only companion draw after sorted frames.
-    depthOnly: { value: false },
   };
   return uniforms;
 }
@@ -87,8 +72,6 @@ export function makeGenerateUniforms(): Uniforms {
     targetLayer: { value: 0 },
     targetBase: { value: 0 },
     targetCount: { value: 0 },
-    // Stable mesh identity, independent of accumulator layout and visibility.
-    stochasticSeedBase: { value: 0 },
     sourceSplats: { value: emptySplatTexture },
     sourceSplats2: { value: emptySplatTexture },
     sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },

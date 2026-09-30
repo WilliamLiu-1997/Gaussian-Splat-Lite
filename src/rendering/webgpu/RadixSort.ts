@@ -9,7 +9,6 @@ import {
 import { N, setIndirectDispatch } from "../tsl/tslCompat";
 
 const RADIX_BITS = 4;
-const STOCHASTIC_RADIX_PASSES = 16 / RADIX_BITS;
 const RADIX_BUCKETS = 1 << RADIX_BITS;
 const WEBGPU_SORT_KEY_BITS = 32;
 const RADIX_PASSES = WEBGPU_SORT_KEY_BITS / RADIX_BITS;
@@ -27,8 +26,6 @@ type WebGPURadixSortOptions = {
   count: Node<"uint">;
   /** Matches the input key encoding for this draw. */
   fastSort: Node<"bool">;
-  /** Matches the 16-bit front-to-back stochastic keys. */
-  stochastic: Node<"bool">;
   /** Final-pass write, compiled once with the persistent sort graph. */
   storeOrder: (index: Node<"uint">, value: Node<"uint">) => void;
   maxComputeWorkgroupsPerDimension: number;
@@ -393,7 +390,6 @@ export class WebGPURadixSort {
   capacity: number;
   readonly maxCapacity: number;
   readonly nodes: ComputeNode[];
-  private readonly stochasticDispatchNodes: ComputeNode[][];
 
   private readonly elementCount = N.uniform(0, "uint");
   private readonly keys: [BufferRef, BufferRef];
@@ -448,7 +444,6 @@ export class WebGPURadixSort {
     });
     this.nodes = [setup, ...prefixNodes[PREFIX_LEVELS - 1]];
     this.dispatchNodes = prefixNodes.map(() => [setup]);
-    this.stochasticDispatchNodes = prefixNodes.map(() => [setup]);
     this.fastDispatchNodes = prefixNodes.map(() => [setup]);
     for (let pass = 0; pass < RADIX_PASSES; pass++) {
       const firstPass = pass === 0;
@@ -474,11 +469,9 @@ export class WebGPURadixSort {
         lastPass:
           pass === RADIX_PASSES - 1
             ? true
-            : pass === STOCHASTIC_RADIX_PASSES - 1
-              ? options.stochastic
-              : pass === FAST_RADIX_PASSES - 1
-                ? options.fastSort
-                : false,
+            : pass === FAST_RADIX_PASSES - 1
+              ? options.fastSort
+              : false,
         storeOrder: options.storeOrder,
       });
       setIndirectDispatch(histogram, this.sortDispatch);
@@ -487,8 +480,6 @@ export class WebGPURadixSort {
       for (let level = 0; level < PREFIX_LEVELS; level++) {
         const nodes = [histogram, ...prefixNodes[level], reorder];
         this.dispatchNodes[level].push(...nodes);
-        if (pass < STOCHASTIC_RADIX_PASSES)
-          this.stochasticDispatchNodes[level].push(...nodes);
         if (pass < FAST_RADIX_PASSES)
           this.fastDispatchNodes[level].push(...nodes);
       }
@@ -621,11 +612,7 @@ export class WebGPURadixSort {
   }
 
   /** Prepare the persistent graph; GPU count is clamped to this input bound. */
-  prepare(
-    elementCount: number,
-    fastSort = false,
-    stochastic = false,
-  ): ComputeNode[] {
+  prepare(elementCount: number, fastSort = false): ComputeNode[] {
     if (
       !Number.isSafeInteger(elementCount) ||
       elementCount < 0 ||
@@ -649,13 +636,7 @@ export class WebGPURadixSort {
       if (items === 1) break;
       lastLevel++;
     }
-    return (
-      stochastic
-        ? this.stochasticDispatchNodes
-        : fastSort
-          ? this.fastDispatchNodes
-          : this.dispatchNodes
-    )[lastLevel];
+    return (fastSort ? this.fastDispatchNodes : this.dispatchNodes)[lastLevel];
   }
 
   dispose() {

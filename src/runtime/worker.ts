@@ -47,7 +47,6 @@ function sortCenters32({
   direction,
   radial,
   fastSort,
-  frontSort = false,
   ordering,
 }: {
   numSplats: number;
@@ -55,7 +54,6 @@ function sortCenters32({
   direction: [number, number, number];
   radial: boolean;
   fastSort: boolean;
-  frontSort?: boolean;
   ordering: Uint32Array;
 }) {
   const activeSplats = sort32_centers(
@@ -64,7 +62,6 @@ function sortCenters32({
     ...direction,
     radial,
     fastSort,
-    frontSort,
     ordering,
   );
   return { activeSplats, ordering };

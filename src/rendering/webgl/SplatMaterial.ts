@@ -13,7 +13,6 @@ export function createWebGLSplatMaterial(
     ...options,
     defines: {
       SPLATS_PER_INSTANCE,
-      GSL_SORTED_FRAGMENT: 0,
     },
     glslVersion: THREE.GLSL3,
     vertexShader: shaders.splatVertex,

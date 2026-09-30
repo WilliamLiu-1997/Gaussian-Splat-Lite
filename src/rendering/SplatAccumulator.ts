@@ -79,10 +79,6 @@ export class SplatAccumulator {
       : SplatAccumulator.emptyTextures;
   }
 
-  getStochasticSeeds(): THREE.Texture {
-    return this.target?.textures[2] ?? SplatAccumulator.emptyTexture;
-  }
-
   generateMapping(splatCounts: number[], compact = false) {
     let maxSplats = 0;
     const mapping = splatCounts.map((count) => {
@@ -146,10 +142,6 @@ export class SplatAccumulator {
       throw new Error("SplatMesh has no source");
     }
     source.setTextureUniforms(uniforms);
-    // A mesh keeps its seed when other meshes enter/leave the packed mapping.
-    // Combine it on the GPU with the physical source index, before LOD compaction.
-    uniforms.stochasticSeedBase.value =
-      Math.imul(mesh.id + 1, 0x9e3779b9) >>> 0;
     uniforms.numSh.value = Math.min(mesh.maxSh, source.getNumSh());
 
     decomposeSplatTransform(

@@ -19,23 +19,6 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `autoUpdate` | `boolean` | `true` | Update visible Splats when rendering |
 | `preUpdate` | `boolean` | `true` | Update before rendering on WebGL; XR updates follow the render pass. Unused on native WebGPU |
 
-## Rendering options
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `autoStochastic` | `boolean` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
-| `stochastic` | `boolean` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
-| `stochasticSort` | `boolean` | `true` | 16-bit front-to-back ordering for stochastic/Auto motion frames: async on WebGL and WebGL fallback, GPU sorting on native WebGPU single-view draws. Disable for source/compacted order |
-| `renderDepth` | `boolean` | `false` | Let Splats occlude later geometry on sorted frames when `depthWrite` is off |
-
-These options require the built-in materials. Stochastic rendering can look noisy while active. Automatic switching requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; captures use sorted rendering.
-
-`renderDepth` lets Splats occlude geometry drawn later. Draw order and depth testing in other materials still matter; transparent edges may show noise. It does not return a depth image.
-
-### Stochastic resolve
-
-See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduction, renderer binding, post-processing, and XR usage.
-
 ## Quality and appearance options
 
 | Option | Type | Default | Description |
@@ -54,14 +37,14 @@ See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduc
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `sortRadial` | `boolean` | `false` | Sort by distance when `true`, or by camera depth when `false` |
-| `fastSort` | `boolean` | `true` | Lower-precision sorting on WebGPU and WebGL; no effect on stochastic rendering |
+| `fastSort` | `boolean` | `true` | Lower-precision sorting on WebGPU and WebGL |
 | `minSortIntervalMs` | `number` | `0` | Minimum time between WebGL sorts; unused on native WebGPU |
 | `transparent` | `boolean` | `true` | Enable transparent blending in sorted rendering |
 | `depthTest` | `boolean` | `true` | Respect depth from other geometry |
 | `depthWrite` | `boolean` | `false` | Write depth directly; normally leave off for transparent Splats |
 | `target` | `TargetOptions` | `undefined` | Set the size and options for offscreen captures |
 
-On WebGL, the current sort order stays in use until a new sort is ready. Native WebGPU sorts before drawing. Use stochastic rendering for more responsive movement, with some visible noise.
+On WebGL, the current sort order stays in use until a new sort is ready. Native WebGPU sorts before drawing.
 
 ```ts
 type TargetOptions = {
@@ -107,11 +90,9 @@ Built-in materials handle model color conversion. Use your Three.js renderer's o
 | `renderEnvMap(...)` | Capture an environment map for lighting |
 | `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
 | `dispose()` | Release this renderer's resources |
-| `stochasticActive` | Read whether the current frame uses stochastic rendering |
 | `synchronousSort` | Read whether sorting finishes before drawing: `true` on native WebGPU |
-| `depthMesh` | Depth-only mesh used by depth rendering |
 
-`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, `stochasticSort`, and `renderDepth` are also writable properties with the behavior listed above.
+`premultipliedAlpha`, `transparent`, `depthTest`, and `depthWrite` are also writable properties with the behavior listed above.
 
 For manual updates after scene or camera changes:
 

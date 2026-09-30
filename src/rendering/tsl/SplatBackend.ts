@@ -12,8 +12,7 @@ import {
 
 /** Drawing and readback shared by both WebGPURenderer backends. */
 export class NodeSplatBackend {
-  readonly sortedMaterial: SplatNodeMaterial;
-  readonly uniformMaterial: SplatNodeMaterial;
+  readonly material: SplatNodeMaterial;
 
   constructor(
     readonly renderer: WebGPURenderer,
@@ -22,39 +21,16 @@ export class NodeSplatBackend {
     orderingNode?: OrderingNode,
     vertexData?: (camera: THREE.Camera) => ProjectedVertexData,
   ) {
-    this.sortedMaterial = createSplatNodeMaterial({
+    this.material = createSplatNodeMaterial({
       uniforms,
       ...options,
       orderingNode,
       vertexData,
-      sorted: true,
     });
-    this.uniformMaterial = createSplatNodeMaterial({
-      uniforms,
-      ...options,
-      orderingNode: this.sortedMaterial.orderingNode,
-      vertexNode: this.sortedMaterial.vertexNode,
-    });
-  }
-
-  selectMaterial(useUniform: boolean) {
-    return useUniform ? this.uniformMaterial : this.sortedMaterial;
   }
 
   dispose() {
-    this.sortedMaterial.dispose();
-    this.uniformMaterial.dispose();
-  }
-
-  createDepthMaterial(uniforms: Uniforms) {
-    return createSplatNodeMaterial({
-      uniforms,
-      orderingNode: this.sortedMaterial.orderingNode,
-      premultipliedAlpha: false,
-      transparent: false,
-      depthTest: true,
-      depthWrite: true,
-    });
+    this.material.dispose();
   }
 
   async readPixels(

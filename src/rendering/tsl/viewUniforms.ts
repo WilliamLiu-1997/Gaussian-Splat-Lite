@@ -8,26 +8,20 @@ import { N, uniformBinding } from "./shaderUtils";
 export function splatViewportUniforms(
   uniforms: Uniforms,
   camera: THREE.Camera,
-) {
+): { renderSize: Node<"vec2"> } {
   const arrayCamera = camera as THREE.ArrayCamera;
   if (!arrayCamera.isArrayCamera || arrayCamera.cameras.length === 0) {
     return {
       renderSize: uniformBinding(uniforms, "renderSize", "vec2"),
-      viewportOrigin: uniformBinding(uniforms, "viewportOrigin", "vec2"),
     };
   }
 
-  const views = arrayCamera.cameras.map(() => new THREE.Vector4());
-  const viewData = N.uniformArray<"vec4">(views, "vec4").onObjectUpdate(
+  const views = arrayCamera.cameras.map(() => new THREE.Vector2());
+  const viewData = N.uniformArray<"vec2">(views, "vec2").onObjectUpdate(
     ({ camera }) => {
       (camera as THREE.ArrayCamera).cameras.forEach((eye, i) => {
         const size = uniforms.renderSize.value;
-        views[i].set(
-          eye.viewport?.z ?? size.x,
-          eye.viewport?.w ?? size.y,
-          eye.viewport?.x ?? 0,
-          eye.viewport?.y ?? 0,
-        );
+        views[i].set(eye.viewport?.z ?? size.x, eye.viewport?.w ?? size.y);
       });
     },
   );
@@ -36,18 +30,17 @@ export function splatViewportUniforms(
     ? N.builtin("gl_ViewID_OVR")
     : N.cameraIndex;
   const viewport = viewData.element(index);
-  return { renderSize: viewport.xy, viewportOrigin: viewport.zw };
+  return { renderSize: viewport };
 }
 
 export function splatViewUniforms(
   uniforms: Uniforms,
   camera: THREE.Camera,
-): Omit<ProjectionView, "projectionMatrix"> & { viewportOrigin: Node<"vec2"> } {
+): Omit<ProjectionView, "projectionMatrix"> {
   const arrayCamera = camera as THREE.ArrayCamera;
   if (!arrayCamera.isArrayCamera || arrayCamera.cameras.length === 0) {
     return {
       renderSize: uniformBinding(uniforms, "renderSize", "vec2"),
-      viewportOrigin: uniformBinding(uniforms, "viewportOrigin", "vec2"),
       renderToViewQuat: uniformBinding(uniforms, "renderToViewQuat", "vec4"),
       renderToViewPos: uniformBinding(uniforms, "renderToViewPos", "vec3"),
       renderToViewScale: uniformBinding(uniforms, "renderToViewScale", "float"),
@@ -57,9 +50,8 @@ export function splatViewUniforms(
   }
 
   // ArrayCamera draws do not call onBeforeRender separately for each eye.
-  // Pack rotation, position/scale, viewport/clipping and pixel origin per eye.
+  // Pack rotation, position/scale, viewport/clipping per eye.
   const views = arrayCamera.cameras.flatMap(() => [
-    new THREE.Vector4(),
     new THREE.Vector4(),
     new THREE.Vector4(),
     new THREE.Vector4(),
@@ -75,21 +67,20 @@ export function splatViewUniforms(
         matrix.makeTranslation(uniforms.renderOrigin.value);
         matrix.premultiply(eye.matrixWorldInverse);
         matrix.decompose(position, rotation, scale);
-        views[i * 4].set(rotation.x, rotation.y, rotation.z, rotation.w);
-        views[i * 4 + 1].set(
+        views[i * 3].set(rotation.x, rotation.y, rotation.z, rotation.w);
+        views[i * 3 + 1].set(
           position.x,
           position.y,
           position.z,
           (scale.x + scale.y + scale.z) / 3,
         );
         const size = uniforms.renderSize.value;
-        views[i * 4 + 2].set(
+        views[i * 3 + 2].set(
           eye.viewport?.z ?? size.x,
           eye.viewport?.w ?? size.y,
           eye.near,
           eye.far,
         );
-        views[i * 4 + 3].set(eye.viewport?.x ?? 0, eye.viewport?.y ?? 0, 0, 0);
       });
     },
   );
@@ -97,12 +88,11 @@ export function splatViewUniforms(
     .isMultiViewCamera
     ? N.builtin("gl_ViewID_OVR")
     : N.cameraIndex;
-  const offset = index.mul(4);
+  const offset = index.mul(3);
   const positionScale = viewData.element(offset.add(1));
   const viewportClip = viewData.element(offset.add(2));
   return {
     renderSize: viewportClip.xy,
-    viewportOrigin: viewData.element(offset.add(3)).xy,
     renderToViewQuat: viewData.element(offset),
     renderToViewPos: positionScale.xyz,
     renderToViewScale: positionScale.w,

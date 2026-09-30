@@ -21,9 +21,9 @@
 | `rust/gaussian-splat-rs/src/` | WASM bridges, typed-array output, LOD selection, sorting, and raycasting |
 | `src/runtime/` | Worker RPC, pooling, transferables, and WASM initialization |
 | `src/utils/` | Numeric conversion, spatial transforms, and Three.js helpers |
-| `src/rendering/` | Shared updates, sorting handoffs, depth, captures, and stochastic resolve |
+| `src/rendering/` | Shared updates, sorting handoffs, and captures |
 | `src/rendering/webgl/` | GLSL materials, texture generation, CPU ordering uploads, and readback |
-| `src/rendering/tsl/` | Shared TSL generation, projection, drawing, resolve, and view uniforms |
+| `src/rendering/tsl/` | Shared TSL generation, projection, drawing, and view uniforms |
 | `src/rendering/webgpu/` | Compute projection, projected caches, GPU sorting, and indirect drawing |
 | `src/rendering/webgl-fallback/` | WebGPURenderer WebGL2 raster generation and ordering uploads |
 
@@ -33,17 +33,15 @@ The renderer combines visible models using Three.js transforms, visibility, and 
 
 | Owner | Responsibility |
 | --- | --- |
-| `GaussianSplatRenderer` | Scene updates, accumulator handoff, sorting, stochastic transitions, and companion depth |
+| `GaussianSplatRenderer` | Scene updates, accumulator handoff, and sorting |
 | `SplatCapture` | Offscreen targets, supersampled readback, cube captures, and environment-map filtering |
 | `SplatAccumulator` | Scene mappings, versions, camera-relative origin, and WebGL texture generation |
-| `StochasticResolvePass` | Scene composition, noise reduction, XR eye layout, and renderer-state restoration |
-| `StochasticTAAPass` | Stochastic-only sampling jitter, selective temporal filtering, and on-demand convergence |
 | WebGL backend | GLSL materials, ordering textures, texture generation, readback, and PMREM |
 | WebGPU backend | Compute projection, caches, GPU sorting, and indirect drawing |
 | WebGL fallback backend | Raster generation and CPU-sorted ordering textures |
 | Shared TSL code | Generation and projection math, materials, color conversion, readback, and PMREM |
 
-For sorted rendering, both WebGL backends use asynchronous Worker/WASM sorting and retain the previous display until a matching order is ready. Native WebGPU keeps ordering and visible counts on the GPU and sorts before drawing; its accumulator carries mappings and edit metadata without generating combined textures. Stochastic rendering skips sorting.
+For sorted rendering, both WebGL backends use asynchronous Worker/WASM sorting and retain the previous display until a matching order is ready. Native WebGPU keeps ordering and visible counts on the GPU and sorts before drawing; its accumulator carries mappings and edit metadata without generating combined textures.
 
 In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `ProjectionCache.ts` owns projected storage, and `RadixSort.ts` owns sort passes. Both WebGL backends share `webgl/OrderingTexture.ts` for allocation and disposal, while keeping their own upload and binding paths.
 
@@ -149,6 +147,6 @@ Both schedulers defer expired-cache retirement while a new LOD decision is pendi
 
 - Applications import from `gaussian-splat-lite`, including `utils` and `defines`; source paths are internal.
 - Internal modules import helpers from their owner. `utils/index.ts` is the public entry point.
-- Keep scene updates, sorting handoffs, and stochastic transitions in shared rendering code, with backend-specific storage and output handling in each backend.
+- Keep scene updates and sorting handoffs in shared rendering code, with backend-specific storage and output handling in each backend.
 - Keep options and types beside their owner. Shared uniform defaults must not import backends; native projected-cache layouts belong in `webgpu/`, separately from packed source layouts in `data/`.
 - Keep numeric codecs separate from Three.js object unpacking so decode workers avoid scene dependencies.

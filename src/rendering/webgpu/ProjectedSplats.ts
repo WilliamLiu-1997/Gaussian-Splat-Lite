@@ -63,7 +63,6 @@ export class ProjectedSplats {
     1,
   );
   private readonly keys = buffer("gslProjectionKeys");
-  private readonly seeds = buffer("gslProjectionSeeds");
   private readonly counts = buffer("gslProjectionCounts");
   private readonly sorter: WebGPURadixSort;
   private readonly slots: ComputeSlot[] = [];
@@ -107,26 +106,19 @@ export class ProjectedSplats {
     };
     const viewBase = uniformBinding(this.state, "viewBase", "uint");
     const multiView = uniformBinding(this.state, "multiView", "bool");
-    const stochastic = uniformBinding(uniforms, "stochastic", "bool");
     // Mono draws read the buffers directly. ArrayCamera draws need every eye's
-    // order and seeds at once; the finish node or final sort scatter writes them.
+    // order at once; the final sort scatter writes it.
     // Texture arrays avoid dividing the storage-binding capacity by eye count.
     const count = N.storage(this.visibleCount, "uint")
       .setName("gslVisibleCount")
       .toReadOnly()
       .element(0);
-    const seeds = bindBuffer(this.seeds).toReadOnly();
     this.sorter = new WebGPURadixSort(1, this.keys, {
       count,
-      stochastic,
       fastSort: uniformBinding(this.state, "fastSort", "bool"),
       storeOrder: (index, value) => {
         N.If(multiView, () => {
-          // Sorted color uses x; stochastic/depth draws use direct slots and y.
-          this.cache.storeOrder(
-            viewBase.add(index),
-            N.uvec4(value, seeds.element(index), 0, 0),
-          );
+          this.cache.storeOrder(viewBase.add(index), value);
         });
       },
       maxComputeWorkgroupsPerDimension:
@@ -150,27 +142,16 @@ export class ProjectedSplats {
     const counts = bindBuffer(this.counts);
     const viewIndex = uniformBinding(this.state, "viewIndex", "uint");
     this.finish = N.Fn(() => {
-      const index = N.uint(N.instanceIndex);
-      N.If(index.equal(0), () => {
-        counts.element(viewIndex).assign(count);
-        const instances = count
-          .add(SPLATS_PER_INSTANCE - 1)
-          .div(N.uint(SPLATS_PER_INSTANCE));
-        // The first eye resets the count; later eyes extend it to their maximum.
-        drawCount.assign(
-          N.select(viewIndex.equal(0), instances, drawCount.max(instances)),
-        );
-      });
-      // Only stochastic ArrayCamera draws need this per-eye copy;
-      // mono reads seeds directly.
-      N.If(multiView.and(stochastic).and(index.lessThan(count)), () => {
-        this.cache.storeOrder(
-          viewBase.add(index),
-          N.uvec4(index, seeds.element(index), 0, 0),
-        );
-      });
+      counts.element(viewIndex).assign(count);
+      const instances = count
+        .add(SPLATS_PER_INSTANCE - 1)
+        .div(N.uint(SPLATS_PER_INSTANCE));
+      // The first eye resets the count; later eyes extend it to their maximum.
+      drawCount.assign(
+        N.select(viewIndex.equal(0), instances, drawCount.max(instances)),
+      );
     })()
-      .compute(1, [WORKGROUP_SIZE])
+      .compute(1, [1])
       .setName("Splat visible draw arguments");
     for (let i = 0; i < PROJECT_SLOTS; i++) this.slots.push(this.createSlot());
     this.ready = computeRenderer
@@ -224,13 +205,11 @@ export class ProjectedSplats {
     const sortOffset = u("sortOffset", "vec3");
     const radial = u("sortRadial", "bool");
     const fastSort = u("fastSort", "bool");
-    const stochastic = u("stochastic", "bool");
     const centerRange = u("clipXY", "float").abs().max(1).mul(1.000001);
     const pixelScale = u("renderSize", "vec2")
       .mul(u("focalAdjustment", "float"))
       .mul(0.5);
     const keys = bindBuffer(this.keys);
-    const seeds = bindBuffer(this.seeds);
     const counter = N.storage(this.visibleCount, "uint")
       .setName("gslVisibleCount")
       .toAtomic();
@@ -245,7 +224,7 @@ export class ProjectedSplats {
       const onscreen = N.all(ndc.abs().lessThanEqual(extent.add(1)));
       N.If(projection.valid.and(onscreen), () => {
         projection.rgba.rgb.assign(generated.resolveRgb());
-        // Compact survivors and their stable seeds into the same slots.
+        // Compact surviving projections into contiguous slots.
         const slot = N.atomicAdd(counter.element(0), N.uint(1)).toVar();
         this.cache.write(
           viewBase.add(slot),
@@ -254,51 +233,30 @@ export class ProjectedSplats {
           pixelScale,
           centerRange,
         );
-        seeds.element(slot).assign(generated.stochasticSeed);
-        N.If(stochastic.and(u("stochasticOrdering", "bool")), () => {
-          // Keep the high 16 bits of a front-to-back signed float key.
-          const metric = generated.center.add(sortOffset).dot(direction);
-          const bits = N.floatBitsToUint(metric);
-          const key = N.uint(0xffffffff).toVar();
-          N.If(
-            bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
-            () => {
-              key.assign(
-                N.select(
-                  bits.bitAnd(N.uint(0x80000000)).notEqual(0),
-                  bits.bitXor(N.uint(0xffffffff)),
-                  bits.bitXor(N.uint(0x80000000)),
-                ),
-              );
-            },
-          );
-          keys.element(slot).assign(key.shiftRight(16));
-        }).ElseIf(stochastic.not(), () => {
-          // Signed float keys preserve back-to-front order across negative view depths.
-          const center = generated.center.add(sortOffset);
-          const metric = N.select(
-            radial,
-            center.dot(center),
-            center.dot(direction),
-          );
-          const bits = N.floatBitsToUint(metric);
-          const key = N.uint(0xffffffff).toVar();
-          N.If(
-            bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
-            () => {
-              key.assign(
-                N.select(
-                  bits.bitAnd(N.uint(0x80000000)).notEqual(0),
-                  bits,
-                  bits.bitXor(N.uint(0x7fffffff)),
-                ),
-              );
-            },
-          );
-          // Discard low mantissa bits before storing the key. Projection/depth
-          // cache precision is independent of this sorting approximation.
-          keys.element(slot).assign(N.select(fastSort, key.shiftRight(8), key));
-        });
+        // Signed float keys preserve back-to-front order across negative view depths.
+        const center = generated.center.add(sortOffset);
+        const metric = N.select(
+          radial,
+          center.dot(center),
+          center.dot(direction),
+        );
+        const bits = N.floatBitsToUint(metric);
+        const key = N.uint(0xffffffff).toVar();
+        N.If(
+          bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
+          () => {
+            key.assign(
+              N.select(
+                bits.bitAnd(N.uint(0x80000000)).notEqual(0),
+                bits,
+                bits.bitXor(N.uint(0x7fffffff)),
+              ),
+            );
+          },
+        );
+        // Discard low mantissa bits before storing the key. Projection/depth
+        // cache precision is independent of this sorting approximation.
+        keys.element(slot).assign(N.select(fastSort, key.shiftRight(8), key));
       });
     })()
       .compute(1, [WORKGROUP_SIZE])
@@ -306,12 +264,12 @@ export class ProjectedSplats {
     return { uniforms, node };
   }
 
-  vertexData(camera: THREE.Camera, depthOnly = false): ProjectedVertexData {
+  vertexData(camera: THREE.Camera): ProjectedVertexData {
     const array = camera as THREE.ArrayCamera;
     const multiView = array.isArrayCamera === true && array.cameras.length > 0;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
-    // Both coverage branches need the eye offset before any order lookup.
+    // Compute the eye offset before looking up its order.
     const base = eye.mul(stride).toVar();
     const i = N.uint(N.instanceIndex)
       .mul(SPLATS_PER_INSTANCE)
@@ -320,8 +278,6 @@ export class ProjectedSplats {
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     const rgba = N.vec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
-    const stochasticSeed = N.uint(0).toVar();
-    const stochastic = uniformBinding(this.uniforms, "stochastic", "bool");
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
@@ -339,33 +295,14 @@ export class ProjectedSplats {
     // Indirect draws round up to whole quad groups; trim each eye before any
     // index or cache load, including the unused tail of the final instance.
     N.If(i.lessThan(counts.element(eye)), () => {
-      const cacheIndex = i.toVar();
-      if (!depthOnly) {
-        const ordered = multiView
-          ? stochastic.not()
-          : stochastic
-              .not()
-              .or(uniformBinding(this.uniforms, "stochasticOrdering", "bool"));
-        N.If(ordered, () => {
-          cacheIndex.assign(
-            multiView
-              ? this.cache.readOrder(base.add(i)).x
-              : N.storage(this.sorter.ordering, "uint")
-                  .onObjectUpdate(() => this.sorter.ordering)
-                  .toReadOnly()
-                  .element(i),
-          );
-        });
-      }
-      const assignSeed = () => {
-        stochasticSeed.assign(
-          multiView
-            ? this.cache.readOrder(base.add(i)).y
-            : bindBuffer(this.seeds).toReadOnly().element(cacheIndex),
-        );
-      };
-      if (depthOnly) assignSeed();
-      else N.If(stochastic, assignSeed);
+      const cacheIndex = (
+        multiView
+          ? this.cache.readOrder(base.add(i))
+          : N.storage(this.sorter.ordering, "uint")
+              .onObjectUpdate(() => this.sorter.ordering)
+              .toReadOnly()
+              .element(i)
+      ).toVar();
       const projected = this.cache.read(
         base.add(cacheIndex),
         pixelScale,
@@ -381,10 +318,8 @@ export class ProjectedSplats {
       clipPosition,
       rgba,
       splatUv,
-      stochasticSeed,
       supportRadiusSquared,
       kernelPower,
-      viewportOrigin: view.viewportOrigin,
     };
   }
 
@@ -427,7 +362,6 @@ export class ProjectedSplats {
     const size = getProjectionCacheSize(capacity * viewCapacity, this.limits);
     this.resizeBuffer(this.keys, capacity);
     this.sorter.resize(capacity, shrink);
-    this.resizeBuffer(this.seeds, capacity);
     this.resizeBuffer(this.counts, viewCapacity);
     this.cache.resize(size);
     this.capacity = capacity;
@@ -454,15 +388,11 @@ export class ProjectedSplats {
     this.resize(accumulator.numSplats, cameras.length, shrink);
     this.state.multiView.value = multiView;
     this.state.fastSort.value = fastSort;
-    this.finish.count =
-      multiView && this.uniforms.stochastic.value
-        ? Math.max(1, accumulator.numSplats)
-        : 1;
     this.cache.ensureOrder(multiView, shrink);
     geometry.setIndirect(this.indirect);
     geometry.setSplatCount(Math.max(1, accumulator.numSplats));
     // The accumulator version covers source, mapping, transform, animation and
-    // edit changes. Jitter and output color settings are draw-only.
+    // edit changes. Output color settings are draw-only.
     const { uniforms } = this;
     const inputs = [
       accumulator,
@@ -472,8 +402,6 @@ export class ProjectedSplats {
       cameras.length,
       radial,
       fastSort,
-      uniforms.stochastic.value,
-      uniforms.stochasticOrdering.value,
       uniforms.maxStdDev.value,
       uniforms.minPixelRadius.value,
       uniforms.maxPixelRadius.value,
@@ -548,14 +476,10 @@ export class ProjectedSplats {
         slot.node.count = count;
         pending.push(slot.node);
       }
-      pending.push(this.finish);
-      if (!this.uniforms.stochastic.value) {
-        pending.push(...this.sorter.prepare(accumulator.numSplats, fastSort));
-      } else if (!multiView && this.uniforms.stochasticOrdering.value) {
-        pending.push(
-          ...this.sorter.prepare(accumulator.numSplats, false, true),
-        );
-      }
+      pending.push(
+        this.finish,
+        ...this.sorter.prepare(accumulator.numSplats, fastSort),
+      );
       this.renderer.compute(pending);
     }
     this.projectedInputs = inputs;
@@ -575,7 +499,6 @@ export class ProjectedSplats {
     this.cache.dispose();
     this.visibleCount.dispose();
     this.keys.value.dispose();
-    this.seeds.value.dispose();
     this.counts.value.dispose();
     this.indirect.dispose();
   }

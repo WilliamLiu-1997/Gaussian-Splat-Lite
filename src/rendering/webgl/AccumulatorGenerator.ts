@@ -33,10 +33,7 @@ export function createWebGLAccumulatorTarget(
   target.scissorTest = true;
 
   const second = target.texture.clone();
-  const stochasticSeeds = target.texture.clone();
-  stochasticSeeds.format = THREE.RedIntegerFormat;
-  stochasticSeeds.name = "SplatAccumulator.stochasticSeeds";
-  target.textures = [target.texture, second, stochasticSeeds];
+  target.textures = [target.texture, second];
   return target;
 }
 

@@ -1,7 +1,6 @@
 import type { WebGPURenderer } from "three/webgpu";
 import type { SplatMaterial, SplatMaterialOptions } from "../backend";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
-import { createSplatNodeMaterial } from "../tsl/SplatMaterial";
 import type { Uniforms } from "../uniforms";
 import { ProjectedSplats } from "./ProjectedSplats";
 
@@ -31,17 +30,6 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
   }
   getOrderingCapacity(count: number) {
     return Math.max(1, count);
-  }
-
-  createDepthMaterial(uniforms: Uniforms) {
-    return createSplatNodeMaterial({
-      uniforms,
-      vertexData: (camera) => this.projection.vertexData(camera, true),
-      premultipliedAlpha: false,
-      transparent: false,
-      depthTest: true,
-      depthWrite: true,
-    });
   }
 
   bindOrdering(_material: SplatMaterial, _uniforms: Uniforms) {}

@@ -15,25 +15,15 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   function setValue(property, value, { emit = false } = {}) {
     entries.get(property).setValue(value);
     if (emit) onChange(property, getValue(property));
-    syncDependencies(property, emit);
+    syncDependencies();
   }
 
   function setHidden(property, hidden) {
     entries.get(property).row.hidden = hidden;
   }
 
-  function syncDependencies(changedProperty, emit = false) {
-    const stochasticEnabled = getValue("stochasticMode") !== "off";
-    if (changedProperty === "stochasticMode" && stochasticEnabled) {
-      if (getValue("renderDepth")) setValue("renderDepth", false, { emit });
-    }
-    const nativeWebGPU = getValue("rendererBackend") === "webgpu";
-    setHidden("renderDepth", stochasticEnabled);
-    setHidden("minSortIntervalMs", nativeWebGPU);
-    setHidden(
-      "stochasticSort",
-      getValue("rendererBackend") === "webgl-fallback",
-    );
+  function syncDependencies() {
+    setHidden("minSortIntervalMs", getValue("rendererBackend") === "webgpu");
   }
 
   function createRow(option) {
@@ -153,7 +143,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
       ];
       for (const property of order) {
         onChange(property, getValue(property));
-        syncDependencies(property, true);
+        syncDependencies();
       }
     },
   };
