@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import type { ComputeNode } from "three/webgpu";
+import type { ComputeNode, Node } from "three/webgpu";
 import {
   IndirectStorageBufferAttribute,
   StorageBufferAttribute,
   type WebGPURenderer,
 } from "three/webgpu";
 
+import { MAX_LAYERED_BATCHES } from "../LayeredOverdraw";
 import type { SplatAccumulator } from "../SplatAccumulator";
 import { SPLATS_PER_INSTANCE, type SplatGeometry } from "../SplatGeometry";
 import { createGenerateProgram } from "../tsl/GenerateProgram";
@@ -19,6 +20,8 @@ import { WebGPURadixSort } from "./RadixSort";
 
 const WORKGROUP_SIZE = 256;
 const PROJECT_SLOTS = 8;
+// [first rank, count] per layered batch and eye.
+const BATCH_RANGE_STRIDE = MAX_LAYERED_BATCHES * 2;
 
 type BufferRef = { value: StorageBufferAttribute; name: string };
 type ComputeSlot = { uniforms: Uniforms; node: ComputeNode };
@@ -80,6 +83,18 @@ export class ProjectedSplats {
   private viewCapacity = 0;
   private disposed = false;
   private projectedInputs: unknown[] = [];
+  // Layered overdraw splits each eye's sorted order into front-to-back
+  // batches. Indirect draws cover every eye's largest batch.
+  readonly batchIndirect = new IndirectStorageBufferAttribute(
+    new Uint32Array(MAX_LAYERED_BATCHES * 5),
+    1,
+  );
+  private readonly batchRanges = buffer("gslBatchRanges");
+  private readonly batchState: Uniforms = {
+    count: { value: 1 },
+    eyes: { value: 1 },
+  };
+  private batchSetup: ComputeNode | null = null;
 
   constructor(
     private readonly renderer: WebGPURenderer,
@@ -306,7 +321,15 @@ export class ProjectedSplats {
     return { uniforms, node };
   }
 
-  vertexData(camera: THREE.Camera, depthOnly = false): ProjectedVertexData {
+  /**
+   * With `batch`, reads that single-view front-to-back batch from the current
+   * back-to-front order instead of drawing every visible Splat.
+   */
+  vertexData(
+    camera: THREE.Camera,
+    depthOnly = false,
+    batch?: Node<"uint">,
+  ): ProjectedVertexData {
     const array = camera as THREE.ArrayCamera;
     const multiView = array.isArrayCamera === true && array.cameras.length > 0;
     const eye = multiView ? N.cameraIndex : N.uint(0);
@@ -336,11 +359,32 @@ export class ProjectedSplats {
       .mul(uniformBinding(this.uniforms, "focalAdjustment", "float"))
       .mul(0.5);
 
+    const ranges = batch ? bindBuffer(this.batchRanges).toReadOnly() : null;
+    const range = batch ? eye.mul(BATCH_RANGE_STRIDE).add(batch.mul(2)) : null;
+    const ordering = () =>
+      N.storage(this.sorter.ordering, "uint")
+        .onObjectUpdate(() => this.sorter.ordering)
+        .toReadOnly();
+
     // Indirect draws round up to whole quad groups; trim each eye before any
     // index or cache load, including the unused tail of the final instance.
-    N.If(i.lessThan(counts.element(eye)), () => {
+    const limit =
+      ranges && range ? ranges.element(range.add(1)) : counts.element(eye);
+    N.If(i.lessThan(limit), () => {
       const cacheIndex = i.toVar();
-      if (!depthOnly) {
+      if (ranges && range) {
+        // Walk this eye's back-to-front order in reverse from the batch's
+        // first rank.
+        const reversed = counts
+          .element(eye)
+          .sub(ranges.element(range).add(i))
+          .sub(1);
+        cacheIndex.assign(
+          multiView
+            ? this.cache.readOrder(base.add(reversed)).x
+            : ordering().element(reversed),
+        );
+      } else if (!depthOnly) {
         const ordered = multiView
           ? stochastic.not()
           : stochastic
@@ -350,10 +394,7 @@ export class ProjectedSplats {
           cacheIndex.assign(
             multiView
               ? this.cache.readOrder(base.add(i)).x
-              : N.storage(this.sorter.ordering, "uint")
-                  .onObjectUpdate(() => this.sorter.ordering)
-                  .toReadOnly()
-                  .element(i),
+              : ordering().element(i),
           );
         });
       }
@@ -365,7 +406,7 @@ export class ProjectedSplats {
         );
       };
       if (depthOnly) assignSeed();
-      else N.If(stochastic, assignSeed);
+      else if (!batch) N.If(stochastic, assignSeed);
       const projected = this.cache.read(
         base.add(cacheIndex),
         pixelScale,
@@ -386,6 +427,70 @@ export class ProjectedSplats {
       kernelPower,
       viewportOrigin: view.viewportOrigin,
     };
+  }
+
+  /**
+   * Splits each eye's latest sorted visible Splats into `count` front-to-back
+   * batches. Sizes double toward the back, so stop masks cover the nearest
+   * Splats sooner; boundaries stay on whole quad groups.
+   */
+  prepareBatches(count: number, eyes: number) {
+    this.resizeBuffer(
+      this.batchRanges,
+      Math.max(eyes, this.viewCapacity) * BATCH_RANGE_STRIDE,
+    );
+    this.batchState.count.value = count;
+    this.batchState.eyes.value = eyes;
+    this.batchSetup ??= this.createBatchSetup();
+    this.renderer.compute(this.batchSetup);
+  }
+
+  private createBatchSetup() {
+    const counts = bindBuffer(this.counts).toReadOnly();
+    const ranges = bindBuffer(this.batchRanges);
+    const args = N.storage(this.batchIndirect, "uint").setName(
+      "gslBatchIndirect",
+    );
+    const count = uniformBinding(this.batchState, "count", "uint");
+    const eyes = uniformBinding(this.batchState, "eyes", "uint");
+    const groupMask = N.uint(~(SPLATS_PER_INSTANCE - 1) >>> 0);
+    return N.Fn(() => {
+      const instances = Array.from({ length: MAX_LAYERED_BATCHES }, () =>
+        N.uint(0).toVar(),
+      );
+      N.Loop(
+        { start: N.uint(0), end: eyes, type: "uint", condition: "<" },
+        ({ i: eye }) => {
+          const visible = counts.element(eye).toVar();
+          const base = eye.mul(BATCH_RANGE_STRIDE).toVar();
+          const first = N.uint(0).toVar();
+          for (let batch = 0; batch < MAX_LAYERED_BATCHES; batch++) {
+            const end = N.select(
+              N.uint(batch + 1).lessThan(count),
+              visible.shiftRight(count.sub(batch + 1)).bitAnd(groupMask),
+              N.select(N.uint(batch).lessThan(count), visible, first),
+            ).toVar();
+            const size = end.sub(first).toVar();
+            ranges.element(base.add(batch * 2)).assign(first);
+            ranges.element(base.add(batch * 2 + 1)).assign(size);
+            instances[batch].assign(
+              instances[batch].max(
+                size.add(SPLATS_PER_INSTANCE - 1).div(SPLATS_PER_INSTANCE),
+              ),
+            );
+            first.assign(end);
+          }
+        },
+      );
+      for (let batch = 0; batch < MAX_LAYERED_BATCHES; batch++) {
+        args.element(batch * 5).assign(SPLATS_PER_INSTANCE * 6);
+        args.element(batch * 5 + 1).assign(instances[batch]);
+        for (let arg = 2; arg < 5; arg++)
+          args.element(batch * 5 + arg).assign(0);
+      }
+    })()
+      .compute(1, [1])
+      .setName("Splat layered batches");
   }
 
   private resizeBuffer(ref: BufferRef, count: number) {
@@ -578,5 +683,8 @@ export class ProjectedSplats {
     this.seeds.value.dispose();
     this.counts.value.dispose();
     this.indirect.dispose();
+    this.batchSetup?.dispose();
+    this.batchRanges.value.dispose();
+    this.batchIndirect.dispose();
   }
 }

@@ -5,6 +5,7 @@ import type {
   SplatMaterialOptions,
 } from "../backend";
 import { type Uniforms, emptyOrdering } from "../uniforms";
+import { createWebGLLayers } from "./LayeredOverdraw";
 import { OrderingTexture } from "./OrderingTexture";
 import { createWebGLSplatMaterial } from "./SplatMaterial";
 import { uploadU32DataTextureRows } from "./textureUtils";
@@ -14,10 +15,11 @@ export class WebGLSplatBackend {
   readonly kind = "webgl";
   readonly material: THREE.ShaderMaterial;
   private readonly ordering = new OrderingTexture();
+  private layeredState: ReturnType<typeof createWebGLLayers> | null = null;
 
   constructor(
     readonly renderer: THREE.WebGLRenderer,
-    uniforms: Uniforms,
+    private readonly uniforms: Uniforms,
     options: SplatMaterialOptions,
   ) {
     this.material = createWebGLSplatMaterial(uniforms, options);
@@ -35,6 +37,27 @@ export class WebGLSplatBackend {
       material.needsUpdate = true;
     }
     return material;
+  }
+
+  /** Front-to-back layer passes, created on first use; the material composites them. */
+  get layered() {
+    this.layeredState ??= createWebGLLayers(this.renderer, this.uniforms);
+    return { overdraw: this.layeredState.overdraw, material: this.material };
+  }
+
+  /** Compiles the composite branch only while layered overdraw is enabled. */
+  setLayered(enabled: boolean) {
+    const { material } = this;
+    const composite = Number(enabled);
+    if (material.defines.GSL_LAYERED_COMPOSITE !== composite) {
+      material.defines.GSL_LAYERED_COMPOSITE = composite;
+      material.needsUpdate = true;
+    }
+  }
+
+  /** Releases layer targets while layered overdraw is disabled. */
+  releaseLayered() {
+    this.layeredState?.overdraw.release();
   }
 
   createDepthMaterial(uniforms: Uniforms) {
@@ -91,6 +114,8 @@ export class WebGLSplatBackend {
   }
 
   dispose() {
+    this.layeredState?.dispose();
+    this.layeredState = null;
     this.ordering.dispose();
     this.material.dispose();
   }

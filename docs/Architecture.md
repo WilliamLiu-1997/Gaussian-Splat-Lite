@@ -45,7 +45,9 @@ The renderer combines visible models using Three.js transforms, visibility, and 
 
 For sorted rendering, both WebGL backends use asynchronous Worker/WASM sorting and retain the previous display until a matching order is ready. Native WebGPU keeps ordering and visible counts on the GPU and sorts before drawing; its accumulator carries mappings and edit metadata without generating combined textures. Stochastic rendering skips sorting.
 
-In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `ProjectionCache.ts` owns projected storage, and `RadixSort.ts` owns sort passes. Both WebGL backends share `webgl/OrderingTexture.ts` for allocation and disposal, while keeping their own upload and binding paths.
+In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `ProjectionCache.ts` owns projected storage, and `RadixSort.ts` owns sort passes.
+
+Layered overdraw keeps its targets, batch loop, and renderer-state restoration in the shared `LayeredOverdraw.ts`. Each backend supplies the pass access and batch materials: `webgpu/RenderPassSplit.ts` isolates the Three.js WebGPU internals that split the active pass, with batch ranges computed on the GPU; the WebGL backends copy depth with `webgl/LayeredDepth.ts` and plan batches on the CPU from their sorted counts. Both WebGL backends share `webgl/OrderingTexture.ts` for allocation and disposal, while keeping their own upload and binding paths.
 
 Resource rules:
 
@@ -53,6 +55,7 @@ Resource rules:
 - Keep color conversion and XR output handling with the backend that owns them.
 - `SplatCapture` owns cube targets and PMREM generators per renderer instance and releases them on disposal. Callers dispose textures returned by `renderEnvMap()`, which also releases their output render targets.
 - Capture scopes restore the renderer override, render target, and sorted-render state after use.
+- Layered overdraw runs its passes between the draws before and after the Splat's. WebGPU submits the pass's earlier draws first, then reopens it with loaded attachments and restored viewport, scissor, timestamp, and occlusion state; GL backends restore exact framebuffer bindings after depth blits. Any unexpected internal state leaves the frame on regular sorted drawing.
 
 ## Decoder boundaries
 

@@ -102,6 +102,26 @@ export const renderOptionGroups = [
         trueLabel: "On",
       },
       {
+        property: "layeredOverdraw",
+        label: "Layered overdraw",
+        description:
+          "Sorted frames draw front to back in batches and skip pixels that are already opaque. Stochastic frames draw as usual.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "layeredOverdrawBatches",
+        label: "Layered batches",
+        description:
+          "More batches stop opaque pixels sooner; each extra batch adds a stop pass.",
+        min: 2,
+        max: 8,
+        step: 1,
+        defaultValue: 4,
+        format: (value) => String(Math.round(value)),
+      },
+      {
         property: "stochasticSort",
         label: "Stochastic front sort",
         description:

@@ -30,6 +30,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     const nativeWebGPU = getValue("rendererBackend") === "webgpu";
     setHidden("renderDepth", stochasticEnabled);
     setHidden("minSortIntervalMs", nativeWebGPU);
+    setHidden("layeredOverdrawBatches", !getValue("layeredOverdraw"));
     setHidden(
       "stochasticSort",
       getValue("rendererBackend") === "webgl-fallback",

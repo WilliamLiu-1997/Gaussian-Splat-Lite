@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `layeredOverdraw` (default `false`) on native WebGPU, the WebGL fallback, and WebGLRenderer. Sorted frames reuse the current sort to draw Splats front to back in `layeredOverdrawBatches` batches (default 4, range 2-8) and stop blending pixels once they are opaque. The layers are composited at the Splat renderer's place in the draw order, with the scene's depth and stencil, and work with render targets, captures, MRT, override materials, `ArrayCamera` viewports, and XR eyes rendered into their own targets. Colors accumulate in float32 when float blending is available. Stochastic frames, MSAA targets, direct XR output, `transparent: false`, and `depthWrite: true` draw as before.
+- Viewer **Layered overdraw** and **Layered batches** render options.
+
 ## [1.1.8] - 2026-09-29
 
 ### Fixed

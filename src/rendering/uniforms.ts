@@ -78,6 +78,10 @@ export function makeSplatUniforms() {
     stochasticResolve: { value: false },
     // Depth-only companion draw after sorted frames.
     depthOnly: { value: false },
+    // Layered overdraw frames composite front-to-back layers instead of Splats.
+    layeredComposite: { value: false },
+    // Premultiplied layer RGB and remaining transmittance (GLSL composite).
+    layers: { value: null as THREE.Texture | null },
   };
   return uniforms;
 }

@@ -33,6 +33,19 @@ export type ProjectedVertexData = {
 
 export type OrderingNode = StorageBufferNode<"uint"> | TextureNode<"uvec4">;
 
+/** One front-to-back batch of the CPU-sorted order: ranks first..first+count. */
+export type LayeredBatch = {
+  first: Node<"uint">;
+  count: Node<"uint">;
+};
+
+/** Front-to-back layers that the Splat's own draw composites while active. */
+export type LayeredComposite = {
+  active: Node<"bool">;
+  /** Premultiplied RGB and remaining transmittance. */
+  layers: TextureNode<"vec4">;
+};
+
 export type SplatNodeMaterial = NodeMaterial & {
   uniforms: Uniforms;
   orderingNode: OrderingNode;
@@ -64,6 +77,7 @@ function createSplatFragment({
   temporalSample,
   depthOnly,
   premultipliedAlpha,
+  composite,
 }: {
   sorted: boolean;
   minAlpha: Node<"float">;
@@ -73,6 +87,7 @@ function createSplatFragment({
   temporalSample: Node<"vec4">;
   depthOnly: Node<"bool">;
   premultipliedAlpha: Node<"bool">;
+  composite?: LayeredComposite;
 }) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
@@ -81,7 +96,7 @@ function createSplatFragment({
   const vStochasticHash = N.varyingProperty("uint", "gslStochasticHash");
   const vViewportOrigin = N.varyingProperty("vec2", "gslViewportOrigin");
 
-  const fragmentNode = N.Fn(() => {
+  const splatColor = () => {
     const z2 = vSplatUv.dot(vSplatUv);
     z2.greaterThan(N.uintBitsToFloat(vSplat.w)).discard();
     const blueKernelPower = N.unpackHalf2x16(vSplat.y);
@@ -135,6 +150,22 @@ function createSplatFragment({
       rgba.a.assign(N.select(stochasticResolve, 2, 1));
     });
     return rgba;
+  };
+
+  const fragmentNode = N.Fn(() => {
+    if (!composite) return splatColor();
+    const color = N.vec4(0).toVar();
+    N.If(composite.active, () => {
+      const layers = load2D(composite.layers, N.ivec2(N.screenCoordinate.xy));
+      const coverage = N.float(1).sub(layers.a).toVar();
+      coverage.lessThanEqual(0).discard();
+      // Emit the coverage-weighted mean color. Either sorted blend mode then
+      // adds the accumulated premultiplied RGB over the remaining destination.
+      color.assign(N.vec4(layers.rgb.div(coverage), coverage));
+    }).Else(() => {
+      color.assign(splatColor());
+    });
+    return color;
   })();
 
   return {
@@ -173,6 +204,8 @@ export function createSplatNodeMaterial({
   depthWrite,
   sorted = false,
   vertexNode: sharedVertexNode,
+  composite,
+  batch,
 }: {
   uniforms: Uniforms;
   orderingNode?: OrderingNode;
@@ -183,6 +216,9 @@ export function createSplatNodeMaterial({
   depthWrite: boolean;
   sorted?: boolean;
   vertexNode?: Node<"vec4">;
+  composite?: LayeredComposite;
+  /** Texture-ordered drawing of one layered batch. */
+  batch?: LayeredBatch;
 }): SplatNodeMaterial {
   const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
   const splats = textureBinding(uniforms, "splats", true);
@@ -218,6 +254,7 @@ export function createSplatNodeMaterial({
       temporalSample,
       depthOnly,
       premultipliedAlpha: premultipliedAlphaNode,
+      composite,
     });
 
   function buildVertex(builder: NodeBuilder) {
@@ -266,26 +303,35 @@ export function createSplatNodeMaterial({
         "stochasticOrdering",
         "bool",
       );
-      N.If(index.lessThan(splatCount), () => {
-        splatIndex.assign(index);
-        N.If(
-          depthOnly.not().and(stochastic.not().or(stochasticOrdering)),
-          () => {
-            if ("isTextureNode" in orderingNode) {
-              const texel = index.shiftRight(2);
-              const coord = N.ivec2(
-                texel.mod(ORDERING_TEXTURE_WIDTH),
-                texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
-              );
-              splatIndex.assign(
-                load2D(orderingNode, coord).element(index.bitAnd(3)),
-              );
-            } else {
-              splatIndex.assign(orderingNode.element(index));
-            }
-          },
+      const orderedIndex = (rank: Node<"uint">) => {
+        if (!("isTextureNode" in orderingNode)) {
+          return orderingNode.element(rank);
+        }
+        const texel = rank.shiftRight(2);
+        const coord = N.ivec2(
+          texel.mod(ORDERING_TEXTURE_WIDTH),
+          texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
         );
-      });
+        return load2D(orderingNode, coord).element(rank.bitAnd(3));
+      };
+      if (batch) {
+        N.If(index.lessThan(batch.count), () => {
+          // Walk the back-to-front order in reverse from the batch's first rank.
+          splatIndex.assign(
+            orderedIndex(splatCount.sub(batch.first.add(index)).sub(1)),
+          );
+        });
+      } else {
+        N.If(index.lessThan(splatCount), () => {
+          splatIndex.assign(index);
+          N.If(
+            depthOnly.not().and(stochastic.not().or(stochasticOrdering)),
+            () => {
+              splatIndex.assign(orderedIndex(index));
+            },
+          );
+        });
+      }
 
       N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {
         const texCoord = splatTexCoord(splatIndex);
@@ -325,6 +371,15 @@ export function createSplatNodeMaterial({
     N.If(stochastic.and(depthOnly.not()), () => {
       clipPosition.xy.addAssign(temporalSample.xy.mul(clipPosition.w));
     });
+    if (composite) {
+      N.If(composite.active, () => {
+        // Composite draws cover the viewport with the first quad. Reflecting Y
+        // keeps its local winding front-facing without the covariance basis.
+        clipPosition.assign(
+          N.vec4(N.positionGeometry.x, N.positionGeometry.y.negate(), 0.5, 1),
+        );
+      });
+    }
     return clipPosition;
   }
 

@@ -27,10 +27,20 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 | `stochastic` | `boolean` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
 | `stochasticSort` | `boolean` | `true` | 16-bit front-to-back ordering for stochastic/Auto motion frames: async on WebGL and WebGL fallback, GPU sorting on native WebGPU single-view draws. Disable for source/compacted order |
 | `renderDepth` | `boolean` | `false` | Let Splats occlude later geometry on sorted frames when `depthWrite` is off |
+| `layeredOverdraw` | `boolean` | `false` | Draw sorted frames front to back and stop at opaque pixels |
+| `layeredOverdrawBatches` | `number` | `4` | Front-to-back batch count for `layeredOverdraw`, from 2 to 8 |
 
 These options require the built-in materials. Stochastic rendering can look noisy while active. Automatic switching requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; captures use sorted rendering.
 
 `renderDepth` lets Splats occlude geometry drawn later. Draw order and depth testing in other materials still matter; transparent edges may show noise. It does not return a depth image.
+
+### Layered overdraw
+
+`layeredOverdraw` reduces blending work on sorted frames. It reuses the current sort and draws Splats front to back in `layeredOverdrawBatches` batches, each twice the size of the one before. Between batches, pixels whose remaining transmittance is at most 1/1024 are masked so that farther Splats fail the depth test there. The result is composited where the Splat renderer would normally draw, against the same depth and stencil, so other scene objects and draw order are unchanged.
+
+It works on native WebGPU, the WebGL fallback, and WebGLRenderer, with render targets, cube-map and offscreen captures, MRT, override materials, and `ArrayCamera` viewports. In WebXR it applies to eyes rendered into their own targets, as `StochasticTAAPass` and `StochasticResolvePass` do. Colors accumulate in float32 when float blending is available, which is usually closer to an exact blend than sorted drawing into an 8-bit canvas, and in half float otherwise.
+
+It allocates a float32 (or half-float) RGBA target, a depth copy, and an 8-bit target at the render size. Two sizes, such as a display and a capture, are kept at once. Stochastic frames, MSAA targets, direct XR output, `transparent: false`, and `depthWrite: true` draw as usual. Gains grow with overlapping Splats; measure them on your target GPUs.
 
 ### Stochastic resolve
 
@@ -111,7 +121,7 @@ Built-in materials handle model color conversion. Use your Three.js renderer's o
 | `synchronousSort` | Read whether sorting finishes before drawing: `true` on native WebGPU |
 | `depthMesh` | Depth-only mesh used by depth rendering |
 
-`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, `stochasticSort`, and `renderDepth` are also writable properties with the behavior listed above.
+`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, `stochasticSort`, `renderDepth`, `layeredOverdraw`, and `layeredOverdrawBatches` are also writable properties with the behavior listed above.
 
 For manual updates after scene or camera changes:
 

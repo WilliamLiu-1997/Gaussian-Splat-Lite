@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import { SplatWorker } from "../runtime/SplatWorker";
 import { resolveTimer } from "../utils/three";
+import { MAX_LAYERED_BATCHES } from "./LayeredOverdraw";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
 import { SplatCapture } from "./SplatCapture";
 import { SplatDepthPass } from "./SplatDepthPass";
-import { SplatGeometry } from "./SplatGeometry";
+import { SPLATS_PER_INSTANCE, SplatGeometry } from "./SplatGeometry";
 import {
   type SplatBackend,
   type SplatMaterial,
@@ -185,6 +186,23 @@ export interface GaussianSplatRendererOptions {
    */
   renderDepth?: boolean;
   /**
+   * Sorted frames draw Splats front to back in batches, reusing the current
+   * sort, and stop blending pixels once they are opaque. The result is
+   * composited at the Splat's place in the scene's draw order, against the
+   * same depth, stencil and target. Stochastic frames, MSAA targets, direct
+   * XR output, `transparent: false` and `depthWrite: true` draw as usual.
+   * Allocates a float32 (or half-float) color target, a depth copy and an
+   * 8-bit target at render size.
+   * @default false
+   */
+  layeredOverdraw?: boolean;
+  /**
+   * Front-to-back batch count for layeredOverdraw, from 2 to 8. Batch sizes
+   * double toward the back; every batch after the first adds a stop pass.
+   * @default 4
+   */
+  layeredOverdrawBatches?: number;
+  /**
    * Configures an offline render target for the GaussianSplatRenderer (as opposed to
    * rendering to the canvas). This is useful for rendering environment maps,
    * additional viewpoints, or video frame rendering.
@@ -265,6 +283,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   private _stochasticSort: boolean;
   private stochasticOrderingReady = false;
   private _renderDepth: boolean;
+  private _layeredOverdraw: boolean;
+  private _layeredOverdrawBatches: number;
+  // Depth test to restore after a composite draw, or null outside one.
+  private layeredDepthTest: boolean | null = null;
   private _premultipliedAlpha: boolean;
   private _transparent: boolean;
   private readonly sortedBlending: THREE.Blending;
@@ -340,7 +362,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       depthWrite: options.depthWrite ?? false,
     });
     const geometry = new SplatGeometry();
-    const material = backend.selectMaterial(autoStochastic || stochastic);
+    const layeredOverdraw = options.layeredOverdraw ?? false;
+    const material = selectBackendMaterial(
+      backend,
+      autoStochastic || stochastic,
+      layeredOverdraw,
+    );
 
     super(geometry, material);
     this.renderer = options.renderer;
@@ -361,6 +388,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this._stochastic = stochastic;
     this._stochasticSort = options.stochasticSort ?? true;
     this._renderDepth = renderDepth;
+    this._layeredOverdraw = layeredOverdraw;
+    this._layeredOverdrawBatches = clampLayeredBatches(
+      options.layeredOverdrawBatches ?? 4,
+    );
     this.stochasticPhase = stochastic ? "forced" : null;
     this.refreshRenderConfiguration();
     // Disable frustum culling because we want to always draw them all
@@ -630,6 +661,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     scene: THREE.Scene,
     camera: THREE.Camera,
   ) {
+    // A draw that threw before onAfterRender still holds composite state.
+    this.endLayeredFrame();
     const gaussianSplatRenderer =
       GaussianSplatRenderer.gaussianSplatOverride ?? this;
 
@@ -767,6 +800,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
           gaussianSplatRenderer.pendingProjectionShrink,
         );
         gaussianSplatRenderer.pendingProjectionShrink = false;
+        this.renderLayers(renderer, scene, camera, gaussianSplatRenderer);
       }
     } else {
       gaussianSplatRenderer.backend.bindOrdering(this.material, this.uniforms);
@@ -774,12 +808,14 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.uniforms.splats.value = splatTextures[0];
       this.uniforms.splats2.value = splatTextures[1];
       this.uniforms.stochasticSeeds.value = display.getStochasticSeeds();
+      this.renderLayers(renderer, scene, camera, gaussianSplatRenderer);
     }
 
     gaussianSplatRenderer.dirty = false;
   }
 
   onAfterRender() {
+    this.endLayeredFrame();
     const gaussianSplatRenderer =
       GaussianSplatRenderer.gaussianSplatOverride ?? this;
     if (gaussianSplatRenderer.requestMotionFollowup) {
@@ -789,12 +825,86 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     // A pending sort can settle during onBeforeRender. Finish that draw with
     // its captured uniform material before selecting the sorted variant.
     if (!this.stochasticModeEnabled && !this.stochasticFrame) {
-      const material = this.backend.selectMaterial(false);
+      const material = this.selectMaterial(false);
       if (this.material !== material) {
         this.material = material;
         this.applyMaterialState(false);
       }
     }
+  }
+
+  /**
+   * Draws this frame's front-to-back layers before the Splat's own draw,
+   * which then composites them instead of drawing Splats.
+   */
+  private renderLayers(
+    renderer: GaussianSplatCompatibleRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+    active: GaussianSplatRenderer,
+  ) {
+    const { backend, geometry } = this;
+    const override = scene.overrideMaterial as
+      | (THREE.Material & { isShadowPassMaterial?: boolean })
+      | null;
+    if (
+      !this.layeredSelected() ||
+      this.uniforms.stochastic.value ||
+      !this._transparent ||
+      this._depthWrite ||
+      active.display.numSplats === 0 ||
+      override?.isShadowPassMaterial === true ||
+      renderer !== backend.renderer
+    ) {
+      return;
+    }
+    // Drop front batches that would stay empty for this many Splats.
+    let batches = this._layeredOverdrawBatches;
+    while (
+      batches > 2 &&
+      active.display.numSplats >>> (batches - 1) < SPLATS_PER_INSTANCE
+    ) {
+      batches -= 1;
+    }
+    const { overdraw, material } = backend.layered;
+    if (!overdraw.render(camera, batches, this._depthTest)) return;
+    // The composite covers the viewport with one quad and no depth test.
+    this.layeredDepthTest = material.depthTest;
+    this.uniforms.layeredComposite.value = true;
+    material.depthTest = false;
+    if (backend.kind === "webgpu") geometry.setIndirect(null);
+    geometry.instanceCount = 1;
+    geometry.setDrawRange(0, 6);
+  }
+
+  private endLayeredFrame() {
+    const depthTest = this.layeredDepthTest;
+    if (depthTest === null) return;
+    const { backend, geometry } = this;
+    this.layeredDepthTest = null;
+    this.uniforms.layeredComposite.value = false;
+    backend.layered.material.depthTest = depthTest;
+    // The depth companion shares this geometry.
+    if (backend.kind === "webgpu") {
+      geometry.setIndirect(backend.projection.indirect);
+    }
+    geometry.setDrawRange(0, Number.POSITIVE_INFINITY);
+  }
+
+  private layeredSelected() {
+    const { backend } = this;
+    return (
+      this._layeredOverdraw &&
+      (backend.kind === "webgl" || this.material === backend.layered.material)
+    );
+  }
+
+  private selectMaterial(useUniform: boolean) {
+    return selectBackendMaterial(
+      this.backend,
+      useUniform,
+      this._layeredOverdraw,
+    );
   }
 
   clearSplats() {
@@ -1310,7 +1420,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.stochasticPhase = null;
       this.stochasticWasForced = false;
     }
-    this.material = this.backend.selectMaterial(
+    this.material = this.selectMaterial(
       this.stochasticModeEnabled || this.stochasticFrame,
     );
     this.refreshRenderConfiguration();
@@ -1431,6 +1541,33 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.setDirty();
   }
 
+  get layeredOverdraw(): boolean {
+    return this._layeredOverdraw;
+  }
+
+  set layeredOverdraw(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._layeredOverdraw) return;
+    this._layeredOverdraw = nextValue;
+    if (!nextValue) this.backend.releaseLayered();
+    this.material = this.selectMaterial(
+      this.stochasticModeEnabled || this.stochasticFrame,
+    );
+    this.refreshRenderConfiguration();
+    this.setDirty();
+  }
+
+  get layeredOverdrawBatches(): number {
+    return this._layeredOverdrawBatches;
+  }
+
+  set layeredOverdrawBatches(value: number) {
+    const nextValue = clampLayeredBatches(value);
+    if (nextValue === this._layeredOverdrawBatches) return;
+    this._layeredOverdrawBatches = nextValue;
+    if (this._layeredOverdraw) this.setDirty();
+  }
+
   get depthTest(): boolean {
     return this._depthTest;
   }
@@ -1448,6 +1585,27 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this._depthWrite = Boolean(value);
     this.refreshRenderConfiguration();
   }
+}
+
+function selectBackendMaterial(
+  backend: SplatBackend,
+  useUniform: boolean,
+  layered: boolean,
+): SplatMaterial {
+  if (backend.kind === "webgl") {
+    backend.setLayered(layered);
+    return backend.selectMaterial(useUniform);
+  }
+  return layered
+    ? backend.layered.material
+    : backend.selectMaterial(useUniform);
+}
+
+function clampLayeredBatches(value: number) {
+  const batches = Math.round(Number(value));
+  return Number.isFinite(batches)
+    ? Math.min(MAX_LAYERED_BATCHES, Math.max(2, batches))
+    : 4;
 }
 
 function isOpaqueMaterial(material: THREE.Material) {

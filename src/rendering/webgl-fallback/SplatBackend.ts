@@ -10,6 +10,7 @@ import type { SplatNodeMaterial } from "../tsl/SplatMaterial";
 import { uintTexture } from "../tsl/tslCompat";
 import { type Uniforms, emptyOrdering } from "../uniforms";
 import { OrderingTexture } from "../webgl/OrderingTexture";
+import { createFallbackLayers } from "./LayeredOverdraw";
 
 type TextureUploadBackend = {
   updateTexture(
@@ -26,13 +27,30 @@ type TextureUploadBackend = {
 export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   readonly kind = "webgl-fallback";
   private readonly ordering = new OrderingTexture();
+  private layeredState: ReturnType<typeof createFallbackLayers> | null = null;
 
   constructor(
     renderer: WebGPURenderer,
-    uniforms: Uniforms,
-    options: SplatMaterialOptions,
+    private readonly uniforms: Uniforms,
+    private readonly options: SplatMaterialOptions,
   ) {
     super(renderer, uniforms, options, uintTexture(emptyOrdering));
+  }
+
+  /** Front-to-back layer passes and their composite, created on first use. */
+  get layered() {
+    this.layeredState ??= createFallbackLayers(
+      this.renderer,
+      this.uniforms,
+      this.options,
+      this.sortedMaterial.orderingNode,
+    );
+    return this.layeredState;
+  }
+
+  /** Releases layer targets while layered overdraw is disabled. */
+  releaseLayered() {
+    this.layeredState?.overdraw.release();
   }
 
   getOrderingCapacity(count: number) {
@@ -64,6 +82,8 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
 
   dispose() {
     super.dispose();
+    this.layeredState?.dispose();
+    this.layeredState = null;
     this.ordering.dispose();
   }
 

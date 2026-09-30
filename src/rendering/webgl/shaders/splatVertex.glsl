@@ -30,6 +30,14 @@ uniform bool depthOnly;
 uniform uint splatCount;
 
 uniform usampler2D ordering;
+#if GSL_LAYERED_BATCH
+// One front-to-back batch: sorted ranks batchFirst..batchFirst+batchCount.
+uniform uint batchFirst;
+uniform uint batchCount;
+#endif
+#if GSL_LAYERED_COMPOSITE
+uniform bool layeredComposite;
+#endif
 uniform usampler2DArray splats;
 uniform usampler2DArray splats2;
 uniform usampler2DArray stochasticSeeds;
@@ -69,8 +77,23 @@ void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 
+    #if GSL_LAYERED_COMPOSITE
+    if (layeredComposite) {
+        // Composite draws cover the viewport with the first quad. Reflecting Y
+        // keeps its local winding front-facing without the covariance basis.
+        gl_Position = vec4(position.x, -position.y, 0.0, 1.0);
+        return;
+    }
+    #endif
+
     uint index = uint(gl_InstanceID) * uint(SPLATS_PER_INSTANCE) + uint(position.z);
+    #if GSL_LAYERED_BATCH
+    if (index >= batchCount) return;
+    // Walk the back-to-front order in reverse from the batch's first rank.
+    index = splatCount - 1u - (batchFirst + index);
+    #else
     if (index >= splatCount) return;
+    #endif
 
     uint splatIndex;
     if ((stochastic && !stochasticOrdering) || depthOnly) {

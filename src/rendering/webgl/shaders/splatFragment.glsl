@@ -9,6 +9,11 @@ uniform bool stochasticResolve;
 uniform bool depthOnly;
 uniform highp usampler2D stochasticNoise;
 uniform vec2 viewportOrigin;
+#if GSL_LAYERED_COMPOSITE
+uniform bool layeredComposite;
+// Premultiplied RGB and remaining transmittance.
+uniform highp sampler2D layers;
+#endif
 
 out vec4 fragColor;
 
@@ -19,6 +24,24 @@ flat in uint vStochasticHash;
 #include <logdepthbuf_pars_fragment>
 
 void main() {
+    #if GSL_LAYERED_COMPOSITE
+    if (layeredComposite) {
+        vec4 layer = texelFetch(layers, ivec2(gl_FragCoord.xy), 0);
+        float coverage = 1.0 - layer.a;
+        if (coverage <= 0.0) {
+            discard;
+        }
+        // Either sorted blend mode then adds the accumulated premultiplied RGB
+        // over the remaining destination.
+        #ifdef PREMULTIPLIED_ALPHA
+            fragColor = vec4(layer.rgb, coverage);
+        #else
+            fragColor = vec4(layer.rgb / coverage, coverage);
+        #endif
+        return;
+    }
+    #endif
+
     float z2 = dot(vSplatUv, vSplatUv);
     if (z2 > uintBitsToFloat(vSplat.w)) {
         discard;
