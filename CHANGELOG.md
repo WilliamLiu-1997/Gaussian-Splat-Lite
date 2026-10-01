@@ -9,12 +9,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Exported `TAAPass(scene, camera)`, temporal anti-aliasing for WebGLRenderer that renders the scene itself and needs no velocity texture. Its result matches direct canvas colors and needs no `OutputPass`; set `accumulateInOutputSpace = false` for linear effects such as Bloom. Scene depth is exposed for depth effects. WebGPURenderer continues to use Three.js `TRAANode`.
 - Added `stochasticSample` and `autoAdvanceStochasticSample` to control the stochastic noise pattern, for example in a custom temporal anti-aliasing integration.
 - Added velocity output for Three.js `TRAANode` on WebGPURenderer, including its WebGL2 fallback. When the scene pass's MRT includes `velocity`, Splats write motion from camera movement and `SplatMesh` transforms; changes to individual Splats are not tracked.
 
 ### Changed
 
-- Stochastic rendering is now manual: set `stochastic` to switch modes, and smooth its noise with Three.js temporal anti-aliasing, `TRAANode` on WebGPURenderer or `TAARenderPass` on WebGLRenderer. See [Stochastic rendering](docs/StochasticRendering.md).
+- Stochastic coverage now uses a 32-frame spatiotemporal blue-noise sequence optimized for exponential history accumulation, with stable per-Splat offsets on WebGL, WebGPU, and WebGL fallback. This reduces temporal sampling error without changing the TAA integration or its frame budget.
+- Stochastic rendering is now manual: set `stochastic` to switch modes, and smooth its noise with Three.js `TRAANode` on WebGPURenderer or the library's `TAAPass` on WebGLRenderer. See [Stochastic rendering](docs/StochasticRendering.md).
 - The stochastic noise pattern now changes on every render so temporal anti-aliasing keeps converging while the view is still. Previously it stayed fixed unless `StochasticTAAPass` supplied a temporal sample. Set `autoAdvanceStochasticSample = false` to keep it fixed.
 - On WebGL and WebGL fallback, changing `stochastic` takes effect once an update generated for the new mode is displayed; `stochasticActive` reports which mode is drawing. Native WebGPU switches immediately.
 - While stochastic rendering is active, Splats draw in the opaque list with depth testing and writing; otherwise `transparent`, `depthTest`, and `depthWrite` apply as set. Stochastic rendering no longer keeps sorted frames in the opaque list or sets `renderOrder` to `Number.MAX_SAFE_INTEGER`.
@@ -25,7 +27,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - WebXR eyes now share generation, culling, and one sort order from the head's mean pose, each with its exact projection. Native WebGPU projects both eyes in one compute pass instead of projecting and sorting each eye, so `stochasticSort` now also applies in WebXR; its two-eye kernels compile when a session starts, and Splats stay hidden until they are ready. Splats on either eye's layers are visible in both eyes.
 - `RadStreamScheduler` and `SogStreamScheduler` select detail for cameras registered with `setCamera()`, and `update()` takes no arguments; it throws if no camera is registered. Set RAD resolution with `setResolution()` or `setResolutionFromRenderer()` in CSS pixels, without the device pixel ratio, so high-DPI displays no longer load extra detail. RAD no longer defaults to 1024 × 1024 and throws for a non-XR camera without a resolution. Several cameras share one selection at the greatest detail any of them needs.
 - RAD and SOG streaming select WebXR detail with the eyes' combined frustum from a registered `renderer.xr.getCamera()`, the one Three.js culls with, instead of each eye.
-- The viewer's Stochastic control is now On/Off and smooths noise with Three.js temporal anti-aliasing. The TAA/Resolve and Force Splat depth controls were removed.
+- The viewer's Stochastic control is now On/Off and smooths noise with `TAAPass` on WebGLRenderer or Three.js `TRAANode` on WebGPURenderer. The TAA/Resolve and Force Splat depth controls were removed.
 
 ### Fixed
 
@@ -37,7 +39,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Removed
 
 - Non-XR `ArrayCamera` rendering is no longer supported: `update()` and `shrinkResources()` throw, and other draws skip Splats and log an error. Use separate cameras for other views.
-- Removed `autoStochastic`, `renderDepth`, `depthMesh`, and the exported `StochasticResolvePass` and `StochasticTAAPass`. Use `stochastic` to switch modes and Three.js passes for temporal anti-aliasing. Without the depth companion draw, sorted Splats write depth only with `depthWrite`.
+- Removed `autoStochastic`, `renderDepth`, `depthMesh`, and the exported `StochasticResolvePass` and `StochasticTAAPass`. Use `stochastic` to switch modes, `TAAPass` for WebGLRenderer, and Three.js `TRAANode` for WebGPURenderer. Without the depth companion draw, sorted Splats write depth only with `depthWrite`.
 - Removed offscreen captures and environment maps: the `target` option, the `target`, `backTarget`, `superXY`, `superPixels`, and `targetPixels` properties, and `renderTarget()`, `readTarget()`, `renderReadTarget()`, `renderCubeMap()`, `readCubeTargets()`, `renderEnvMap()`, and `recurseSetEnvMap()`. Render into Three.js render targets directly instead.
 - Removed `render()` and `GaussianSplatRenderer.gaussianSplatOverride`. Render with the Three.js renderer, and use `layers` or `visible` to choose which Splat renderer draws.
 

@@ -38,7 +38,8 @@ void main() {
     #if GSL_STOCHASTIC
     uvec2 offset = uvec2(vStochasticOffset, vStochasticOffset >> 5u);
     ivec2 coord = ivec2((uvec2(gl_FragCoord.xy) + offset) & uvec2(31u));
-    float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 1024.0;
+    coord.y += int(vStochasticOffset >> 10u) * 32;
+    float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 32768.0;
     if (randomValue >= alpha) {
         discard;
     }

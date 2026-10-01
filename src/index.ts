@@ -6,6 +6,7 @@ export {
   SplatAccumulator,
   type SplatMapping,
 } from "./rendering/SplatAccumulator";
+export { TAAPass } from "./addons/TAAPass";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {

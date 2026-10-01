@@ -8,7 +8,7 @@ precision highp usampler2DArray;
 flat out uvec4 vSplat;
 out vec2 vSplatUv;
 #if GSL_STOCHASTIC
-// Noise tile offset: x in bits 0-4, y from bit 5.
+// Noise atlas offset: x in bits 0-4, y in 5-9, temporal slice in 10-14.
 flat out uint vStochasticOffset;
 #endif
 
@@ -246,14 +246,13 @@ void main() {
 
     #if GSL_STOCHASTIC
     // Fetch stable coverage seeds only after all projection cutoffs pass.
-    // Fold the noise phase and viewport origin into one per-Splat tile offset.
-    // Rehashing with the phase gives every Splat an independent offset per
-    // sample; a shared linear step would translate the whole noise field and
-    // read as drift. Unsigned wraparound keeps the tile arithmetic exact.
+    // Keep XY fixed so consecutive samples follow the same STBN time sequence.
+    // Independent per-Splat XYZ offsets decorrelate overlapping coverage tests.
     uint seed = texelFetch(stochasticSeeds, texCoord, 0).r;
-    uint hash = hashU32(seed ^ (stochasticSample * 0x9e3779b9u));
+    uint hash = hashU32(seed);
     uvec2 offset = uvec2(hash, hash >> 5u) - uvec2(viewportOrigin);
-    vStochasticOffset = (offset.x & 31u) | (offset.y << 5u);
+    uint phase = ((hash >> 10u) + stochasticSample) & 31u;
+    vStochasticOffset = (offset.x & 31u) | ((offset.y & 31u) << 5u) | (phase << 10u);
     #endif
 
     // RGB is constant across the quad, so convert before rasterization.

@@ -746,7 +746,6 @@ function resizeRenderer() {
   renderer.setSize(width, height, false);
   camera.aspect = width / Math.max(height, 1);
   camera.updateProjectionMatrix();
-  taa?.resize();
   syncStreamResolution();
   requestRender();
 }

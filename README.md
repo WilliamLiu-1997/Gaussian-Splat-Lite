@@ -107,7 +107,7 @@ Sorted alpha blending is the default. To enable stochastic rendering:
 splatRenderer.stochastic = true;
 ```
 
-This mode produces visible noise. Add temporal anti-aliasing to smooth it, as the example viewer does. See [Stochastic rendering](docs/StochasticRendering.md) for sorting options and TAA setup.
+This mode produces visible noise. Use the library's [TAAPass](docs/TAAPass.md) with `WebGLRenderer`, or Three.js `TRAANode` with `WebGPURenderer` (including its WebGL2 fallback), to smooth it. See [Stochastic rendering](docs/StochasticRendering.md) for sorting options and TAA setup.
 
 ## Streaming large scenes
 
@@ -157,6 +157,7 @@ const streaming = new SogStreamScheduler({
 
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options and sorting.
 - [Stochastic rendering](docs/StochasticRendering.md) — Optional rendering mode, noise control, and temporal anti-aliasing.
+- [TAAPass](docs/TAAPass.md) — Temporal reprojection for WebGLRenderer without a velocity texture.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.

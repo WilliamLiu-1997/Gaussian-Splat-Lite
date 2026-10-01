@@ -1,53 +1,35 @@
-import { Matrix4, Vector2, WebGLCoordinateSystem } from "three";
-import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { TAARenderPass } from "three/addons/postprocessing/TAARenderPass.js";
+import { TAAPass } from "gaussian-splat-lite";
+import { Matrix4, WebGLCoordinateSystem } from "three";
 import { traa } from "three/addons/tsl/display/TRAANode.js";
 import * as N from "three/tsl";
 import { RenderPipeline } from "three/webgpu";
 
-// Frames to render after invalidation for WebGPU / WebGL fallback TRAA.
+// Frames to render after invalidation for temporal reprojection.
 const TAA_SETTLE_FRAMES = 32;
 
-/** Viewer-only integration of Three.js's temporal anti-aliasing effects. */
+/** Viewer-only temporal anti-aliasing integration. */
 export function createViewerTAA(renderer, scene, camera) {
-  if (renderer.isWebGPURenderer) return createNodeTAA(renderer, scene, camera);
-
-  const composer = new EffectComposer(renderer);
-  const output = new OutputPass();
-  let taa;
-  const size = new Vector2();
-  function resize() {
-    renderer.getSize(size);
-    composer.setPixelRatio(renderer.getPixelRatio());
-    composer.setSize(size.x, size.y);
-    // TAARenderPass does not resize its hold buffer; recreate it on resize.
-    if (taa) {
-      composer.removePass(taa);
-      taa.dispose();
-    }
-    taa = new TAARenderPass(scene, camera);
-    taa.accumulate = true;
-    taa.sampleLevel = 0;
-    composer.insertPass(taa, 0);
-  }
-  composer.addPass(output);
-  resize();
-  const restart = () => {
-    taa.accumulateIndex = -1;
-  };
+  const taa = renderer.isWebGPURenderer
+    ? createNodeTAA(renderer, scene, camera)
+    : new TAAPass(scene, camera);
+  let remainingFrames = TAA_SETTLE_FRAMES;
   return {
-    render: () => composer.render(),
-    invalidate: restart,
-    reset: restart,
-    resize,
+    render() {
+      taa.render(renderer);
+      remainingFrames = Math.max(0, remainingFrames - 1);
+    },
+    invalidate() {
+      remainingFrames = TAA_SETTLE_FRAMES;
+    },
+    reset() {
+      taa.reset();
+      remainingFrames = TAA_SETTLE_FRAMES;
+    },
     get needsRender() {
-      return taa.accumulateIndex < 32;
+      return remainingFrames > 0;
     },
     dispose() {
       taa.dispose();
-      output.dispose();
-      composer.dispose();
     },
   };
 }
@@ -79,26 +61,14 @@ function createNodeTAA(renderer, scene, camera) {
   }
   // TRAA reads the input size and seeds history before rendering its resolve.
   // Render the scene first, including on the first frame and after a resize.
+  // RenderPipeline applies tone mapping and output conversion after TRAA.
   const pipeline = new RenderPipeline(renderer, taa.before(scenePass));
-  let remainingFrames = TAA_SETTLE_FRAMES;
-
   return {
     render() {
       pipeline.render();
-      remainingFrames = Math.max(0, remainingFrames - 1);
-    },
-    invalidate() {
-      remainingFrames = TAA_SETTLE_FRAMES;
     },
     reset() {
       taa.setSize(1, 1);
-      remainingFrames = TAA_SETTLE_FRAMES;
-    },
-    resize() {
-      remainingFrames = TAA_SETTLE_FRAMES;
-    },
-    get needsRender() {
-      return remainingFrames > 0;
     },
     dispose() {
       pipeline.dispose();

@@ -24,9 +24,11 @@ Both options can be changed at runtime. While stochastic rendering is active, tr
 
 ## Smooth the noise
 
-Use Three.js `TRAANode` with WebGPURenderer, or `TAARenderPass` with WebGLRenderer. The examples below assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with the Splat renderer already added to the scene. They use the default `autoUpdate = true` and a single non-XR camera.
+Use the library's [TAAPass](TAAPass.md) with **WebGLRenderer**, or Three.js **TRAANode** with **WebGPURenderer** (including its WebGL2 fallback). The examples below assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with the Splat renderer already added to the scene. They use the default `autoUpdate = true` and a single non-XR camera.
 
-The noise pattern changes on each render by default so TAA can smooth it over time. The library does not add TAA or schedule these extra renders for you. With on-demand rendering, keep rendering while TAA accumulates.
+The noise pattern changes on each render by default so TAA can smooth it over time. The library does not enable TAA or schedule these extra renders for you. With on-demand rendering, keep rendering while TAA accumulates.
+
+WebGPURenderer blends in Three.js's linear working color space, which makes partially transparent Splats slightly brighter than WebGLRenderer drawing directly to the canvas. `TAAPass` matches direct canvas rendering by default; see [TAAPass color space](TAAPass.md#color-space).
 
 ### WebGPURenderer: TRAA
 
@@ -48,7 +50,10 @@ const taa = traa(
   scenePass.getTextureNode("velocity"),
   camera,
 );
-const pipeline = new RenderPipeline(renderer, taa.before(scenePass));
+const taaColor = taa.before(scenePass);
+// Chain Bloom or other linear effects from taaColor here.
+// RenderPipeline applies the final tone mapping and output conversion.
+const pipeline = new RenderPipeline(renderer, taaColor);
 
 renderer.setAnimationLoop(() => {
   // Update controls / animation here.
@@ -56,45 +61,31 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-Use `taa.before(scenePass)` so the scene renders before TRAA reads its input size and initializes history, including on the first frame and after a resize.
+Use `taa.before(scenePass)` so the scene renders before TRAA on every frame. `RenderPipeline` converts the final colors for display; no `OutputPass` is needed.
 
 Include the `velocity` output so TRAA can reproject history during movement. Camera movement and `SplatMesh` transforms are supported automatically; changes to individual Splats are not tracked. With `autoUpdate = false`, call `update()` after model changes.
 
-The pass sizes follow the renderer automatically; update the renderer size and camera projection on resize. For on-demand rendering, schedule extra frames after each change; the viewer uses 32. When finished, stop the animation loop and dispose `pipeline`, `taa`, and `scenePass`.
+The passes follow the renderer size automatically. When finished, stop the animation loop and dispose `pipeline`, `taa`, and `scenePass`.
 
 For WebGL2 fallback with `reversedDepthBuffer: true`, also apply the Three.js r186 depth correction in the [viewer example](../examples/viewer/viewerTAA.js). That example includes history reset and on-demand rendering helpers.
 
-### WebGLRenderer: TAA
+### WebGLRenderer: TAAPass
 
 ```js
-import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { TAARenderPass } from "three/addons/postprocessing/TAARenderPass.js";
+import { TAAPass } from "gaussian-splat-lite";
 
 splatRenderer.stochastic = true;
 
-const composer = new EffectComposer(renderer);
-const taa = new TAARenderPass(scene, camera);
-taa.accumulate = true;
-taa.sampleLevel = 0;
-composer.addPass(taa);
-
-const output = new OutputPass();
-composer.addPass(output);
-
-function invalidateTAA() {
-  taa.accumulateIndex = -1;
-}
-
+const taa = new TAAPass(scene, camera);
 renderer.setAnimationLoop(() => {
-  // Update controls / animation here. Call invalidateTAA() if the image changes.
-  composer.render();
+  // Update controls / animation here.
+  taa.render(renderer);
 });
 ```
 
-`TAARenderPass` renders the scene itself, so no separate `RenderPass` is needed. It accumulates 32 samples while the scene is still, without motion reprojection. Call `invalidateTAA()` whenever the camera, model, lighting, or streamed content changes; also connect it to the Splat renderer's `onDirty` callback. For on-demand rendering, continue until `taa.accumulateIndex >= 32` after each invalidation.
+`TAAPass` renders the scene itself, so no `RenderPass` or `OutputPass` is needed. It tracks camera movement but not object motion; call `taa.reset()` after a camera cut or scene replacement. See [TAAPass](TAAPass.md) for linear effects, depth effects, and offscreen rendering.
 
-On resize, update the renderer and camera, resize the composer, and recreate `TAARenderPass`: Three.js r186 does not resize its hold buffer. When finished, stop the animation loop and dispose `taa`, `output`, and `composer`. See the [viewer example](../examples/viewer/viewerTAA.js) for the resize and cleanup code.
+For on-demand rendering with either setup, keep rendering for several frames after camera, model, or streamed-content changes, including the Splat renderer's `onDirty` callback; the viewer uses 32. The [viewer example](../examples/viewer/viewerTAA.js) shows both setups.
 
 ## Control the noise pattern
 
@@ -106,6 +97,14 @@ splatRenderer.stochasticSample = 0; // Keep fixed, or increment it yourself.
 ```
 
 Set `autoAdvanceStochasticSample = true` to restore automatic updates.
+
+Coverage uses a 32-frame spatiotemporal blue-noise sequence on all backends.
+Each Splat keeps its own spatial offset and temporal phase, so consecutive
+samples follow the texture's time axis instead of choosing unrelated offsets.
+The temporal sequence is optimized for exponential history accumulation.
+The sequence wraps after 32 samples; this reduces temporal sampling error but
+does not guarantee a noise-free result after 32 renders. Keep advancing the
+sample once per scene render, including when using camera jitter.
 
 ## Return to sorted rendering
 

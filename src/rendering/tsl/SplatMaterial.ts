@@ -56,7 +56,7 @@ function createSplatFragment(
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
   const vSplat = N.varyingProperty("uvec4", "gslSplat");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
-  // Noise tile offset: x in bits 0-4, y from bit 5. See stochasticTileOffset.
+  // Atlas offset: x in bits 0-4, y in 5-9, time in 10-14. See stochasticTileOffset.
   const vStochasticOffset = stochasticNoise
     ? N.varyingProperty("uint", "gslStochasticOffset")
     : null;
@@ -78,11 +78,14 @@ function createSplatFragment(
       const pixel = N.uvec2(N.screenCoordinate.xy);
       const coord = N.ivec2(
         pixel.x.add(vStochasticOffset).bitAnd(31),
-        pixel.y.add(vStochasticOffset.shiftRight(5)).bitAnd(31),
+        pixel.y
+          .add(vStochasticOffset.shiftRight(5))
+          .bitAnd(31)
+          .add(vStochasticOffset.shiftRight(10).mul(32)),
       );
       const randomValue = N.float(load2D(stochasticNoise, coord).r)
         .add(0.5)
-        .div(1024);
+        .div(32768);
       randomValue.greaterThanEqual(alpha).discard();
     }
     // Decode color only after the fragment survives coverage tests.
@@ -101,22 +104,22 @@ function createSplatFragment(
   };
 }
 
-// Fold the temporal phase and viewport origin into the per-Splat noise offset
-// once per vertex. Rehashing with the phase gives every Splat an independent
-// tile offset per sample; a shared linear step would translate the whole noise
-// field and read as drift. Unsigned wraparound keeps the tile arithmetic exact.
+// Keep XY fixed while advancing the STBN time axis. Independent per-Splat XYZ
+// offsets decorrelate overlapping coverage tests without translating the field.
 function stochasticTileOffset(
   seed: Node<"uint">,
   sample: Node<"uint">,
   viewportOrigin: Node<"vec2">,
 ) {
-  const hash = stochasticHash(
-    seed.bitXor(sample.mul(N.uint(0x9e3779b9))),
-  ).toVar();
+  const hash = stochasticHash(seed).toVar();
   const origin = N.uvec2(viewportOrigin);
   const x = hash.sub(origin.x);
   const y = hash.shiftRight(5).sub(origin.y);
-  return x.bitAnd(31).bitOr(y.shiftLeft(5));
+  const phase = hash.shiftRight(10).add(sample).bitAnd(31);
+  return x
+    .bitAnd(31)
+    .bitOr(y.bitAnd(31).shiftLeft(5))
+    .bitOr(phase.shiftLeft(10));
 }
 
 // Half RGB saturates at its largest finite value instead of overflowing after
