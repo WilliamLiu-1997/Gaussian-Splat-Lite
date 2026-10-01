@@ -209,6 +209,10 @@ button {
   transform: translateY(0);
 }
 
+.three-inspector.viewer-inspector .toggle-text {
+  display: none;
+}
+
 .three-inspector.viewer-inspector .profiler-panel,
 .three-inspector.viewer-inspector .profiler-mini-panel,
 .three-inspector.viewer-inspector .detached-tab-panel {

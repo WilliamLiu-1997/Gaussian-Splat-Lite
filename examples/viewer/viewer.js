@@ -75,23 +75,9 @@ async function initializeWebGPURenderer(value, backend, onFailure) {
   if (backend === "webgpu" && !value.backend.isWebGPUBackend) {
     // Inspect the initialized backend without replacing Three's fallback hook.
     onFailure(
-      "Native WebGPU was not initialized. Check browser support and disable Force WebGL in Inspector Settings to use WebGPU.",
+      "Native WebGPU was not initialized. Check browser support to use WebGPU.",
     );
   }
-}
-
-function createViewerInspector(failureMessage) {
-  const inspector = new ViewerInspector();
-  if (failureMessage) inspector.console.addMessage("error", failureMessage);
-  // Leave the built-in Parameters tab hidden: only FPS and Inspector.
-  inspector.parameters.hide();
-  inspector.domElement.classList.add("viewer-inspector");
-  inspector.profiler.toggleButton.setAttribute(
-    "aria-label",
-    "Toggle Three.js Inspector",
-  );
-  inspector.profiler.toggleButton.title = "Three.js Inspector";
-  return inspector;
 }
 
 async function createRendererState(backend, previous, onFailure = () => {}) {
@@ -126,7 +112,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
         state.failureMessage = message;
         onFailure(message);
       });
-      state.inspector = createViewerInspector(state.failureMessage);
+      state.inspector = new ViewerInspector();
     }
     configureRenderer(state.renderer);
 
@@ -208,7 +194,7 @@ function mountRendererState(state, attachInspector = true) {
       renderer.inspector = inspector;
     }
   }
-  // Finalize the drawing buffer after the canvas and Inspector are mounted.
+  // Finalize the drawing buffer after the canvas is mounted.
   resizeRenderer();
 }
 
@@ -386,8 +372,7 @@ async function performRendererSwitch(backend, switchToken) {
     retiringRendererState = previous;
     activated = true;
     detachRendererState(previous);
-    // Finalize the drawing buffer before waiting for visibility. Keep the old
-    // Inspector attached until disposal, then attach the replacement once.
+    // Attach the replacement Inspector after disposing the old console hook.
     activateRendererState(next, false);
     await next.splatRenderer.update({ scene, camera });
     checkRendererSwitch(switchToken);
