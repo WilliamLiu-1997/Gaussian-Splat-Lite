@@ -10,9 +10,9 @@ type TextureLimits = {
   maxTextureArrayLayers: number;
 };
 
-function makeTexture(format: THREE.PixelFormat = THREE.RGBAIntegerFormat) {
+function makeTexture() {
   const texture = new StorageArrayTexture(1, 1, 1);
-  texture.format = format;
+  texture.format = THREE.RGBAIntegerFormat;
   texture.type = THREE.UnsignedIntType;
   texture.minFilter = THREE.NearestFilter;
   texture.magFilter = THREE.NearestFilter;
@@ -75,12 +75,17 @@ export class ProjectionCache {
   // 32 bytes per compact slot and eye. RGB retains half precision; alpha,
   // support radius, kernel power and view depth retain their float32 bits.
   readonly textures = [makeTexture(), makeTexture()];
-  // Per-eye sorted slot; mono draws use storage buffers.
-  readonly order = makeTexture(THREE.RedIntegerFormat);
+  // 16 bytes per compact slot, shared by every eye.
+  readonly motion = makeTexture();
   readonly size = new THREE.Vector4(1, 1, 1, 0);
+  private readonly motionSize = new THREE.Vector4(1, 1, 1, 0);
   private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
     () => this.size,
   );
+  private readonly motionDimensions = N.uniform(
+    this.motionSize,
+    "uvec4",
+  ).onObjectUpdate(() => this.motionSize);
 
   resize(size: ReturnType<typeof getProjectionCacheSize>) {
     for (const texture of this.textures)
@@ -88,27 +93,30 @@ export class ProjectionCache {
     this.size.set(size.width, size.height, size.depth, Math.log2(size.width));
   }
 
-  ensureOrder(multiView: boolean, shrink: boolean) {
-    if (multiView) {
-      this.order.setSize(this.size.x, this.size.y, this.size.z);
-    } else if (shrink) {
-      this.order.setSize(1, 1, 1);
-    }
+  /** Size motion storage for one eye's compact slots; no size when disabled. */
+  ensureMotion(
+    size: ReturnType<typeof getProjectionCacheSize> | undefined,
+    shrink: boolean,
+  ) {
+    if (!size && !shrink) return;
+    const { width, height, depth } = size ?? { width: 1, height: 1, depth: 1 };
+    this.motion.setSize(width, height, depth);
+    this.motionSize.set(width, height, depth, Math.log2(width));
   }
 
-  storeOrder(index: Node<"uint">, value: Node<"uint">) {
+  writeMotion(slot: Node<"uint">, center: Node<"vec3">, mesh: Node<"uint">) {
     store(
-      this.order,
-      cacheTexCoord(index, this.dimensions),
-      N.uvec4(value, 0, 0, 0),
+      this.motion,
+      cacheTexCoord(slot, this.motionDimensions),
+      N.uvec4(N.floatBitsToUint(center), mesh),
     );
   }
 
-  readOrder(index: Node<"uint">) {
+  readMotion(slot: Node<"uint">) {
     return loadArray(
-      uintTexture(this.order),
-      cacheTexCoord(index, this.dimensions),
-    ).r;
+      uintTexture(this.motion),
+      cacheTexCoord(slot, this.motionDimensions),
+    );
   }
 
   // Call after visibility and deferred color evaluation, inside the same guard.
@@ -174,16 +182,32 @@ export class ProjectionCache {
     );
   }
 
+  /**
+   * A shared WebXR slot another eye draws: a transparent record whose
+   * corners collapse to one point, behind a perspective camera.
+   */
+  writeHidden(index: Node<"uint">) {
+    const coord = cacheTexCoord(index, this.dimensions).toVar();
+    store(
+      this.textures[0],
+      coord,
+      N.uvec4(0, N.floatBitsToUint(N.float(-1)), 0, 0),
+    );
+    store(this.textures[1], coord, N.uvec4(0));
+  }
+
   // Call inside the per-eye visible-count guard. No cache loads precede it.
   read(
     index: Node<"uint">,
     pixelScale: Node<"vec2">,
     centerRange: Node<"float">,
+    /** NDC translation from the cached projection to the drawn one. */
+    jitter: Node<"vec2">,
   ) {
     const coord = cacheTexCoord(index, this.dimensions).toVar();
     const first = loadArray(uintTexture(this.textures[0]), coord).toVar();
     const second = loadArray(uintTexture(this.textures[1]), coord).toVar();
-    const ndc = N.unpackSnorm2x16(first.x).mul(centerRange);
+    const ndc = N.unpackSnorm2x16(first.x).mul(centerRange).add(jitter);
     const viewZ = N.uintBitsToFloat(first.y).negate();
     const matrix = N.cameraProjectionMatrix;
     const col0 = matrix.element(0);
@@ -239,6 +263,6 @@ export class ProjectionCache {
   }
 
   dispose() {
-    for (const texture of [...this.textures, this.order]) texture.dispose();
+    for (const texture of [...this.textures, this.motion]) texture.dispose();
   }
 }

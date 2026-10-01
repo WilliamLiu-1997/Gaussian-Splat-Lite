@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import * as TSL from "three/tsl";
-import type { Node, TextureNode, UniformNode } from "three/webgpu";
+import {
+  type Node,
+  NodeUpdateType,
+  type TextureNode,
+  type UniformNode,
+} from "three/webgpu";
 import {
   SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
@@ -83,14 +88,13 @@ function updateTextureLoad<T extends TextureNode<unknown>>(
   binding: T,
   texel: T,
 ) {
-  const update = texel.update;
-  texel.onObjectUpdate((frame) => {
-    // Refresh the texture before Three derives its GL render-target Y flip.
-    // Otherwise the first draw still uses the placeholder's orientation.
-    binding.update(frame);
-    update.call(texel, frame);
+  texel.updateBeforeType = NodeUpdateType.OBJECT;
+  texel.updateBefore = (frame) => {
+    // Bind the real texture before r186's texture update or r187's shared
+    // uniforms derive the GL render-target Y flip.
+    frame.updateNode(binding);
     return undefined;
-  });
+  };
   return texel;
 }
 

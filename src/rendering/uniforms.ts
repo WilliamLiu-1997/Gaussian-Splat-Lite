@@ -6,6 +6,7 @@ import {
 } from "../data/defines";
 import { emptySplatTexture } from "../data/textureLayout";
 import { SplatEdits } from "../scene/SplatEdit";
+import { createBlueNoiseTexture } from "./blueNoise";
 
 export type Uniforms = Record<string, THREE.IUniform>;
 
@@ -28,6 +29,7 @@ export function makeSplatUniforms() {
   const uniforms = {
     // Size of render viewport in pixels
     renderSize: { value: new THREE.Vector2() },
+    viewportOrigin: { value: new THREE.Vector2() },
     renderOrigin: { value: new THREE.Vector3() },
     // Near and far plane distances
     near: { value: 0.1 },
@@ -63,6 +65,13 @@ export function makeSplatUniforms() {
     // Gsplat collection to render
     splats: { type: "t", value: emptySplats },
     splats2: { type: "t", value: emptySplats },
+    stochasticSeeds: { type: "t", value: emptySplats },
+    stochasticNoise: { value: createBlueNoiseTexture() },
+    stochasticSample: { value: 0 },
+    velocityEnabled: { value: false },
+    // Manual stochastic transparency
+    stochastic: { value: false },
+    stochasticOrdering: { value: false },
   };
   return uniforms;
 }
@@ -72,6 +81,8 @@ export function makeGenerateUniforms(): Uniforms {
     targetLayer: { value: 0 },
     targetBase: { value: 0 },
     targetCount: { value: 0 },
+    // Stable mesh identity, independent of accumulator layout and visibility.
+    stochasticSeedBase: { value: 0 },
     sourceSplats: { value: emptySplatTexture },
     sourceSplats2: { value: emptySplatTexture },
     sourceLayerBits: { value: SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS },

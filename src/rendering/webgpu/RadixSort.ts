@@ -8,11 +8,27 @@ import {
 
 import { N, setIndirectDispatch } from "../tsl/tslCompat";
 
+/**
+ * Key layout of one sort: full 32-bit or fast 24-bit back-to-front keys, or
+ * 16-bit front-to-back keys for stochastic ordering.
+ */
+export type RadixSortMode = "full" | "fast" | "front";
+/** Values of the GPU mode uniform. */
+export const RADIX_SORT_MODE_IDS = {
+  full: 0,
+  fast: 1,
+  front: 2,
+} as const satisfies Record<RadixSortMode, number>;
+
 const RADIX_BITS = 4;
 const RADIX_BUCKETS = 1 << RADIX_BITS;
-const WEBGPU_SORT_KEY_BITS = 32;
-const RADIX_PASSES = WEBGPU_SORT_KEY_BITS / RADIX_BITS;
-const FAST_RADIX_PASSES = 24 / RADIX_BITS;
+const RADIX_PASSES = 32 / RADIX_BITS;
+const MODE_PASSES = {
+  full: RADIX_PASSES,
+  fast: 24 / RADIX_BITS,
+  front: 16 / RADIX_BITS,
+} satisfies Record<RadixSortMode, number>;
+const MODES = Object.keys(MODE_PASSES) as RadixSortMode[];
 const WORKGROUP_SIZE = 256;
 const ELEMENTS_PER_THREAD = 8;
 const ELEMENTS_PER_WORKGROUP = WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
@@ -24,10 +40,8 @@ type BufferRef = { value: StorageBufferAttribute };
 type WebGPURadixSortOptions = {
   /** GPU count of compact input records. */
   count: Node<"uint">;
-  /** Matches the input key encoding for this draw. */
-  fastSort: Node<"bool">;
-  /** Final-pass write, compiled once with the persistent sort graph. */
-  storeOrder: (index: Node<"uint">, value: Node<"uint">) => void;
+  /** RADIX_SORT_MODE_IDS value matching the input key encoding. */
+  mode: Node<"uint">;
   maxComputeWorkgroupsPerDimension: number;
   maxStorageBufferBindingSize: number;
 };
@@ -229,7 +243,6 @@ function makeReorderTask({
   firstPass,
   lastPass,
   workgroupCount,
-  storeOrder,
 }: {
   inputKeysAttribute: BufferRef;
   outputKeysAttribute: BufferRef;
@@ -241,7 +254,6 @@ function makeReorderTask({
   firstPass: boolean;
   lastPass: boolean | Node<"bool">;
   workgroupCount: Node<"uint">;
-  storeOrder: (index: Node<"uint">, value: Node<"uint">) => void;
 }) {
   const inputKeys = storage(
     inputKeysAttribute,
@@ -344,13 +356,6 @@ function makeReorderTask({
             });
           }
           outputValues.element(sortedIndex).assign(value);
-          if (lastPass === true) {
-            storeOrder(sortedIndex, value);
-          } else if (lastPass !== false) {
-            N.If(lastPass, () => {
-              storeOrder(sortedIndex, value);
-            });
-          }
         });
 
         N.If(round.lessThan(ELEMENTS_PER_THREAD - 1), () => {
@@ -385,7 +390,7 @@ function makeReorderTask({
     .setName("Splat radix reorder");
 }
 
-/** Stable 24/32-bit radix sort. Borrows and overwrites input keys; their owner manages storage. */
+/** Stable 16-, 24- or 32-bit radix sort. Borrows and overwrites input keys; their owner manages storage. */
 export class WebGPURadixSort {
   capacity: number;
   readonly maxCapacity: number;
@@ -403,8 +408,8 @@ export class WebGPURadixSort {
   );
   private readonly prefixLevels: PrefixLevel[] = [];
   private readonly maxWorkgroups: number;
-  private readonly dispatchNodes: ComputeNode[][];
-  private readonly fastDispatchNodes: ComputeNode[][];
+  // Per mode, the dispatch list for each prefix depth.
+  private readonly dispatchNodes: Record<RadixSortMode, ComputeNode[][]>;
 
   constructor(
     capacity: number,
@@ -443,8 +448,11 @@ export class WebGPURadixSort {
       return nodes;
     });
     this.nodes = [setup, ...prefixNodes[PREFIX_LEVELS - 1]];
-    this.dispatchNodes = prefixNodes.map(() => [setup]);
-    this.fastDispatchNodes = prefixNodes.map(() => [setup]);
+    this.dispatchNodes = {
+      full: prefixNodes.map(() => [setup]),
+      fast: prefixNodes.map(() => [setup]),
+      front: prefixNodes.map(() => [setup]),
+    };
     for (let pass = 0; pass < RADIX_PASSES; pass++) {
       const firstPass = pass === 0;
       const inputIndex = pass & 1;
@@ -469,19 +477,20 @@ export class WebGPURadixSort {
         lastPass:
           pass === RADIX_PASSES - 1
             ? true
-            : pass === FAST_RADIX_PASSES - 1
-              ? options.fastSort
-              : false,
-        storeOrder: options.storeOrder,
+            : pass === MODE_PASSES.front - 1
+              ? options.mode.equal(N.uint(RADIX_SORT_MODE_IDS.front))
+              : pass === MODE_PASSES.fast - 1
+                ? options.mode.equal(N.uint(RADIX_SORT_MODE_IDS.fast))
+                : false,
       });
       setIndirectDispatch(histogram, this.sortDispatch);
       setIndirectDispatch(reorder, this.sortDispatch);
       this.nodes.push(histogram, reorder);
       for (let level = 0; level < PREFIX_LEVELS; level++) {
         const nodes = [histogram, ...prefixNodes[level], reorder];
-        this.dispatchNodes[level].push(...nodes);
-        if (pass < FAST_RADIX_PASSES)
-          this.fastDispatchNodes[level].push(...nodes);
+        for (const mode of MODES)
+          if (pass < MODE_PASSES[mode])
+            this.dispatchNodes[mode][level].push(...nodes);
       }
     }
   }
@@ -612,7 +621,7 @@ export class WebGPURadixSort {
   }
 
   /** Prepare the persistent graph; GPU count is clamped to this input bound. */
-  prepare(elementCount: number, fastSort = false): ComputeNode[] {
+  prepare(elementCount: number, mode: RadixSortMode): ComputeNode[] {
     if (
       !Number.isSafeInteger(elementCount) ||
       elementCount < 0 ||
@@ -636,7 +645,7 @@ export class WebGPURadixSort {
       if (items === 1) break;
       lastLevel++;
     }
-    return (fastSort ? this.fastDispatchNodes : this.dispatchNodes)[lastLevel];
+    return this.dispatchNodes[mode][lastLevel];
   }
 
   dispose() {

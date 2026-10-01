@@ -7,6 +7,10 @@ precision highp usampler2DArray;
 
 flat out uvec4 vSplat;
 out vec2 vSplatUv;
+#if GSL_STOCHASTIC
+// Noise tile offset: x in bits 0-4, y from bit 5.
+flat out uint vStochasticOffset;
+#endif
 
 uniform vec2 renderSize;
 uniform vec4 renderToViewQuat;
@@ -28,12 +32,29 @@ uniform usampler2D ordering;
 uniform usampler2DArray splats;
 uniform usampler2DArray splats2;
 
+#if GSL_STOCHASTIC
+uniform bool stochasticOrdering;
+uniform uint stochasticSample;
+uniform vec2 viewportOrigin;
+uniform usampler2DArray stochasticSeeds;
+#endif
+
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
     return m[ 2 ][ 3 ] == -1.0;
 }
 
 #include <logdepthbuf_pars_vertex>
+
+// Chris Wellons' "prospector" mix, constant across each Splat's fragments.
+uint hashU32(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
 
 float gaussianSupportRadius(float alpha, float maximumRadius) {
     if (minAlpha <= 0.0) return maximumRadius;
@@ -56,8 +77,17 @@ void main() {
     uint index = uint(gl_InstanceID) * uint(SPLATS_PER_INSTANCE) + uint(position.z);
     if (index >= splatCount) return;
 
-    ivec2 orderingCoord = ivec2(int((index >> 2u) & 4095u), int(index >> 14u));
-    uint splatIndex = texelFetch(ordering, orderingCoord, 0)[index & 3u];
+    uint splatIndex;
+    #if GSL_STOCHASTIC
+    if (!stochasticOrdering) {
+        // Use source indices when stochastic ordering is disabled or not ready.
+        splatIndex = index;
+    } else
+    #endif
+    {
+        ivec2 orderingCoord = ivec2(int((index >> 2u) & 4095u), int(index >> 14u));
+        splatIndex = texelFetch(ordering, orderingCoord, 0)[index & 3u];
+    }
     if (splatIndex == 0xffffffffu) {
         // Special value reserved for "no splat"
         return;
@@ -213,6 +243,18 @@ void main() {
     }
     scale1 *= supportScale;
     scale2 *= supportScale;
+
+    #if GSL_STOCHASTIC
+    // Fetch stable coverage seeds only after all projection cutoffs pass.
+    // Fold the noise phase and viewport origin into one per-Splat tile offset.
+    // Rehashing with the phase gives every Splat an independent offset per
+    // sample; a shared linear step would translate the whole noise field and
+    // read as drift. Unsigned wraparound keeps the tile arithmetic exact.
+    uint seed = texelFetch(stochasticSeeds, texCoord, 0).r;
+    uint hash = hashU32(seed ^ (stochasticSample * 0x9e3779b9u));
+    uvec2 offset = uvec2(hash, hash >> 5u) - uvec2(viewportOrigin);
+    vStochasticOffset = (offset.x & 31u) | (offset.y << 5u);
+    #endif
 
     // RGB is constant across the quad, so convert before rasterization.
     if (encodeLinear) {

@@ -20,6 +20,7 @@ import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
 import { createRenderOptionsPanel } from "./renderOptionsPanel.js";
 import { ViewerInspector } from "./viewerInspector.js";
+import { createViewerTAA } from "./viewerTAA.js";
 import { createViewerUI } from "./viewerUI.js";
 
 const viewport = document.querySelector("#viewport");
@@ -67,7 +68,6 @@ THREE.ColorManagement.workingColorSpace = outputColorSpace;
 function configureRenderer(value) {
   value.setClearColor(0x000000, 0);
   value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  value.outputColorSpace = outputColorSpace;
 }
 
 async function initializeWebGPURenderer(value, backend, onFailure) {
@@ -96,9 +96,10 @@ function createViewerInspector(failureMessage) {
 
 async function createRendererState(backend, previous, onFailure = () => {}) {
   const state = {};
-  const webGPU = backend !== "webgl";
   try {
-    if (webGPU) {
+    if (backend === "webgl") {
+      state.renderer = new THREE.WebGLRenderer(rendererParameters);
+    } else {
       // Match Three's adapter options; leave failures to its WebGL fallback.
       const adapter =
         backend === "webgpu"
@@ -125,20 +126,9 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
         state.failureMessage = message;
         onFailure(message);
       });
-      configureRenderer(state.renderer);
       state.inspector = createViewerInspector(state.failureMessage);
-    } else {
-      // WebGL texture setup requires linear working space. Keep the active
-      // renderer's space intact until the replacement is ready to mount.
-      const workingColorSpace = THREE.ColorManagement.workingColorSpace;
-      try {
-        THREE.ColorManagement.workingColorSpace = THREE.LinearSRGBColorSpace;
-        state.renderer = new THREE.WebGLRenderer(rendererParameters);
-        configureRenderer(state.renderer);
-      } finally {
-        THREE.ColorManagement.workingColorSpace = workingColorSpace;
-      }
     }
+    configureRenderer(state.renderer);
 
     state.splatRenderer = new GaussianSplatRenderer({
       renderer: state.renderer,
@@ -153,6 +143,9 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
           }
         }
       }
+    }
+    if (state.splatRenderer.stochastic) {
+      state.taa = createViewerTAA(state.renderer, scene, camera);
     }
     state.controls = new CameraController(state.renderer, scene, camera, {
       worldUp: camera.up,
@@ -182,6 +175,7 @@ function disposeRendererState(state) {
   state.frameGate?.dispose();
   state.controls?.removeEventListener("update", requestRender);
   state.controls?.dispose();
+  state.taa?.dispose();
   state.splatRenderer?.removeFromParent();
   state.splatRenderer?.dispose();
   // An attached Inspector is owned and disposed by the renderer.
@@ -199,6 +193,7 @@ function mountRendererState(state, attachInspector = true) {
     ? outputColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  // WebGL's output setter requires the linear working space to be set first.
   renderer.outputColorSpace = outputColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
@@ -218,6 +213,9 @@ function mountRendererState(state, attachInspector = true) {
 }
 
 let needsRender = true;
+let taa = null;
+// resizeRenderer() reads it while mounting the first renderer.
+let activeStream = null;
 let renderOnDemand = true;
 let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
@@ -244,15 +242,13 @@ function updateStats(time, rendered) {
 
 function requestRender() {
   needsRender = true;
+  taa?.invalidate();
 }
 
 function renderFrame(time) {
   // Keep camera and LOD updates running while the GPU is busy.
   controls.update(time);
-  activeStream?.update(camera, {
-    width: renderer.domElement.width,
-    height: renderer.domElement.height,
-  });
+  activeStream?.update();
   drawFrame(time);
 }
 
@@ -260,7 +256,7 @@ function drawFrame(time) {
   // Replay a blocked draw without waiting for another animation tick.
   if (
     !frameGate.isReady(rendererState.drawPendingFrame) ||
-    (renderOnDemand && !needsRender)
+    (renderOnDemand && !needsRender && !taa?.needsRender)
   ) {
     updateStats(time, false);
     return;
@@ -269,7 +265,15 @@ function drawFrame(time) {
   // Synchronous preparation is consumed by this draw; worker completion can
   // still request a later frame through onDirty.
   needsRender = false;
-  renderer.render(scene, camera);
+  if (taa) {
+    taa.render();
+    // WebGL backends draw stochastically until the sorted order is ready.
+    if (!splatRenderer.stochastic && !splatRenderer.stochasticActive) {
+      retireTAA();
+    }
+  } else {
+    renderer.render(scene, camera);
+  }
   // Draw the anchor over the scene.
   // Its material disables depth testing/writes, so no depth clear is needed.
   if (controls.indicator.visible) {
@@ -346,6 +350,7 @@ function detachRendererState(state) {
 function activateRendererState(state, attachInspector = true) {
   rendererState = state;
   ({ renderer, controls, splatRenderer, frameGate } = state);
+  taa = state.taa ?? null;
   mountRendererState(state, attachInspector);
 }
 
@@ -454,8 +459,21 @@ function applyRenderOption(property, value) {
     apply(value);
   } else {
     splatRenderer[property] = value;
+    // Turning stochastic off keeps TAA until drawFrame sees it inactive.
+    if (property === "stochastic" && value && !taa) {
+      taa = createViewerTAA(renderer, scene, camera);
+      rendererState.taa = taa;
+    }
     splatRenderer.setDirty();
   }
+  requestRender();
+}
+
+function retireTAA() {
+  taa.dispose();
+  taa = null;
+  rendererState.taa = null;
+  // Redraw the sorted image without TAA history.
   requestRender();
 }
 
@@ -463,7 +481,6 @@ const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
 let activeSplat = null;
 let modelUpAxis = "auto";
-let activeStream = null;
 let disposeActiveSource = null;
 let cancelActiveLoad = null;
 let activeLoad = 0;
@@ -475,6 +492,11 @@ const optionsPanel = createRenderOptionsPanel({
   groups: renderOptionGroups,
   onChange: applyRenderOption,
 });
+document
+  .querySelector("#stochastic-control")
+  .append(
+    document.querySelector("#render-option-stochastic").closest(".option-row"),
+  );
 optionsPanel.setHidden("splatBudget", true);
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
@@ -485,6 +507,7 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  taa?.reset();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
   else activeSplat?.dispose();
@@ -504,6 +527,7 @@ function cancelLoading() {
 }
 
 function applyModelOrientation(splat, streamed) {
+  taa?.reset();
   // Transform the stream group so rendering and LOD culling share the same
   // rotation; the decoded splats and index bounds remain in source space.
   splat.rotation.set(getModelRotationX(modelUpAxis, streamed), 0, 0);
@@ -511,6 +535,7 @@ function applyModelOrientation(splat, streamed) {
 }
 
 function frameSplat(splat) {
+  taa?.reset();
   const streamed = activeStream?.group === splat;
   const bounds = streamed
     ? activeStream.getBoundingBox()
@@ -577,6 +602,7 @@ async function initializeModel(
         ui.setStatus("Waiting for a RAD page · retry pending");
       },
     });
+    model.stream.setCamera(camera);
     try {
       await model.stream.initialized;
       model.splat = model.stream.group;
@@ -598,6 +624,7 @@ async function initializeModel(
       onError: (error, chunkUrl) =>
         console.error("Streaming chunk failed", chunkUrl, error),
     });
+    model.stream.setCamera(camera);
     model.splat = model.stream.group;
   } else {
     model.splat = new SplatMesh({
@@ -656,6 +683,7 @@ async function loadFile(
     );
     activeSplat = model.splat;
     activeStream = model.stream;
+    syncStreamResolution();
     optionsPanel.setHidden("splatBudget", !activeStream);
     disposeActiveSource = dispose;
     scene.add(activeSplat);
@@ -718,7 +746,16 @@ function resizeRenderer() {
   renderer.setSize(width, height, false);
   camera.aspect = width / Math.max(height, 1);
   camera.updateProjectionMatrix();
+  taa?.resize();
+  syncStreamResolution();
   requestRender();
+}
+
+// RAD detail follows the canvas size in CSS pixels. Resizes and renderer
+// backend switches both pass through resizeRenderer().
+function syncStreamResolution() {
+  if (activeStream instanceof RadStreamScheduler)
+    activeStream.setResolutionFromRenderer(camera, renderer);
 }
 
 for (const button of document.querySelectorAll("[data-file-picker]")) {

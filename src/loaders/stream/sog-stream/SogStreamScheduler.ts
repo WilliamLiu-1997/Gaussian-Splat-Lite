@@ -7,6 +7,7 @@ import {
   getSplatTextureBytes,
 } from "../../../data/splatData";
 import { StreamByteBudget } from "../StreamByteBudget";
+import { StreamCameras } from "../StreamCameras";
 import {
   type StreamSchedulerOptions,
   type StreamStats,
@@ -32,7 +33,7 @@ import {
   readSogLodLeaf,
   resolveSogLod,
 } from "./sogLod";
-import { type SogView, captureSogView } from "./sogVisibility";
+import { type SogView, captureSogView, getSogViewKey } from "./sogVisibility";
 
 export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
   StreamSchedulerOptions;
@@ -89,6 +90,7 @@ export class SogStreamScheduler {
   private readonly options: SogStreamSchedulerOptions;
   private readonly loader: SogStreamLoader;
   private readonly abort = new AbortController();
+  private readonly streamCameras = new StreamCameras();
   private manifest?: SogLodMetadata;
   private readonly lodLeaves = new Map<number, SogLodLeaf>();
   private view?: SogView;
@@ -244,14 +246,42 @@ export class SogStreamScheduler {
     return this;
   }
 
-  /** Call before rendering. Returns whether the displayed data changed. */
-  update(camera: THREE.Camera): boolean {
+  /** Cameras that select detail, in registration order. */
+  get cameras(): readonly THREE.Camera[] {
+    return this.streamCameras.cameras;
+  }
+
+  hasCamera(camera: THREE.Camera) {
+    return this.streamCameras.has(camera);
+  }
+
+  /**
+   * Select detail for this camera on each update. Detail follows distance,
+   * so it needs no resolution. For WebXR register renderer.xr.getCamera(): it
+   * selects with its eyes' combined frustum. Returns whether the camera was
+   * newly added.
+   */
+  setCamera(camera: THREE.Camera) {
+    return this.streamCameras.add(camera);
+  }
+
+  /** Stop selecting detail for this camera. Returns whether it was registered. */
+  deleteCamera(camera: THREE.Camera) {
+    return this.streamCameras.delete(camera);
+  }
+
+  /**
+   * Call before rendering. Returns whether the displayed data changed. Each
+   * leaf uses the distance of the nearest registered camera that sees it.
+   */
+  update(): boolean {
     if (this.disposed || !this.manifest) return false;
+    const cameras = this.streamCameras.seeing(this.group.layers);
     for (const chunk of this.activeChunks) {
       this.pruneChunk(chunk);
       if (chunk.batch) chunk.batch.layers.mask = this.group.layers.mask;
     }
-    this.view = captureSogView(camera, this.group);
+    this.view = captureSogView(cameras, this.group);
     const { shown } = this.view;
     this.shown = shown;
     if (!shown) {
@@ -292,7 +322,7 @@ export class SogStreamScheduler {
       0,
       splatBudget - Math.max(0, this.environment?.file.count ?? 0),
     );
-    const key = `${view.modelView.join(",")}/${view.projection.join(",")}/${view.coordinateSystem}/${view.reversedDepth}/${splatBudget}/${budget}`;
+    const key = `${getSogViewKey(view)}/${splatBudget}/${budget}`;
     if (key === this.lastRequestedKey) return;
     this.lastRequestedKey = key;
     this.selecting = true;

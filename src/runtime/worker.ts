@@ -41,12 +41,14 @@ function setSortCenterState({
   );
 }
 
+/** Orders the Splats for one viewpoint; returns the active count. */
 function sortCenters32({
   numSplats,
   cameraPosition,
   direction,
   radial,
   fastSort,
+  frontSort,
   ordering,
 }: {
   numSplats: number;
@@ -54,6 +56,7 @@ function sortCenters32({
   direction: [number, number, number];
   radial: boolean;
   fastSort: boolean;
+  frontSort: boolean;
   ordering: Uint32Array;
 }) {
   const activeSplats = sort32_centers(
@@ -62,7 +65,8 @@ function sortCenters32({
     ...direction,
     radial,
     fastSort,
+    frontSort,
     ordering,
   );
-  return { activeSplats, ordering };
+  return { ordering, activeSplats };
 }

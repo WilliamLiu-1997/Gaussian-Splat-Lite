@@ -1,5 +1,5 @@
 import type { WebGPURenderer } from "three/webgpu";
-import type { SplatMaterial, SplatMaterialOptions } from "../backend";
+import type { SplatMaterialOptions } from "../backend";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
 import type { Uniforms } from "../uniforms";
 import { ProjectedSplats } from "./ProjectedSplats";
@@ -16,8 +16,8 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
     options: SplatMaterialOptions,
   ) {
     const projection = new ProjectedSplats(renderer, uniforms);
-    super(renderer, uniforms, options, undefined, (camera) =>
-      projection.vertexData(camera),
+    super(renderer, uniforms, options, undefined, (camera, features) =>
+      projection.vertexData(camera, features),
     );
     this.projection = projection;
     this.precompile = projection.ready.finally(() => {
@@ -31,8 +31,6 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
   getOrderingCapacity(count: number) {
     return Math.max(1, count);
   }
-
-  bindOrdering(_material: SplatMaterial, _uniforms: Uniforms) {}
 
   dispose() {
     super.dispose();

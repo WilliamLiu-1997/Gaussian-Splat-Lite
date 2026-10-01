@@ -8,6 +8,7 @@ precision highp usampler2DArray;
 uniform uint targetLayer;
 uniform int targetBase;
 uniform int targetCount;
+uniform uint stochasticSeedBase;
 
 uniform usampler2DArray sourceSplats;
 uniform usampler2DArray sourceSplats2;
@@ -38,6 +39,9 @@ uniform usampler2D editTexture;
 
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
+#if GSL_STOCHASTIC_SEEDS
+layout(location = 2) out uint targetSeed;
+#endif
 
 // Match WebGPU's finite sentinel for empty/unbounded SDFs. Smooth ALL shapes
 // must not evaluate exp(inf - inf).
@@ -294,6 +298,9 @@ void produceSplat(int index) {
         uvec4 indices = texelFetch(sourceIndices, splatTexCoord(index >> 2), 0);
         sourceIndex = indices[index & 3];
     }
+    #if GSL_STOCHASTIC_SEEDS
+    targetSeed = sourceIndex ^ stochasticSeedBase;
+    #endif
     float blockOpacity = 1.0;
     if (sourceBlockBits < 32u) {
         // Group layers follow the source layers, at one texel per block.
@@ -395,6 +402,9 @@ void main() {
 
     target = uvec4(0u);
     target2 = uvec4(0u);
+    #if GSL_STOCHASTIC_SEEDS
+    targetSeed = 0u;
+    #endif
     if (index >= 0 && index < targetCount) {
         produceSplat(index);
     }

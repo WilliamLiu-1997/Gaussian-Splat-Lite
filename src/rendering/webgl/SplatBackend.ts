@@ -1,15 +1,11 @@
-import * as THREE from "three";
-import type {
-  CPUOrderingUpdate,
-  SplatMaterial,
-  SplatMaterialOptions,
-} from "../backend";
+import type * as THREE from "three";
+import type { CPUOrderingUpdate, SplatMaterialOptions } from "../backend";
 import { type Uniforms, emptyOrdering } from "../uniforms";
 import { OrderingTexture } from "./OrderingTexture";
 import { createWebGLSplatMaterial } from "./SplatMaterial";
 import { uploadU32DataTextureRows } from "./textureUtils";
 
-/** WebGL materials, ordering-texture uploads, and framebuffer readback. */
+/** WebGL materials and ordering-texture uploads. */
 export class WebGLSplatBackend {
   readonly kind = "webgl";
   readonly material: THREE.ShaderMaterial;
@@ -17,7 +13,7 @@ export class WebGLSplatBackend {
 
   constructor(
     readonly renderer: THREE.WebGLRenderer,
-    uniforms: Uniforms,
+    private readonly uniforms: Uniforms,
     options: SplatMaterialOptions,
   ) {
     this.material = createWebGLSplatMaterial(uniforms, options);
@@ -25,6 +21,16 @@ export class WebGLSplatBackend {
       .getContext()
       .getExtension("WEBGL_provoking_vertex");
     extension?.provokingVertexWEBGL(extension.FIRST_VERTEX_CONVENTION_WEBGL);
+  }
+
+  selectMaterial(stochastic: boolean) {
+    const { material } = this;
+    const value = Number(stochastic);
+    if (material.defines.GSL_STOCHASTIC !== value) {
+      material.defines.GSL_STOCHASTIC = value;
+      material.needsUpdate = true;
+    }
+    return material;
   }
 
   getOrderingCapacity(count: number) {
@@ -36,39 +42,24 @@ export class WebGLSplatBackend {
   }
 
   setCPUOrdering(update: CPUOrderingUpdate) {
-    this.ordering.update(update, (texture, rows) => {
-      uploadU32DataTextureRows(
-        this.renderer,
-        texture,
-        texture.image.width,
-        rows,
-        update.ordering,
-      );
-    });
-  }
-
-  bindOrdering(_material: SplatMaterial, uniforms: Uniforms) {
-    uniforms.ordering.value = this.ordering.texture ?? emptyOrdering;
-  }
-
-  async readPixels(
-    target: THREE.WebGLRenderTarget,
-    pixels: Uint8Array,
-    face = 0,
-  ) {
-    await this.renderer.readRenderTargetPixelsAsync(
-      target,
-      0,
-      0,
-      target.width,
-      target.height,
-      pixels,
-      face,
+    this.uniforms.ordering.value = this.ordering.update(
+      update,
+      (texture, rows) => {
+        uploadU32DataTextureRows(
+          this.renderer,
+          texture,
+          texture.image.width,
+          rows,
+          update.ordering,
+        );
+      },
     );
   }
 
-  createPMREMGenerator() {
-    return new THREE.PMREMGenerator(this.renderer);
+  /** Unsorted draws read no ordering; the next sort allocates it again. */
+  releaseOrdering() {
+    this.ordering.dispose();
+    this.uniforms.ordering.value = emptyOrdering;
   }
 
   dispose() {

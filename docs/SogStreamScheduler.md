@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Loads large SOG `lod-meta.json` scenes with detail that adapts as the camera moves. Supports version 1 and older unversioned indexes on WebGL2 and WebGPU. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md).
+Loads large SOG `lod-meta.json` scenes with detail that adapts as the camera moves. Supports version 1 and older unversioned indexes on WebGPU and WebGL2. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md).
 
 ```js
 import { SogStreamScheduler } from "gaussian-splat-lite";
@@ -12,10 +12,11 @@ const streaming = new SogStreamScheduler({
   splatBudget: 3_000_000,
 });
 scene.add(streaming.group);
+streaming.setCamera(camera);
 await streaming.initialized;
 
 // Call each animation tick, before rendering.
-streaming.update(camera);
+streaming.update();
 renderer.render(scene, camera);
 
 // When removing the model:
@@ -24,6 +25,10 @@ streaming.group.removeFromParent();
 ```
 
 Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed models support SDF edits and picking; their data is read-only.
+
+Detail follows distance from the camera, so cameras need no resolution. Register several cameras to load detail for all of them; each region follows the nearest camera that sees it.
+
+In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown for [RadStreamScheduler](RadStreamScheduler.md). Selection uses the combined frustum of both eyes, the one Three.js culls with, and may follow the previous frame's pose when `update()` runs before rendering.
 
 For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#raycasting).
 
@@ -57,7 +62,8 @@ Ready regions are attached during `update()` once their previous fade completes,
 | `splatBudget` | Positive safe integer including the environment; change it at runtime to adjust detail |
 | `initialized` | Resolves when the index is ready; rejects invalid input |
 | `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; keep calling `update()` while waiting |
-| `update(camera)` | Update detail, loading, fades, and cleanup |
+| `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that selects detail; `hasCamera(camera)` and `cameras` list them |
+| `update()` | Update detail, loading, fades, and cleanup for the registered cameras; throws if none are registered |
 | `getBoundingBox()` | Group-local index bounds, available after initialization |
 | `stats` | Visible and retained Splat data, loading progress, and memory estimates; not total browser memory |
 | `dispose()` | Cancel loading and release scene resources; pending readiness promises reject with `AbortError` |

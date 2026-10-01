@@ -10,7 +10,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Check WebGL2, WebGPU, and WebGPU · WebGL2 in the viewer. For rendering changes, compare sorted blending, mesh occlusion, transparent edges, and captures on all three backends.
+Check WebGPU, WebGL2, and WebGPU · WebGL2 in the viewer. For rendering changes, compare sorted and stochastic rendering, mesh occlusion, and transparent edges.
 
 See [Architecture](docs/Architecture.md) for module responsibilities, backend boundaries, and resource ownership.
 

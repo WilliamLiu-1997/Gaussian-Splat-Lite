@@ -21,10 +21,10 @@
 | `rust/gaussian-splat-rs/src/` | WASM bridges, typed-array output, LOD selection, sorting, and raycasting |
 | `src/runtime/` | Worker RPC, pooling, transferables, and WASM initialization |
 | `src/utils/` | Numeric conversion, spatial transforms, and Three.js helpers |
-| `src/rendering/` | Shared updates, sorting handoffs, and captures |
-| `src/rendering/webgl/` | GLSL materials, texture generation, CPU ordering uploads, and readback |
+| `src/rendering/` | Shared updates and sorting handoffs |
 | `src/rendering/tsl/` | Shared TSL generation, projection, drawing, and view uniforms |
 | `src/rendering/webgpu/` | Compute projection, projected caches, GPU sorting, and indirect drawing |
+| `src/rendering/webgl/` | GLSL materials, texture generation, and CPU ordering uploads |
 | `src/rendering/webgl-fallback/` | WebGPURenderer WebGL2 raster generation and ordering uploads |
 
 ## Rendering boundaries
@@ -34,23 +34,20 @@ The renderer combines visible models using Three.js transforms, visibility, and 
 | Owner | Responsibility |
 | --- | --- |
 | `GaussianSplatRenderer` | Scene updates, accumulator handoff, and sorting |
-| `SplatCapture` | Offscreen targets, supersampled readback, cube captures, and environment-map filtering |
 | `SplatAccumulator` | Scene mappings, versions, camera-relative origin, and WebGL texture generation |
-| WebGL backend | GLSL materials, ordering textures, texture generation, readback, and PMREM |
 | WebGPU backend | Compute projection, caches, GPU sorting, and indirect drawing |
+| WebGL backend | GLSL materials, ordering textures, and texture generation |
 | WebGL fallback backend | Raster generation and CPU-sorted ordering textures |
-| Shared TSL code | Generation and projection math, materials, color conversion, readback, and PMREM |
+| Shared TSL code | Generation and projection math, materials, and color conversion |
 
-For sorted rendering, both WebGL backends use asynchronous Worker/WASM sorting and retain the previous display until a matching order is ready. Native WebGPU keeps ordering and visible counts on the GPU and sorts before drawing; its accumulator carries mappings and edit metadata without generating combined textures.
+For sorted rendering, native WebGPU keeps ordering and visible counts on the GPU and sorts before drawing; its accumulator carries mappings and edit metadata without generating combined textures. Both WebGL backends use asynchronous Worker/WASM sorting and retain the previous display until a matching order is ready.
 
-In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `ProjectionCache.ts` owns projected storage, and `RadixSort.ts` owns sort passes. Both WebGL backends share `webgl/OrderingTexture.ts` for allocation and disposal, while keeping their own upload and binding paths.
+In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `ProjectionCache.ts` owns projected storage, and `RadixSort.ts` owns sort passes. WebXR uses the eyes' mean pose for generation and sorting, with separate projections for each eye. Both WebGL backends share `webgl/OrderingTexture.ts` for allocation and disposal, while keeping their own upload and binding paths.
 
 Resource rules:
 
 - Wait for outstanding GPU compilation before disposing the sorter; preserve compute nodes when resizing resources or changing source meshes.
 - Keep color conversion and XR output handling with the backend that owns them.
-- `SplatCapture` owns cube targets and PMREM generators per renderer instance and releases them on disposal. Callers dispose textures returned by `renderEnvMap()`, which also releases their output render targets.
-- Capture scopes restore the renderer override, render target, and sorted-render state after use.
 
 ## Decoder boundaries
 
@@ -88,7 +85,7 @@ Loaders own transport and parsing; schedulers own selection, fades, publication,
 
 `splatBudget` controls selected detail, not total memory. Resident-byte estimates exclude pending copies and WASM memory, which are reported separately; resident storage has no byte cap. Pending copies allow 8 MiB per concurrent load (32 MiB by default), enlarged for an indivisible RAD page; one oversized item can proceed alone. This bounds the waiting queue, not the bytes published or uploaded per frame.
 
-Applications must keep calling `update()` while waiting for `firstRenderable` and while loading, fades, retries, or retirement need to advance. `onChange` requests redraws; it does not drive scheduler updates.
+Applications must keep calling `update()` while waiting for `firstRenderable` and while loading, fades, retries, or retirement need to advance. `onChange` requests redraws; it does not drive scheduler updates. Schedulers update ordinary camera matrices, but read a WebXR camera's matrices directly and select detail with its eyes' combined frustum, as Three.js culls. Streaming updates before rendering may use the previous frame's XR pose.
 
 ## Streamed SOG boundaries
 

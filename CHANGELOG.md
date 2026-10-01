@@ -7,10 +7,39 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `stochasticSample` and `autoAdvanceStochasticSample` to control the stochastic noise pattern, for example in a custom temporal anti-aliasing integration.
+- Added velocity output for Three.js `TRAANode` on WebGPURenderer, including its WebGL2 fallback. When the scene pass's MRT includes `velocity`, Splats write motion from camera movement and `SplatMesh` transforms; changes to individual Splats are not tracked.
+
+### Changed
+
+- Stochastic rendering is now manual: set `stochastic` to switch modes, and smooth its noise with Three.js temporal anti-aliasing, `TRAANode` on WebGPURenderer or `TAARenderPass` on WebGLRenderer. See [Stochastic rendering](docs/StochasticRendering.md).
+- The stochastic noise pattern now changes on every render so temporal anti-aliasing keeps converging while the view is still. Previously it stayed fixed unless `StochasticTAAPass` supplied a temporal sample. Set `autoAdvanceStochasticSample = false` to keep it fixed.
+- On WebGL and WebGL fallback, changing `stochastic` takes effect once an update generated for the new mode is displayed; `stochasticActive` reports which mode is drawing. Native WebGPU switches immediately.
+- While stochastic rendering is active, Splats draw in the opaque list with depth testing and writing; otherwise `transparent`, `depthTest`, and `depthWrite` apply as set. Stochastic rendering no longer keeps sorted frames in the opaque list or sets `renderOrder` to `Number.MAX_SAFE_INTEGER`.
+- Sorted rendering no longer stores stochastic seeds: WebGL accumulators omit the seed layer, and native WebGPU allocates its seed buffer only for stochastic draws. Sorted and stochastic draws compile separate shaders without mode branches on all backends.
+- With unsorted stochastic rendering, `shrinkResources()` releases the sort worker and ordering instead of sorting. Enabling sorting again rebuilds them.
+- WebGL and WebGL fallback show a moved `SplatMesh` in the frame it moves instead of after the next sort, with `autoUpdate` and `preUpdate` enabled outside WebXR.
+- Native WebGPU reuses projection and sorting results while only TRAA's sub-pixel jitter changes.
+- WebXR eyes now share generation, culling, and one sort order from the head's mean pose, each with its exact projection. Native WebGPU projects both eyes in one compute pass instead of projecting and sorting each eye, so `stochasticSort` now also applies in WebXR; its two-eye kernels compile when a session starts, and Splats stay hidden until they are ready. Splats on either eye's layers are visible in both eyes.
+- `RadStreamScheduler` and `SogStreamScheduler` select detail for cameras registered with `setCamera()`, and `update()` takes no arguments; it throws if no camera is registered. Set RAD resolution with `setResolution()` or `setResolutionFromRenderer()` in CSS pixels, without the device pixel ratio, so high-DPI displays no longer load extra detail. RAD no longer defaults to 1024 × 1024 and throws for a non-XR camera without a resolution. Several cameras share one selection at the greatest detail any of them needs.
+- RAD and SOG streaming select WebXR detail with the eyes' combined frustum from a registered `renderer.xr.getCamera()`, the one Three.js culls with, instead of each eye.
+- The viewer's Stochastic control is now On/Off and smooths noise with Three.js temporal anti-aliasing. The TAA/Resolve and Force Splat depth controls were removed.
+
+### Fixed
+
+- Updated TSL texture bindings before sampling state so both Three.js r186 and r187 preserve render-target Y orientation without calling removed texture update methods.
+- Preserved WebXR camera rig transforms when reading eye poses for rendering and RAD/SOG detail selection.
+- SOG detail selection now includes a scaled camera rig's scale, like rendering and RAD. It previously measured view distances and culled without it.
+- Draws during a WebXR session that do not use the WebXR camera now use their own camera and viewport instead of the headset's. Examples are render targets drawn with `renderer.xr.enabled` off, such as `Reflector`, and WebGPURenderer render targets other than its output.
+
 ### Removed
 
-- Removed stochastic rendering and the companion depth draw across WebGL2, native WebGPU, and WebGPURenderer's WebGL2 fallback. Removed `autoStochastic`, `stochastic`, `stochasticSort`, `stochasticActive`, `renderDepth`, and `depthMesh`, plus the exported `StochasticResolvePass` and `StochasticTAAPass` classes. Remove those options and imports, and use `renderer.render(scene, camera)` for scene rendering. Normal sorted rendering, `depthTest`, `depthWrite`, and captures remain available.
-- Removed the associated viewer controls, blue-noise resources, seed buffers, shader variants, and 16-bit front-to-back Worker/WASM and GPU sorting paths.
+- Non-XR `ArrayCamera` rendering is no longer supported: `update()` and `shrinkResources()` throw, and other draws skip Splats and log an error. Use separate cameras for other views.
+- Removed `autoStochastic`, `renderDepth`, `depthMesh`, and the exported `StochasticResolvePass` and `StochasticTAAPass`. Use `stochastic` to switch modes and Three.js passes for temporal anti-aliasing. Without the depth companion draw, sorted Splats write depth only with `depthWrite`.
+- Removed offscreen captures and environment maps: the `target` option, the `target`, `backTarget`, `superXY`, `superPixels`, and `targetPixels` properties, and `renderTarget()`, `readTarget()`, `renderReadTarget()`, `renderCubeMap()`, `readCubeTargets()`, `renderEnvMap()`, and `recurseSetEnvMap()`. Render into Three.js render targets directly instead.
+- Removed `render()` and `GaussianSplatRenderer.gaussianSplatOverride`. Render with the Three.js renderer, and use `layers` or `visible` to choose which Splat renderer draws.
 
 ## [1.1.8] - 2026-09-29
 

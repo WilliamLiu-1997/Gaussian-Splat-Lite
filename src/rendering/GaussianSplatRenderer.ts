@@ -3,7 +3,6 @@ import { SplatWorker } from "../runtime/SplatWorker";
 import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
-import { SplatCapture } from "./SplatCapture";
 import { SplatGeometry } from "./SplatGeometry";
 import {
   type SplatBackend,
@@ -14,23 +13,72 @@ import {
 import {
   type GaussianSplatCompatibleRenderer,
   assertSupportedRenderer,
+  getMeanViewPose,
   getRenderFrame,
+  getViews,
 } from "./rendererUtils";
+import type { SplatNodeMaterial } from "./tsl/SplatMaterial";
 import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms";
 
 const renderToViewScaleTmp = new THREE.Vector3();
 const renderToViewMatrixTmp = new THREE.Matrix4();
 const renderTranslationTmp = new THREE.Matrix4();
+const headPositionTmp = new THREE.Vector3();
+const headTargetTmp = new THREE.Vector3();
 type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
-  layerCamera?: THREE.Camera;
   shrinkResources: boolean;
 };
 
-// Average (uniform) world scale of a camera.
+// Back-to-front for blending, front-to-back for stochastic overdraw, or
+// source order for unsorted stochastic draws.
+type SortMode = "back" | "front" | "identity";
+
+const UNSUPPORTED_CAMERA =
+  "GaussianSplatRenderer draws ArrayCamera only for WebXR; render other views with separate cameras";
+
+/**
+ * Whether the camera is the WebXR camera or one of its eyes. Presenting alone
+ * is not enough: Three draws render targets with the caller's camera when
+ * xr.enabled is off, and WebGPURenderer whenever the target is not its output.
+ */
+function isXRCamera(
+  camera: THREE.Camera,
+  renderer: GaussianSplatCompatibleRenderer,
+) {
+  if (!renderer.xr.isPresenting) return false;
+  const xrCamera = renderer.xr.getCamera();
+  return (
+    camera === xrCamera || (xrCamera.cameras as THREE.Camera[]).includes(camera)
+  );
+}
+
+/**
+ * Multiple views are drawn only as WebXR eyes. Classic WebGL draws each view
+ * of an ArrayCamera separately, as a camera with a viewport.
+ */
+function isSupportedCamera(
+  camera: THREE.Camera,
+  renderer: GaussianSplatCompatibleRenderer,
+) {
+  return (
+    isXRCamera(camera, renderer) ||
+    (!(camera as THREE.ArrayCamera).isArrayCamera &&
+      (camera as THREE.PerspectiveCamera).viewport === undefined)
+  );
+}
+
+function assertSupportedCamera(
+  camera: THREE.Camera,
+  renderer: GaussianSplatCompatibleRenderer,
+) {
+  if (!isSupportedCamera(camera, renderer)) throw new Error(UNSUPPORTED_CAMERA);
+}
+
+// Average (uniform) world scale of a camera, read without updating it.
 function getCameraWorldScale(camera: THREE.Camera): number {
-  const scale = camera.getWorldScale(renderToViewScaleTmp);
+  const scale = renderToViewScaleTmp.setFromMatrixScale(camera.matrixWorld);
   return (scale.x + scale.y + scale.z) / 3;
 }
 
@@ -134,6 +182,7 @@ export interface GaussianSplatRendererOptions {
   sortRadial?: boolean;
   /**
    * Lower-precision sorting for faster sorted rendering.
+   * Has no effect on stochastic rendering.
    * @default true
    */
   fastSort?: boolean;
@@ -144,39 +193,30 @@ export interface GaussianSplatRendererOptions {
    */
   minSortIntervalMs?: number;
   /**
-   * Configures an offline render target for the GaussianSplatRenderer (as opposed to
-   * rendering to the canvas). This is useful for rendering environment maps,
-   * additional viewpoints, or video frame rendering.
-   * @default undefined
+   * Enables stochastic transparency. Also applies to WebXR.
+   * @default false
    */
-  target?: {
-    /**
-     * Width of the render target in pixels.
-     */
-    width: number;
-    /**
-     * Height of the render target in pixels.
-     */
-    height: number;
-    /**
-     * If you want to be able to render a scene that depends on this target's
-     * output (for example, a recursive viewport), set this to true to enable
-     * double buffering.
-     * @default false
-     */
-    doubleBuffer?: boolean;
-    /**
-     * Super-sampling factor for the render target. Values 1-4 are supported.
-     * Note that re-sampling back down to .width x .height is done on the CPU
-     * with simple averaging only when calling readTarget().
-     * @default 1
-     */
-    superXY?: number;
-  } & THREE.RenderTargetOptions;
+  stochastic?: boolean;
+  /**
+   * Increment stochasticSample once per scene render while stochastic
+   * coverage is active, including WebXR. All views in that render share the
+   * same sample.
+   * @default true
+   */
+  autoAdvanceStochasticSample?: boolean;
+  /**
+   * 16-bit front-to-back ordering for stochastic frames.
+   * WebXR eyes share one order based on their mean position and direction.
+   * WebGL and WebGL fallback sort asynchronously; native WebGPU sorts on the GPU.
+   * Disable to draw in source/compacted order.
+   * @default true
+   */
+  stochasticSort?: boolean;
   /**
    * Set the splat shader material to be transparent which determines if the
    * splats are rendered during the first opaque THREE.js render pass or the
-   * second transparent render pass.
+   * second transparent render pass. Stochastic rendering keeps the
+   * material in the opaque list, with depth testing and writing enabled.
    * @default undefined = true
    */
   transparent?: boolean;
@@ -204,7 +244,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   autoUpdate: boolean;
   preUpdate: boolean;
-  static gaussianSplatOverride?: GaussianSplatRenderer;
 
   renderSize = new THREE.Vector2();
   maxStdDev: number;
@@ -218,8 +257,18 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   sortRadial: boolean;
   private _fastSort: boolean;
   minSortIntervalMs: number;
+  /**
+   * Noise pattern index, wrapped to uint32. Each value selects an independent
+   * pattern. Disable autoAdvanceStochasticSample for manual control.
+   */
+  stochasticSample = 0;
+  autoAdvanceStochasticSample: boolean;
+  private _stochastic: boolean;
+  private stochasticFrame: boolean;
+  private _stochasticSort: boolean;
   private _premultipliedAlpha: boolean;
   private _transparent: boolean;
+  private readonly sortedBlending: THREE.Blending;
   private _depthTest: boolean;
   private _depthWrite: boolean;
 
@@ -231,8 +280,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   dirty: boolean;
 
   private readonly backend: SplatBackend;
-  private readonly capture: SplatCapture;
   private orderingBuffer: Uint32Array = new Uint32Array(0);
+  // A CPU ordering matching the displayed accumulator; unsorted stochastic
+  // updates display without one.
+  private orderingReady = false;
+  // Mean pose of the WebXR eyes; see getGenerationCamera().
+  private readonly headCamera = new THREE.PerspectiveCamera();
   maxSplats = 0;
   activeSplats = 0;
 
@@ -248,6 +301,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   sortedDir = new THREE.Vector3().setScalar(0);
   private sortedRadial: boolean | undefined;
   private sortedFastSort: boolean | undefined;
+  private sortedMode: SortMode | undefined;
   private sortCenterCache = new SortCenterCache();
   private sortStateRevision = 0;
   private uploadedSortStateRevision = -1;
@@ -256,12 +310,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   private queuedUpdate: UpdateRequest | null = null;
   private disposed = false;
   private pendingProjectionShrink = false;
-
-  target?: THREE.WebGLRenderTarget;
-  backTarget?: THREE.WebGLRenderTarget;
-  superPixels?: Uint8Array;
-  targetPixels?: Uint8Array;
-  superXY = 1;
+  private unsupportedCameraReported = false;
 
   constructor(options: GaussianSplatRendererOptions) {
     if (!options?.renderer) {
@@ -272,6 +321,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const uniforms = GaussianSplatRenderer.makeUniforms();
 
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
+    const stochastic = options.stochastic ?? false;
     const backend = createSplatBackend(options.renderer, uniforms, {
       premultipliedAlpha,
       transparent: options.transparent ?? true,
@@ -279,18 +329,23 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       depthWrite: options.depthWrite ?? false,
     });
     const geometry = new SplatGeometry();
-    const material = backend.material;
+    const material = backend.selectMaterial(stochastic);
 
     super(geometry, material);
     this.renderer = options.renderer;
     this.backend = backend;
-    this.capture = new SplatCapture(this, backend, () => this.beginCapture());
     this.uniforms = uniforms;
+    this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
     this._depthWrite = options.depthWrite ?? false;
     this._premultipliedAlpha = premultipliedAlpha;
     this._transparent = options.transparent ?? true;
-    this.applyMaterialState();
+    this._stochastic = stochastic;
+    this.autoAdvanceStochasticSample =
+      options.autoAdvanceStochasticSample ?? true;
+    this._stochasticSort = options.stochasticSort ?? true;
+    this.stochasticFrame = stochastic;
+    this.applyMaterialState(this.stochasticFrame);
     // Disable frustum culling because we want to always draw them all
     // and cull Gsplats individually in the shader
     this.frustumCulled = false;
@@ -330,9 +385,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       backend.precompile?.then(() => {
         if (!this.disposed) this.setDirty();
       });
+      // WebXR eye kernels compile on first use or session start; draws hide
+      // Splats until they are ready, so request a redraw.
+      backend.projection.onKernelsReady = () => {
+        if (!this.disposed) this.setDirty();
+      };
     }
-
-    this.capture.initialize(options.target);
   }
 
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]) {}
@@ -350,8 +408,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     super.dispose();
 
-    this.capture.dispose();
     this.backend.dispose();
+    this.uniforms.stochasticNoise.value.dispose();
 
     const accumulators = new Set<SplatAccumulator>();
     accumulators.add(this.display);
@@ -365,8 +423,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.accumulators.length = 0;
 
     this.resetSortWorker();
-    this.releaseReadbackBuffers();
     this.orderingBuffer = new Uint32Array(0);
+    this.orderingReady = false;
     this.maxSplats = 0;
     this.activeSplats = 0;
 
@@ -392,9 +450,15 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.uploadedSortStateRevision = -1;
   }
 
-  private releaseReadbackBuffers() {
-    this.superPixels = undefined;
-    this.targetPixels = undefined;
+  /**
+   * Frees the worker, its sort state and the ordering, which unsorted draws
+   * never read. Re-enabling sorting reallocates them and uploads centers.
+   */
+  private releaseOrdering() {
+    this.resetSortWorker();
+    if (this.backend.kind !== "webgpu") this.backend.releaseOrdering();
+    this.orderingBuffer = new Uint32Array(0);
+    this.maxSplats = 0;
   }
 
   private takeAccumulator() {
@@ -411,12 +475,33 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
   }
 
-  private applyMaterialState() {
+  /**
+   * Draw stochastically exactly while the displayed accumulator was generated
+   * for it: only stochastic accumulators carry sampling seeds, and only
+   * sorted ones a back-to-front order. WebGL backends therefore switch modes
+   * once an update for the new mode is displayed; native WebGPU at once.
+   */
+  private syncStochasticFrame() {
+    const active =
+      this.backend.kind === "webgpu" || this.display.numSplats === 0
+        ? this._stochastic
+        : this.display.hasStochasticSeeds;
+    if (active === this.stochasticFrame) return;
+    this.stochasticFrame = active;
+    this.material = this.backend.selectMaterial(active);
+    this.applyMaterialState(active);
+    this.setDirty();
+  }
+
+  private applyMaterialState(stochasticActive: boolean) {
     const { material } = this;
     const wasOpaque = isOpaqueMaterial(material);
-    material.transparent = this._transparent;
-    material.depthTest = this._depthTest;
-    material.depthWrite = this._depthWrite;
+    material.transparent = stochasticActive ? false : this._transparent;
+    material.blending = stochasticActive
+      ? THREE.NoBlending
+      : this.sortedBlending;
+    material.depthTest = stochasticActive ? true : this._depthTest;
+    material.depthWrite = stochasticActive ? true : this._depthWrite;
     if (
       material.premultipliedAlpha !== this._premultipliedAlpha ||
       wasOpaque !== isOpaqueMaterial(material)
@@ -431,60 +516,74 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     scene: THREE.Scene,
     camera: THREE.Camera,
   ) {
-    const gaussianSplatRenderer =
-      GaussianSplatRenderer.gaussianSplatOverride ?? this;
-
+    if (!isSupportedCamera(camera, renderer)) {
+      // Throwing here would leave Three.js mid-render; skip this draw instead.
+      if (!this.unsupportedCameraReported) {
+        this.unsupportedCameraReported = true;
+        console.error(UNSUPPORTED_CAMERA);
+      }
+      this.geometry.setIndirect(null);
+      this.geometry.instanceCount = 0;
+      return;
+    }
     const frame = getRenderFrame(renderer);
-    const isNewFrame = frame !== gaussianSplatRenderer.lastFrame;
-    gaussianSplatRenderer.lastFrame = frame;
+    const isNewFrame = frame !== this.lastFrame;
+    this.lastFrame = frame;
+    if (isNewFrame) {
+      if (this.autoAdvanceStochasticSample && this.stochasticFrame) {
+        this.stochasticSample = (this.stochasticSample + 1) >>> 0;
+      }
+    }
 
     const currentRenderTarget = renderer.getRenderTarget();
     if (currentRenderTarget) {
-      gaussianSplatRenderer.renderSize.set(
+      this.renderSize.set(
         currentRenderTarget.width,
         currentRenderTarget.height,
       );
     } else {
-      renderer.getDrawingBufferSize(gaussianSplatRenderer.renderSize);
+      renderer.getDrawingBufferSize(this.renderSize);
     }
 
-    let useCamera = camera;
-    if (renderer.xr.isPresenting) {
-      const xrCamera = renderer.xr.getCamera();
-      // Keep the per-eye camera parented to the XR rig so its world transform
-      // includes any scale applied to that rig.
-      useCamera = xrCamera.cameras[0] ?? xrCamera;
-      const viewport =
-        (camera as THREE.PerspectiveCamera).viewport ??
-        (useCamera as THREE.PerspectiveCamera).viewport;
-      if (viewport) {
-        // WebGPU selects each eye's size in the shader; updates use the first.
-        gaussianSplatRenderer.renderSize.set(viewport.z, viewport.w);
-      }
-    }
-    this.uniforms.renderSize.value.copy(gaussianSplatRenderer.renderSize);
+    const xrView = isXRCamera(camera, renderer);
+    const updateCamera = xrView ? renderer.xr.getCamera() : camera;
+    // Classic WebGL draws each eye separately; node backends select viewport
+    // uniforms per eye in the shader. XR preparation uses the first eye's size.
+    const viewport =
+      (camera as THREE.PerspectiveCamera).viewport ??
+      (xrView
+        ? (getViews(updateCamera)[0] as THREE.PerspectiveCamera).viewport
+        : undefined);
+    this.uniforms.viewportOrigin.value.set(viewport?.x ?? 0, viewport?.y ?? 0);
+    if (viewport) this.renderSize.set(viewport.z, viewport.w);
+    this.uniforms.renderSize.value.copy(this.renderSize);
+    // Accumulator generation inside this draw would reset a classic WebGL
+    // eye viewport and must not delay XR frames.
+    const renderNested =
+      this.backend.kind !== "webgpu" && this.preUpdate && !xrView && !viewport;
 
     // Trigger update after refreshing renderSize but before any uniforms that
     // depend on the active accumulator, avoiding both size and display latency.
-    if (gaussianSplatRenderer.autoUpdate && isNewFrame) {
+    if (this.autoUpdate && isNewFrame) {
       // Native preparation only updates mappings and edit metadata. Its GPU
       // projection runs below, so it can prepare before XR draws as well.
+      // Three has already selected this draw's material and render list.
+      // WebGL mode changes must finish outside the draw; onDirty then requests
+      // a frame with the matching material, ordering and accumulator.
       const preUpdate =
-        gaussianSplatRenderer.backend.kind === "webgpu" ||
-        (gaussianSplatRenderer.preUpdate && !renderer.xr.isPresenting);
+        this.backend.kind === "webgpu" ||
+        (renderNested && this.stochasticFrame === this._stochastic);
       const updateRequest = {
         scene,
-        camera: useCamera,
-        layerCamera:
-          gaussianSplatRenderer.backend.kind === "webgpu" ? camera : undefined,
+        camera: updateCamera,
         shrinkResources: false,
       };
       if (preUpdate) {
-        gaussianSplatRenderer.updateInternal(updateRequest);
-      } else if (gaussianSplatRenderer.updateTimeoutId === -1) {
-        gaussianSplatRenderer.updateTimeoutId = setTimeout(() => {
-          gaussianSplatRenderer.updateTimeoutId = -1;
-          gaussianSplatRenderer.updateInternal(updateRequest);
+        this.updateInternal(updateRequest);
+      } else if (this.updateTimeoutId === -1) {
+        this.updateTimeoutId = setTimeout(() => {
+          this.updateTimeoutId = -1;
+          this.updateInternal(updateRequest);
         }, 0);
       }
     }
@@ -496,10 +595,21 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.uniforms.near.value = typedCamera.near;
     this.uniforms.far.value = typedCamera.far;
 
-    const display = gaussianSplatRenderer.display;
+    const display = this.display;
+    // Native WebGPU prepares current poses before every draw.
+    if (this.autoUpdate && renderNested) {
+      display.refreshTransforms(renderer);
+    }
     this.uniforms.renderOrigin.value.copy(display.viewOrigin);
     const geometry = this.geometry;
-    const splatCount = gaussianSplatRenderer.activeSplats;
+    // CPU orderings exist only while they match the displayed accumulator.
+    this.uniforms.stochasticOrdering.value =
+      this.stochasticSort &&
+      (this.backend.kind === "webgpu" || this.orderingReady);
+    const splatCount =
+      this.stochasticFrame && !this.uniforms.stochasticOrdering.value
+        ? display.numSplats
+        : this.activeSplats;
     geometry.setSplatCount(splatCount);
     this.uniforms.splatCount.value = splatCount;
 
@@ -518,15 +628,26 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         renderToViewScaleTmp.y +
         renderToViewScaleTmp.z) /
       3;
-    this.uniforms.maxStdDev.value = gaussianSplatRenderer.maxStdDev;
-    this.uniforms.minPixelRadius.value = gaussianSplatRenderer.minPixelRadius;
-    this.uniforms.maxPixelRadius.value = gaussianSplatRenderer.maxPixelRadius;
-    this.uniforms.minAlpha.value = gaussianSplatRenderer.minAlpha;
-    this.uniforms.preBlurAmount.value = gaussianSplatRenderer.preBlurAmount;
-    this.uniforms.blurAmount.value = gaussianSplatRenderer.blurAmount;
-    this.uniforms.clipXY.value = gaussianSplatRenderer.clipXY;
-    this.uniforms.focalAdjustment.value = gaussianSplatRenderer.focalAdjustment;
+    this.uniforms.maxStdDev.value = this.maxStdDev;
+    this.uniforms.minPixelRadius.value = this.minPixelRadius;
+    this.uniforms.maxPixelRadius.value = this.maxPixelRadius;
+    this.uniforms.minAlpha.value = this.minAlpha;
+    this.uniforms.preBlurAmount.value = this.preBlurAmount;
+    this.uniforms.blurAmount.value = this.blurAmount;
+    this.uniforms.clipXY.value = this.clipXY;
+    this.uniforms.focalAdjustment.value = this.focalAdjustment;
+    this.uniforms.stochastic.value = this.stochasticFrame;
+    this.uniforms.stochasticSample.value = this.stochasticSample >>> 0;
     configureSplatOutput(renderer, currentRenderTarget, this.uniforms);
+
+    if (this.backend.kind !== "webgl") {
+      const enabled = this.backend.renderer.getMRT()?.has("velocity") === true;
+      this.uniforms.velocityEnabled.value = enabled;
+      this.backend.velocity.accumulator = display;
+      (this.material as SplatNodeMaterial).mrtNode = enabled
+        ? this.backend.velocity.mrt
+        : null;
+    }
 
     if (this.backend.kind === "webgpu") {
       if (this.backend.sortError) throw this.backend.sortError;
@@ -537,26 +658,27 @@ export class GaussianSplatRenderer extends THREE.Mesh<
           display,
           camera,
           geometry,
-          gaussianSplatRenderer.sortRadial,
-          gaussianSplatRenderer.fastSort,
-          gaussianSplatRenderer.pendingProjectionShrink,
+          this.sortRadial,
+          this.fastSort,
+          this.pendingProjectionShrink,
         );
-        gaussianSplatRenderer.pendingProjectionShrink = false;
+        this.pendingProjectionShrink = false;
       }
     } else {
-      gaussianSplatRenderer.backend.bindOrdering(this.material, this.uniforms);
       const splatTextures = display.getTextures();
       this.uniforms.splats.value = splatTextures[0];
       this.uniforms.splats2.value = splatTextures[1];
+      this.uniforms.stochasticSeeds.value = display.getStochasticSeeds();
     }
 
-    gaussianSplatRenderer.dirty = false;
+    this.dirty = false;
   }
 
   clearSplats() {
     this.activeSplats = 0;
     this.display.numSplats = 0;
     if (this.backend.kind === "webgpu") this.display.mapping = [];
+    this.syncStochasticFrame();
     this.setDirty();
   }
 
@@ -567,6 +689,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     scene: THREE.Scene;
     camera: THREE.Camera;
   }) {
+    assertSupportedCamera(camera, this.renderer);
     if (this.backend.kind === "webgpu") {
       await this.backend.precompile;
       if (this.backend.sortError) throw this.backend.sortError;
@@ -586,6 +709,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     scene: THREE.Scene;
     camera: THREE.Camera;
   }) {
+    assertSupportedCamera(camera, this.renderer);
+    if (this.backend.kind !== "webgl") this.backend.velocity.shrink();
     await this.updateInternal({
       scene,
       camera,
@@ -597,32 +722,35 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     if (this.disposed) return Promise.resolve();
 
     if (this.backend.kind === "webgpu") {
-      const { scene, camera, layerCamera, shrinkResources } = request;
+      const { scene, shrinkResources } = request;
       if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
+      if (!(request.camera as THREE.ArrayCamera).isArrayCamera)
+        request.camera.updateWorldMatrix(true, false);
+      const camera = this.getGenerationCamera(request.camera);
       if (this.ownsTimer) this.timer.update();
-      if (shrinkResources) {
-        this.releaseReadbackBuffers();
-        this.pendingProjectionShrink = true;
-      }
+      if (shrinkResources) this.pendingProjectionShrink = true;
       const previousVersion = this.current.version;
       const viewChanged =
         !this.current.viewOrigin.equals(
-          camera.getWorldPosition(renderToViewScaleTmp),
+          renderToViewScaleTmp.setFromMatrixPosition(camera.matrixWorld),
         ) ||
         !this.current.viewDirection.equals(
-          camera.getWorldDirection(renderToViewScaleTmp),
+          renderToViewScaleTmp
+            .setFromMatrixColumn(camera.matrixWorld, 2)
+            .normalize()
+            .negate(),
         );
       const { requiredMaxSplats } = this.current.prepareGenerate({
         renderer: this.renderer,
         scene,
         timer: this.timer,
         camera,
-        layerCamera,
+        layerCamera: request.camera,
         previous: this.current,
       });
       // The accumulator only carries source mappings and the camera-relative
       // origin here. Projection, compaction and ordering happen on the GPU
-      // immediately before each draw, including independent capture views.
+      // immediately before each draw.
       this.display = this.current;
       this.activeSplats = this.current.numSplats;
       this.maxSplats = requiredMaxSplats;
@@ -668,29 +796,42 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   private async performUpdate({
     scene,
-    camera,
+    camera: updateCamera,
     shrinkResources,
   }: UpdateRequest) {
     const next = this.takeAccumulator();
 
     const renderer = this.renderer;
     if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
-    if (shrinkResources) {
-      this.releaseReadbackBuffers();
-    }
+    if (!(updateCamera as THREE.ArrayCamera).isArrayCamera)
+      updateCamera.updateWorldMatrix(true, false);
     if (this.ownsTimer) {
       this.timer.update();
     }
 
-    const center = camera.getWorldPosition(new THREE.Vector3());
-    const dir = camera.getWorldDirection(new THREE.Vector3());
-
+    // Read the mode when the update runs; queued requests may predate a switch.
+    const mode: SortMode = !this._stochastic
+      ? "back"
+      : this.stochasticSort
+        ? "front"
+        : "identity";
+    // One viewpoint generates and sorts: the camera, or the WebXR head.
+    const camera = this.getGenerationCamera(updateCamera);
+    const center = new THREE.Vector3().setFromMatrixPosition(
+      camera.matrixWorld,
+    );
+    const direction = new THREE.Vector3()
+      .setFromMatrixColumn(camera.matrixWorld, 2)
+      .normalize()
+      .negate();
     const viewChanged =
+      mode !== this.sortedMode ||
+      (mode === "back" &&
+        (this.sortRadial !== this.sortedRadial ||
+          this.fastSort !== this.sortedFastSort)) ||
       center.distanceTo(this.sortedCenter) >
-        0.001 * getCameraWorldScale(camera) ||
-      dir.dot(this.sortedDir) < 0.999 ||
-      this.sortRadial !== this.sortedRadial ||
-      this.fastSort !== this.sortedFastSort;
+        0.001 * getCameraWorldScale(getViews(updateCamera)[0]) ||
+      direction.dot(this.sortedDir) < 0.999;
 
     const previousVersion = this.current.version;
     let preparation: ReturnType<SplatAccumulator["prepareGenerate"]>;
@@ -700,6 +841,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         scene,
         timer: this.timer,
         camera,
+        layerCamera: updateCamera,
         previous: this.current,
       });
     } catch (error) {
@@ -713,12 +855,14 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const doUpdate =
       shrinkResources || viewChanged || version !== previousVersion;
     const needsSort = orderingNeedsShrink || viewChanged || sortUpdated;
+    // Unsorted stochastic draws read source indices directly.
+    const skipSort = mode === "identity";
 
     if (!doUpdate) {
       this.releaseAccumulator(next);
     } else {
       try {
-        generate(shrinkResources);
+        generate(shrinkResources, mode !== "back");
       } catch (error) {
         this.releaseAccumulator(next);
         throw error;
@@ -728,7 +872,18 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         this.sortStateRevision += 1;
       }
 
-      if (this.display.mappingVersion === next.mappingVersion && !needsSort) {
+      if (skipSort) {
+        this.releaseAccumulator(this.display);
+        if (this.current !== this.display) {
+          this.releaseAccumulator(this.current);
+        }
+        // The stochastic shader reads identity indices, so the latest generated
+        // accumulator is immediately displayable without a matching ordering.
+        this.display = next;
+      } else if (
+        this.display.mappingVersion === next.mappingVersion &&
+        !needsSort
+      ) {
         // Appearance-only update: the mapping and existing sort order are
         // still valid, so display the new accumulator immediately.
         this.releaseAccumulator(this.display);
@@ -748,14 +903,68 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.setDirty();
     }
 
-    await this.driveSort(orderingNeedsShrink, shrinkResources);
+    if (skipSort) {
+      // No ordering matches the displayed accumulator. Record the view it
+      // was generated for, so later frames compare against it as they do
+      // against a sort and only real view or mode changes regenerate it.
+      this.sortDirty = false;
+      this.activeSplats = this.display.numSplats;
+      this.orderingReady = false;
+      if (doUpdate) {
+        this.sortedMode = mode;
+        this.sortedCenter.copy(center);
+        this.sortedDir.copy(direction);
+      }
+      if (shrinkResources) {
+        this.releaseOrdering();
+        this.disposeOversizedAccumulators(this.current.maxSplats);
+      }
+      this.syncStochasticFrame();
+      return;
+    }
 
+    await this.driveSort(
+      orderingNeedsShrink,
+      // Switch modes without waiting for the sort interval.
+      shrinkResources || this.stochasticFrame !== this._stochastic,
+      mode,
+    );
+
+    this.syncStochasticFrame();
     if (shrinkResources) {
       this.disposeOversizedAccumulators(this.current.maxSplats);
     }
   }
 
-  private async driveSort(shrinkOrdering = false, forceSort = false) {
+  /**
+   * Viewpoint for generation, spherical harmonics, the render origin and
+   * sorting: the camera, or for WebXR eyes their mean pose, the shared head.
+   */
+  private getGenerationCamera(camera: THREE.Camera) {
+    const views = getViews(camera);
+    if (views.length < 2 || !isXRCamera(camera, this.renderer)) return views[0];
+    const position = headPositionTmp;
+    const target = headTargetTmp;
+    getMeanViewPose(views, position, target);
+    target.add(position);
+    const head = this.headCamera;
+    head.matrixAutoUpdate = false;
+    head.matrix
+      .lookAt(
+        position,
+        target,
+        renderToViewScaleTmp.setFromMatrixColumn(views[0].matrixWorld, 1),
+      )
+      .setPosition(position);
+    head.updateMatrixWorld(true);
+    return head;
+  }
+
+  private async driveSort(
+    shrinkOrdering: boolean,
+    forceSort: boolean,
+    mode: SortMode,
+  ) {
     // WebGL updates await each sort before draining the next queued update.
     if (this.disposed || this.backend.kind === "webgpu" || !this.sortDirty)
       return;
@@ -801,30 +1010,35 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         this.uploadedSortStateRevision = stateRevision;
       }
 
-      const result = await sortWorker.call("sortCenters32", {
-        numSplats,
-        cameraPosition: [
-          current.viewOrigin.x,
-          current.viewOrigin.y,
-          current.viewOrigin.z,
-        ],
-        direction: [
-          current.viewDirection.x,
-          current.viewDirection.y,
-          current.viewDirection.z,
-        ],
-        radial: sortRadial,
-        fastSort,
-        ordering: this.orderingBuffer,
-      });
+      // Every view, including both WebXR eyes, draws this one order.
+      const { ordering, activeSplats } = await sortWorker.call(
+        "sortCenters32",
+        {
+          numSplats,
+          cameraPosition: current.viewOrigin.toArray() as [
+            number,
+            number,
+            number,
+          ],
+          direction: current.viewDirection.toArray() as [
+            number,
+            number,
+            number,
+          ],
+          radial: sortRadial,
+          fastSort,
+          frontSort: mode !== "back",
+          ordering: this.orderingBuffer,
+        },
+      );
       if (this.disposed) return;
 
-      this.activeSplats = result.activeSplats;
+      this.activeSplats = activeSplats;
       const previousOrdering = this.backend.cpuOrdering;
       this.backend.setCPUOrdering({
-        ordering: result.ordering,
-        activeSplats: result.activeSplats,
-        requiredCapacity: orderingMaxSplats,
+        ordering,
+        activeSplats,
+        requiredCapacity: this.maxSplats,
         shrink: shrinkOrdering,
       });
 
@@ -839,6 +1053,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.sortedDir.copy(current.viewDirection);
       this.sortedRadial = sortRadial;
       this.sortedFastSort = fastSort;
+      this.sortedMode = mode;
+      this.orderingReady = true;
       if (this.display !== current) {
         this.releaseAccumulator(this.display);
         this.display = current;
@@ -863,116 +1079,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
   }
 
-  render(scene: THREE.Scene, camera: THREE.Camera) {
-    const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
-    try {
-      GaussianSplatRenderer.gaussianSplatOverride = this;
-      this.renderer.render(scene, camera);
-    } finally {
-      GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
-    }
-  }
-
-  private beginCapture() {
-    const previousOverride = GaussianSplatRenderer.gaussianSplatOverride;
-    return {
-      activate: () => {
-        GaussianSplatRenderer.gaussianSplatOverride = this;
-      },
-      restore: () => {
-        GaussianSplatRenderer.gaussianSplatOverride = previousOverride;
-      },
-    };
-  }
-
-  renderTarget({
-    scene,
-    camera,
-  }: { scene: THREE.Scene; camera: THREE.Camera }): THREE.WebGLRenderTarget {
-    return this.capture.renderTarget({ scene, camera });
-  }
-
-  async readTarget(): Promise<Uint8Array> {
-    return this.capture.readTarget();
-  }
-
-  async renderReadTarget({
-    scene,
-    camera,
-  }: {
-    scene: THREE.Scene;
-    camera: THREE.Camera;
-  }): Promise<Uint8Array> {
-    return this.capture.renderReadTarget({ scene, camera });
-  }
-
-  async renderCubeMap({
-    scene,
-    worldCenter,
-    size = 256,
-    near = 0.1,
-    far = 1000,
-    hideObjects = [],
-    update = true,
-    filter = false,
-  }: {
-    scene: THREE.Scene;
-    worldCenter: THREE.Vector3;
-    size?: number;
-    near?: number;
-    far?: number;
-    hideObjects: THREE.Object3D[];
-    update: boolean;
-    filter: boolean;
-  }): Promise<THREE.CubeTexture> {
-    return this.capture.renderCubeMap({
-      scene,
-      worldCenter,
-      size,
-      near,
-      far,
-      hideObjects,
-      update,
-      filter,
-    });
-  }
-
-  async readCubeTargets(): Promise<Uint8Array[]> {
-    return this.capture.readCubeTargets();
-  }
-
-  async renderEnvMap({
-    scene,
-    worldCenter,
-    size = 256,
-    near = 0.1,
-    far = 1000,
-    hideObjects = [],
-    update = true,
-  }: {
-    scene: THREE.Scene;
-    worldCenter: THREE.Vector3;
-    size?: number;
-    near?: number;
-    far?: number;
-    hideObjects: THREE.Object3D[];
-    update: boolean;
-  }): Promise<THREE.Texture> {
-    return this.capture.renderEnvMap({
-      scene,
-      worldCenter,
-      size,
-      near,
-      far,
-      hideObjects,
-      update,
-    });
-  }
-
-  recurseSetEnvMap(root: THREE.Object3D, envMap: THREE.Texture) {
-    return this.capture.recurseSetEnvMap(root, envMap);
-  }
-
   get premultipliedAlpha(): boolean {
     return this._premultipliedAlpha;
   }
@@ -981,7 +1087,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (this._premultipliedAlpha !== nextValue) {
       this._premultipliedAlpha = nextValue;
-      this.applyMaterialState();
+      this.applyMaterialState(this.stochasticFrame);
     }
   }
 
@@ -993,7 +1099,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (this._transparent !== nextValue) {
       this._transparent = nextValue;
-      this.applyMaterialState();
+      this.applyMaterialState(this.stochasticFrame);
     }
   }
 
@@ -1005,7 +1111,45 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (nextValue === this._fastSort) return;
     this._fastSort = nextValue;
-    if (this.backend.kind !== "webgpu") this.sortDirty = true;
+    // Stochastic orderings sort front to back and ignore it.
+    if (!this._stochastic && this.backend.kind !== "webgpu") {
+      this.sortDirty = true;
+    }
+    this.setDirty();
+  }
+
+  get stochasticSort(): boolean {
+    return this._stochasticSort;
+  }
+
+  set stochasticSort(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._stochasticSort) return;
+    this._stochasticSort = nextValue;
+    if (this._stochastic && this.backend.kind !== "webgpu") {
+      this.sortDirty = true;
+    }
+    this.setDirty();
+  }
+
+  get stochastic(): boolean {
+    return this._stochastic;
+  }
+
+  /**
+   * Whether Splats currently draw stochastically. On WebGL backends it
+   * follows `stochastic` once an update for the new mode is displayed.
+   */
+  get stochasticActive(): boolean {
+    return this.stochasticFrame;
+  }
+
+  set stochastic(value: boolean) {
+    const nextValue = Boolean(value);
+    if (nextValue === this._stochastic) return;
+    this._stochastic = nextValue;
+    this.syncStochasticFrame();
+    this.sortDirty = true;
     this.setDirty();
   }
 
@@ -1015,7 +1159,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   set depthTest(value: boolean) {
     this._depthTest = Boolean(value);
-    this.applyMaterialState();
+    this.applyMaterialState(this.stochasticFrame);
   }
 
   get depthWrite(): boolean {
@@ -1024,7 +1168,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   set depthWrite(value: boolean) {
     this._depthWrite = Boolean(value);
-    this.applyMaterialState();
+    this.applyMaterialState(this.stochasticFrame);
   }
 }
 

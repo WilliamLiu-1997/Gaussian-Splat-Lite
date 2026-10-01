@@ -126,6 +126,7 @@ pub fn sort32_centers(
     direction_z: f32,
     radial: bool,
     fast_sort: bool,
+    front_sort: bool,
     ordering: Uint32Array,
 ) -> u32 {
     let max_splats = ordering.length() as usize;
@@ -133,15 +134,25 @@ pub fn sort32_centers(
     let result: Result<u32, String> = SORT32_BUFFERS.with_borrow_mut(|buffers| {
         let camera = [camera_x, camera_y, camera_z];
         let direction = [direction_x, direction_y, direction_z];
-        let active_splats = sort32_centers_internal(
-            buffers,
-            max_splats,
-            num_splats as usize,
-            camera,
-            direction,
-            radial,
-            fast_sort,
-        )?;
+        let active_splats = if front_sort {
+            sort::sort16_centers_front_internal(
+                buffers,
+                max_splats,
+                num_splats as usize,
+                camera,
+                direction,
+            )
+        } else {
+            sort32_centers_internal(
+                buffers,
+                max_splats,
+                num_splats as usize,
+                camera,
+                direction,
+                radial,
+                fast_sort,
+            )
+        }?;
 
         if active_splats > 0 {
             ordering

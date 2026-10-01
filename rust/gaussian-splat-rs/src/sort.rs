@@ -342,6 +342,71 @@ fn validate_ranges(
     Ok(())
 }
 
+/// Stable near-to-far ordering by the high 16 bits of signed float depth.
+/// Keep finite negative depths: stochastic visibility is decided by the shader.
+pub fn sort16_centers_front_internal(
+    buffers: &mut Sort32Buffers,
+    max_splats: usize,
+    num_splats: usize,
+    camera_position: [f64; 3],
+    direction: [f32; 3],
+) -> Result<u32, String> {
+    validate_ranges(buffers, max_splats, num_splats)?;
+
+    buffers.ensure_size(max_splats);
+    // Count in the 16-bit high-pass histogram. The fast sort only uses
+    // buckets_lo, so its 24-bit histogram and occupied range stay intact.
+    buffers.buckets_hi.resize(1 << FULL_RADIX_BITS, 0);
+    buffers.buckets_hi.fill(0);
+    let direction64 = direction.map(f64::from);
+    let mut next_index = 0;
+    for range in 0..buffers.range_bases.len() {
+        let base = buffers.range_bases[range] as usize;
+        let count = buffers.range_counts[range] as usize;
+        let end = base + count;
+        buffers.keys[next_index..base].fill(0xffff);
+        next_index = end;
+        let mesh = &buffers.meshes[buffers.range_mesh_ids[range] as usize];
+        let camera_local = [
+            (camera_position[0] - mesh.origin[0]) as f32,
+            (camera_position[1] - mesh.origin[1]) as f32,
+            (camera_position[2] - mesh.origin[2]) as f32,
+        ];
+        let (local_direction, offset) = mesh.axial_projection(camera_local, direction, direction64);
+        for (center, key_out) in mesh.raw_centers[..count * 3]
+            .chunks_exact(3)
+            .zip(buffers.keys[base..end].iter_mut())
+        {
+            let metric = center[0] * local_direction[0]
+                + center[1] * local_direction[1]
+                + center[2] * local_direction[2]
+                + offset;
+            let bits = metric.to_bits();
+            if bits & 0x7fffffff < 0x7f800000 {
+                let key = (if bits & 0x80000000 != 0 {
+                    !bits
+                } else {
+                    bits ^ 0x80000000
+                }) >> 16;
+                *key_out = key;
+                buffers.buckets_hi[key as usize] += 1;
+            } else {
+                *key_out = 0xffff;
+            }
+        }
+    }
+    buffers.keys[next_index..num_splats].fill(0xffff);
+    let active = prefix_sum_exclusive(&mut buffers.buckets_hi);
+    for (i, &key) in buffers.keys[..num_splats].iter().enumerate() {
+        if key != 0xffff {
+            let offset = &mut buffers.buckets_hi[key as usize];
+            buffers.ordering[*offset as usize] = i as u32;
+            *offset += 1;
+        }
+    }
+    Ok(active)
+}
+
 /// Count valid keys without touching buckets for centers behind the camera.
 #[inline(always)]
 fn tally_key<const FAST: bool>(
@@ -677,5 +742,33 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("ordering buffer too small"));
+    }
+
+    #[test]
+    fn front_sort_orders_near_to_far_and_keeps_the_fast_histogram() {
+        let mut buffers = Sort32Buffers::default();
+        // Depths along +Z: 5, -2, 1, NaN, 3.
+        #[rustfmt::skip]
+        buffers.set_centers(&[
+            0.0, 0.0, 5.0,
+            0.0, 0.0, -2.0,
+            0.0, 0.0, 1.0,
+            0.0, 0.0, f32::NAN,
+            0.0, 0.0, 3.0,
+        ]);
+        let camera = [0.0, 0.0, 0.0];
+        let direction = [0.0, 0.0, 1.0];
+
+        let fast =
+            sort32_centers_internal(&mut buffers, 5, 5, camera, direction, false, true).unwrap();
+        assert_eq!(&buffers.ordering[..fast as usize], &[0, 4, 2]);
+
+        let front = sort16_centers_front_internal(&mut buffers, 5, 5, camera, direction).unwrap();
+        // Finite depths behind the camera stay; the shader culls them.
+        assert_eq!(&buffers.ordering[..front as usize], &[1, 2, 4, 0]);
+
+        let fast =
+            sort32_centers_internal(&mut buffers, 5, 5, camera, direction, false, true).unwrap();
+        assert_eq!(&buffers.ordering[..fast as usize], &[0, 4, 2]);
     }
 }

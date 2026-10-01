@@ -697,6 +697,32 @@ button {
   outline-offset: 2px;
 }
 
+.toolbar-select {
+  flex-shrink: 0;
+  padding-left: 0.8rem;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+}
+
+.toolbar-select .option-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0;
+  border: 0;
+}
+
+.toolbar-select .option-copy label {
+  color: #c4c9d2;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.toolbar-select .option-copy p {
+  display: none;
+}
+
 .options-footer {
   display: flex;
   align-items: center;

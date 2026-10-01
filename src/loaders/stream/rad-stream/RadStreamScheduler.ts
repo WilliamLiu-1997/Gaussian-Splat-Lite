@@ -12,6 +12,11 @@ import type { RadMeta, RadStreamChunk } from "../../rad/radFormat";
 import { getRadChunkSpan } from "../../rad/radFormat";
 import { StreamByteBudget } from "../StreamByteBudget";
 import {
+  StreamCameras,
+  type StreamResolutionSource,
+  prepareStreamCamera,
+} from "../StreamCameras";
+import {
   type StreamSchedulerOptions,
   type StreamStats,
   notifyStreamChange,
@@ -109,6 +114,7 @@ export class RadStreamScheduler {
   private _splatBudget: number;
   private readonly loader: RadStreamLoader;
   private readonly abort = new AbortController();
+  private readonly streamCameras = new StreamCameras();
   private readonly pages = new Map<number, Page>();
   private readonly pools: Pool[] = [];
   private readonly bounds = new THREE.Box3();
@@ -166,6 +172,50 @@ export class RadStreamScheduler {
     this.invalidatePendingSelection();
     this.revision++;
     void this.requestSelection();
+  }
+
+  /** Cameras that select detail, in registration order. */
+  get cameras(): readonly THREE.Camera[] {
+    return this.streamCameras.cameras;
+  }
+
+  hasCamera(camera: THREE.Camera) {
+    return this.streamCameras.has(camera);
+  }
+
+  /**
+   * Select detail for this camera on each update; set its resolution too. For
+   * WebXR register renderer.xr.getCamera(): it selects with its eyes' combined
+   * frustum, sized by an eye's viewport. Returns whether the camera was newly
+   * added.
+   */
+  setCamera(camera: THREE.Camera) {
+    return this.streamCameras.add(camera);
+  }
+
+  /** Stop selecting detail for this camera. Returns whether it was registered. */
+  deleteCamera(camera: THREE.Camera) {
+    return this.streamCameras.delete(camera);
+  }
+
+  /**
+   * Set a registered camera's render size in CSS pixels, without the device
+   * pixel ratio. Returns whether the camera is registered.
+   */
+  setResolution(
+    camera: THREE.Camera,
+    xOrVec: number | THREE.Vector2,
+    y?: number,
+  ) {
+    return this.streamCameras.setResolution(camera, xOrVec, y);
+  }
+
+  /** Set a registered camera's resolution from renderer.getSize(). */
+  setResolutionFromRenderer(
+    camera: THREE.Camera,
+    renderer: StreamResolutionSource,
+  ) {
+    return this.streamCameras.setResolutionFromRenderer(camera, renderer);
   }
 
   get stats(): RadStreamStats {
@@ -259,29 +309,22 @@ export class RadStreamScheduler {
     return this;
   }
 
-  /** Call before rendering; physical pixel dimensions include device pixel ratio.
-   * ArrayCamera uses a shared cut selected at the greatest per-eye detail. */
-  update(
-    camera: THREE.Camera,
-    viewport: { width: number; height: number } = { width: 1024, height: 1024 },
-  ): boolean {
+  /**
+   * Call before rendering. Registered cameras share one cut at the greatest
+   * detail any of them needs.
+   */
+  update(): boolean {
     if (this.disposed || !this.meta) return false;
-    if (
-      !(viewport.width > 0 && viewport.height > 0) ||
-      !Number.isFinite(viewport.width + viewport.height)
-    )
-      throw new Error("RAD viewport dimensions must be positive and finite");
+    const cameras = this.streamCameras.seeing(this.group.layers);
     const now = performance.now();
-    camera.updateWorldMatrix(true, false);
     this.group.updateWorldMatrix(true, false);
-    let shown = true;
+    let shown = cameras.length > 0;
     for (
       let object: THREE.Object3D | null = this.group;
       object;
       object = object.parent
     )
       shown &&= object.visible;
-    shown &&= camera.layers.test(this.group.layers);
     let changed = false;
     if (shown !== this.shown) {
       this.shown = shown;
@@ -295,30 +338,36 @@ export class RadStreamScheduler {
     }
     for (const { batch } of this.pools)
       batch.layers.mask = this.group.layers.mask;
-    const cameras = (camera as THREE.ArrayCamera).isArrayCamera
-      ? (camera as THREE.ArrayCamera).cameras
-      : [camera];
-    this.views = cameras.map((eye) => {
-      eye.updateWorldMatrix(true, false);
+    this.views = [];
+    for (const camera of cameras) {
+      if (!prepareStreamCamera(camera)) continue;
+      // A WebXR camera is sized by an eye's viewport: a headset has only
+      // physical pixels.
+      const array = camera as THREE.ArrayCamera;
+      const viewport = array.isArrayCamera
+        ? array.cameras[0].viewport
+        : undefined;
+      const resolution = this.streamCameras.getResolution(camera);
+      const width = viewport?.z ?? resolution?.x;
+      const height = viewport?.w ?? resolution?.y;
+      if (width === undefined || height === undefined)
+        throw new Error(
+          "RAD camera has no resolution; call setResolution() or setResolutionFromRenderer()",
+        );
       this.matrix
-        .copy(eye.matrixWorld)
+        .copy(camera.matrixWorld)
         .invert()
         .multiply(this.group.matrixWorld);
-      const eyeViewport = (
-        eye as THREE.PerspectiveCamera & { viewport?: THREE.Vector4 }
-      ).viewport;
-      const width = eyeViewport?.z ?? viewport.width;
-      const height = eyeViewport?.w ?? viewport.height;
-      const p = eye.projectionMatrix.elements;
-      return {
+      const p = camera.projectionMatrix.elements;
+      this.views.push({
         viewFromObject: this.matrix.elements.slice(),
         projectionRows: [p[0], p[4], p[8], p[12], p[1], p[5], p[9], p[13]],
         pixelScale:
           Math.max(Math.abs(p[0]) * width, Math.abs(p[5]) * height) / 2,
         orthographic:
-          (eye as THREE.OrthographicCamera).isOrthographicCamera === true,
-      };
-    });
+          (camera as THREE.OrthographicCamera).isOrthographicCamera === true,
+      });
+    }
     const key = this.views
       .map(
         (view) =>

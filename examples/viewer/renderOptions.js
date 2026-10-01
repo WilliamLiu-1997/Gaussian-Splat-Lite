@@ -5,13 +5,14 @@ export const renderOptionGroups = [
     options: [
       {
         property: "rendererBackend",
+        label: "Renderer",
         description:
           "Chooses the renderer; WebGPU falls back to WebGL2 when unavailable.",
         defaultValue: "webgpu",
         choices: [
           ["webgpu", "WebGPU"],
-          ["webgl-fallback", "WebGPU · WebGL2"],
-          ["webgl", "WebGL2"],
+          ["webgl-fallback", "WebGPU (WebGL2 fallback)"],
+          ["webgl", "WebGLRenderer"],
         ],
       },
       {
@@ -49,6 +50,15 @@ export const renderOptionGroups = [
     description: "Trade image stability for rendering work.",
     options: [
       {
+        property: "stochastic",
+        label: "Stochastic",
+        description:
+          "Uses stochastic coverage with Three.js temporal anti-aliasing in this viewer. Off restores sorted alpha blending.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
         property: "sortRadial",
         description:
           "Radial is stable while orbiting; Z-depth can match trained scenes more accurately.",
@@ -61,6 +71,15 @@ export const renderOptionGroups = [
         label: "Fast sort",
         description:
           "Speeds up sorted rendering with a small loss of blending accuracy.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "stochasticSort",
+        label: "Stochastic front sort",
+        description:
+          "Uses 16-bit front-to-back ordering to reduce overdraw. WebXR eyes share one head-based order. Off draws in source or compacted order.",
         defaultValue: true,
         falseLabel: "Off",
         trueLabel: "On",

@@ -216,7 +216,8 @@ export class SplatMesh extends THREE.Object3D {
       updated = true;
     }
     if (this.maxSh > 0 && source.getNumSh() > 0) {
-      camera.getWorldPosition(this.viewOrigin);
+      // The renderer has updated the camera; WebXR eyes must not recompute.
+      this.viewOrigin.setFromMatrixPosition(camera.matrixWorld);
       if (!this.viewOrigin.equals(this.lastViewOrigin)) {
         this.lastViewOrigin.copy(this.viewOrigin);
         // Directional SH changes appearance but never changes splat depth.

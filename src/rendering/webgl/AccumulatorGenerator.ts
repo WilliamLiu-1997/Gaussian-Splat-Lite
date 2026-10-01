@@ -11,15 +11,19 @@ import { getShaders } from "./shaders";
 import splatGenerate from "./shaders/splatGenerate.glsl";
 import { IDENT_VERTEX_SHADER } from "./textureUtils";
 
-let webGLMaterial: THREE.RawShaderMaterial | null = null;
+// Generate materials without and with the stochastic seed output.
+const webGLMaterials: (THREE.RawShaderMaterial | undefined)[] = [];
+let webGLUniforms: Uniforms | null = null;
 const fullScreenQuad = new FullScreenQuad(
   new THREE.RawShaderMaterial({ visible: false }),
 );
 
+/** Sorted rendering needs no seed layer; stochastic draws read one per Splat. */
 export function createWebGLAccumulatorTarget(
   width: number,
   height: number,
   depth: number,
+  stochasticSeeds: boolean,
 ) {
   const target = new THREE.WebGLArrayRenderTarget(width, height, depth, {
     depthBuffer: false,
@@ -34,34 +38,49 @@ export function createWebGLAccumulatorTarget(
 
   const second = target.texture.clone();
   target.textures = [target.texture, second];
+  if (stochasticSeeds) {
+    const seeds = target.texture.clone();
+    seeds.format = THREE.RedIntegerFormat;
+    seeds.name = "SplatAccumulator.stochasticSeeds";
+    target.textures.push(seeds);
+  }
   return target;
 }
 
-function getMaterial() {
-  let material = webGLMaterial;
+/** Whether an accumulator target stores stochastic sampling seeds. */
+export function hasStochasticSeeds(target: THREE.WebGLArrayRenderTarget) {
+  return target.textures.length > 2;
+}
+
+function getMaterial(stochasticSeeds: boolean) {
+  const index = Number(stochasticSeeds);
+  let material = webGLMaterials[index];
   if (!material) {
     getShaders();
     material = new THREE.RawShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: IDENT_VERTEX_SHADER,
       fragmentShader: splatGenerate,
-      uniforms: makeGenerateUniforms(),
+      // Both variants share one uniform set.
+      uniforms: getWebGLGenerateUniforms(),
+      defines: { GSL_STOCHASTIC_SEEDS: index },
       depthTest: false,
       depthWrite: false,
     });
-    webGLMaterial = material;
+    webGLMaterials[index] = material;
   }
   return material;
 }
 
 export function getWebGLGenerateUniforms() {
-  return getMaterial().uniforms;
+  webGLUniforms ??= makeGenerateUniforms();
+  return webGLUniforms;
 }
 
 export function generateWebGLAccumulator(
   options: AccumulatorRenderOptions<THREE.WebGLRenderer>,
 ) {
-  const material = getMaterial();
+  const material = getMaterial(hasStochasticSeeds(options.target));
   fullScreenQuad.material = material;
   renderAccumulatorLayers(options, material.uniforms, () =>
     fullScreenQuad.render(options.renderer),
