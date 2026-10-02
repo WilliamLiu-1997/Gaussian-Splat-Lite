@@ -89,6 +89,7 @@
             type="button"
             aria-controls="render-options"
             aria-expanded="false"
+            aria-label="Render options"
           >
             <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M4 5h12M7 10h9M4 15h12M7 3v4M13 8v4M8 13v4" />
@@ -101,8 +102,13 @@
             type="button"
             aria-controls="empty-state"
             aria-expanded="true"
+            aria-label="Open file"
           >
-            Open file
+            <svg class="button-icon open-file-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M5.5 2.5h6l3.5 3.5v11.5h-9.5z" />
+              <path d="M11.5 2.5V6H15M7.75 11.25 10.25 8.75l2.5 2.5M10.25 8.75v5.5" />
+            </svg>
+            <span class="open-file-label">Open file</span>
           </button>
         </div>
         <div id="model-controls" class="model-controls" hidden>
@@ -240,16 +246,17 @@
           <span class="meta-separator" aria-hidden="true"></span>
           <span id="file-stats"></span>
           <span id="model-credit-separator" class="meta-separator" aria-hidden="true" hidden></span>
-          <span id="model-credit-prefix" hidden>by</span>
-          <a
-            id="model-credit"
-            class="model-credit"
-            href="https://superspl.at/scene/c1e6297e"
-            target="_blank"
-            rel="noreferrer"
-            title="SplatGen_demo_addon🎁🚨 by shehabmekky (CC BY 4.0)"
-            hidden
-          >shehabmekky</a>
+          <span id="model-credit-group" class="model-credit-group" hidden>
+            by
+            <a
+              id="model-credit"
+              class="model-credit"
+              href="https://superspl.at/scene/c1e6297e"
+              target="_blank"
+              rel="noreferrer"
+              title="SplatGen_demo_addon🎁🚨 by shehabmekky (CC BY 4.0)"
+            >shehabmekky</a>
+          </span>
         </div>
       </footer>
     </div>

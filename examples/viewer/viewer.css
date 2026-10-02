@@ -224,6 +224,8 @@ button {
   position: absolute;
   inset: 0;
   display: grid;
+  /* Keep wide toolbar content from stretching the layout past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
   padding: clamp(0.75rem, 2vw, 1.5rem);
   padding-bottom: clamp(0.3rem, 0.84vw, 0.6rem);
@@ -256,11 +258,12 @@ button {
 
 .brand-mark {
   position: relative;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2.35rem;
+  height: 2.35rem;
   flex: 0 0 auto;
-  border-radius: 0.7rem;
-  background: url("./favicon.svg") center / contain no-repeat;
+  border-radius: 0.65rem;
+  /* Crop the SVG margin so the tile matches the toolbar buttons. */
+  background: url("./favicon.svg") center / 112.3% no-repeat;
   box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
 }
 
@@ -410,6 +413,10 @@ button {
 
 .reference-toggle[aria-pressed="true"] {
   color: #cfff58;
+}
+
+.open-file-icon {
+  display: none;
 }
 
 .button-large {
@@ -755,6 +762,7 @@ button {
 .stage {
   display: grid;
   min-height: 0;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
 }
 
@@ -762,6 +770,11 @@ button {
   position: relative;
   z-index: 15;
   width: min(32rem, calc(100vw - 2rem));
+  /* Scroll inside the stage when a short viewport cannot fit the panel. */
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #4f5662 transparent;
   padding: clamp(1.75rem, 5vw, 3rem);
   border: 1px solid rgb(255 255 255 / 11%);
   border-radius: 1.2rem;
@@ -1150,8 +1163,11 @@ button {
   flex: 0 1 auto;
 }
 
+.model-credit-group {
+  white-space: nowrap;
+}
+
 .model-credit {
-  flex: 0 0 auto;
   color: inherit;
   text-decoration: none;
   pointer-events: auto;
@@ -1262,9 +1278,9 @@ button {
   }
 }
 
-@media (max-width: 640px) {
-  .interface {
-    padding: 0.75rem 0.75rem 0.3rem;
+@media (max-width: 900px) {
+  .toolbar {
+    gap: 0.75rem;
   }
 
   .brand-copy small,
@@ -1273,8 +1289,47 @@ button {
     display: none;
   }
 
-  #reset-view {
-    padding-inline: 0.75rem;
+  #reset-view,
+  #render-options-toggle {
+    width: 2.35rem;
+    flex-shrink: 0;
+    padding: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .interface {
+    padding: 0.75rem 0.75rem 0.3rem;
+  }
+
+  .toolbar {
+    gap: 0.5rem;
+  }
+
+  .brand {
+    flex-shrink: 0;
+  }
+
+  .performance-stat-heap,
+  .open-file-label {
+    display: none;
+  }
+
+  .open-file-icon {
+    display: block;
+  }
+
+  .toolbar-actions {
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
+
+  #source-panel-toggle {
+    width: 2.35rem;
+    flex-shrink: 0;
+    padding: 0;
   }
 
   .options-panel {
@@ -1284,7 +1339,24 @@ button {
   }
 
   .empty-state {
-    padding: 2rem 1.35rem;
+    padding: 1.75rem 1.25rem;
+  }
+
+  .file-glyph {
+    width: 3.25rem;
+    height: 3.25rem;
+    margin-bottom: 1rem;
+  }
+
+  .file-glyph svg {
+    width: 1.8rem;
+    height: 1.8rem;
+  }
+
+  .empty-description {
+    margin: 0.85rem auto 1.25rem;
+    font-size: 0.85rem;
+    line-height: 1.55;
   }
 
   .source-actions {
@@ -1305,15 +1377,44 @@ button {
   }
 
   .model-controls {
-    overflow-x: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.3rem 0.5rem;
+    padding-inline: 0.5rem;
   }
 
   .source-up-axis {
     gap: 0.4rem;
   }
 
+  .source-up-axis-choices {
+    gap: 0.25rem;
+  }
+
   .source-up-axis-choices label {
+    gap: 0.2rem;
     font-size: 0.7rem;
+  }
+
+  .toolbar-select {
+    padding-left: 0.5rem;
+  }
+
+  .toolbar-select .option-row {
+    gap: 0.45rem;
+  }
+
+  .toolbar-select .option-copy label {
+    font-size: 0.7rem;
+  }
+
+  /* The switch already shows the state. */
+  .toolbar-select .toggle-value {
+    display: none;
+  }
+
+  .toolbar-select .option-control {
+    grid-template-columns: auto;
   }
 
   .file-meta {
@@ -1327,6 +1428,12 @@ button {
   .toast {
     right: 0.75rem;
     bottom: 5.8rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .brand-copy {
+    display: none;
   }
 }
 

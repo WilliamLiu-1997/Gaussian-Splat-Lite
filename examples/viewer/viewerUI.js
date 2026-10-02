@@ -33,7 +33,7 @@ export function createViewerUI({
   const fileName = document.querySelector("#file-name");
   const fileStats = document.querySelector("#file-stats");
   const modelCredit = document.querySelector("#model-credit");
-  const modelCreditPrefix = document.querySelector("#model-credit-prefix");
+  const modelCreditGroup = document.querySelector("#model-credit-group");
   const modelCreditSeparator = document.querySelector(
     "#model-credit-separator",
   );
@@ -232,8 +232,7 @@ export function createViewerUI({
       ? "Loading visible regions…"
       : `${formatNumber.format(numSplats)} splats${sizeLabel}`;
     modelCredit.textContent = credit;
-    modelCreditPrefix.hidden = !credit;
-    modelCredit.hidden = !credit;
+    modelCreditGroup.hidden = !credit;
     modelCreditSeparator.hidden = !credit;
     setStatus(streamed ? "Streaming visible regions" : "Loaded and ready");
   }
