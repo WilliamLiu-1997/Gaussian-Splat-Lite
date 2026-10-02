@@ -7,6 +7,7 @@ export {
   type SplatMapping,
 } from "./rendering/SplatAccumulator";
 export { TAAPass } from "./addons/TAAPass";
+export { TAANode } from "./addons/TAANode";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {

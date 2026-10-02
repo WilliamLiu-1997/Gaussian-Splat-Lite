@@ -39,10 +39,10 @@ for (let y = 0; y < SIZE; y++) {
   }
 }
 
-// Optimize for TRAA's base exponential history weight. Pairwise energy uses
+// Optimize for TAA's base exponential history weight. Pairwise energy uses
 // the filter's autocorrelation, not its taps directly. Wrap the history around
 // the 32-frame cycle so every starting/stopping phase is treated equally.
-// This models accumulation only, not TRAA's nonlinear clipping/rejection.
+// This models accumulation only, not TAA's nonlinear clipping/rejection.
 const temporalKernel = new Float64Array(FRAMES);
 const historyWeights = Float64Array.from(
   { length: FRAMES },

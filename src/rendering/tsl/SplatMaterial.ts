@@ -1,17 +1,13 @@
 import * as THREE from "three";
 import type { Node, NodeBuilder } from "three/webgpu";
 import { NodeMaterial, type TextureNode } from "three/webgpu";
-import { SPLAT_TEX_WIDTH_BITS } from "../../data/defines";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry";
 import { ORDERING_TEXTURE_WIDTH, type Uniforms } from "../uniforms";
 import { createProjectionProgram } from "./ProjectionProgram";
-import type { SplatVelocity } from "./SplatVelocity";
 import {
   N,
-  decodeCenter,
   load2D,
   loadArray,
-  quatVec,
   splatTexCoord,
   textureBinding,
   uniformBinding,
@@ -21,8 +17,6 @@ import { splatViewUniforms } from "./viewUniforms";
 
 export type ProjectedVertexData = {
   clipPosition: Node<"vec4">;
-  /** Velocity variant only: render-relative center and mapping entry. */
-  motion?: { center: Node<"vec3">; index: Node<"uint"> };
   /** Source color space; this material applies encodeLinear. */
   rgba: Node<"vec4">;
   splatUv: Node<"vec2">;
@@ -32,9 +26,6 @@ export type ProjectedVertexData = {
   kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
 };
-
-/** Compile-time features of one vertex graph. */
-export type VertexDataOptions = { velocity: boolean; stochastic: boolean };
 
 export type SplatNodeMaterial = NodeMaterial & { uniforms: Uniforms };
 
@@ -51,7 +42,6 @@ const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
 function createSplatFragment(
   minAlpha: Node<"float">,
   stochasticNoise: TextureNode<"uvec4"> | null,
-  velocity: SplatVelocity,
 ) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
@@ -89,7 +79,6 @@ function createSplatFragment(
         .div(32768);
       randomValue.greaterThanEqual(alpha).discard();
     }
-    velocity.alpha.assign(stochasticNoise ? 1 : alpha);
     // Decode color only after the fragment survives coverage tests.
     return N.vec4(
       N.unpackHalf2x16(vSplat.x),
@@ -146,7 +135,6 @@ function packSplatVarying(
  * carries no coverage varyings, seed loads or mode branches.
  */
 export function createSplatNodeMaterial({
-  velocity,
   uniforms,
   orderingNode,
   vertexData,
@@ -156,14 +144,13 @@ export function createSplatNodeMaterial({
   depthWrite,
   stochastic,
 }: {
-  velocity: SplatVelocity;
   uniforms: Uniforms;
   /** CPU ordering for drawing from accumulator textures. */
   orderingNode?: TextureNode<"uvec4">;
   /** Replaces accumulator projection, e.g. with a GPU projection cache. */
   vertexData?: (
     camera: THREE.Camera,
-    options: VertexDataOptions,
+    stochastic: boolean,
   ) => ProjectedVertexData;
   premultipliedAlpha: boolean;
   transparent: boolean;
@@ -190,27 +177,14 @@ export function createSplatNodeMaterial({
     createSplatFragment(
       minAlpha,
       stochastic ? textureBinding(uniforms, "stochasticNoise") : null,
-      velocity,
     );
 
   function buildVertex(builder: NodeBuilder) {
     const camera = materialCamera(builder);
-    const motion = builder.renderer.getMRT()?.has("velocity") === true;
-    if (motion) {
-      velocity.current.assign(N.vec4(0, 0, 0, 1));
-      velocity.previous.assign(N.vec4(0, 0, 0, 1));
-    }
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vSplat.assign(N.uvec4(0));
     vSplatUv.assign(N.vec2(0));
     vStochasticOffset?.assign(N.uint(0));
-    // Per-eye uniform arrays are created once and shared by both uses.
-    let viewNodes: ReturnType<typeof splatViewUniforms> | undefined;
-    const getView = () => {
-      viewNodes ??= splatViewUniforms(uniforms, camera);
-      return viewNodes;
-    };
-
     const assignVertexData = (data: ProjectedVertexData) => {
       const rgba = data.rgba.toVar();
       // RGB is constant across the quad; decode its color space once
@@ -219,27 +193,6 @@ export function createSplatNodeMaterial({
         rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));
       });
       clipPosition.assign(data.clipPosition);
-      if (data.motion) {
-        const { center, index } = data.motion;
-        const { renderToViewQuat, renderToViewScale, renderToViewPos } =
-          getView();
-        const viewCenter = quatVec(renderToViewQuat, center)
-          .mul(renderToViewScale)
-          .add(renderToViewPos);
-        const corner = N.cameraProjectionMatrixInverse
-          .mul(clipPosition)
-          .toVar();
-        // Add only the view-space corner offset to the render-relative center;
-        // avoid reconstructing an absolute world position at large coordinates.
-        const point = center
-          .add(
-            N.mat3(N.cameraWorldMatrix).mul(
-              corner.xyz.div(corner.w).sub(viewCenter),
-            ),
-          )
-          .toVar();
-        velocity.assign(point, index, camera);
-      }
       vSplat.assign(
         packSplatVarying(rgba, data.supportRadiusSquared, data.kernelPower),
       );
@@ -257,14 +210,14 @@ export function createSplatNodeMaterial({
     };
 
     if (vertexData) {
-      assignVertexData(vertexData(camera, { velocity: motion, stochastic }));
+      assignVertexData(vertexData(camera, stochastic));
       return clipPosition;
     }
     if (!accumulator || !orderingNode) {
       throw new Error("Accumulator splat drawing requires an ordering texture");
     }
 
-    const view = getView();
+    const view = splatViewUniforms(uniforms, camera);
     const project = createProjectionProgram(uniforms, {
       ...view,
       projectionMatrix: N.cameraProjectionMatrix,
@@ -306,14 +259,6 @@ export function createSplatNodeMaterial({
           .add(projected.axis2.mul(N.positionGeometry.y));
         const ndcCenter = projected.clipCenter.xyz.div(projected.clipCenter.w);
         assignVertexData({
-          motion: motion
-            ? {
-                center: decodeCenter(first),
-                index: velocity.entryForRow(
-                  splatIndex.shiftRight(SPLAT_TEX_WIDTH_BITS),
-                ),
-              }
-            : undefined,
           clipPosition: N.vec4(
             ndcCenter.xy.add(ndcOffset).mul(projected.clipCenter.w),
             projected.clipCenter.zw,

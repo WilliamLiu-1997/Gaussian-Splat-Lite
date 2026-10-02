@@ -334,7 +334,6 @@ export class SplatAccumulator {
       mesh.frameUpdate({
         time: this.time,
         deltaTime: this.deltaTime,
-        camera,
         globalEdits: Array.from(globalEdits),
       });
     }

@@ -68,7 +68,6 @@ export function makeSplatUniforms() {
     stochasticSeeds: { type: "t", value: emptySplats },
     stochasticNoise: { value: createBlueNoiseTexture() },
     stochasticSample: { value: 0 },
-    velocityEnabled: { value: false },
     // Manual stochastic transparency
     stochastic: { value: false },
     stochasticOrdering: { value: false },

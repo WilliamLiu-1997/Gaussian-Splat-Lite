@@ -48,7 +48,6 @@ export type SplatMeshOptions = {
 export type SplatMeshFrameContext = {
   time: number;
   deltaTime: number;
-  camera: THREE.Camera;
   globalEdits: SplatEdit[];
 };
 
@@ -200,7 +199,7 @@ export class SplatMesh extends THREE.Object3D {
     );
   }
 
-  frameUpdate({ time, deltaTime, camera, globalEdits }: SplatMeshFrameContext) {
+  frameUpdate({ time, deltaTime, globalEdits }: SplatMeshFrameContext) {
     this.onFrame?.({ mesh: this, time, deltaTime });
 
     const source = this.splats;

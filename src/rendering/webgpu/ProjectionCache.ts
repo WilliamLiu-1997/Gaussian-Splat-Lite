@@ -75,48 +75,15 @@ export class ProjectionCache {
   // 32 bytes per compact slot and eye. RGB retains half precision; alpha,
   // support radius, kernel power and view depth retain their float32 bits.
   readonly textures = [makeTexture(), makeTexture()];
-  // 16 bytes per compact slot, shared by every eye.
-  readonly motion = makeTexture();
   readonly size = new THREE.Vector4(1, 1, 1, 0);
-  private readonly motionSize = new THREE.Vector4(1, 1, 1, 0);
   private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
     () => this.size,
   );
-  private readonly motionDimensions = N.uniform(
-    this.motionSize,
-    "uvec4",
-  ).onObjectUpdate(() => this.motionSize);
 
   resize(size: ReturnType<typeof getProjectionCacheSize>) {
     for (const texture of this.textures)
       texture.setSize(size.width, size.height, size.depth);
     this.size.set(size.width, size.height, size.depth, Math.log2(size.width));
-  }
-
-  /** Size motion storage for one eye's compact slots; no size when disabled. */
-  ensureMotion(
-    size: ReturnType<typeof getProjectionCacheSize> | undefined,
-    shrink: boolean,
-  ) {
-    if (!size && !shrink) return;
-    const { width, height, depth } = size ?? { width: 1, height: 1, depth: 1 };
-    this.motion.setSize(width, height, depth);
-    this.motionSize.set(width, height, depth, Math.log2(width));
-  }
-
-  writeMotion(slot: Node<"uint">, center: Node<"vec3">, mesh: Node<"uint">) {
-    store(
-      this.motion,
-      cacheTexCoord(slot, this.motionDimensions),
-      N.uvec4(N.floatBitsToUint(center), mesh),
-    );
-  }
-
-  readMotion(slot: Node<"uint">) {
-    return loadArray(
-      uintTexture(this.motion),
-      cacheTexCoord(slot, this.motionDimensions),
-    );
   }
 
   // Call after visibility and deferred color evaluation, inside the same guard.
@@ -263,6 +230,6 @@ export class ProjectionCache {
   }
 
   dispose() {
-    for (const texture of [...this.textures, this.motion]) texture.dispose();
+    for (const texture of this.textures) texture.dispose();
   }
 }

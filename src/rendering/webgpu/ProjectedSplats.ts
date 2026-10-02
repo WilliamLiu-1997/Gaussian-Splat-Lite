@@ -5,16 +5,14 @@ import {
   StorageBufferAttribute,
   type WebGPURenderer,
 } from "three/webgpu";
+import { getTAAProjection } from "../../addons/taaShared";
 
 import type { SplatAccumulator } from "../SplatAccumulator";
 import { SPLATS_PER_INSTANCE, type SplatGeometry } from "../SplatGeometry";
 import { getMeanViewPose, getViews } from "../rendererUtils";
 import { createGenerateProgram } from "../tsl/GenerateProgram";
 import { createProjectionProgram } from "../tsl/ProjectionProgram";
-import type {
-  ProjectedVertexData,
-  VertexDataOptions,
-} from "../tsl/SplatMaterial";
+import type { ProjectedVertexData } from "../tsl/SplatMaterial";
 import { N, type UniformType, uniformBinding } from "../tsl/shaderUtils";
 import { splatViewportUniforms } from "../tsl/viewUniforms";
 import { type Uniforms, makeGenerateUniforms } from "../uniforms";
@@ -49,7 +47,7 @@ function buffer(name: string): BufferRef {
 
 /**
  * Stores in `jitter` the NDC translation that `jittered` adds to `base`, as
- * TRAA's sub-pixel view offsets do. Returns false for any other difference.
+ * TAA's sub-pixel view offsets do. Returns false for any other difference.
  */
 function getProjectionJitter(
   jittered: THREE.Matrix4,
@@ -213,7 +211,6 @@ export class ProjectedSplats {
     const uniforms = {
       ...this.state,
       ...makeGenerateUniforms(),
-      motionIndex: { value: 0 },
     };
     const u = <Type extends UniformType>(name: string, type: Type) =>
       uniformBinding(uniforms, name, type);
@@ -288,14 +285,6 @@ export class ProjectedSplats {
           } else {
             write();
           }
-        });
-        // Motion is the same for every eye: one record per compact slot.
-        N.If(u("velocityEnabled", "bool"), () => {
-          this.cache.writeMotion(
-            slot,
-            generated.center,
-            u("motionIndex", "uint"),
-          );
         });
         N.If(stochastic, () => {
           seeds.element(slot).assign(generated.stochasticSeed);
@@ -414,10 +403,7 @@ export class ProjectedSplats {
     }
   }
 
-  vertexData(
-    camera: THREE.Camera,
-    { velocity, stochastic }: VertexDataOptions,
-  ): ProjectedVertexData {
+  vertexData(camera: THREE.Camera, stochastic: boolean): ProjectedVertexData {
     const multiView = getViews(camera)[0] !== camera;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
@@ -431,9 +417,6 @@ export class ProjectedSplats {
       .toReadOnly()
       .element(0);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
-    const motion = velocity
-      ? { center: N.vec3(0).toVar(), index: N.uint(0).toVar() }
-      : undefined;
     const rgba = N.vec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
     const stochasticSeed = stochastic ? N.uint(0).toVar() : undefined;
@@ -483,11 +466,6 @@ export class ProjectedSplats {
         uniformBinding(this.state, "projectionJitter", "vec2"),
       );
       clipPosition.assign(projected.clipPosition);
-      if (motion) {
-        const record = this.cache.readMotion(cacheIndex);
-        motion.center.assign(N.uintBitsToFloat(record.xyz));
-        motion.index.assign(record.w);
-      }
       rgba.assign(projected.rgba);
       splatUv.assign(projected.splatUv);
       supportRadiusSquared.assign(projected.supportRadiusSquared);
@@ -495,7 +473,6 @@ export class ProjectedSplats {
     });
     return {
       clipPosition,
-      motion,
       rgba,
       splatUv,
       stochasticSeed,
@@ -587,19 +564,12 @@ export class ProjectedSplats {
         : null;
     if (sortMode) this.state.sortMode.value = RADIX_SORT_MODE_IDS[sortMode];
     this.state.sortRadial.value = radial;
-    this.cache.ensureMotion(
-      uniforms.velocityEnabled.value
-        ? getProjectionCacheSize(this.capacity, this.limits)
-        : undefined,
-      shrink,
-    );
-    // TRAA installs its unjittered projection on Three's velocity node while
-    // it draws the jittered scene pass. Project and sort without the sub-pixel
-    // jitter, so a still view does not rerun the compute passes every frame;
-    // the draw applies the jitter as an NDC translation.
+    // TAA exposes its unjittered projection during scene capture. Project and
+    // sort without the jitter so a still view reuses the compute results;
+    // drawing applies the jitter as an NDC translation.
     const jitter = this.state.projectionJitter.value as THREE.Vector2;
     jitter.set(0, 0);
-    const unjittered = N.velocity.projectionMatrix;
+    const unjittered = getTAAProjection(camera);
     const monoProjection =
       !multiView &&
       unjittered &&
@@ -619,7 +589,6 @@ export class ProjectedSplats {
       // Each mode keys only the sort options it reads.
       !stochastic && radial,
       sortMode,
-      uniforms.velocityEnabled.value,
       uniforms.maxStdDev.value,
       uniforms.minPixelRadius.value,
       uniforms.maxPixelRadius.value,
@@ -717,10 +686,7 @@ export class ProjectedSplats {
   ) {
     const pending: ComputeNode[] = [this.resetCount];
     let slotCount = 0;
-    for (const [
-      motionIndex,
-      { node, count, matrixWorld },
-    ] of accumulator.mapping.entries()) {
+    for (const { node, count, matrixWorld } of accumulator.mapping) {
       if (!views.some((view) => view.layers.test(node.layers))) continue;
       // A slot's uniforms can only be changed after its preceding batch has
       // been submitted. Keep the last batch open for draw arguments and sorting.
@@ -731,7 +697,6 @@ export class ProjectedSplats {
       }
       const slot = slots[slotCount++];
       accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
-      slot.uniforms.motionIndex.value = motionIndex;
       slot.uniforms.targetCount.value = count;
       slot.node.count = count;
       pending.push(slot.node);

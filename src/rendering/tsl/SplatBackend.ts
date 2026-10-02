@@ -1,21 +1,17 @@
 import type * as THREE from "three";
 import type { TextureNode, WebGPURenderer } from "three/webgpu";
 import type { SplatMaterialOptions } from "../backend";
-import { usesNativeWebGPU } from "../rendererUtils";
 import type { Uniforms } from "../uniforms";
 import {
   type ProjectedVertexData,
   type SplatNodeMaterial,
-  type VertexDataOptions,
   createSplatNodeMaterial,
 } from "./SplatMaterial";
-import { SplatVelocity } from "./SplatVelocity";
 
 /** Drawing shared by both WebGPURenderer backends. */
 export class NodeSplatBackend {
   readonly sortedMaterial: SplatNodeMaterial;
   readonly stochasticMaterial: SplatNodeMaterial;
-  readonly velocity: SplatVelocity;
 
   constructor(
     readonly renderer: WebGPURenderer,
@@ -24,13 +20,11 @@ export class NodeSplatBackend {
     orderingNode?: TextureNode<"uvec4">,
     vertexData?: (
       camera: THREE.Camera,
-      options: VertexDataOptions,
+      stochastic: boolean,
     ) => ProjectedVertexData,
   ) {
-    this.velocity = new SplatVelocity(usesNativeWebGPU(renderer));
     const create = (stochastic: boolean) =>
       createSplatNodeMaterial({
-        velocity: this.velocity,
         uniforms,
         ...options,
         orderingNode,
@@ -46,7 +40,6 @@ export class NodeSplatBackend {
   }
 
   dispose() {
-    this.velocity.dispose();
     this.sortedMaterial.dispose();
     this.stochasticMaterial.dispose();
   }

@@ -16,8 +16,8 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
     options: SplatMaterialOptions,
   ) {
     const projection = new ProjectedSplats(renderer, uniforms);
-    super(renderer, uniforms, options, undefined, (camera, features) =>
-      projection.vertexData(camera, features),
+    super(renderer, uniforms, options, undefined, (camera, stochastic) =>
+      projection.vertexData(camera, stochastic),
     );
     this.projection = projection;
     this.precompile = projection.ready.finally(() => {

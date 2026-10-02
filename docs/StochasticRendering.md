@@ -24,36 +24,26 @@ Both options can be changed at runtime. While stochastic rendering is active, tr
 
 ## Smooth the noise
 
-Use the library's [TAAPass](TAAPass.md) with **WebGLRenderer**, or Three.js **TRAANode** with **WebGPURenderer** (including its WebGL2 fallback). The examples below assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with the Splat renderer already added to the scene. They use the default `autoUpdate = true` and a single non-XR camera.
+Use the library's [TAAPass](TAAPass.md) with **WebGLRenderer**, or the library's **TAANode** with **WebGPURenderer** (including its WebGL2 fallback). The examples below assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with the Splat renderer already added to the scene. They use the default `autoUpdate = true` and a single non-XR camera.
 
 The noise pattern changes on each render by default so TAA can smooth it over time. The library does not enable TAA or schedule these extra renders for you. With on-demand rendering, keep rendering while TAA accumulates.
 
 WebGPURenderer blends in Three.js's linear working color space, which makes partially transparent Splats slightly brighter than WebGLRenderer drawing directly to the canvas. `TAAPass` matches direct canvas rendering by default; see [TAAPass color space](TAAPass.md#color-space).
 
-### WebGPURenderer: TRAA
+### WebGPURenderer: TAANode
 
 Use this setup for both native WebGPU and WebGPURenderer's WebGL2 fallback, after `await renderer.init()`:
 
 ```js
+import { TAANode } from "gaussian-splat-lite";
 import { RenderPipeline } from "three/webgpu";
-import { mrt, output, pass, velocity } from "three/tsl";
-import { traa } from "three/addons/tsl/display/TRAANode.js";
 
 splatRenderer.stochastic = true;
 
-const scenePass = pass(scene, camera, { samples: 0 });
-scenePass.setMRT(mrt({ output, velocity }));
-
-const taa = traa(
-  scenePass.getTextureNode(),
-  scenePass.getTextureNode("depth"),
-  scenePass.getTextureNode("velocity"),
-  camera,
-);
-const taaColor = taa.before(scenePass);
-// Chain Bloom or other linear effects from taaColor here.
+const taa = new TAANode(scene, camera);
+// Chain Bloom or other linear effects from taa here.
 // RenderPipeline applies the final tone mapping and output conversion.
-const pipeline = new RenderPipeline(renderer, taaColor);
+const pipeline = new RenderPipeline(renderer, taa);
 
 renderer.setAnimationLoop(() => {
   // Update controls / animation here.
@@ -61,11 +51,7 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-Use `taa.before(scenePass)` so the scene renders before TRAA on every frame. `RenderPipeline` converts the final colors for display; no `OutputPass` is needed.
-
-Include the `velocity` output so TRAA can reproject history during movement. Camera movement and `SplatMesh` transforms are supported automatically; changes to individual Splats are not tracked. With `autoUpdate = false`, call `update()` after model changes.
-
-The passes follow the renderer size automatically. When finished, stop the animation loop and dispose `pipeline`, `taa`, and `scenePass`.
+Call `taa.reset()` after a camera cut, scene replacement, or an abrupt object change. See [TAANode](TAAPass.md#webgpurenderer-tsl-version) for behavior, supported cameras, and cleanup.
 
 ### WebGLRenderer: TAAPass
 
@@ -110,7 +96,7 @@ sample once per scene render, including when using camera jitter.
 splatRenderer.stochastic = false;
 ```
 
-On WebGL, switching in either direction takes effect once the next update and its sort finish; `stochasticActive` reports whether stochastic rendering is in use. Keep TAA running until it turns `false`. With `autoUpdate = false`, update before drawing:
+Switching in either direction takes effect at the next update boundary, after the current draw. WebGL backends also wait for the matching accumulator and sort. `stochasticActive` reports whether stochastic rendering is in use. Keep TAA running until it turns `false`. With `autoUpdate = false`, update before drawing:
 
 ```js
 await splatRenderer.update({ scene, camera });

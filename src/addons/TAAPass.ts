@@ -1,24 +1,24 @@
 import {
-  AlwaysDepth,
   Color,
   ColorManagement,
   DepthTexture,
   FloatType,
   GLSL3,
   HalfFloatType,
-  Matrix4,
-  NeverDepth,
+  type Matrix4,
   NoBlending,
+  NoToneMapping,
   type OrthographicCamera,
   type PerspectiveCamera,
   type Scene,
   ShaderMaterial,
+  type ToneMapping,
   Vector2,
-  Vector3,
   WebGLRenderTarget,
   type WebGLRenderer,
 } from "three";
 import { FullScreenQuad, Pass } from "three/addons/postprocessing/Pass.js";
+import { createTAAState } from "./taaShared";
 
 const vertexShader = /* glsl */ `
 out vec2 vUv;
@@ -134,7 +134,7 @@ void main() {
   vec4 previousClip = viewToPreviousClip * positionView;
   if (previousClip.w <= 0.0) return;
   vec4 currentClip = unjitteredProjection * positionView;
-  // Exclude camera jitter from motion, just like TRAA's velocity attachment.
+  // Exclude projection jitter from camera motion.
   vec2 offsetUV = (currentClip.xy / currentClip.w - previousClip.xy / previousClip.w) * 0.5;
   vec2 historyUV = vUv - offsetUV;
   if (any(lessThan(historyUV, vec2(0.0))) || any(greaterThanEqual(historyUV, vec2(1.0)))) return;
@@ -168,22 +168,14 @@ void main() {
 }
 `;
 
-function halton(index: number, base: number) {
-  let i = index;
-  let fraction = 1;
-  let result = 0;
-  while (i > 0) {
-    fraction /= base;
-    result += fraction * (i % base);
-    i = Math.floor(i / base);
-  }
-  return result;
+function makeTarget(name: string) {
+  const target = new WebGLRenderTarget(1, 1, {
+    type: HalfFloatType,
+    depthTexture: new DepthTexture(1, 1, FloatType),
+  });
+  target.texture.name = name;
+  return target;
 }
-
-const jitterOffsets = Array.from({ length: 32 }, (_, i) => [
-  halton(i + 1, 2) - 0.5,
-  halton(i + 1, 3) - 0.5,
-]);
 
 /**
  * Temporal reprojection for WebGLRenderer, using depth and camera motion.
@@ -208,17 +200,24 @@ export class TAAPass extends Pass {
    */
   accumulateInOutputSpace = true;
 
-  private readonly _source: WebGLRenderTarget & { isXRRenderTarget: boolean };
-  private readonly _history: WebGLRenderTarget[];
+  // Three uses this flag to honor the target's output color space for both
+  // ordinary materials and splats, matching direct canvas blending.
+  private readonly _source = Object.assign(makeTarget("TAAPass.scene"), {
+    isXRRenderTarget: false,
+  });
+  private readonly _history = [
+    makeTarget("TAAPass.history0"),
+    makeTarget("TAAPass.history1"),
+  ];
   private readonly _size = new Vector2();
   private readonly _clearColor = new Color();
-  private _historyIndex = 0;
-  private _historyValid = false;
-  private _jitterIndex = 0;
-  private readonly _previousViewProjection = new Matrix4();
-  private readonly _previousWorld = new Matrix4();
-  private readonly _baseProjection = new Matrix4();
-  private readonly _viewMatrix = new Matrix4();
+  private readonly _state = createTAAState(
+    <T>(value: T) => ({ value }),
+    [this._source, ...this._history],
+  );
+  private _workingColorSpace = ColorManagement.workingColorSpace;
+  private _toneMapping: ToneMapping = NoToneMapping;
+  private _toneMappingExposure = 1;
   private readonly _uniforms;
   private readonly _resolveMaterial: ShaderMaterial;
   private readonly _copyMaterial: ShaderMaterial;
@@ -230,44 +229,12 @@ export class TAAPass extends Pass {
   ) {
     super();
 
-    const makeTarget = (name: string) => {
-      const target = new WebGLRenderTarget(1, 1, {
-        type: HalfFloatType,
-        depthTexture: new DepthTexture(1, 1, FloatType),
-      });
-      target.texture.name = name;
-      return target;
-    };
-    // Three uses this flag to honor the target's output color space for both
-    // ordinary materials and splats, matching direct canvas blending.
-    this._source = Object.assign(makeTarget("TAAPass.scene"), {
-      isXRRenderTarget: false,
-    });
-    this._history = [
-      makeTarget("TAAPass.history0"),
-      makeTarget("TAAPass.history1"),
-    ];
-
     this._uniforms = {
       source: { value: this._source.texture },
       sourceDepth: { value: this._source.depthTexture },
       history: { value: this._history[0].texture },
       historyDepth: { value: this._history[0].depthTexture },
-      renderSize: { value: new Vector2(1, 1) },
-      projection: { value: new Matrix4() },
-      unjitteredProjection: { value: new Matrix4() },
-      previousProjection: { value: new Matrix4() },
-      viewToPreviousClip: { value: new Matrix4() },
-      previousViewToView: { value: new Matrix4() },
-      valid: { value: false },
-      reversed: { value: false },
-      logarithmic: { value: false },
-      logFar: { value: new Vector2() },
-      depthThreshold: { value: this.depthThreshold },
-      edgeDepthDiff: { value: this.edgeDepthDiff },
-      maxMotionLength: { value: this.maxMotionLength },
-      useSubpixelCorrection: { value: this.useSubpixelCorrection },
-      luminanceCoefficients: { value: new Vector3() },
+      ...this._state.uniforms,
     };
     this._resolveMaterial = new ShaderMaterial({
       name: "TAAPass.resolve",
@@ -311,40 +278,12 @@ export class TAAPass extends Pass {
 
   /** Resize all internal targets in physical pixels; a size change clears history. */
   override setSize(width: number, height: number): void {
-    const w = Math.max(1, Math.floor(width));
-    const h = Math.max(1, Math.floor(height));
-    if (this._source.width === w && this._source.height === h) return;
-    this._source.setSize(w, h);
-    for (const target of this._history) target.setSize(w, h);
-    this._uniforms.renderSize.value.set(w, h);
-    this.reset();
+    this._state.setSize(width, height);
   }
 
   /** Discard history after a camera cut, scene replacement, or color-space change. */
   reset(): void {
-    this._historyValid = false;
-    this._jitterIndex = 0;
-  }
-
-  /** Apply this frame's Halton jitter before rendering the input textures. */
-  private setViewOffset(): void {
-    const { camera } = this;
-    this._baseProjection.copy(camera.projectionMatrix);
-    const [x, y] = jitterOffsets[this._jitterIndex];
-    const { x: width, y: height } = this._uniforms.renderSize.value;
-    const elements = camera.projectionMatrix.elements;
-    // Translate clip coordinates, preserving custom and off-axis projections.
-    for (let column = 0; column < 16; column += 4) {
-      elements[column] -= ((2 * x) / width) * elements[column + 3];
-      elements[column + 1] += ((2 * y) / height) * elements[column + 3];
-    }
-    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-  }
-
-  private clearViewOffset(): void {
-    this._uniforms.projection.value.copy(this.camera.projectionMatrix);
-    this.camera.projectionMatrix.copy(this._baseProjection);
-    this.camera.projectionMatrixInverse.copy(this._baseProjection).invert();
+    this._state.reset();
   }
 
   /** Render the scene and TAA to the canvas, a target, or the composer's buffer. */
@@ -352,22 +291,35 @@ export class TAAPass extends Pass {
     renderer: WebGLRenderer,
     writeBuffer: WebGLRenderTarget | null = null,
   ): void {
-    const { camera, _uniforms: uniforms } = this;
+    const { camera, _state: state, _uniforms: uniforms } = this;
     if (writeBuffer) {
       this.setSize(writeBuffer.width, writeBuffer.height);
     } else {
       renderer.getDrawingBufferSize(this._size);
       this.setSize(this._size.x, this._size.y);
     }
+    const workingColorSpace = ColorManagement.workingColorSpace;
     const colorSpace = this.accumulateInOutputSpace
       ? renderer.outputColorSpace
-      : ColorManagement.workingColorSpace;
+      : workingColorSpace;
+    // Only transforms applied during capture affect accumulated history.
+    const toneMapping = this.accumulateInOutputSpace
+      ? renderer.toneMapping
+      : NoToneMapping;
+    const exposure =
+      toneMapping === NoToneMapping ? 1 : renderer.toneMappingExposure;
     if (
       this._source.texture.colorSpace !== colorSpace ||
-      this._source.isXRRenderTarget !== this.accumulateInOutputSpace
+      this._source.isXRRenderTarget !== this.accumulateInOutputSpace ||
+      this._workingColorSpace !== workingColorSpace ||
+      this._toneMapping !== toneMapping ||
+      this._toneMappingExposure !== exposure
     ) {
       this._source.texture.colorSpace = colorSpace;
       this._source.isXRRenderTarget = this.accumulateInOutputSpace;
+      this._workingColorSpace = workingColorSpace;
+      this._toneMapping = toneMapping;
+      this._toneMappingExposure = exposure;
       this.reset();
     }
     const previousTarget = renderer.getRenderTarget();
@@ -377,7 +329,7 @@ export class TAAPass extends Pass {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
       const reversedDepth = camera.reversedDepth;
-      this.setViewOffset();
+      state.beginCapture(camera);
       try {
         renderer.setRenderTarget(this._source);
         // Refresh the clear color in the capture target's color space.
@@ -388,48 +340,27 @@ export class TAAPass extends Pass {
         renderer.clear();
         renderer.render(this.scene, camera);
       } finally {
-        this.clearViewOffset();
+        state.endCapture(camera);
         // Three may initialize reversed depth during the first draw. Keep its
         // new depth convention when restoring the unjittered projection.
         if (camera.reversedDepth !== reversedDepth)
           camera.updateProjectionMatrix();
       }
 
-      const input = this._history[this._historyIndex];
-      const output = this._history[1 - this._historyIndex];
-      if (!this._historyValid) {
+      const input = this._history[state.historyIndex];
+      const output = this._history[1 - state.historyIndex];
+      if (!uniforms.valid.value) {
         // Allocate depth attachments before either is bound as a sampler.
         for (const target of this._history) renderer.initRenderTarget(target);
       }
       uniforms.history.value = input.texture;
       uniforms.historyDepth.value = input.depthTexture;
-      uniforms.valid.value = this._historyValid;
       uniforms.reversed.value = renderer.capabilities.reversedDepthBuffer;
       uniforms.logarithmic.value =
         renderer.capabilities.logarithmicDepthBuffer &&
         "isPerspectiveCamera" in camera &&
         camera.isPerspectiveCamera;
-      uniforms.logFar.value.x = Math.log2(camera.far + 1);
-      uniforms.unjitteredProjection.value.copy(camera.projectionMatrix);
-      uniforms.viewToPreviousClip.value.multiplyMatrices(
-        this._previousViewProjection,
-        camera.matrixWorld,
-      );
-      uniforms.previousViewToView.value.multiplyMatrices(
-        this._viewMatrix.copy(camera.matrixWorld).invert(),
-        this._previousWorld,
-      );
-      uniforms.depthThreshold.value = this.depthThreshold;
-      uniforms.edgeDepthDiff.value = this.edgeDepthDiff;
-      uniforms.maxMotionLength.value = this.maxMotionLength;
-      uniforms.useSubpixelCorrection.value = this.useSubpixelCorrection;
-      ColorManagement.getLuminanceCoefficients(
-        uniforms.luminanceCoefficients.value,
-      );
-      // Three r186 reverses NeverDepth to GL_ALWAYS for reversed depth.
-      this._resolveMaterial.depthFunc = uniforms.reversed.value
-        ? NeverDepth
-        : AlwaysDepth;
+      this._resolveMaterial.depthFunc = state.prepareResolve(camera, this);
       renderer.setRenderTarget(output);
       this._quad.material = this._resolveMaterial;
       this._quad.render(renderer);
@@ -439,16 +370,7 @@ export class TAAPass extends Pass {
       this._quad.material = this._copyMaterial;
       this._quad.render(renderer);
 
-      this._previousViewProjection.multiplyMatrices(
-        camera.projectionMatrix,
-        this._viewMatrix,
-      );
-      this._previousWorld.copy(camera.matrixWorld);
-      uniforms.previousProjection.value.copy(uniforms.projection.value);
-      uniforms.logFar.value.y = uniforms.logFar.value.x;
-      this._historyIndex = 1 - this._historyIndex;
-      this._historyValid = true;
-      this._jitterIndex = (this._jitterIndex + 1) % jitterOffsets.length;
+      state.advance(camera);
     } finally {
       renderer.setRenderTarget(previousTarget);
       renderer.autoClear = autoClear;

@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Temporal anti-aliasing for **WebGLRenderer**. Import `TAAPass` from `gaussian-splat-lite`. For **WebGPURenderer**, including its WebGL2 fallback, use Three.js [TRAANode](StochasticRendering.md#webgpurenderer-traa) instead.
+Temporal anti-aliasing for **WebGLRenderer**. Import `TAAPass` from `gaussian-splat-lite`. For **WebGPURenderer**, including its WebGL2 fallback, use the library's [TAANode](#webgpurenderer-tsl-version).
 
 The pass is based on Three.js TRAA and needs no velocity texture. Camera motion is supported; independent object motion and changes to individual Splats are not tracked.
 
@@ -96,6 +96,25 @@ composer.addPass(depthEffect);
 Here `depthEffect` is a custom pass that consumes those uniforms. Both objects stay the same across frames and resizes, so bind them once.
 
 The depth is the current frame's raw depth, rendered with camera jitter and not temporally smoothed. Use `taa.projectionMatrix` to decode it, not `camera.projectionMatrix`, which no longer includes the jitter. Treat both as read-only.
+
+## WebGPURenderer TSL version
+
+`TAANode` implements the same camera/depth reprojection, 32-frame Halton jitter, depth rejection, neighborhood clipping, and luminance-aware blending for native WebGPU and WebGPURenderer's WebGL2 fallback. It captures the scene itself and uses two history targets, with no velocity attachment or history copies.
+
+```js
+import { TAANode } from "gaussian-splat-lite";
+import { RenderPipeline } from "three/webgpu";
+
+const taa = new TAANode(scene, camera);
+const pipeline = new RenderPipeline(renderer, taa);
+pipeline.render();
+// On a camera cut / scene replacement: taa.reset().
+// On cleanup: pipeline.dispose(); taa.dispose();
+```
+
+Chain TSL effects from the node or `taa.getTextureNode()`. Accumulation stays in the working color space; `RenderPipeline` applies tone mapping and output conversion at the end. `accumulateInOutputSpace` and the classic `Pass` properties apply only to `TAAPass`.
+
+`TAANode` exposes the same `depthThreshold`, `edgeDepthDiff`, `maxMotionLength`, `useSubpixelCorrection`, `depthTexture`, and `projectionMatrix`. Both implementations support one non-XR perspective or orthographic camera, including custom projections, scaled camera rigs, reversed depth, and logarithmic depth. They track camera movement, not independent object motion.
 
 ## Properties
 

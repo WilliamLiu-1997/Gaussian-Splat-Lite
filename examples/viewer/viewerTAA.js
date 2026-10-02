@@ -1,7 +1,4 @@
-import { TAAPass } from "gaussian-splat-lite";
-import { Matrix4, REVISION, WebGLCoordinateSystem } from "three";
-import { traa } from "three/addons/tsl/display/TRAANode.js";
-import * as N from "three/tsl";
+import { TAANode, TAAPass } from "gaussian-splat-lite";
 import { RenderPipeline } from "three/webgpu";
 
 // Frames to render after invalidation for temporal reprojection.
@@ -35,46 +32,18 @@ export function createViewerTAA(renderer, scene, camera) {
 }
 
 function createNodeTAA(renderer, scene, camera) {
-  const scenePass = N.pass(scene, camera, { samples: 0 });
-  scenePass.setMRT(N.mrt({ output: N.output, velocity: N.velocity }));
-  const taa = traa(
-    scenePass.getTextureNode(),
-    scenePass.getTextureNode("depth"),
-    scenePass.getTextureNode("velocity"),
-    camera,
-  );
-  if (
-    REVISION === "186" &&
-    renderer.coordinateSystem === WebGLCoordinateSystem &&
-    renderer.reversedDepthBuffer
-  ) {
-    // Three r186 TAAUtils maps WebGL depth to [-1, 1], but reversed-depth
-    // projections expect [0, 1]. Adapt only the inverse saved for next frame's
-    // history reconstruction, after TRAA has finished using this frame's data.
-    const depthRange = new Matrix4()
-      .makeScale(1, 1, 0.5)
-      .setPosition(0, 0, 0.5);
-    const updateBefore = taa.updateBefore;
-    taa.updateBefore = function (frame) {
-      updateBefore.call(this, frame);
-      this._cameraProjectionMatrixInverse.value.multiply(depthRange);
-    };
-  }
-  // TRAA reads the input size and seeds history before rendering its resolve.
-  // Render the scene first, including on the first frame and after a resize.
-  // RenderPipeline applies tone mapping and output conversion after TRAA.
-  const pipeline = new RenderPipeline(renderer, taa.before(scenePass));
+  const taa = new TAANode(scene, camera);
+  const pipeline = new RenderPipeline(renderer, taa);
   return {
     render() {
       pipeline.render();
     },
     reset() {
-      taa.setSize(1, 1);
+      taa.reset();
     },
     dispose() {
       pipeline.dispose();
       taa.dispose();
-      scenePass.dispose();
     },
   };
 }

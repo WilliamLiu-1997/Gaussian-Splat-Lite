@@ -17,7 +17,6 @@ import {
   getRenderFrame,
   getViews,
 } from "./rendererUtils";
-import type { SplatNodeMaterial } from "./tsl/SplatMaterial";
 import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms";
 
 const renderToViewScaleTmp = new THREE.Vector3();
@@ -479,7 +478,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
    * Draw stochastically exactly while the displayed accumulator was generated
    * for it: only stochastic accumulators carry sampling seeds, and only
    * sorted ones a back-to-front order. WebGL backends therefore switch modes
-   * once an update for the new mode is displayed; native WebGPU at once.
+   * once an update for the new mode is displayed. Native WebGPU switches at
+   * the update boundary too, keeping mode changes outside an active draw.
    */
   private syncStochasticFrame() {
     const active =
@@ -540,17 +540,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.prepareDraw(renderer, scene, camera);
     } catch (error) {
       this.reportRenderError(error);
-      if (this.backend.kind !== "webgl") this.backend.velocity.restore();
       this.geometry.setIndirect(null);
       this.geometry.instanceCount = 0;
     } finally {
       // Generation can render nested quads, advancing Three's render counter.
       this.lastFrame = getRenderFrame(renderer);
     }
-  }
-
-  override onAfterRender() {
-    if (this.backend.kind !== "webgl") this.backend.velocity.restore();
   }
 
   private prepareDraw(
@@ -613,11 +608,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       // Native preparation only updates mappings and edit metadata. Its GPU
       // projection runs below, so it can prepare before XR draws as well.
       // Three has already selected this draw's material and render list.
-      // WebGL mode changes must finish outside the draw; onDirty then requests
+      // Mode changes must finish outside the draw; onDirty then requests
       // a frame with the matching material, ordering and accumulator.
       const preUpdate =
-        this.backend.kind === "webgpu" ||
-        (renderNested && this.stochasticFrame === this._stochastic);
+        this.stochasticFrame === this._stochastic &&
+        (this.backend.kind === "webgpu" || renderNested);
       const updateRequest = {
         scene,
         camera: updateCamera,
@@ -685,18 +680,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.uniforms.stochasticSample.value = this.stochasticSample >>> 0;
     configureSplatOutput(renderer, currentRenderTarget, this.uniforms);
 
-    if (this.backend.kind !== "webgl") {
-      const mrt = this.backend.renderer.getMRT();
-      const enabled = mrt?.has("velocity") === true;
-      if (enabled && mrt)
-        this.backend.velocity.configure(mrt, this.material.premultipliedAlpha);
-      this.uniforms.velocityEnabled.value = enabled;
-      this.backend.velocity.accumulator = display;
-      (this.material as SplatNodeMaterial).mrtNode = enabled
-        ? this.backend.velocity.mrt
-        : null;
-    }
-
     if (this.backend.kind === "webgpu") {
       if (this.backend.sortError) throw this.backend.sortError;
       if (this.backend.precompile) {
@@ -760,7 +743,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   }) {
     assertSupportedCamera(camera, this.renderer);
     this.reportedRenderError = "";
-    if (this.backend.kind !== "webgl") this.backend.velocity.shrink();
     await this.updateInternal({
       scene,
       camera,
@@ -805,6 +787,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       this.activeSplats = this.current.numSplats;
       this.maxSplats = requiredMaxSplats;
       this.sortDirty = false;
+      this.syncStochasticFrame();
       if (
         shrinkResources ||
         viewChanged ||
@@ -1201,8 +1184,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   }
 
   /**
-   * Whether Splats currently draw stochastically. On WebGL backends it
-   * follows `stochastic` once an update for the new mode is displayed.
+   * Whether Splats currently draw stochastically. It follows `stochastic`
+   * once an update for the new mode is displayed.
    */
   get stochasticActive(): boolean {
     return this.stochasticFrame;
@@ -1212,7 +1195,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextValue = Boolean(value);
     if (nextValue === this._stochastic) return;
     this._stochastic = nextValue;
-    this.syncStochasticFrame();
+    if (this.display.numSplats === 0) this.syncStochasticFrame();
     this.sortDirty = true;
     this.setDirty();
   }
