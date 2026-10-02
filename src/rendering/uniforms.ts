@@ -58,8 +58,6 @@ export function makeSplatUniforms() {
     focalAdjustment: { value: 2.0 },
     // Whether to decode stored sRGB Splat colors before blending
     encodeLinear: { value: false },
-    // Mirrors the material flag for WebGPU's output premultiplication.
-    premultipliedAlpha: { value: true },
     // Exact draw count; the final instance may contain unused quads.
     splatCount: { value: 0 },
     // Back-to-front sort ordering of splat indices
@@ -69,15 +67,10 @@ export function makeSplatUniforms() {
     splats2: { type: "t", value: emptySplats },
     stochasticSeeds: { type: "t", value: emptySplats },
     stochasticNoise: { value: createBlueNoiseTexture() },
-    // Stochastic transparency for automatic or forced frames
+    stochasticSample: { value: 0 },
+    // Manual stochastic transparency
     stochastic: { value: false },
     stochasticOrdering: { value: false },
-    // NDC jitter (xy) and blue-noise offset (zw), owned by StochasticTAAPass.
-    stochasticTemporalSample: { value: new THREE.Vector4() },
-    // Tags accepted samples for an attached StochasticResolvePass.
-    stochasticResolve: { value: false },
-    // Depth-only companion draw after sorted frames.
-    depthOnly: { value: false },
   };
   return uniforms;
 }
@@ -111,6 +104,7 @@ export function makeGenerateUniforms(): Uniforms {
     objectOffset: { value: new THREE.Vector3() },
     objectLnScale: { value: new THREE.Vector3() },
     objectQuaternion: { value: new THREE.Quaternion() },
+    objectReflected: { value: false },
     recolor: { value: new THREE.Vector4(1, 1, 1, 1) },
     numSdfs: { value: 0 },
     numEdits: { value: 0 },

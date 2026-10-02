@@ -1,10 +1,10 @@
 use std::ops::Range;
 
 const DEPTH_INFINITY_F32: u32 = 0x7f800000;
-// Full precision uses two 16-bit passes; fast sorting uses one 24-bit pass.
+// Nonnegative depth keys use 31 bits; fast sorting drops the lowest eight.
 const FULL_RADIX_BITS: u32 = 16;
 const FAST_KEY_SHIFT: u32 = 8;
-const FAST_RADIX_BITS: u32 = 32 - FAST_KEY_SHIFT;
+const FAST_RADIX_BITS: u32 = 31 - FAST_KEY_SHIFT;
 
 /// Persistent raw/radial centers and affine state for one renderer mesh.
 pub struct MeshSortState {
@@ -161,7 +161,8 @@ impl Sort32Buffers {
         if FAST {
             // Only the previous occupied range can contain counts or offsets.
             self.buckets_lo[self.bucket_range.clone()].fill(0);
-            self.bucket_range = usize::MAX..0;
+            self.bucket_range.start = usize::MAX;
+            self.bucket_range.end = 0;
         } else {
             self.buckets_lo.fill(0);
             self.buckets_hi.resize(1 << bits, 0);
@@ -354,9 +355,10 @@ pub fn sort16_centers_front_internal(
     validate_ranges(buffers, max_splats, num_splats)?;
 
     buffers.ensure_size(max_splats);
-    buffers.buckets_lo.resize(65536, 0);
-    buffers.buckets_lo.fill(0);
-    buffers.bucket_range = 0..65536;
+    // Count in the 16-bit high-pass histogram. The fast sort only uses
+    // buckets_lo, so its 24-bit histogram and occupied range stay intact.
+    buffers.buckets_hi.resize(1 << FULL_RADIX_BITS, 0);
+    buffers.buckets_hi.fill(0);
     let direction64 = direction.map(f64::from);
     let mut next_index = 0;
     for range in 0..buffers.range_bases.len() {
@@ -388,17 +390,17 @@ pub fn sort16_centers_front_internal(
                     bits ^ 0x80000000
                 }) >> 16;
                 *key_out = key;
-                buffers.buckets_lo[key as usize] += 1;
+                buffers.buckets_hi[key as usize] += 1;
             } else {
                 *key_out = 0xffff;
             }
         }
     }
     buffers.keys[next_index..num_splats].fill(0xffff);
-    let active = prefix_sum_exclusive(&mut buffers.buckets_lo);
+    let active = prefix_sum_exclusive(&mut buffers.buckets_hi);
     for (i, &key) in buffers.keys[..num_splats].iter().enumerate() {
         if key != 0xffff {
-            let offset = &mut buffers.buckets_lo[key as usize];
+            let offset = &mut buffers.buckets_hi[key as usize];
             buffers.ordering[*offset as usize] = i as u32;
             *offset += 1;
         }
@@ -584,9 +586,11 @@ mod tests {
 
     #[test]
     fn returns_early_when_every_key_is_invalid() {
-        let mut buffers = Sort32Buffers::default();
-        buffers.keys = vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000];
-        buffers.ordering = vec![7, 7, 7, 7];
+        let mut buffers = Sort32Buffers {
+            keys: vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000],
+            ordering: vec![7, 7, 7, 7],
+            ..Default::default()
+        };
 
         assert_eq!(sort_internal::<false>(&mut buffers, 4, 4), 0);
         assert_eq!(buffers.ordering, [7, 7, 7, 7]);
@@ -594,16 +598,18 @@ mod tests {
 
     #[test]
     fn orders_finite_keys_descending_and_stably() {
-        let mut buffers = Sort32Buffers::default();
-        buffers.keys = vec![
-            0x3f800000, // 1.0
-            0x7f800000, // +infinity, excluded
-            0x00000000, // +0.0
-            0x3f800000, // 1.0, kept after the first equal key
-            0x7f7fffff, // largest finite f32
-            0x80000000, // -0.0, excluded
-            0x7fc00000, // NaN, excluded
-        ];
+        let mut buffers = Sort32Buffers {
+            keys: vec![
+                0x3f800000, // 1.0
+                0x7f800000, // +infinity, excluded
+                0x00000000, // +0.0
+                0x3f800000, // 1.0, kept after the first equal key
+                0x7f7fffff, // largest finite f32
+                0x80000000, // -0.0, excluded
+                0x7fc00000, // NaN, excluded
+            ],
+            ..Default::default()
+        };
 
         let active = sort_internal::<false>(&mut buffers, 7, 7);
 
@@ -741,5 +747,33 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("ordering buffer too small"));
+    }
+
+    #[test]
+    fn front_sort_orders_near_to_far_and_keeps_the_fast_histogram() {
+        let mut buffers = Sort32Buffers::default();
+        // Depths along +Z: 5, -2, 1, NaN, 3.
+        #[rustfmt::skip]
+        buffers.set_centers(&[
+            0.0, 0.0, 5.0,
+            0.0, 0.0, -2.0,
+            0.0, 0.0, 1.0,
+            0.0, 0.0, f32::NAN,
+            0.0, 0.0, 3.0,
+        ]);
+        let camera = [0.0, 0.0, 0.0];
+        let direction = [0.0, 0.0, 1.0];
+
+        let fast =
+            sort32_centers_internal(&mut buffers, 5, 5, camera, direction, false, true).unwrap();
+        assert_eq!(&buffers.ordering[..fast as usize], &[0, 4, 2]);
+
+        let front = sort16_centers_front_internal(&mut buffers, 5, 5, camera, direction).unwrap();
+        // Finite depths behind the camera stay; the shader culls them.
+        assert_eq!(&buffers.ordering[..front as usize], &[1, 2, 4, 0]);
+
+        let fast =
+            sort32_centers_internal(&mut buffers, 5, 5, camera, direction, false, true).unwrap();
+        assert_eq!(&buffers.ordering[..fast as usize], &[0, 4, 2]);
     }
 }

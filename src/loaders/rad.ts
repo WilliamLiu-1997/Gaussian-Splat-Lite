@@ -2,6 +2,7 @@ import { RadDecoder, decode_rad_header } from "gaussian-splat-rs";
 import { SH_KEYS } from "../data/splatData";
 import { getTextureSize } from "../data/textureLayout";
 import { linkedAbortController } from "../runtime/abort";
+import { wasmCall, wasmFree } from "../runtime/wasmCall";
 import type { SplatSourceArgs as LoadRadArgs } from "./loadTypes";
 import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { RadSource } from "./rad/RadSource";
@@ -124,7 +125,9 @@ export async function loadRad(args: LoadRadArgs) {
   let decoder: RadDecoder | undefined;
   let parsedHeader: RadHeader | undefined;
   const validateHeader = (bytes: Uint8Array) => {
-    const header = decode_rad_header(bytes) as RadHeader | undefined;
+    const header = wasmCall(() => decode_rad_header(bytes)) as
+      | RadHeader
+      | undefined;
     if (!header) throw new Error("RAD: truncated header");
     parsedHeader = header;
     return header;
@@ -179,10 +182,10 @@ export async function loadRad(args: LoadRadArgs) {
         header.meta.chunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
       report(source.stats.downloadedBytes);
     }
-    decoder = new RadDecoder(
-      JSON.stringify(header.meta),
-      header.meta.maxSh ?? 0,
+    decoder = wasmCall(
+      () => new RadDecoder(JSON.stringify(header.meta), header.meta.maxSh ?? 0),
     );
+    const activeDecoder = decoder;
     const tree = header.meta.lodTree
       ? {
           start: new Uint32Array(header.meta.count),
@@ -202,7 +205,9 @@ export async function loadRad(args: LoadRadArgs) {
       signal,
     )) {
       signal.throwIfAborted();
-      const chunk = decoder.decode_chunk(bytes) as RadDecodedChunk;
+      const chunk = wasmCall(() =>
+        activeDecoder.decode_chunk(bytes),
+      ) as RadDecodedChunk;
       const expected = getRadChunkSpan(header.meta, chunkIndex++);
       // Rust matches the count to its directory entry; verify the requested page.
       if (chunk.base !== expected.base)
@@ -224,7 +229,7 @@ export async function loadRad(args: LoadRadArgs) {
   } finally {
     request.controller.abort();
     source?.dispose();
-    decoder?.free();
+    wasmFree(decoder);
     request.cleanup();
   }
 }

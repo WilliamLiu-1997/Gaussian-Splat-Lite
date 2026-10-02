@@ -6,9 +6,9 @@
 [![CI](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Three.js Gaussian Splatting · WebGPU · Depth Rendering · Streaming**
+**Three.js Gaussian Splatting · WebGPU · Streaming**
 
-Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth rendering**, and **large-scene streaming**. Load PLY/SPZ/SOG/RAD models, combine them with regular 3D objects, and explore large scenes as detail loads around the camera.
+Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2** and **large-scene streaming**. Load PLY/SPZ/SOG/RAD models, combine them with regular 3D objects, and explore large scenes as detail loads around the camera.
 
 <div align="center">
 
@@ -29,9 +29,8 @@ Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2**, **depth re
 | Focus | What you get |
 | --- | --- |
 | **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
-| **Depth Rendering** | Let Splats occlude other scene objects |
+| **Stochastic rendering** | Optional transparency mode for use with temporal anti-aliasing |
 | **Large-scene streaming** | Load RAD and SOG detail as the camera moves, with smooth transitions |
-| **Stochastic rendering** | Responsive camera movement with optional noise reduction |
 | **SDF edits** | Recolor or hide parts of a model without moving Splats |
 | **Data and precision** | Load URLs, files, or bytes; place local models in large GIS/ECEF scenes |
 
@@ -68,7 +67,6 @@ camera.position.set(0, 0, 3);
 
 const splatRenderer = new GaussianSplatRenderer({
   renderer,
-  renderDepth: true, // Add Splat depth after the sorted color draw.
 });
 scene.add(splatRenderer);
 
@@ -99,7 +97,17 @@ For the classic WebGL renderer, replace the WebGPU renderer creation and initial
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 ```
 
-Keep the rest of the example, including `renderDepth`.
+Keep the rest of the example unchanged.
+
+## Stochastic rendering
+
+Sorted alpha blending is the default. To enable stochastic rendering:
+
+```js
+splatRenderer.stochastic = true;
+```
+
+This mode produces visible noise. Use the library's [TAAPass / TAANode](docs/TAAPass.md) to smooth it: `TAAPass` for `WebGLRenderer`, and `TAANode` for `WebGPURenderer` (including its WebGL2 fallback). See [Stochastic rendering](docs/StochasticRendering.md) for sorting options and TAA setup.
 
 ## Streaming large scenes
 
@@ -116,12 +124,12 @@ const streaming = new RadStreamScheduler({
   fadeDurationMs: 200, // Smooth LOD transitions (default).
 });
 scene.add(streaming.group);
+streaming.setCamera(camera);
+streaming.setResolutionFromRenderer(camera, renderer); // CSS pixels; again after resizing.
 await streaming.initialized;
 
-const size = new THREE.Vector2();
 renderer.setAnimationLoop(() => {
-  renderer.getDrawingBufferSize(size);
-  streaming.update(camera, { width: size.x, height: size.y });
+  streaming.update();
   renderer.render(scene, camera);
 });
 
@@ -133,7 +141,7 @@ await streaming.firstRenderable;
 // streaming.group.removeFromParent();
 ```
 
-For streamed SOG, use this constructor and call `streaming.update(camera)` before rendering each frame; the group and readiness lifecycle are the same:
+For streamed SOG, use this constructor. Register the camera with `setCamera(camera)` and call `streaming.update()` before rendering each frame; SOG detail follows distance, so it needs no resolution. The group and readiness lifecycle are the same:
 
 ```js
 import { SogStreamScheduler } from "gaussian-splat-lite";
@@ -145,23 +153,11 @@ const streaming = new SogStreamScheduler({
 });
 ```
 
-## Depth Rendering
-
-**`renderDepth` lets Splats occlude geometry drawn later.** Both WebGPU and WebGL2 support it.
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `renderDepth` | `false` | Let Splats occlude geometry drawn later, including transparent meshes |
-| `stochastic` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
-| `autoStochastic` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
-
-Draw order and depth testing in other materials still matter. Stochastic rendering and transparent edges may show noise; [StochasticResolvePass](docs/StochasticResolvePass.md) can reduce stochastic noise.
-
 ## Documentation
 
-- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, depth, and captures.
-- [StochasticResolvePass](docs/StochasticResolvePass.md) — Stochastic noise reduction, post-processing, and XR.
-- [StochasticTAAPass](docs/StochasticTAAPass.md) — Temporal anti-aliasing limited to stochastic splat regions.
+- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options and sorting.
+- [Stochastic rendering](docs/StochasticRendering.md) — Optional rendering mode, noise control, and temporal anti-aliasing.
+- [TAAPass / TAANode](docs/TAAPass.md) — Temporal reprojection for WebGLRenderer and WebGPURenderer without a velocity texture.
 - [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
 - [SplatLoader](docs/SplatLoader.md) — File loading.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
@@ -174,7 +170,7 @@ Draw order and depth testing in other materials still matter. Stochastic renderi
 
 ## Development
 
-Requires Node.js 20.9+, Rust via `rustup`, and the `wasm32-unknown-unknown` target. `build:wasm` installs `wasm-pack` through Cargo if needed.
+Requires Node.js 20.19+ or 22.12+, Rust via `rustup`, and the `wasm32-unknown-unknown` target. `build:wasm` installs `wasm-pack` through Cargo if needed.
 
 ```sh
 npm ci
@@ -182,7 +178,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGL2 / WebGPU / WebGPU · WebGL2** in the viewer to compare backends; disable automatic stochastic mode to expose the **Force Splat depth** control.
+Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
 
 See [Contributing](CONTRIBUTING.md#validation) for validation commands. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
 

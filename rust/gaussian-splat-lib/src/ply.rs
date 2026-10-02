@@ -1,5 +1,5 @@
 use std::array;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::SQRT_2;
 use std::sync::LazyLock;
 
@@ -10,7 +10,7 @@ use crate::splat_encode::ShLookup;
 
 pub const PLY_MAGIC: u32 = 0x00796c70; // "ply"
 const MAX_SPLAT_CHUNK: usize = 65536;
-const SH_C0: f32 = 0.28209479177387814;
+const SH_C0: f32 = 0.282_094_8;
 const SUPER_CHUNK_SIZE: usize = 256;
 static COMPRESSED_SH_LOOKUP: LazyLock<ShLookup> =
     LazyLock::new(|| ShLookup::new(array::from_fn(|b| b as f32 * 8.0 / 255.0 - 4.0)));
@@ -23,6 +23,8 @@ pub struct PlyDecoder<T: SplatReceiver> {
     splats: T,
     buffer: Vec<u8>,
     state: Option<PlyState>,
+    prefix_remaining: u64,
+    expected_input_size: Option<u64>,
 }
 
 impl<T: SplatReceiver> PlyDecoder<T> {
@@ -31,6 +33,8 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             splats,
             buffer: Vec::new(),
             state: None,
+            prefix_remaining: 0,
+            expected_input_size: None,
         }
     }
 
@@ -62,12 +66,18 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             return Err(anyhow!("Invalid PLY file"));
         }
 
-        const TERMINATOR: &[u8] = b"end_header\n";
-        let header_end = self
+        let terminator = self
             .buffer
-            .windows(TERMINATOR.len())
-            .position(|window| window == TERMINATOR);
-        let Some(header_end) = header_end else {
+            .windows(11)
+            .position(|window| window == b"end_header\n")
+            .map(|end| (end, 11))
+            .or_else(|| {
+                self.buffer
+                    .windows(12)
+                    .position(|window| window == b"end_header\r\n")
+                    .map(|end| (end, 12))
+            });
+        let Some((header_end, terminator_len)) = terminator else {
             if self.buffer.len() >= 65536 {
                 return Err(anyhow!("PLY header too large"));
             }
@@ -76,7 +86,20 @@ impl<T: SplatReceiver> PlyDecoder<T> {
 
         let header = std::str::from_utf8(&self.buffer[..header_end])?;
         let parsed = parse_header(header)?;
+        if let Some(size) = self.expected_input_size {
+            let header_bytes = (header_end + terminator_len) as u64;
+            let required = elements_byte_len(parsed.elements.iter(), header_bytes)?;
+            if required > size {
+                return Err(anyhow!(
+                    "PLY declares {required} bytes, input has only {size}"
+                ));
+            }
+        }
 
+        if parsed.chunk.is_none() {
+            self.prefix_remaining =
+                elements_byte_len(parsed.elements.iter().take_while(|e| e.name != "vertex"), 0)?;
+        }
         let state = if parsed.chunk.is_some() {
             let state = SuperSplatState::new(parsed)?;
             self.splats.init_splats(&SplatInit {
@@ -108,12 +131,20 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             PlyState::Standard(state)
         };
 
-        self.buffer.drain(..header_end + TERMINATOR.len());
+        self.buffer.drain(..header_end + terminator_len);
         self.state = Some(state);
         Ok(())
     }
 
     fn poll_data(&mut self) -> anyhow::Result<()> {
+        if self.prefix_remaining > 0 {
+            let skip = self.prefix_remaining.min(self.buffer.len() as u64) as usize;
+            self.buffer.drain(..skip);
+            self.prefix_remaining -= skip as u64;
+            if self.prefix_remaining > 0 {
+                return Ok(());
+            }
+        }
         match self.state {
             Some(PlyState::PointCloud(_)) => self.poll_data_pointcloud(),
             Some(PlyState::Standard(_)) => self.poll_data_standard(),
@@ -209,34 +240,38 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 let op_logistic = state.op_logi.get_f32(&self.buffer, base);
                 state.output.opacity[i] = 1.0 / (1.0 + (-op_logistic).exp());
                 for d in 0..3 {
-                    state.output.rgb[i3 + d] =
-                        0.5 + state.f_dc[d].get_f32(&self.buffer, base) * SH_C0;
+                    let color = state.color[d].get_f32(&self.buffer, base);
+                    state.output.rgb[i3 + d] = if state.color_is_sh {
+                        0.5 + color * SH_C0
+                    } else {
+                        color
+                    };
                 }
                 for d in 0..3 {
                     state.output.scale[i3 + d] = state.scale[d].get_f32(&self.buffer, base);
                 }
                 let quat: [f32; 4] = array::from_fn(|d| state.rot[d].get_f32(&self.buffer, base));
                 let quat_magnitude = quat.map(|x| x.powi(2)).iter().sum::<f32>().sqrt();
-                for d in 0..4 {
-                    state.output.quat[i4 + d] = quat[d] / quat_magnitude;
+                for (d, value) in quat.iter().enumerate() {
+                    state.output.quat[i4 + d] = value / quat_magnitude;
                 }
 
                 if let Some(sh1) = sh1 {
                     let i9 = i * 9;
-                    for d in 0..9 {
-                        state.output.sh1[i9 + d] = sh1[d].get_f32(&self.buffer, base);
+                    for (d, property) in sh1.iter().enumerate() {
+                        state.output.sh1[i9 + d] = property.get_f32(&self.buffer, base);
                     }
                 }
                 if let Some(sh2) = sh2 {
                     let i15 = i * 15;
-                    for d in 0..15 {
-                        state.output.sh2[i15 + d] = sh2[d].get_f32(&self.buffer, base);
+                    for (d, property) in sh2.iter().enumerate() {
+                        state.output.sh2[i15 + d] = property.get_f32(&self.buffer, base);
                     }
                 }
                 if let Some(sh3) = sh3 {
                     let i21 = i * 21;
-                    for d in 0..21 {
-                        state.output.sh3[i21 + d] = sh3[d].get_f32(&self.buffer, base);
+                    for (d, property) in sh3.iter().enumerate() {
+                        state.output.sh3[i21 + d] = property.get_f32(&self.buffer, base);
                     }
                 }
             }
@@ -287,8 +322,12 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 elem_read = elem.read;
             }
 
-            let available = (self.buffer.len() - offset) / elem_record_size;
             let remaining = elem_count - elem_read;
+            if remaining == 0 {
+                state.current_element += 1;
+                continue;
+            }
+            let available = (self.buffer.len() - offset) / elem_record_size;
             let chunk = remaining.min(available).min(MAX_SPLAT_CHUNK);
             if chunk == 0 {
                 break;
@@ -382,6 +421,11 @@ impl<T: SplatReceiver> ChunkReceiver for PlyDecoder<T> {
         self
     }
 
+    fn set_expected_input_size(&mut self, size: u64) -> anyhow::Result<()> {
+        self.expected_input_size = Some(size);
+        Ok(())
+    }
+
     fn push(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         self.buffer.extend_from_slice(bytes);
         self.poll()?;
@@ -453,6 +497,8 @@ impl<T: SplatReceiver> ChunkReceiver for PlyDecoder<T> {
 }
 
 #[derive(Debug)]
+// Decoder states are allocated once; boxing adds indirection to their hot loops.
+#[allow(clippy::large_enum_variant)]
 enum PlyState {
     PointCloud(PointCloudDecoderState),
     Standard(PlyDecoderState),
@@ -465,6 +511,23 @@ struct PlyElementDesc {
     count: usize,
     record_size: usize,
     properties: HashMap<String, PlyProperty>,
+}
+
+impl PlyElementDesc {
+    fn byte_len(&self) -> Option<u64> {
+        (self.count as u64).checked_mul(self.record_size as u64)
+    }
+}
+
+/// Bytes occupied by `elements` after `start`, with overflow reported as an error.
+fn elements_byte_len<'a>(
+    elements: impl Iterator<Item = &'a PlyElementDesc>,
+    start: u64,
+) -> anyhow::Result<u64> {
+    elements
+        .map(PlyElementDesc::byte_len)
+        .try_fold(start, |bytes, len| bytes.checked_add(len?))
+        .ok_or_else(|| anyhow!("PLY element sizes overflow"))
 }
 
 #[derive(Default)]
@@ -514,14 +577,14 @@ struct ParsedHeader {
 
 fn parse_property_type(s: &str) -> anyhow::Result<PlyPropertyType> {
     let ty = match s {
-        "char" => PlyPropertyType::Char,
-        "uchar" => PlyPropertyType::Uchar,
-        "short" => PlyPropertyType::Short,
-        "ushort" => PlyPropertyType::Ushort,
-        "int" => PlyPropertyType::Int,
-        "uint" => PlyPropertyType::Uint,
-        "float" => PlyPropertyType::Float,
-        "double" => PlyPropertyType::Double,
+        "char" | "int8" => PlyPropertyType::Char,
+        "uchar" | "uint8" => PlyPropertyType::Uchar,
+        "short" | "int16" => PlyPropertyType::Short,
+        "ushort" | "uint16" => PlyPropertyType::Ushort,
+        "int" | "int32" => PlyPropertyType::Int,
+        "uint" | "uint32" => PlyPropertyType::Uint,
+        "float" | "float32" => PlyPropertyType::Float,
+        "double" | "float64" => PlyPropertyType::Double,
         _ => return Err(anyhow!("Unsupported PLY property type: {}", s)),
     };
     Ok(ty)
@@ -575,6 +638,9 @@ fn parse_header(header: &str) -> anyhow::Result<ParsedHeader> {
                     return Err(anyhow!("Property outside of element"));
                 };
                 let ty = parse_property_type(fields[1])?;
+                if cur.properties.iter().any(|(name, _)| name == fields[2]) {
+                    return Err(anyhow!("Duplicate PLY property: {}", fields[2]));
+                }
                 cur.add_property(fields[2], ty);
             }
             "end_header" => {
@@ -592,6 +658,18 @@ fn parse_header(header: &str) -> anyhow::Result<ParsedHeader> {
     }
 
     let elements: Vec<PlyElementDesc> = builders.into_iter().map(|b| b.build()).collect();
+    let mut names = HashSet::new();
+    for element in &elements {
+        if !names.insert(element.name.as_str()) {
+            return Err(anyhow!("Duplicate PLY element: {}", element.name));
+        }
+        if element.count > 0 && element.record_size == 0 {
+            return Err(anyhow!("PLY element has no properties"));
+        }
+        element
+            .byte_len()
+            .ok_or_else(|| anyhow!("PLY element size overflows"))?;
+    }
     let vertex = elements
         .iter()
         .find(|e| e.name == "vertex")
@@ -601,7 +679,10 @@ fn parse_header(header: &str) -> anyhow::Result<ParsedHeader> {
     let sh = elements.iter().find(|e| e.name == "sh").cloned();
     let is_pointcloud = POINT_CLOUD_PROPERTIES
         .iter()
-        .all(|&p| vertex.properties.contains_key(p));
+        .all(|&p| vertex.properties.contains_key(p))
+        && !["scale_0", "scale_1", "scale_2", "rot_0", "f_dc_0"]
+            .iter()
+            .any(|p| vertex.properties.contains_key(*p));
 
     Ok(ParsedHeader {
         num_splats: vertex.count,
@@ -1058,7 +1139,8 @@ struct PlyDecoderState {
     scale: [PlyProperty; 3],
     rot: [PlyProperty; 4],
     op_logi: PlyProperty,
-    f_dc: [PlyProperty; 3],
+    color: [PlyProperty; 3],
+    color_is_sh: bool,
     max_sh_degree: usize,
     sh1: Option<[PlyProperty; 9]>,
     sh2: Option<[PlyProperty; 15]>,
@@ -1077,7 +1159,15 @@ impl PlyDecoderState {
         let scale = required_properties(properties, ["scale_0", "scale_1", "scale_2"])?;
         let rot = required_properties(properties, ["rot_1", "rot_2", "rot_3", "rot_0"])?;
         let op_logi = required_property(properties, "opacity")?;
-        let f_dc = required_properties(properties, ["f_dc_0", "f_dc_1", "f_dc_2"])?;
+        let color_is_sh = properties.contains_key("f_dc_0");
+        let color = required_properties(
+            properties,
+            if color_is_sh {
+                ["f_dc_0", "f_dc_1", "f_dc_2"]
+            } else {
+                ["red", "green", "blue"]
+            },
+        )?;
 
         let max_sh_degree = sh_degree(properties)?;
         let sh1 = sh_properties(properties, max_sh_degree, 1);
@@ -1092,7 +1182,8 @@ impl PlyDecoderState {
             scale,
             rot,
             op_logi,
-            f_dc,
+            color,
+            color_is_sh,
             max_sh_degree,
             sh1,
             sh2,
@@ -1306,4 +1397,109 @@ fn f_rest_name(max_sh_degree: usize, degree: usize, k: usize, d: usize) -> Strin
     let stride = f_rest_offset(max_sh_degree);
     let offset = f_rest_offset(degree - 1);
     format!("f_rest_{}", stride * d + offset + k)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Default)]
+    struct Points(Vec<f32>, Vec<f32>);
+    impl SplatReceiver for Points {
+        fn set_center(&mut self, _base: usize, _count: usize, center: &[f32]) {
+            self.0.extend_from_slice(center);
+        }
+        fn set_opacity(&mut self, _base: usize, _count: usize, _values: &[f32]) {}
+        fn set_rgb(&mut self, _base: usize, _count: usize, values: &[f32]) {
+            self.1.extend_from_slice(values);
+        }
+        fn set_scale(&mut self, _base: usize, _count: usize, _values: &[f32]) {}
+        fn set_quat(&mut self, _base: usize, _count: usize, _values: &[f32]) {}
+        fn set_batch(&mut self, _base: usize, _count: usize, batch: &SplatProps) {
+            self.0.extend_from_slice(batch.center);
+            self.1.extend_from_slice(batch.rgb);
+        }
+    }
+    #[test]
+    fn rejects_duplicate_elements_and_nonempty_elements_without_properties() {
+        for elements in [
+            "element vertex 1\nelement vertex 1\n",
+            "element empty 1\nelement vertex 0\n",
+        ] {
+            assert!(
+                parse_header(&format!("ply\nformat binary_little_endian 1.0\n{elements}")).is_err()
+            );
+        }
+    }
+    #[test]
+    fn decodes_crlf_aliases_and_skips_prefix_elements() {
+        let header = "ply\r\nformat binary_little_endian 1.0\r\nelement prefix 1\r\nproperty uint32 tag\r\nelement vertex 1\r\nproperty float32 x\r\nproperty float32 y\r\nproperty float32 z\r\nproperty uint8 red\r\nproperty uint8 green\r\nproperty uint8 blue\r\nend_header\r\n";
+        let mut file = header.as_bytes().to_vec();
+        file.extend_from_slice(&99_u32.to_le_bytes());
+        for value in [1.0_f32, 2.0, 3.0] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        file.extend_from_slice(&[255, 128, 0]);
+        let mut decoder = PlyDecoder::new(Points::default());
+        for bytes in file.chunks(3) {
+            decoder.push(bytes).unwrap();
+        }
+        decoder.finish().unwrap();
+        assert_eq!(decoder.into_splats().0, [1.0, 2.0, 3.0]);
+    }
+    #[test]
+    fn gaussian_rgb_without_dc_keeps_shape_and_normalized_color() {
+        let mut header = String::from("ply\nformat binary_little_endian 1.0\nelement vertex 1\n");
+        for name in ["x", "y", "z"] {
+            header.push_str(&format!("property float {name}\n"));
+        }
+        for name in ["red", "green", "blue"] {
+            header.push_str(&format!("property uchar {name}\n"));
+        }
+        for name in [
+            "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3", "opacity",
+        ] {
+            header.push_str(&format!("property float {name}\n"));
+        }
+        header.push_str("end_header\n");
+        let mut file = header.into_bytes();
+        for value in [1.0_f32, 2.0, 3.0] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        file.extend_from_slice(&[255, 128, 0]);
+        for value in [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut decoder = PlyDecoder::new(Points::default());
+        decoder.set_expected_input_size(file.len() as u64).unwrap();
+        for bytes in file.chunks(7) {
+            decoder.push(bytes).unwrap();
+        }
+        decoder.finish().unwrap();
+        let points = decoder.into_splats();
+        assert_eq!(points.0, [1.0, 2.0, 3.0]);
+        assert_eq!(points.1, [1.0, 128.0 / 255.0, 0.0]);
+    }
+
+    #[test]
+    fn accepts_element_byte_lengths_above_4_gib_and_checks_known_input_size() {
+        let header = "ply\nformat binary_little_endian 1.0\nelement vertex 400000000\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\n";
+        let parsed = parse_header(header).unwrap();
+        assert_eq!(
+            parsed.vertex.count as u64 * parsed.vertex.record_size as u64,
+            6_000_000_000
+        );
+        let mut decoder = PlyDecoder::new(Points::default());
+        decoder.set_expected_input_size(1024).unwrap();
+        assert!(decoder
+            .push(format!("{header}end_header\n").as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("declares"));
+    }
+
+    #[test]
+    fn rgb_does_not_override_gaussian_properties() {
+        let header = "ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float scale_0\n";
+        assert!(!parse_header(header).unwrap().is_pointcloud);
+    }
 }

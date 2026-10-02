@@ -2,12 +2,20 @@ import { writeFile } from "node:fs/promises";
 
 // Ulichney's void-and-cluster method:
 // https://cv.ulichney.com/papers/1993-void-cluster.pdf
+// Spatiotemporal extension: interact within an XY slice or along one pixel's
+// time axis, never across both space and time at once.
+// https://developer.nvidia.com/blog/rendering-in-real-time-with-spatiotemporal-blue-noise-textures-part-1/
+// Filter-adapted temporal energy:
+// https://www.ea.com/seed/news/spatio-temporal-sampling
 // Run: node scripts/generate-blue-noise.js
 const SIZE = 32;
-const COUNT = SIZE * SIZE;
+const FRAMES = 32;
+const SLICE = SIZE * SIZE;
+const COUNT = SLICE * FRAMES;
 const SIGMA = 1.1;
 const BROAD_SIGMA = 2.8;
 const BROAD_WEIGHT = 2;
+const CURRENT_FRAME_WEIGHT = 0.05;
 const INITIAL_COUNT = Math.floor(COUNT * 0.1);
 let seed = 0x47534c;
 
@@ -18,7 +26,7 @@ function random() {
 
 // Toroidal distances keep the distribution uniform across tile boundaries.
 // Two Gaussian scales control local clustering and broader density variation.
-const kernel = new Float64Array(COUNT);
+const kernel = new Float64Array(SLICE);
 for (let y = 0; y < SIZE; y++) {
   for (let x = 0; x < SIZE; x++) {
     const dx = Math.min(x, SIZE - x);
@@ -31,19 +39,49 @@ for (let y = 0; y < SIZE; y++) {
   }
 }
 
+// Optimize for TAA's base exponential history weight. Pairwise energy uses
+// the filter's autocorrelation, not its taps directly. Wrap the history around
+// the 32-frame cycle so every starting/stopping phase is treated equally.
+// This models accumulation only, not TAA's nonlinear clipping/rejection.
+const temporalKernel = new Float64Array(FRAMES);
+const historyWeights = Float64Array.from(
+  { length: FRAMES },
+  (_, t) =>
+    (CURRENT_FRAME_WEIGHT * (1 - CURRENT_FRAME_WEIGHT) ** t) /
+    (1 - (1 - CURRENT_FRAME_WEIGHT) ** FRAMES),
+);
+for (let t = 0; t < FRAMES; t++) {
+  for (let j = 0; j < FRAMES; j++) {
+    temporalKernel[t] += historyWeights[j] * historyWeights[(j + t) % FRAMES];
+  }
+}
+// Give spatial and temporal density the same total weight.
+const temporalScale =
+  kernel.reduce((sum, value) => sum + value, 0) /
+  temporalKernel.reduce((sum, value) => sum + value, 0);
+for (let t = 0; t < FRAMES; t++) temporalKernel[t] *= temporalScale;
+
 const occupied = new Uint8Array(COUNT);
 const density = new Float64Array(COUNT);
 
 function setPixel(index, value) {
   const delta = value - occupied[index];
   occupied[index] = value;
-  const px = index % SIZE;
-  const py = Math.floor(index / SIZE);
+  const pixel = index % SLICE;
+  const frame = Math.floor(index / SLICE);
+  const base = frame * SLICE;
+  const px = pixel % SIZE;
+  const py = Math.floor(pixel / SIZE);
   for (let y = 0; y < SIZE; y++) {
     const row = ((y - py + SIZE) % SIZE) * SIZE;
     for (let x = 0; x < SIZE; x++) {
-      density[y * SIZE + x] += delta * kernel[row + ((x - px + SIZE) % SIZE)];
+      density[base + y * SIZE + x] +=
+        delta * kernel[row + ((x - px + SIZE) % SIZE)];
     }
+  }
+  for (let t = 0; t < FRAMES; t++) {
+    density[t * SLICE + pixel] +=
+      delta * temporalKernel[(t - frame + FRAMES) % FRAMES];
   }
 }
 
@@ -112,11 +150,14 @@ for (let rank = COUNT / 2; rank < COUNT; rank++) {
   setPixel(pixel, 0);
 }
 
-// Each rank 0–1023 occurs once; preserve the renderer's uint16 LE format.
+// Each rank 0–32767 occurs once. Stack XY slices vertically in a 32×1024
+// atlas so WebGL and WebGPU can use the same integer 2D texture lookup.
 const output = Buffer.alloc(COUNT * 2);
 for (let i = 0; i < COUNT; i++) output.writeUInt16LE(ranks[i], i * 2);
 await writeFile(
   new URL("../src/rendering/blueNoise32.bin", import.meta.url),
   output,
 );
-console.log(`Generated ${SIZE}×${SIZE} blue noise (${output.length} bytes).`);
+console.log(
+  `Generated ${SIZE}×${SIZE}×${FRAMES} spatiotemporal blue noise (${output.length} bytes).`,
+);

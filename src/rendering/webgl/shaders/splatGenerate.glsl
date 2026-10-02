@@ -30,6 +30,7 @@ uniform mat3 objectBasis;
 uniform vec3 objectOffset;
 uniform vec3 objectLnScale;
 uniform vec4 objectQuaternion;
+uniform bool objectReflected;
 uniform vec4 recolor;
 
 uniform int numSdfs;
@@ -39,7 +40,9 @@ uniform usampler2D editTexture;
 
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
+#if GSL_STOCHASTIC_SEEDS
 layout(location = 2) out uint targetSeed;
+#endif
 
 // Match WebGPU's finite sentinel for empty/unbounded SDFs. Smooth ALL shapes
 // must not evaluate exp(inf - inf).
@@ -114,18 +117,19 @@ void unpackSdf(
     int index,
     out uint flags,
     out vec3 center,
-    out vec4 quaternion,
-    out vec3 scale,
+    out mat3 basis,
+    out float distanceScale,
     out vec4 sizes,
     out vec4 sdfRgba
 ) {
     uvec4 data = texelFetch(sdfTexture, ivec2(0, index), 0);
     center = vec3(uintBitsToFloat(data.x), uintBitsToFloat(data.y), uintBitsToFloat(data.z));
     flags = data.w;
-    data = texelFetch(sdfTexture, ivec2(1, index), 0);
-    quaternion = vec4(uintBitsToFloat(data.x), uintBitsToFloat(data.y), uintBitsToFloat(data.z), uintBitsToFloat(data.w));
-    data = texelFetch(sdfTexture, ivec2(2, index), 0);
-    scale = vec3(uintBitsToFloat(data.x), uintBitsToFloat(data.y), uintBitsToFloat(data.z));
+    uvec4 firstAxis = texelFetch(sdfTexture, ivec2(1, index), 0);
+    uvec4 secondAxis = texelFetch(sdfTexture, ivec2(2, index), 0);
+    uvec4 thirdAxis = texelFetch(sdfTexture, ivec2(5, index), 0);
+    basis = mat3(uintBitsToFloat(firstAxis.xyz), uintBitsToFloat(secondAxis.xyz), uintBitsToFloat(thirdAxis.xyz));
+    distanceScale = uintBitsToFloat(thirdAxis.w);
     data = texelFetch(sdfTexture, ivec2(3, index), 0);
     sizes = vec4(uintBitsToFloat(data.x), uintBitsToFloat(data.y), uintBitsToFloat(data.z), uintBitsToFloat(data.w));
     data = texelFetch(sdfTexture, ivec2(4, index), 0);
@@ -187,19 +191,20 @@ float evaluateSdfs(
     for (int index = sdfFirst; index < sdfLast; ++index) {
         uint flags;
         vec3 center;
-        vec4 quaternion;
-        vec3 scale;
+        mat3 basis;
+        float distanceScale;
         vec4 sizes;
         vec4 value;
-        unpackSdf(index, flags, center, quaternion, scale, sizes, value);
+        unpackSdf(index, flags, center, basis, distanceScale, sizes, value);
+        if (distanceScale <= 0.0) continue;
         vec4 valueMask = vec4(
             (flags & 0x10000u) != 0u ? 1.0 : 0.0,
             (flags & 0x20000u) != 0u ? 1.0 : 0.0,
             (flags & 0x40000u) != 0u ? 1.0 : 0.0,
             (flags & 0x80000u) != 0u ? 1.0 : 0.0
         );
-        vec3 sdfPosition = quatVec(quaternion, position * scale) + center;
-        float distance = sdfDistance(flags & 0xffu, sdfPosition, sizes);
+        vec3 sdfPosition = basis * position + center;
+        float distance = sdfDistance(flags & 0xffu, sdfPosition, sizes) * distanceScale;
         if ((flags & 0x100u) != 0u) distance = -distance;
 
         if (smoothAmount == 0.0) {
@@ -296,7 +301,9 @@ void produceSplat(int index) {
         uvec4 indices = texelFetch(sourceIndices, splatTexCoord(index >> 2), 0);
         sourceIndex = indices[index & 3];
     }
+    #if GSL_STOCHASTIC_SEEDS
     targetSeed = sourceIndex ^ stochasticSeedBase;
+    #endif
     float blockOpacity = 1.0;
     if (sourceBlockBits < 32u) {
         // Group layers follow the source layers, at one texel per block.
@@ -341,9 +348,11 @@ void produceSplat(int index) {
         vec3 worldViewDirection = center + objectOffset;
         vec4 inverseObjectQuaternion = vec4(-objectQuaternion.xyz, objectQuaternion.w);
         vec3 sourceViewDirection = normalize(quatVec(inverseObjectQuaternion, worldViewDirection));
+        if (objectReflected) sourceViewDirection.x = -sourceViewDirection.x;
         rgba.rgb += evaluateSH(coord, sourceViewDirection);
     }
     lnScales += objectLnScale;
+    if (objectReflected) quaternion.yz = -quaternion.yz;
     quaternion = quatQuat(objectQuaternion, quaternion);
 
     vec3 editPosition = center;
@@ -398,7 +407,9 @@ void main() {
 
     target = uvec4(0u);
     target2 = uvec4(0u);
+    #if GSL_STOCHASTIC_SEEDS
     targetSeed = 0u;
+    #endif
     if (index >= 0 && index < targetCount) {
         produceSplat(index);
     }

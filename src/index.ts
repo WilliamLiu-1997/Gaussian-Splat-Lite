@@ -6,8 +6,8 @@ export {
   SplatAccumulator,
   type SplatMapping,
 } from "./rendering/SplatAccumulator";
-export { StochasticResolvePass } from "./resolve/StochasticResolvePass";
-export { StochasticTAAPass } from "./taa/StochasticTAAPass";
+export { TAAPass } from "./addons/TAAPass";
+export { TAANode } from "./addons/TAANode";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {

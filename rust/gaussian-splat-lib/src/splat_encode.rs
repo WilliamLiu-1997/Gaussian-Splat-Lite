@@ -58,10 +58,15 @@ pub fn get_splat_tex_size(num_splats: usize) -> (usize, usize, usize, usize) {
 
 pub(crate) fn get_splat_tex_size_u64(num_splats: u64) -> (u64, u64, u64, u64) {
     let width = SPLAT_TEX_WIDTH as u64;
-    let height = num_splats
-        .div_ceil(width)
-        .clamp(SPLAT_TEX_MIN_HEIGHT as u64, SPLAT_TEX_HEIGHT as u64);
-    let depth = num_splats.div_ceil(SPLAT_TEX_LAYER_SIZE as u64).max(1);
+    let rows = num_splats.max(1).div_ceil(width);
+    let height = if rows <= SPLAT_TEX_HEIGHT as u64 {
+        rows.max(SPLAT_TEX_MIN_HEIGHT as u64)
+    } else {
+        rows.div_ceil(256)
+            .next_power_of_two()
+            .min(SPLAT_TEX_HEIGHT as u64)
+    };
+    let depth = num_splats.max(1).div_ceil(width * height);
     let max_splats = width * height * depth;
     (width, height, depth, max_splats)
 }
@@ -125,13 +130,12 @@ pub fn decode_splat_center(splat_a: &[u32]) -> [f32; 3] {
 /// Encodes raw opacity as regular alpha plus Spark's nonlinear wider-kernel
 /// shape amount. Shape is limited to [0, 1], matching the renderer's [1, 5].
 pub fn encode_splat_opacity(splat_a: &mut [u32], opacity: f32) {
-    let raw_opacity = opacity.clamp(0.0, f32::INFINITY);
+    let raw_opacity = opacity.max(0.0);
     splat_a[3] = if raw_opacity > 1.0 {
         let shape_amount = 0.25 * (raw_opacity.ln().mul_add(std::f32::consts::E, 1.0).sqrt() - 1.0);
         f16::ONE.to_bits() as u32 | ((f16::from_f32(shape_amount.min(1.0)).to_bits() as u32) << 16)
     } else {
-        // Keep the common Gaussian path in the low lane only. This also
-        // preserves the existing NaN representation without encoding zero.
+        // Keep the common Gaussian path in the low lane; NaN encodes as zero.
         f16::from_f32(raw_opacity).to_bits() as u32
     };
 }
@@ -349,6 +353,24 @@ pub fn decode_splat_sh_rgb(word: u32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opacity_nan_encodes_as_transparent() {
+        let mut words = [0; 4];
+        encode_splat_opacity(&mut words, f32::NAN);
+        assert_eq!(decode_splat_opacity(&words), 0.0);
+    }
+
+    #[test]
+    fn texture_layout_keeps_partial_layers_compact() {
+        let (width, height, depth, capacity) = get_splat_tex_size(4_194_305);
+        assert_eq!((width, height, depth), (2048, 16, 129));
+        assert_eq!(capacity, 4_227_072);
+        assert_eq!(
+            get_splat_tex_size(capacity),
+            (width, height, depth, capacity)
+        );
+    }
 
     #[test]
     fn f16_sh_lookup_preserves_mixed_exponents_and_signs() {

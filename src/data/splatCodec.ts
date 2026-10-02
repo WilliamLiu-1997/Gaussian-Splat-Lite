@@ -28,7 +28,7 @@ export function decodeSplatOpacity(word: number) {
 
 export function encodeSplatOpacity(opacity: number) {
   if (opacity > 0 && opacity <= 1) return toHalf(opacity);
-  const value = Math.max(opacity, 0);
+  const value = Math.max(opacity || 0, 0);
   if (value > 1) {
     const shapeAmount = 0.25 * (Math.sqrt(Math.log(value) * Math.E + 1) - 1);
     // Match the renderer's shape range [0, 1].
@@ -158,7 +158,7 @@ export function encodeQuatOctXy1010R12(
   qz: number,
   qw: number,
 ): number {
-  return (encodeQuaternion(qx, qy, qz, qw, 0) ?? 0) | 0;
+  return (encodeQuaternion(qx, qy, qz, qw, 0) ?? 0) >>> 0;
 }
 
 export function tryEncodeQuatOctXy1010R12(

@@ -9,6 +9,7 @@
     "ignoreUnknown": false,
     "ignore": [
       "dist/**",
+      "site/**",
       "site-dist/**",
       "rust/target/**",
       "rust/gaussian-splat-rs/pkg/**",

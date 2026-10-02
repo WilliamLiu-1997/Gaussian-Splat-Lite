@@ -77,4 +77,4 @@ Unassigned channels stay unchanged. For example, `color: { r: 1, g: 0.5 }` with 
 
 Shapes (`SplatEditSdfType`): `ALL`, `PLANE`, `SPHERE`, `BOX`, `ELLIPSOID`, `CYLINDER`, `CAPSULE`, `INFINITE_CONE`.
 
-Move, rotate, and scale shapes with normal Three.js transforms. Edits apply in creation order; use `edit.ordering` to change it.
+Move, rotate, and scale shapes with normal Three.js transforms, including transforms inherited from parents. `BOX` and `ELLIPSOID` take their half-size from `scale`, and `CAPSULE` takes its length from `scale.y`; scaling these shapes does not change their `radius`. Other shapes, including `SPHERE`, scale as a whole. A shape scaled to zero on any axis has no effect, even when inverted. With uneven scaling, soft edges are approximate. Edits apply in creation order; use `edit.ordering` to change it.

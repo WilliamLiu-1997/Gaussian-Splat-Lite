@@ -1,11 +1,6 @@
 import * as THREE from "three";
 import type { Node, NodeBuilder } from "three/webgpu";
-import {
-  NodeMaterial,
-  StorageBufferAttribute,
-  type StorageBufferNode,
-  type TextureNode,
-} from "three/webgpu";
+import { NodeMaterial, type TextureNode } from "three/webgpu";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry";
 import { ORDERING_TEXTURE_WIDTH, type Uniforms } from "../uniforms";
 import { createProjectionProgram } from "./ProjectionProgram";
@@ -25,25 +20,14 @@ export type ProjectedVertexData = {
   /** Source color space; this material applies encodeLinear. */
   rgba: Node<"vec4">;
   splatUv: Node<"vec2">;
-  stochasticSeed: Node<"uint">;
+  /** Stochastic variant only. */
+  stochasticSeed?: Node<"uint">;
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
 };
 
-export type OrderingNode = StorageBufferNode<"uint"> | TextureNode<"uvec4">;
-
-export type SplatNodeMaterial = NodeMaterial & {
-  uniforms: Uniforms;
-  orderingNode: OrderingNode;
-  vertexNode: Node<"vec4">;
-};
-
-function createDefaultOrderingNode() {
-  const ordering = new StorageBufferAttribute(new Uint32Array([0xffffffff]), 1);
-  ordering.name = "GaussianSplatOrdering";
-  return N.storage(ordering, "uint").toReadOnly();
-}
+export type SplatNodeMaterial = NodeMaterial & { uniforms: Uniforms };
 
 const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
   const value = N.uint(input).toVar();
@@ -55,31 +39,18 @@ const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
   return value;
 });
 
-function createSplatFragment({
-  sorted,
-  minAlpha,
-  stochastic,
-  stochasticResolve,
-  stochasticNoise,
-  temporalSample,
-  depthOnly,
-  premultipliedAlpha,
-}: {
-  sorted: boolean;
-  minAlpha: Node<"float">;
-  stochastic: Node<"bool">;
-  stochasticResolve: Node<"bool">;
-  stochasticNoise: TextureNode<"uvec4">;
-  temporalSample: Node<"vec4">;
-  depthOnly: Node<"bool">;
-  premultipliedAlpha: Node<"bool">;
-}) {
+function createSplatFragment(
+  minAlpha: Node<"float">,
+  stochasticNoise: TextureNode<"uvec4"> | null,
+) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
   const vSplat = N.varyingProperty("uvec4", "gslSplat");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
-  const vStochasticHash = N.varyingProperty("uint", "gslStochasticHash");
-  const vViewportOrigin = N.varyingProperty("vec2", "gslViewportOrigin");
+  // Atlas offset: x in bits 0-4, y in 5-9, time in 10-14. See stochasticTileOffset.
+  const vStochasticOffset = stochasticNoise
+    ? N.varyingProperty("uint", "gslStochasticOffset")
+    : null;
 
   const fragmentNode = N.Fn(() => {
     const z2 = vSplatUv.dot(vSplatUv);
@@ -94,56 +65,52 @@ function createSplatFragment({
     });
     const alpha = N.uintBitsToFloat(vSplat.z).mul(kernelAlpha).toVar();
     alpha.lessThan(minAlpha).discard();
-    // Auto, stochastic and depth draws keep the uniform graph.
-    if (!sorted) {
-      N.If(stochastic.or(depthOnly), () => {
-        const pixel = N.uvec2(N.screenCoordinate.xy.sub(vViewportOrigin));
-        // Match the fixed per-Splat coverage used by the WebGL color/depth pass.
-        const offset = N.uvec2(
-          vStochasticHash,
-          vStochasticHash.shiftRight(5),
-        ).add(
-          N.select(
-            stochastic.and(depthOnly.not()),
-            N.uvec2(temporalSample.zw),
-            N.uvec2(0),
-          ),
-        );
-        const coord = N.ivec2(
-          pixel.x.add(offset.x).bitAnd(31),
-          pixel.y.add(offset.y).bitAnd(31),
-        );
-        const randomValue = N.float(load2D(stochasticNoise, coord).r)
-          .add(0.5)
-          .div(1024);
-        randomValue.greaterThanEqual(alpha).discard();
-      });
+    if (stochasticNoise && vStochasticOffset) {
+      const pixel = N.uvec2(N.screenCoordinate.xy);
+      const coord = N.ivec2(
+        pixel.x.add(vStochasticOffset).bitAnd(31),
+        pixel.y
+          .add(vStochasticOffset.shiftRight(5))
+          .bitAnd(31)
+          .add(vStochasticOffset.shiftRight(10).mul(32)),
+      );
+      const randomValue = N.float(load2D(stochasticNoise, coord).r)
+        .add(0.5)
+        .div(32768);
+      randomValue.greaterThanEqual(alpha).discard();
     }
     // Decode color only after the fragment survives coverage tests.
-    const rgba = N.vec4(
+    return N.vec4(
       N.unpackHalf2x16(vSplat.x),
       blueKernelPower.x,
-      alpha,
-    ).toVar();
-    if (sorted) return rgba;
-    N.If(stochastic.and(depthOnly.not()), () => {
-      // NodeMaterial premultiplies its output when requested. Cancel the
-      // alpha-2 marker here so the stored stochastic RGB remains straight.
-      N.If(premultipliedAlpha.and(stochasticResolve), () => {
-        rgba.rgb.mulAssign(0.5);
-      });
-      rgba.a.assign(N.select(stochasticResolve, 2, 1));
-    });
-    return rgba;
+      stochasticNoise ? 1 : alpha,
+    );
   })();
 
   return {
     vSplat,
     vSplatUv,
-    vStochasticHash,
-    vViewportOrigin,
+    vStochasticOffset,
     fragmentNode,
   };
+}
+
+// Keep XY fixed while advancing the STBN time axis. Independent per-Splat XYZ
+// offsets decorrelate overlapping coverage tests without translating the field.
+function stochasticTileOffset(
+  seed: Node<"uint">,
+  sample: Node<"uint">,
+  viewportOrigin: Node<"vec2">,
+) {
+  const hash = stochasticHash(seed).toVar();
+  const origin = N.uvec2(viewportOrigin);
+  const x = hash.sub(origin.x);
+  const y = hash.shiftRight(5).sub(origin.y);
+  const phase = hash.shiftRight(10).add(sample).bitAnd(31);
+  return x
+    .bitAnd(31)
+    .bitOr(y.bitAnd(31).shiftLeft(5))
+    .bitOr(phase.shiftLeft(10));
 }
 
 // Half RGB saturates at its largest finite value instead of overflowing after
@@ -163,75 +130,66 @@ function packSplatVarying(
   );
 }
 
+/**
+ * Sorted and stochastic variants compile separate graphs, so sorted drawing
+ * carries no coverage varyings, seed loads or mode branches.
+ */
 export function createSplatNodeMaterial({
   uniforms,
-  orderingNode: providedOrderingNode,
+  orderingNode,
   vertexData,
   premultipliedAlpha,
   transparent,
   depthTest,
   depthWrite,
-  sorted = false,
-  vertexNode: sharedVertexNode,
+  stochastic,
 }: {
   uniforms: Uniforms;
-  orderingNode?: OrderingNode;
-  vertexData?: (camera: THREE.Camera) => ProjectedVertexData;
+  /** CPU ordering for drawing from accumulator textures. */
+  orderingNode?: TextureNode<"uvec4">;
+  /** Replaces accumulator projection, e.g. with a GPU projection cache. */
+  vertexData?: (
+    camera: THREE.Camera,
+    stochastic: boolean,
+  ) => ProjectedVertexData;
   premultipliedAlpha: boolean;
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
-  sorted?: boolean;
-  vertexNode?: Node<"vec4">;
+  stochastic: boolean;
 }): SplatNodeMaterial {
-  const orderingNode = providedOrderingNode ?? createDefaultOrderingNode();
-  const splats = textureBinding(uniforms, "splats", true);
-  const splats2 = textureBinding(uniforms, "splats2", true);
-  const stochasticSeeds = textureBinding(uniforms, "stochasticSeeds", true);
-  const stochasticNoise = textureBinding(uniforms, "stochasticNoise");
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
-  const premultipliedAlphaNode = uniformBinding(
-    uniforms,
-    "premultipliedAlpha",
-    "bool",
-  );
-  const stochastic = uniformBinding(uniforms, "stochastic", "bool");
-  const temporalSample = uniformBinding(
-    uniforms,
-    "stochasticTemporalSample",
-    "vec4",
-  );
-  const stochasticResolve = uniformBinding(
-    uniforms,
-    "stochasticResolve",
-    "bool",
-  );
-  const depthOnly = uniformBinding(uniforms, "depthOnly", "bool");
-  const { vSplat, vSplatUv, vStochasticHash, vViewportOrigin, fragmentNode } =
-    createSplatFragment({
-      sorted,
+  const stochasticSample = stochastic
+    ? uniformBinding(uniforms, "stochasticSample", "uint")
+    : null;
+  // Accumulator textures are only read without a projection cache.
+  const accumulator = vertexData
+    ? null
+    : {
+        splats: textureBinding(uniforms, "splats", true),
+        splats2: textureBinding(uniforms, "splats2", true),
+        seeds: stochastic
+          ? textureBinding(uniforms, "stochasticSeeds", true)
+          : null,
+      };
+  const { vSplat, vSplatUv, vStochasticOffset, fragmentNode } =
+    createSplatFragment(
       minAlpha,
-      stochastic,
-      stochasticResolve,
-      stochasticNoise,
-      temporalSample,
-      depthOnly,
-      premultipliedAlpha: premultipliedAlphaNode,
-    });
+      stochastic ? textureBinding(uniforms, "stochasticNoise") : null,
+    );
 
   function buildVertex(builder: NodeBuilder) {
     const camera = materialCamera(builder);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vSplat.assign(N.uvec4(0));
     vSplatUv.assign(N.vec2(0));
-    vStochasticHash.assign(N.uint(0));
-
+    vStochasticOffset?.assign(N.uint(0));
     const assignVertexData = (data: ProjectedVertexData) => {
       const rgba = data.rgba.toVar();
       // RGB is constant across the quad; decode its color space once
       // per vertex rather than for every covered fragment.
-      N.If(encodeLinear.and(depthOnly.not()), () => {
+      N.If(encodeLinear, () => {
         rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));
       });
       clipPosition.assign(data.clipPosition);
@@ -239,101 +197,93 @@ export function createSplatNodeMaterial({
         packSplatVarying(rgba, data.supportRadiusSquared, data.kernelPower),
       );
       vSplatUv.assign(data.splatUv);
-      // Coverage uses the same hash across every fragment of this Splat.
-      N.If(stochastic.or(depthOnly), () => {
-        vStochasticHash.assign(stochasticHash(data.stochasticSeed));
-      });
-      vViewportOrigin.assign(data.viewportOrigin);
+      if (vStochasticOffset && stochasticSample && data.stochasticSeed) {
+        // Coverage uses the same offset across every fragment of this Splat.
+        vStochasticOffset.assign(
+          stochasticTileOffset(
+            data.stochasticSeed,
+            stochasticSample,
+            data.viewportOrigin,
+          ),
+        );
+      }
     };
 
     if (vertexData) {
-      assignVertexData(vertexData(camera));
-    } else {
-      const view = splatViewUniforms(uniforms, camera);
-      vViewportOrigin.assign(view.viewportOrigin);
-      const project = createProjectionProgram(uniforms, {
-        ...view,
-        projectionMatrix: N.cameraProjectionMatrix,
-      });
-      const index = N.uint(N.instanceIndex)
-        .mul(SPLATS_PER_INSTANCE)
-        .add(N.uint(N.positionGeometry.z))
-        .toVar();
-      const splatIndex = N.uint(0xffffffff).toVar();
-      const splatCount = uniformBinding(uniforms, "splatCount", "uint");
-      const stochasticOrdering = uniformBinding(
-        uniforms,
-        "stochasticOrdering",
-        "bool",
-      );
-      N.If(index.lessThan(splatCount), () => {
-        splatIndex.assign(index);
-        N.If(
-          depthOnly.not().and(stochastic.not().or(stochasticOrdering)),
-          () => {
-            if ("isTextureNode" in orderingNode) {
-              const texel = index.shiftRight(2);
-              const coord = N.ivec2(
-                texel.mod(ORDERING_TEXTURE_WIDTH),
-                texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
-              );
-              splatIndex.assign(
-                load2D(orderingNode, coord).element(index.bitAnd(3)),
-              );
-            } else {
-              splatIndex.assign(orderingNode.element(index));
-            }
-          },
-        );
-      });
-
-      N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {
-        const texCoord = splatTexCoord(splatIndex);
-        const projected = project({
-          first: loadArray(splats, texCoord),
-          second: loadArray(splats2, texCoord),
-        });
-        N.If(projected.valid, () => {
-          const stochasticSeed = N.uint(0).toVar();
-          N.If(stochastic.or(depthOnly), () => {
-            stochasticSeed.assign(loadArray(stochasticSeeds, texCoord).r);
-          });
-          const ndcOffset = projected.axis1
-            .mul(N.positionGeometry.x)
-            .add(projected.axis2.mul(N.positionGeometry.y));
-          const ndcCenter = projected.clipCenter.xyz.div(
-            projected.clipCenter.w,
-          );
-          assignVertexData({
-            clipPosition: N.vec4(
-              ndcCenter.xy.add(ndcOffset).mul(projected.clipCenter.w),
-              projected.clipCenter.zw,
-            ),
-            rgba: projected.rgba,
-            splatUv: N.positionGeometry.xy.mul(projected.supportRadius),
-            stochasticSeed,
-            supportRadiusSquared: projected.supportRadius.mul(
-              projected.supportRadius,
-            ),
-            kernelPower: projected.kernelPower,
-            viewportOrigin: view.viewportOrigin,
-          });
-        });
-      });
+      assignVertexData(vertexData(camera, stochastic));
+      return clipPosition;
+    }
+    if (!accumulator || !orderingNode) {
+      throw new Error("Accumulator splat drawing requires an ordering texture");
     }
 
-    N.If(stochastic.and(depthOnly.not()), () => {
-      clipPosition.xy.addAssign(temporalSample.xy.mul(clipPosition.w));
+    const view = splatViewUniforms(uniforms, camera);
+    const project = createProjectionProgram(uniforms, {
+      ...view,
+      projectionMatrix: N.cameraProjectionMatrix,
     });
+    const index = N.uint(N.instanceIndex)
+      .mul(SPLATS_PER_INSTANCE)
+      .add(N.uint(N.positionGeometry.z))
+      .toVar();
+    const splatIndex = N.uint(0xffffffff).toVar();
+    // Every view, including both WebXR eyes, draws the one shared order.
+    const loadOrdered = () => {
+      const texel = index.shiftRight(2);
+      const coord = N.ivec2(
+        texel.mod(ORDERING_TEXTURE_WIDTH),
+        texel.div(N.uint(ORDERING_TEXTURE_WIDTH)),
+      );
+      splatIndex.assign(load2D(orderingNode, coord).element(index.bitAnd(3)));
+    };
+    N.If(index.lessThan(uniformBinding(uniforms, "splatCount", "uint")), () => {
+      if (!stochastic) {
+        loadOrdered();
+        return;
+      }
+      // Unsorted stochastic draws use source indices directly.
+      splatIndex.assign(index);
+      N.If(uniformBinding(uniforms, "stochasticOrdering", "bool"), loadOrdered);
+    });
+
+    N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {
+      const texCoord = splatTexCoord(splatIndex);
+      const first = loadArray(accumulator.splats, texCoord);
+      const projected = project({
+        first,
+        second: loadArray(accumulator.splats2, texCoord),
+      });
+      N.If(projected.valid, () => {
+        const ndcOffset = projected.axis1
+          .mul(N.positionGeometry.x)
+          .add(projected.axis2.mul(N.positionGeometry.y));
+        const ndcCenter = projected.clipCenter.xyz.div(projected.clipCenter.w);
+        assignVertexData({
+          clipPosition: N.vec4(
+            ndcCenter.xy.add(ndcOffset).mul(projected.clipCenter.w),
+            projected.clipCenter.zw,
+          ),
+          rgba: projected.rgba,
+          splatUv: N.positionGeometry.xy.mul(projected.supportRadius),
+          // Fetch stable coverage seeds only after all projection cutoffs.
+          stochasticSeed: accumulator.seeds
+            ? loadArray(accumulator.seeds, texCoord).r
+            : undefined,
+          supportRadiusSquared: projected.supportRadius.mul(
+            projected.supportRadius,
+          ),
+          kernelPower: projected.kernelPower,
+          viewportOrigin: view.viewportOrigin,
+        });
+      });
+    });
+
     return clipPosition;
   }
 
-  const vertexNode = sharedVertexNode ?? N.Fn(buildVertex)();
-
   return Object.assign(new NodeMaterial(), {
     uniforms,
-    orderingNode,
-    vertexNode,
+    vertexNode: N.Fn(buildVertex)(),
     colorNode: fragmentNode,
     premultipliedAlpha,
     transparent,

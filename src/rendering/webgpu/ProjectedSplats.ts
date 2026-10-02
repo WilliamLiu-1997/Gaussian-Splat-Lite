@@ -5,9 +5,11 @@ import {
   StorageBufferAttribute,
   type WebGPURenderer,
 } from "three/webgpu";
+import { getTAAProjection } from "../../addons/taaShared";
 
 import type { SplatAccumulator } from "../SplatAccumulator";
 import { SPLATS_PER_INSTANCE, type SplatGeometry } from "../SplatGeometry";
+import { getMeanViewPose, getViews } from "../rendererUtils";
 import { createGenerateProgram } from "../tsl/GenerateProgram";
 import { createProjectionProgram } from "../tsl/ProjectionProgram";
 import type { ProjectedVertexData } from "../tsl/SplatMaterial";
@@ -15,13 +17,18 @@ import { N, type UniformType, uniformBinding } from "../tsl/shaderUtils";
 import { splatViewportUniforms } from "../tsl/viewUniforms";
 import { type Uniforms, makeGenerateUniforms } from "../uniforms";
 import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache";
-import { WebGPURadixSort } from "./RadixSort";
+import {
+  RADIX_SORT_MODE_IDS,
+  type RadixSortMode,
+  WebGPURadixSort,
+} from "./RadixSort";
 
 const WORKGROUP_SIZE = 256;
 const PROJECT_SLOTS = 8;
 
 type BufferRef = { value: StorageBufferAttribute; name: string };
 type ComputeSlot = { uniforms: Uniforms; node: ComputeNode };
+type SlotSet = { slots: ComputeSlot[]; compiled: number };
 type DeviceLimits = {
   maxStorageBufferBindingSize: number;
   maxBufferSize: number;
@@ -36,6 +43,35 @@ type ComputeRenderer = WebGPURenderer & {
 
 function buffer(name: string): BufferRef {
   return { value: new StorageBufferAttribute(new Uint32Array(1), 1), name };
+}
+
+/**
+ * Stores in `jitter` the NDC translation that `jittered` adds to `base`, as
+ * TAA's sub-pixel view offsets do. Returns false for any other difference.
+ */
+function getProjectionJitter(
+  jittered: THREE.Matrix4,
+  base: THREE.Matrix4,
+  jitter: THREE.Vector2,
+) {
+  const a = jittered.elements;
+  const b = base.elements;
+  for (let i = 0; i < 16; i++) {
+    if (
+      i !== 8 &&
+      i !== 9 &&
+      i !== 12 &&
+      i !== 13 &&
+      Math.abs(a[i] - b[i]) >
+        4 * Number.EPSILON * Math.max(1, Math.abs(a[i]), Math.abs(b[i]))
+    ) {
+      return false;
+    }
+  }
+  // Perspective offsets scale with view depth (w = -z); orthographic ones
+  // translate clip space directly (w = 1). Each projection uses only one.
+  jitter.set(a[12] - b[12] - (a[8] - b[8]), a[13] - b[13] - (a[9] - b[9]));
+  return true;
 }
 
 function bindBuffer(ref: BufferRef) {
@@ -55,6 +91,12 @@ export class ProjectedSplats {
   /** Common kernels, the full sorter and the first slot are ready; remaining slots warm automatically. */
   readonly ready: Promise<void>;
   error: unknown = null;
+  /**
+   * Called when kernels for a new WebXR eye count can draw, or when a slot
+   * fails to compile. Draws hide Splats until then, so on-demand hosts must
+   * redraw.
+   */
+  onKernelsReady?: () => void;
 
   private readonly limits: DeviceLimits;
   private readonly cache = new ProjectionCache();
@@ -64,18 +106,24 @@ export class ProjectedSplats {
   );
   private readonly keys = buffer("gslProjectionKeys");
   private readonly seeds = buffer("gslProjectionSeeds");
-  private readonly counts = buffer("gslProjectionCounts");
   private readonly sorter: WebGPURadixSort;
-  private readonly slots: ComputeSlot[] = [];
-  private readonly compilation: Promise<void>;
-  private compiledSlots = 0;
+  // Slots for each eye count. One eye compiles at startup; WebXR eye counts
+  // compile as a session starts or on first use, so other draws pay nothing.
+  private readonly slotSets = new Map<number, SlotSet>();
+  private readonly compilations: Promise<void>[] = [];
+  private readonly onSessionStart = () => void this.getSlots(2);
+  private shrinkViews = false;
+  private readonly onSessionEnd = () => {
+    this.shrinkViews = true;
+    this.onKernelsReady?.();
+  };
   private readonly resetCount: ComputeNode;
   private readonly finish: ComputeNode;
   private readonly state: Uniforms;
   private readonly matrix = new THREE.Matrix4();
   private readonly translation = new THREE.Matrix4();
   private readonly scale = new THREE.Vector3();
-  private readonly direction = new THREE.Vector3();
+  private readonly viewPosition = new THREE.Vector3();
   private capacity = 0;
   private viewCapacity = 0;
   private disposed = false;
@@ -96,39 +144,24 @@ export class ProjectedSplats {
       near: { value: 0.1 },
       far: { value: 1000 },
       renderSize: { value: new THREE.Vector2() },
-      viewBase: { value: 0 },
-      viewIndex: { value: 0 },
+      // Projected records of each eye start one capacity after the last.
       viewStride: { value: 1 },
-      multiView: { value: false },
       sortDirection: { value: new THREE.Vector3() },
       sortOffset: { value: new THREE.Vector3() },
       sortRadial: { value: false },
-      fastSort: { value: false },
+      // RADIX_SORT_MODE_IDS value of the current key encoding.
+      sortMode: { value: 0 },
+      // NDC translation the draw applies to unjittered projections.
+      projectionJitter: { value: new THREE.Vector2() },
     };
-    const viewBase = uniformBinding(this.state, "viewBase", "uint");
-    const multiView = uniformBinding(this.state, "multiView", "bool");
-    const stochastic = uniformBinding(uniforms, "stochastic", "bool");
-    // Mono draws read the buffers directly. ArrayCamera draws need every eye's
-    // order and seeds at once; the finish node or final sort scatter writes them.
-    // Texture arrays avoid dividing the storage-binding capacity by eye count.
+    // Every view, including each WebXR eye, draws one compact sorted order.
     const count = N.storage(this.visibleCount, "uint")
       .setName("gslVisibleCount")
       .toReadOnly()
       .element(0);
-    const seeds = bindBuffer(this.seeds).toReadOnly();
     this.sorter = new WebGPURadixSort(1, this.keys, {
       count,
-      stochastic,
-      fastSort: uniformBinding(this.state, "fastSort", "bool"),
-      storeOrder: (index, value) => {
-        N.If(multiView, () => {
-          // Sorted color uses x; stochastic/depth draws use direct slots and y.
-          this.cache.storeOrder(
-            viewBase.add(index),
-            N.uvec4(value, seeds.element(index), 0, 0),
-          );
-        });
-      },
+      mode: uniformBinding(this.state, "sortMode", "uint"),
       maxComputeWorkgroupsPerDimension:
         this.limits.maxComputeWorkgroupsPerDimension,
       maxStorageBufferBindingSize: Math.min(
@@ -147,88 +180,66 @@ export class ProjectedSplats {
     })()
       .compute(1, [1])
       .setName("Splat reset visible count");
-    const counts = bindBuffer(this.counts);
-    const viewIndex = uniformBinding(this.state, "viewIndex", "uint");
     this.finish = N.Fn(() => {
-      const index = N.uint(N.instanceIndex);
-      N.If(index.equal(0), () => {
-        counts.element(viewIndex).assign(count);
-        const instances = count
-          .add(SPLATS_PER_INSTANCE - 1)
-          .div(N.uint(SPLATS_PER_INSTANCE));
-        // The first eye resets the count; later eyes extend it to their maximum.
-        drawCount.assign(
-          N.select(viewIndex.equal(0), instances, drawCount.max(instances)),
-        );
-      });
-      // Only stochastic ArrayCamera draws need this per-eye copy;
-      // mono reads seeds directly.
-      N.If(multiView.and(stochastic).and(index.lessThan(count)), () => {
-        this.cache.storeOrder(
-          viewBase.add(index),
-          N.uvec4(index, seeds.element(index), 0, 0),
-        );
-      });
+      drawCount.assign(
+        count.add(SPLATS_PER_INSTANCE - 1).div(N.uint(SPLATS_PER_INSTANCE)),
+      );
     })()
-      .compute(1, [WORKGROUP_SIZE])
+      .compute(1, [1])
       .setName("Splat visible draw arguments");
-    for (let i = 0; i < PROJECT_SLOTS; i++) this.slots.push(this.createSlot());
+    const mono = this.createSlotSet(1);
     this.ready = computeRenderer
       .compileComputeAsync([
         this.resetCount,
         this.finish,
         ...this.sorter.nodes,
-        this.slots[0].node,
+        mono.slots[0].node,
       ])
       .then(() => {
-        this.compiledSlots = 1;
+        mono.compiled = 1;
       })
       .catch((error: unknown) => {
         this.error = error;
       });
-    this.compilation = this.ready.then(() => this.compileRemainingSlots());
+    this.compilations.push(this.ready.then(() => this.compileSlots(mono)));
+    renderer.xr.addEventListener("sessionstart", this.onSessionStart);
+    renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }
 
-  private async compileRemainingSlots() {
-    if (this.disposed || this.compiledSlots === 0) return;
-    try {
-      // Yield to let readiness callbacks run before warming remaining slots.
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      while (!this.disposed && this.compiledSlots < this.slots.length) {
-        await (this.renderer as ComputeRenderer).compileComputeAsync([
-          this.slots[this.compiledSlots].node,
-        ]);
-        this.compiledSlots++;
-      }
-    } catch (error) {
-      this.error = error;
-    }
-  }
-
-  private createSlot(): ComputeSlot {
-    const uniforms = { ...this.state, ...makeGenerateUniforms() };
+  private createSlot(eyeCount = 1): ComputeSlot {
+    this.ensureEyeUniforms(eyeCount);
+    const uniforms = {
+      ...this.state,
+      ...makeGenerateUniforms(),
+    };
     const u = <Type extends UniformType>(name: string, type: Type) =>
       uniformBinding(uniforms, name, type);
     const generate = createGenerateProgram({ uniforms });
-    const project = createProjectionProgram(uniforms, {
-      projectionMatrix: u("projectionMatrix", "mat4"),
-      renderToViewQuat: u("renderToViewQuat", "vec4"),
-      renderToViewPos: u("renderToViewPos", "vec3"),
-      renderToViewScale: u("renderToViewScale", "float"),
-      near: u("near", "float"),
-      far: u("far", "float"),
-      renderSize: u("renderSize", "vec2"),
-    });
-    const viewBase = u("viewBase", "uint");
+    // Eye 0 reads the unsuffixed uniforms; later eyes append their index.
+    const eyes = Array.from({ length: eyeCount }, (_, eye) =>
+      eye ? `${eye}` : "",
+    ).map((suffix) => ({
+      project: createProjectionProgram(uniforms, {
+        projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
+        renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
+        renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
+        renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
+        near: u(`near${suffix}`, "float"),
+        far: u(`far${suffix}`, "float"),
+        renderSize: u(`renderSize${suffix}`, "vec2"),
+      }),
+      pixelScale: u(`renderSize${suffix}`, "vec2")
+        .mul(u("focalAdjustment", "float"))
+        .mul(0.5),
+    }));
+    const viewStride = u("viewStride", "uint");
     const direction = u("sortDirection", "vec3");
     const sortOffset = u("sortOffset", "vec3");
     const radial = u("sortRadial", "bool");
-    const fastSort = u("fastSort", "bool");
+    const sortMode = u("sortMode", "uint");
+    const front = sortMode.equal(N.uint(RADIX_SORT_MODE_IDS.front));
     const stochastic = u("stochastic", "bool");
     const centerRange = u("clipXY", "float").abs().max(1).mul(1.000001);
-    const pixelScale = u("renderSize", "vec2")
-      .mul(u("focalAdjustment", "float"))
-      .mul(0.5);
     const keys = bindBuffer(this.keys);
     const seeds = bindBuffer(this.seeds);
     const counter = N.storage(this.visibleCount, "uint")
@@ -236,48 +247,54 @@ export class ProjectedSplats {
       .toAtomic();
     const node = N.Fn(() => {
       const index = N.uint(N.instanceIndex);
+      // Decode, edit and evaluate color once, then project for each eye.
       const generated = generate.prepare(index);
-      const projection = project(generated, false);
-      const extent = projection.axis1.abs().add(projection.axis2.abs());
-      const ndc = projection.clipCenter.xy.div(projection.clipCenter.w);
-      // Reject only quads wholly outside the viewport; clipXY and every
-      // existing visual cutoff remain part of the shared projection math.
-      const onscreen = N.all(ndc.abs().lessThanEqual(extent.add(1)));
-      N.If(projection.valid.and(onscreen), () => {
-        projection.rgba.rgb.assign(generated.resolveRgb());
+      const projected = eyes.map(({ project }) => {
+        const projection = project(generated, false);
+        const extent = projection.axis1.abs().add(projection.axis2.abs());
+        const ndc = projection.clipCenter.xy.div(projection.clipCenter.w);
+        // Reject only quads wholly outside the viewport; clipXY and every
+        // existing visual cutoff remain part of the shared projection math.
+        const onscreen = N.all(ndc.abs().lessThanEqual(extent.add(1)));
+        return { projection, ndc, visible: projection.valid.and(onscreen) };
+      });
+      // Shared culling keeps Splats any eye draws.
+      const visible = projected
+        .slice(1)
+        .reduce((any, eye) => any.or(eye.visible), projected[0].visible);
+      N.If(visible, () => {
+        const rgb = generated.resolveRgb().toVar();
         // Compact survivors and their stable seeds into the same slots.
         const slot = N.atomicAdd(counter.element(0), N.uint(1)).toVar();
-        this.cache.write(
-          viewBase.add(slot),
-          projection,
-          ndc,
-          pixelScale,
-          centerRange,
-        );
-        seeds.element(slot).assign(generated.stochasticSeed);
-        N.If(stochastic.and(u("stochasticOrdering", "bool")), () => {
-          // Keep the high 16 bits of a front-to-back signed float key.
-          const metric = generated.center.add(sortOffset).dot(direction);
-          const bits = N.floatBitsToUint(metric);
-          const key = N.uint(0xffffffff).toVar();
-          N.If(
-            bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
-            () => {
-              key.assign(
-                N.select(
-                  bits.bitAnd(N.uint(0x80000000)).notEqual(0),
-                  bits.bitXor(N.uint(0xffffffff)),
-                  bits.bitXor(N.uint(0x80000000)),
-                ),
-              );
-            },
-          );
-          keys.element(slot).assign(key.shiftRight(16));
-        }).ElseIf(stochastic.not(), () => {
-          // Signed float keys preserve back-to-front order across negative view depths.
+        projected.forEach(({ projection, ndc, visible: eyeVisible }, eye) => {
+          const cacheIndex = viewStride.mul(eye).add(slot);
+          const write = () => {
+            projection.rgba.rgb.assign(rgb);
+            this.cache.write(
+              cacheIndex,
+              projection,
+              ndc,
+              eyes[eye].pixelScale,
+              centerRange,
+            );
+          };
+          if (eyeCount > 1) {
+            N.If(eyeVisible, write).Else(() => {
+              this.cache.writeHidden(cacheIndex);
+            });
+          } else {
+            write();
+          }
+        });
+        N.If(stochastic, () => {
+          seeds.element(slot).assign(generated.stochasticSeed);
+        });
+        // Sorted blending orders back to front by depth or distance;
+        // stochastic ordering uses front-to-back depth.
+        N.If(stochastic.not().or(u("stochasticOrdering", "bool")), () => {
           const center = generated.center.add(sortOffset);
           const metric = N.select(
-            radial,
+            radial.and(front.not()),
             center.dot(center),
             center.dot(direction),
           );
@@ -286,42 +303,123 @@ export class ProjectedSplats {
           N.If(
             bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
             () => {
+              // Signed float bits in ascending order, preserved across
+              // negative view depths; inverted for back-to-front keys.
+              const ascending = N.select(
+                bits.bitAnd(N.uint(0x80000000)).notEqual(0),
+                bits.bitXor(N.uint(0xffffffff)),
+                bits.bitXor(N.uint(0x80000000)),
+              );
               key.assign(
-                N.select(
-                  bits.bitAnd(N.uint(0x80000000)).notEqual(0),
-                  bits,
-                  bits.bitXor(N.uint(0x7fffffff)),
+                ascending.bitXor(
+                  N.select(front, N.uint(0), N.uint(0xffffffff)),
                 ),
               );
             },
           );
-          // Discard low mantissa bits before storing the key. Projection/depth
-          // cache precision is independent of this sorting approximation.
-          keys.element(slot).assign(N.select(fastSort, key.shiftRight(8), key));
+          // Discard low mantissa bits before storing the key: front keys keep
+          // 16 bits and fast keys 24. Projection/depth cache precision is
+          // independent of this sorting approximation.
+          const shift = N.select(
+            front,
+            N.uint(16),
+            N.select(
+              sortMode.equal(N.uint(RADIX_SORT_MODE_IDS.fast)),
+              N.uint(8),
+              N.uint(0),
+            ),
+          );
+          keys.element(slot).assign(key.shiftRight(shift));
         });
       });
     })()
       .compute(1, [WORKGROUP_SIZE])
-      .setName("Splat generate project compact");
+      .setName(
+        eyeCount > 1
+          ? `Splat generate project compact ${eyeCount} eyes`
+          : "Splat generate project compact",
+      );
     return { uniforms, node };
   }
 
-  vertexData(camera: THREE.Camera, depthOnly = false): ProjectedVertexData {
-    const array = camera as THREE.ArrayCamera;
-    const multiView = array.isArrayCamera === true && array.cameras.length > 0;
+  /** Projection uniforms of each eye after the first, created on demand. */
+  private ensureEyeUniforms(eyeCount: number) {
+    for (let eye = 1; eye < eyeCount; eye++) {
+      if (this.state[`projectionMatrix${eye}`]) continue;
+      Object.assign(this.state, {
+        [`projectionMatrix${eye}`]: { value: new THREE.Matrix4() },
+        [`renderToViewQuat${eye}`]: { value: new THREE.Quaternion() },
+        [`renderToViewPos${eye}`]: { value: new THREE.Vector3() },
+        [`renderToViewScale${eye}`]: { value: 1 },
+        [`near${eye}`]: { value: 0.1 },
+        [`far${eye}`]: { value: 1000 },
+        [`renderSize${eye}`]: { value: new THREE.Vector2() },
+      });
+    }
+  }
+
+  private createSlotSet(eyeCount: number): SlotSet {
+    const set: SlotSet = {
+      slots: Array.from({ length: PROJECT_SLOTS }, () =>
+        this.createSlot(eyeCount),
+      ),
+      compiled: 0,
+    };
+    this.slotSets.set(eyeCount, set);
+    return set;
+  }
+
+  /**
+   * Compiled slots that project this many eyes. One eye uses the startup
+   * slots; WebXR eye counts build theirs on first request.
+   */
+  private getSlots(eyeCount: number) {
+    let set = this.slotSets.get(eyeCount);
+    if (!set) {
+      set = this.createSlotSet(eyeCount);
+      this.compilations.push(this.compileSlots(set));
+    }
+    return set.slots.slice(0, set.compiled);
+  }
+
+  private async compileSlots(set: SlotSet) {
+    try {
+      // A drawable set yields first, so readiness callbacks run before the
+      // slots that only batch more meshes.
+      if (set.compiled > 0)
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      while (!this.disposed && !this.error && set.compiled < set.slots.length) {
+        await (this.renderer as ComputeRenderer).compileComputeAsync([
+          set.slots[set.compiled].node,
+        ]);
+        set.compiled++;
+        // The first slot is enough to draw; later ones only batch more meshes.
+        if (set.compiled === 1 && !this.disposed) this.onKernelsReady?.();
+      }
+    } catch (error) {
+      this.error = error;
+      // The next draw throws the compilation error.
+      if (!this.disposed) this.onKernelsReady?.();
+    }
+  }
+
+  vertexData(camera: THREE.Camera, stochastic: boolean): ProjectedVertexData {
+    const multiView = getViews(camera)[0] !== camera;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
-    // Both coverage branches need the eye offset before any order lookup.
+    // Compute the eye offset before looking up its order.
     const base = eye.mul(stride).toVar();
     const i = N.uint(N.instanceIndex)
       .mul(SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z));
-    const counts = bindBuffer(this.counts).toReadOnly();
+    const count = N.storage(this.visibleCount, "uint")
+      .setName("gslVisibleCount")
+      .toReadOnly()
+      .element(0);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     const rgba = N.vec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
-    const stochasticSeed = N.uint(0).toVar();
-    const stochastic = uniformBinding(this.uniforms, "stochastic", "bool");
+    const stochasticSeed = stochastic ? N.uint(0).toVar() : undefined;
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
@@ -336,40 +434,36 @@ export class ProjectedSplats {
       .mul(uniformBinding(this.uniforms, "focalAdjustment", "float"))
       .mul(0.5);
 
-    // Indirect draws round up to whole quad groups; trim each eye before any
-    // index or cache load, including the unused tail of the final instance.
-    N.If(i.lessThan(counts.element(eye)), () => {
+    // Indirect draws round up to whole quad groups; trim before any index or
+    // cache load, including the unused tail of the final instance.
+    N.If(i.lessThan(count), () => {
+      // Every eye draws the one shared order of compact slots.
       const cacheIndex = i.toVar();
-      if (!depthOnly) {
-        const ordered = multiView
-          ? stochastic.not()
-          : stochastic
-              .not()
-              .or(uniformBinding(this.uniforms, "stochasticOrdering", "bool"));
-        N.If(ordered, () => {
-          cacheIndex.assign(
-            multiView
-              ? this.cache.readOrder(base.add(i)).x
-              : N.storage(this.sorter.ordering, "uint")
-                  .onObjectUpdate(() => this.sorter.ordering)
-                  .toReadOnly()
-                  .element(i),
-          );
-        });
-      }
-      const assignSeed = () => {
-        stochasticSeed.assign(
-          multiView
-            ? this.cache.readOrder(base.add(i)).y
-            : bindBuffer(this.seeds).toReadOnly().element(cacheIndex),
+      const loadOrdered = () => {
+        cacheIndex.assign(
+          N.storage(this.sorter.ordering, "uint")
+            .onObjectUpdate(() => this.sorter.ordering)
+            .toReadOnly()
+            .element(i),
         );
       };
-      if (depthOnly) assignSeed();
-      else N.If(stochastic, assignSeed);
+      if (stochastic) {
+        // Unsorted stochastic draws read compacted slots directly.
+        N.If(
+          uniformBinding(this.uniforms, "stochasticOrdering", "bool"),
+          loadOrdered,
+        );
+      } else {
+        loadOrdered();
+      }
+      stochasticSeed?.assign(
+        bindBuffer(this.seeds).toReadOnly().element(cacheIndex),
+      );
       const projected = this.cache.read(
         base.add(cacheIndex),
         pixelScale,
         centerRange,
+        uniformBinding(this.state, "projectionJitter", "vec2"),
       );
       clipPosition.assign(projected.clipPosition);
       rgba.assign(projected.rgba);
@@ -421,14 +515,14 @@ export class ProjectedSplats {
               Math.ceil((this.capacity * 1.5) / 2048) * 2048,
             ),
           );
-    const viewCapacity = shrink ? views : Math.max(views, this.viewCapacity);
+    const viewCapacity =
+      shrink || this.shrinkViews ? views : Math.max(views, this.viewCapacity);
+    this.shrinkViews = false;
     if (capacity === this.capacity && viewCapacity === this.viewCapacity)
       return;
     const size = getProjectionCacheSize(capacity * viewCapacity, this.limits);
     this.resizeBuffer(this.keys, capacity);
     this.sorter.resize(capacity, shrink);
-    this.resizeBuffer(this.seeds, capacity);
-    this.resizeBuffer(this.counts, viewCapacity);
     this.cache.resize(size);
     this.capacity = capacity;
     this.viewCapacity = viewCapacity;
@@ -444,36 +538,57 @@ export class ProjectedSplats {
     shrink = false,
   ) {
     if (this.error) throw this.error;
-    if (this.compiledSlots === 0 || this.disposed) {
+    const cameras = getViews(camera) as THREE.PerspectiveCamera[];
+    const multiView = cameras[0] !== camera;
+    // WebXR eyes share one generated, culled, compacted and sorted set, like
+    // one head; each eye still gets its exact projection.
+    const slots = this.disposed ? [] : this.getSlots(cameras.length);
+    if (slots.length === 0) {
+      // Draw nothing until the kernels for this eye count compile.
+      geometry.setIndirect(null);
       geometry.instanceCount = 0;
-      return;
+      return false;
     }
-    const array = camera as THREE.ArrayCamera;
-    const multiView = array.isArrayCamera === true && array.cameras.length > 0;
-    const cameras = multiView ? array.cameras : [camera];
     this.resize(accumulator.numSplats, cameras.length, shrink);
-    this.state.multiView.value = multiView;
-    this.state.fastSort.value = fastSort;
-    this.finish.count =
-      multiView && this.uniforms.stochastic.value
-        ? Math.max(1, accumulator.numSplats)
-        : 1;
-    this.cache.ensureOrder(multiView, shrink);
+    const { uniforms } = this;
+    const stochastic = uniforms.stochastic.value;
+    // Only stochastic draws read seeds; sorted rendering keeps one entry.
+    this.resizeBuffer(this.seeds, stochastic ? this.capacity : 1);
+    // Unsorted stochastic draws need no keys or sort.
+    const sortMode: RadixSortMode | null = !stochastic
+      ? fastSort
+        ? "fast"
+        : "full"
+      : uniforms.stochasticOrdering.value
+        ? "front"
+        : null;
+    if (sortMode) this.state.sortMode.value = RADIX_SORT_MODE_IDS[sortMode];
+    this.state.sortRadial.value = radial;
+    // TAA exposes its unjittered projection during scene capture. Project and
+    // sort without the jitter so a still view reuses the compute results;
+    // drawing applies the jitter as an NDC translation.
+    const jitter = this.state.projectionJitter.value as THREE.Vector2;
+    jitter.set(0, 0);
+    const unjittered = getTAAProjection(camera);
+    const monoProjection =
+      !multiView &&
+      unjittered &&
+      getProjectionJitter(camera.projectionMatrix, unjittered, jitter)
+        ? unjittered
+        : null;
     geometry.setIndirect(this.indirect);
     geometry.setSplatCount(Math.max(1, accumulator.numSplats));
     // The accumulator version covers source, mapping, transform, animation and
-    // edit changes. Jitter and output color settings are draw-only.
-    const { uniforms } = this;
+    // edit changes. Output color settings are draw-only.
     const inputs = [
       accumulator,
       accumulator.version,
       ...accumulator.viewOrigin.toArray(),
-      multiView,
       cameras.length,
-      radial,
-      fastSort,
-      uniforms.stochastic.value,
-      uniforms.stochasticOrdering.value,
+      stochastic,
+      // Each mode keys only the sort options it reads.
+      !stochastic && radial,
+      sortMode,
       uniforms.maxStdDev.value,
       uniforms.minPixelRadius.value,
       uniforms.maxPixelRadius.value,
@@ -484,10 +599,10 @@ export class ProjectedSplats {
       uniforms.focalAdjustment.value,
     ];
     for (const { node } of accumulator.mapping) inputs.push(node.layers.mask);
-    for (const view of cameras as THREE.PerspectiveCamera[]) {
+    for (const view of cameras) {
       inputs.push(
         ...view.matrixWorld.elements,
-        ...view.projectionMatrix.elements,
+        ...(monoProjection ?? view.projectionMatrix).elements,
         view.near,
         view.far,
         view.layers.mask,
@@ -500,83 +615,116 @@ export class ProjectedSplats {
       inputs.length === this.projectedInputs.length &&
       inputs.every((value, index) => value === this.projectedInputs[index])
     )
-      return;
+      return true;
     // A failed or partially submitted update must not reuse the old snapshot.
     this.projectedInputs = [];
-    for (let eye = 0; eye < cameras.length; eye++) {
-      const view = cameras[eye] as THREE.PerspectiveCamera;
-      this.state.viewIndex.value = eye;
-      this.state.viewBase.value = eye * this.capacity;
-      this.state.sortRadial.value = radial;
-      view.getWorldDirection(this.direction);
-      this.state.sortDirection.value.copy(this.direction);
-      view.getWorldPosition(this.direction);
-      this.state.sortOffset.value
-        .copy(accumulator.viewOrigin)
-        .sub(this.direction);
-      this.state.projectionMatrix.value.copy(view.projectionMatrix);
-      this.state.near.value = view.near;
-      this.state.far.value = view.far;
-      this.state.renderSize.value.copy(this.uniforms.renderSize.value);
-      if (view.viewport)
-        this.state.renderSize.value.set(view.viewport.z, view.viewport.w);
-      this.matrix
-        .copy(view.matrixWorld)
-        .invert()
-        .multiply(this.translation.makeTranslation(accumulator.viewOrigin))
-        .decompose(
-          this.state.renderToViewPos.value,
-          this.state.renderToViewQuat.value,
-          this.scale,
-        );
-      this.state.renderToViewScale.value =
-        (this.scale.x + this.scale.y + this.scale.z) / 3;
-      const pending: ComputeNode[] = [this.resetCount];
-      let slotCount = 0;
-      for (const { node, count } of accumulator.mapping) {
-        if (!view.layers.test(node.layers)) continue;
-        // A slot's uniforms can only be changed after its preceding batch has
-        // been submitted. Keep the last batch open for draw arguments and sorting.
-        if (slotCount === this.compiledSlots) {
-          this.renderer.compute(pending);
-          pending.length = 0;
-          slotCount = 0;
-        }
-        const slot = this.slots[slotCount++];
-        accumulator.prepareUniforms(node, slot.uniforms);
-        slot.uniforms.targetCount.value = count;
-        slot.node.count = count;
-        pending.push(slot.node);
-      }
-      pending.push(this.finish);
-      if (!this.uniforms.stochastic.value) {
-        pending.push(...this.sorter.prepare(accumulator.numSplats, fastSort));
-      } else if (!multiView && this.uniforms.stochasticOrdering.value) {
-        pending.push(
-          ...this.sorter.prepare(accumulator.numSplats, false, true),
-        );
-      }
-      this.renderer.compute(pending);
-    }
+    cameras.forEach((view, eye) => {
+      this.setEye(eye, view, monoProjection, accumulator);
+    });
+    this.setSortPose(cameras, accumulator);
+    this.dispatch(slots, cameras, accumulator, sortMode);
     this.projectedInputs = inputs;
+    return true;
+  }
+
+  /** Projection uniforms for one eye; eye 0 also serves mono draws. */
+  private setEye(
+    eye: number,
+    view: THREE.PerspectiveCamera,
+    projection: THREE.Matrix4 | null,
+    accumulator: SplatAccumulator,
+  ) {
+    const state = this.state;
+    const suffix = eye ? `${eye}` : "";
+    // WebXR eye viewports are physical pixels; Three draws them as given.
+    const viewport = view.viewport;
+    state[`projectionMatrix${suffix}`].value.copy(
+      projection ?? view.projectionMatrix,
+    );
+    state[`near${suffix}`].value = view.near;
+    state[`far${suffix}`].value = view.far;
+    const renderSize = state[`renderSize${suffix}`].value as THREE.Vector2;
+    renderSize.copy(this.uniforms.renderSize.value);
+    if (viewport) renderSize.set(viewport.z, viewport.w);
+    this.matrix
+      .copy(view.matrixWorld)
+      .invert()
+      .multiply(this.translation.makeTranslation(accumulator.viewOrigin))
+      .decompose(
+        state[`renderToViewPos${suffix}`].value,
+        state[`renderToViewQuat${suffix}`].value,
+        this.scale,
+      );
+    state[`renderToViewScale${suffix}`].value =
+      (this.scale.x + this.scale.y + this.scale.z) / 3;
+  }
+
+  /** Sort from the views' mean pose: the camera, or the WebXR head. */
+  private setSortPose(
+    views: THREE.PerspectiveCamera[],
+    accumulator: SplatAccumulator,
+  ) {
+    // Read the views at each draw: after a manual update, the accumulator's
+    // pose may be stale and only places the render origin.
+    getMeanViewPose(
+      views,
+      this.viewPosition,
+      this.state.sortDirection.value as THREE.Vector3,
+    );
+    (this.state.sortOffset.value as THREE.Vector3).subVectors(
+      accumulator.viewOrigin,
+      this.viewPosition,
+    );
+  }
+
+  /** Generates, projects, compacts and sorts the meshes any view draws. */
+  private dispatch(
+    slots: ComputeSlot[],
+    views: THREE.Camera[],
+    accumulator: SplatAccumulator,
+    sortMode: RadixSortMode | null,
+  ) {
+    const pending: ComputeNode[] = [this.resetCount];
+    let slotCount = 0;
+    for (const { node, count, matrixWorld } of accumulator.mapping) {
+      if (!views.some((view) => view.layers.test(node.layers))) continue;
+      // A slot's uniforms can only be changed after its preceding batch has
+      // been submitted. Keep the last batch open for draw arguments and sorting.
+      if (slotCount === slots.length) {
+        this.renderer.compute(pending);
+        pending.length = 0;
+        slotCount = 0;
+      }
+      const slot = slots[slotCount++];
+      accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
+      slot.uniforms.targetCount.value = count;
+      slot.node.count = count;
+      pending.push(slot.node);
+    }
+    pending.push(this.finish);
+    if (sortMode)
+      pending.push(...this.sorter.prepare(accumulator.numSplats, sortMode));
+    this.renderer.compute(pending);
   }
 
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.projectedInputs = [];
-    void this.compilation.then(() => this.disposeResources());
+    this.renderer.xr.removeEventListener("sessionstart", this.onSessionStart);
+    this.renderer.xr.removeEventListener("sessionend", this.onSessionEnd);
+    void Promise.all(this.compilations).then(() => this.disposeResources());
   }
 
   private disposeResources() {
-    for (const slot of this.slots) slot.node.dispose();
+    for (const { slots } of this.slotSets.values())
+      for (const slot of slots) slot.node.dispose();
     for (const node of [this.resetCount, this.finish]) node.dispose();
     this.sorter.dispose();
     this.cache.dispose();
     this.visibleCount.dispose();
     this.keys.value.dispose();
     this.seeds.value.dispose();
-    this.counts.value.dispose();
     this.indirect.dispose();
   }
 }

@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Requires Node.js 20.9+, Rust via `rustup`, and the `wasm32-unknown-unknown` target.
+Requires Node.js 20.19+ or 22.12+, Rust via `rustup`, and the `wasm32-unknown-unknown` target.
 
 ```bash
 npm ci
@@ -10,7 +10,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Check WebGL2, WebGPU, and WebGPU · WebGL2 in the viewer. For depth changes, compare mesh occlusion and transparent edges; disable **Automatic stochastic** to expose **Force Splat depth**.
+Check WebGPU, WebGL2, and WebGPU · WebGL2 in the viewer. For rendering changes, compare sorted and stochastic rendering, mesh occlusion, and transparent edges.
 
 See [Architecture](docs/Architecture.md) for module responsibilities, backend boundaries, and resource ownership.
 

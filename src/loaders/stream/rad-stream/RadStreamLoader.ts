@@ -69,6 +69,10 @@ export class RadStreamLoader {
     };
   }
 
+  get lodWorkerLost() {
+    return this.lodWorker.disposed && !this.controller.signal.aborted;
+  }
+
   private assertActive() {
     this.controller.signal.throwIfAborted();
     if (this.lodWorker.disposed) throw new Error("RAD LOD worker terminated");

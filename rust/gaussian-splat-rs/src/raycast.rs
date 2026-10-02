@@ -64,6 +64,7 @@ impl RaycastTables {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Flat arguments match the WASM/caller interface.
 pub fn raycast_splat_ellipsoids(
     buffer: &[u32],
     buffer2: &[u32],
@@ -191,75 +192,65 @@ fn raycast_ellipsoid(
     near: f32,
     far: f32,
 ) -> Option<f32> {
-    let origin = vec3_sub(origin, center);
-    let inv_quat = [-quat[0], -quat[1], -quat[2], quat[3]];
-
-    // Model the Gaussian splat as an ellipsoid for higher quality raycasting
-    let local_origin = quat_vec(inv_quat, origin);
-    let local_dir = quat_vec(inv_quat, dir);
-
-    let zero_scale_count = scale.iter().filter(|&&value| value == 0.0).count();
-    if zero_scale_count > 1 {
+    let origin = std::array::from_fn(|i| origin[i] as f64 - center[i] as f64);
+    let dir = dir.map(f64::from);
+    let scale = scale.map(f64::from);
+    let q = quat.map(f64::from);
+    let inv_quat = [-q[0], -q[1], -q[2], q[3]];
+    let local_origin = quat_vec64(inv_quat, origin);
+    let local_dir = quat_vec64(inv_quat, dir);
+    if scale.iter().filter(|&&value| value == 0.0).count() > 1 {
         return None;
     }
-
-    if scale[2] == 0.0 {
-        // Treat it as a flat elliptical disk
-        if local_dir[2].abs() < 1e-6 {
+    if let Some(axis) = scale.iter().position(|&value| value == 0.0) {
+        if local_dir[axis].abs() < 1e-6 {
             return None;
         }
-        let t = -local_origin[2] / local_dir[2];
-        let p_x = local_origin[0] + t * local_dir[0];
-        let p_y = local_origin[1] + t * local_dir[1];
-        if sqr(p_x / scale[0]) + sqr(p_y / scale[1]) > 1.0 {
+        let t = -local_origin[axis] / local_dir[axis];
+        let radius_squared: f64 = (0..3)
+            .filter(|&i| i != axis)
+            .map(|i| ((local_origin[i] + t * local_dir[i]) / scale[i]).powi(2))
+            .sum();
+        if radius_squared > 1.0 {
             return None;
         }
-        raycast_t_in_range(t, near, far)
-    } else if scale[1] == 0.0 {
-        // Treat it as a flat elliptical disk
-        if local_dir[1].abs() < 1e-6 {
-            return None;
-        }
-        let t = -local_origin[1] / local_dir[1];
-        let p_x = local_origin[0] + t * local_dir[0];
-        let p_z = local_origin[2] + t * local_dir[2];
-        if sqr(p_x / scale[0]) + sqr(p_z / scale[2]) > 1.0 {
-            return None;
-        }
-        raycast_t_in_range(t, near, far)
-    } else if scale[0] == 0.0 {
-        // Treat it as a flat elliptical disk
-        if local_dir[0].abs() < 1e-6 {
-            return None;
-        }
-        let t = -local_origin[0] / local_dir[0];
-        let p_y = local_origin[1] + t * local_dir[1];
-        let p_z = local_origin[2] + t * local_dir[2];
-        if sqr(p_y / scale[1]) + sqr(p_z / scale[2]) > 1.0 {
-            return None;
-        }
-        raycast_t_in_range(t, near, far)
-    } else {
-        let inv_scale = [1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2]];
-        let local_origin = vec3_mul(local_origin, inv_scale);
-        let local_dir = vec3_mul(local_dir, inv_scale);
-
-        let a = vec3_dot(local_dir, local_dir);
-        let b = vec3_dot(local_origin, local_dir);
-        let c = vec3_dot(local_origin, local_origin) - 1.0;
-        let discriminant = b * b - a * c;
-        if discriminant < 0.0 {
-            return None;
-        }
-
-        let entry_t = (-b - discriminant.sqrt()) / a;
-        raycast_t_in_range(entry_t, near, far)
+        return raycast_t_in_range64(t, near, far);
     }
+    let o: [f64; 3] = std::array::from_fn(|i| local_origin[i] / scale[i]);
+    let d: [f64; 3] = std::array::from_fn(|i| local_dir[i] / scale[i]);
+    let a: f64 = d.iter().map(|v| v * v).sum();
+    let b: f64 = o.iter().zip(d).map(|(o, d)| o * d).sum();
+    // Closest-point geometry avoids subtracting two large quadratic terms.
+    // Keep d unnormalized so t stays in world-distance units.
+    let closest_t = -b / a;
+    let distance_squared: f64 = o
+        .iter()
+        .zip(d)
+        .map(|(o, d)| (o + closest_t * d).powi(2))
+        .sum();
+    if distance_squared > 1.0 {
+        return None;
+    }
+    raycast_t_in_range64(closest_t - ((1.0 - distance_squared) / a).sqrt(), near, far)
+}
+
+fn quat_vec64(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let xyz = [q[0], q[1], q[2]];
+    let uv = cross(xyz, v);
+    let uuv = cross(xyz, uv);
+    std::array::from_fn(|i| v[i] + 2.0 * (q[3] * uv[i] + uuv[i]))
 }
 
 #[inline]
-fn raycast_t_in_range(t: f32, near: f32, far: f32) -> Option<f32> {
-    (t >= near && t <= far).then_some(t)
+fn raycast_t_in_range64(t: f64, near: f32, far: f32) -> Option<f32> {
+    (t >= near as f64 && t <= far as f64).then_some(t as f32)
 }
 
 // Use the ellipsoid's longest semi-axis as a conservative bounding sphere.
@@ -293,39 +284,12 @@ fn raycast_sphere_may_hit(
     vec3_dot(closest, closest) <= radius * radius
 }
 
-fn sqr(x: f32) -> f32 {
-    x * x
-}
-
 fn vec3_sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn vec3_mul(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
-}
-
 fn vec3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn quat_vec(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
-    let q_vec = [q[0], q[1], q[2]];
-    let uv = vec3_cross(q_vec, v);
-    let uuv = vec3_cross(q_vec, uv);
-    [
-        v[0] + 2.0 * (q[3] * uv[0] + uuv[0]),
-        v[1] + 2.0 * (q[3] * uv[1] + uuv[1]),
-        v[2] + 2.0 * (q[3] * uv[2] + uuv[2]),
-    ]
 }
 
 #[cfg(test)]
@@ -353,6 +317,35 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0],
         );
         (splat_a, splat_b)
+    }
+
+    #[test]
+    fn thin_ellipsoid_retains_hits_without_cancellation() {
+        for thickness in [0.001, 0.00001] {
+            for step in -99..=99 {
+                let x = step as f32 / 100.0;
+                let hit = raycast_ellipsoid(
+                    [x, 0.0, 5.0],
+                    [0.0, 0.0, -1.0],
+                    [0.0; 3],
+                    [1.0, 1.0, thickness],
+                    [0.0, 0.0, 0.0, 1.0],
+                    0.0,
+                    10.0,
+                );
+                assert!(hit.is_some(), "missed x={x}, thickness={thickness}");
+            }
+            assert!(raycast_ellipsoid(
+                [1.01, 0.0, 5.0],
+                [0.0, 0.0, -1.0],
+                [0.0; 3],
+                [1.0, 1.0, thickness],
+                [0.0, 0.0, 0.0, 1.0],
+                0.0,
+                10.0
+            )
+            .is_none());
+        }
     }
 
     #[test]

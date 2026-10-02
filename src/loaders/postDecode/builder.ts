@@ -559,8 +559,35 @@ export class ProgramBuilder {
       <T extends NumericValueType>(value: ValueLike<T>) =>
         this.unary(opcode, value) as SplatPostDecodeValue<T>;
     const compare =
-      (opcode: Opcode) => (left: AnyValueLike, right: AnyValueLike) =>
-        this.binary(opcode, left, right, "bool") as BoolValue;
+      (opcode: Opcode) => (left: AnyValueLike, right: AnyValueLike) => {
+        const a = this.coerce(left);
+        const scalar = opcode !== Opcode.Equal && opcode !== Opcode.NotEqual;
+        if (scalar && a.type !== "float")
+          throw new Error("Ordered comparisons require scalars");
+        const b = this.coerce(right, a.type);
+        return this.instruction("bool", opcode, [
+          a.register,
+          b.register,
+        ]) as BoolValue;
+      };
+    const vectorBinary = (
+      opcode: Opcode,
+      left: AnyValueLike,
+      right: AnyValueLike,
+    ) => {
+      const a = this.coerce(left);
+      if (
+        !(a.type === "vec2" || a.type === "vec3" || a.type === "vec4") ||
+        (opcode === Opcode.Cross && a.type !== "vec3")
+      )
+        throw new Error("dot/cross require matching vectors");
+      const b = this.coerce(right, a.type);
+      return this.instruction(
+        opcode === Opcode.Dot ? "float" : a.type,
+        opcode,
+        [a.register, b.register],
+      );
+    };
     const reduceBoolean =
       (opcode: Opcode) =>
       (first: BoolLike, ...rest: BoolLike[]): BoolValue => {
@@ -632,10 +659,9 @@ export class ProgramBuilder {
           falseValue.register,
         ]) as never;
       },
-      dot: (left, right) =>
-        this.binary(Opcode.Dot, left, right, "float") as FloatValue,
+      dot: (left, right) => vectorBinary(Opcode.Dot, left, right) as FloatValue,
       cross: (left, right) =>
-        this.binary(Opcode.Cross, left, right) as Vec3Value,
+        vectorBinary(Opcode.Cross, left, right) as Vec3Value,
       vec2: (x, y) => construct(Opcode.Vec2, "vec2", [x, y]),
       vec3: (x, y, z) => construct(Opcode.Vec3, "vec3", [x, y, z]),
       vec4: (x, y, z, w) => construct(Opcode.Vec4, "vec4", [x, y, z, w]),

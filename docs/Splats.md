@@ -47,7 +47,7 @@ Choose at most one of `url`, `file`, or `fileBytes`; mixing inputs throws.
 ## Data rules
 
 - File data is spatially reordered after `postDecode`; indices refer to the loaded order. Use `getSourceIndex(index)` or a picking hit's `sourceIndex` for the original source ID. Passing existing `Splats` to a mesh keeps their order.
-- `getSplat()` returns `center`, `scales`, `quaternion`, `opacity`, `color`, and `sh` (0, 3, 8, or 15 RGB coefficients for SH0/1/2/3). Changing these returned values does not update the source.
+- `getSplat()` returns new `center`, `scales`, `quaternion`, `opacity`, `color`, and `sh` (0, 3, 8, or 15 RGB coefficients for SH0/1/2/3) values on each call. Changing them does not update the source. `forEachSplat()` reuses the same objects for every Splat; clone any you need to keep after the callback returns.
 - Streamed RAD/SOG data cannot be reinitialized.
 - Read bounds through [`mesh.getBoundingBox()`](SplatMesh.md#common-methods). They update when data is reinitialized or the streaming selection changes.
 

@@ -1,12 +1,7 @@
 import type * as THREE from "three";
-import type { WebGPURenderer } from "three/webgpu";
-import type {
-  CPUOrderingUpdate,
-  SplatMaterial,
-  SplatMaterialOptions,
-} from "../backend";
+import type { TextureNode, WebGPURenderer } from "three/webgpu";
+import type { CPUOrderingUpdate, SplatMaterialOptions } from "../backend";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
-import type { SplatNodeMaterial } from "../tsl/SplatMaterial";
 import { uintTexture } from "../tsl/tslCompat";
 import { type Uniforms, emptyOrdering } from "../uniforms";
 import { OrderingTexture } from "../webgl/OrderingTexture";
@@ -26,13 +21,17 @@ type TextureUploadBackend = {
 export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   readonly kind = "webgl-fallback";
   private readonly ordering = new OrderingTexture();
+  // Shared by the sorted and stochastic materials.
+  private readonly orderingNode: TextureNode<"uvec4">;
 
   constructor(
     renderer: WebGPURenderer,
     uniforms: Uniforms,
     options: SplatMaterialOptions,
   ) {
-    super(renderer, uniforms, options, uintTexture(emptyOrdering));
+    const orderingNode = uintTexture(emptyOrdering);
+    super(renderer, uniforms, options, orderingNode);
+    this.orderingNode = orderingNode;
   }
 
   getOrderingCapacity(count: number) {
@@ -44,31 +43,28 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   }
 
   setCPUOrdering(update: CPUOrderingUpdate) {
-    this.sortedMaterial.orderingNode.value = this.ordering.update(
-      update,
-      (texture, rows) => {
-        // Finish any pending allocation before uploading only active rows.
-        this.renderer.initTexture(texture);
-        // The r186 fallback's copyTextureToTexture allocates a GPU source;
-        // update the destination directly to avoid that staging texture.
-        const backend = this.renderer
-          .backend as unknown as TextureUploadBackend;
-        backend.updateTexture(texture, {
-          width: texture.image.width,
-          height: rows,
-          image: texture.image,
-        });
-      },
-    );
+    this.orderingNode.value = this.ordering.update(update, (texture, rows) => {
+      // Finish any pending allocation before uploading only active rows.
+      this.renderer.initTexture(texture);
+      // The r186 fallback's copyTextureToTexture allocates a GPU source;
+      // update the destination directly to avoid that staging texture.
+      const backend = this.renderer.backend as unknown as TextureUploadBackend;
+      backend.updateTexture(texture, {
+        width: texture.image.width,
+        height: rows,
+        image: texture.image,
+      });
+    });
+  }
+
+  /** Unsorted draws read no ordering; the next sort allocates it again. */
+  releaseOrdering() {
+    this.ordering.dispose();
+    this.orderingNode.value = emptyOrdering;
   }
 
   dispose() {
     super.dispose();
     this.ordering.dispose();
-  }
-
-  bindOrdering(material: SplatMaterial, _uniforms: Uniforms) {
-    (material as SplatNodeMaterial).orderingNode.value =
-      this.ordering.texture ?? emptyOrdering;
   }
 }

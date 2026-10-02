@@ -12,29 +12,12 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `renderer` | `THREE.WebGLRenderer \| WebGPURenderer` | Required | Three.js renderer; call `await renderer.init()` first when using WebGPURenderer |
+| `renderer` | `WebGPURenderer \| THREE.WebGLRenderer` | Required | Three.js renderer; call `await renderer.init()` first when using WebGPURenderer |
 | `onDirty` | `() => void` | `undefined` | Called when the image needs a redraw |
 | `premultipliedAlpha` | `boolean` | `true` | Use premultiplied alpha for blending |
 | `timer` | `THREE.Timer` | New internal timer | Optional shared timer; update it yourself when supplied |
 | `autoUpdate` | `boolean` | `true` | Update visible Splats when rendering |
 | `preUpdate` | `boolean` | `true` | Update before rendering on WebGL; XR updates follow the render pass. Unused on native WebGPU |
-
-## Rendering options
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `autoStochastic` | `boolean` | `false` | Use stochastic rendering during movement, then return to sorted rendering with depth |
-| `stochastic` | `boolean` | `false` | Always use stochastic rendering for responsive movement, with visible noise |
-| `stochasticSort` | `boolean` | `true` | 16-bit front-to-back ordering for stochastic/Auto motion frames: async on WebGL and WebGL fallback, GPU sorting on native WebGPU single-view draws. Disable for source/compacted order |
-| `renderDepth` | `boolean` | `false` | Let Splats occlude later geometry on sorted frames when `depthWrite` is off |
-
-These options require the built-in materials. Stochastic rendering can look noisy while active. Automatic switching requires `autoUpdate` and is disabled in WebXR. Manual `stochastic` works in XR; captures use sorted rendering.
-
-`renderDepth` lets Splats occlude geometry drawn later. Draw order and depth testing in other materials still matter; transparent edges may show noise. It does not return a depth image.
-
-### Stochastic resolve
-
-See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduction, renderer binding, post-processing, and XR usage.
 
 ## Quality and appearance options
 
@@ -49,43 +32,33 @@ See [StochasticResolvePass](StochasticResolvePass.md) for stochastic noise reduc
 | `clipXY` | `number` | `1.25` | Allow centers slightly outside the view; `1` clips at its edge |
 | `focalAdjustment` | `number` | `2` | Adjust projected size; higher values generally look sharper |
 
-## Sorting, material, and offscreen options
+## Sorting and material options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `sortRadial` | `boolean` | `false` | Sort by distance when `true`, or by camera depth when `false` |
-| `fastSort` | `boolean` | `true` | Lower-precision sorting on WebGPU and WebGL; no effect on stochastic rendering |
+| `fastSort` | `boolean` | `true` | Lower-precision back-to-front sorting; does not affect stochastic rendering |
 | `minSortIntervalMs` | `number` | `0` | Minimum time between WebGL sorts; unused on native WebGPU |
+| `stochastic` | `boolean` | `false` | Enable stochastic rendering; use temporal anti-aliasing to smooth its noise |
+| `autoAdvanceStochasticSample` | `boolean` | `true` | Change the noise pattern on each render while stochastic rendering is active, including WebXR |
+| `stochasticSort` | `boolean` | `true` | Sort stochastic Splats from front to back; set to `false` to skip sorting |
 | `transparent` | `boolean` | `true` | Enable transparent blending in sorted rendering |
 | `depthTest` | `boolean` | `true` | Respect depth from other geometry |
 | `depthWrite` | `boolean` | `false` | Write depth directly; normally leave off for transparent Splats |
-| `target` | `TargetOptions` | `undefined` | Set the size and options for offscreen captures |
 
-On WebGL, the current sort order stays in use until a new sort is ready. Native WebGPU sorts before drawing. Use stochastic rendering for more responsive movement, with some visible noise.
+Native WebGPU sorts before drawing. On WebGL, the current sort order stays in use until a new sort is ready.
 
-```ts
-type TargetOptions = {
-  width: number;
-  height: number;
-  doubleBuffer?: boolean; // false
-  superXY?: number;       // 1-4, default 1
-} & THREE.RenderTargetOptions;
-```
+Automatic update errors are caught and logged once per error message, preventing unhandled promise rejections. If draw preparation fails, that draw is skipped so rendering can continue. Explicit `update()` calls report errors to the caller.
 
-`superXY` improves capture quality by rendering at higher resolution. The returned image keeps the requested width and height. Each dimension multiplied by `superXY` must be at most 8192.
+See [Stochastic rendering](StochasticRendering.md) for setup and temporal anti-aliasing.
 
-```js
-const captureRenderer = new GaussianSplatRenderer({
-  renderer,
-  target: { width: 1920, height: 1080, superXY: 2 },
-});
-scene.add(captureRenderer);
-await captureRenderer.update({ scene, camera });
-const rgba = await captureRenderer.renderReadTarget({ scene, camera });
-// RGBA Uint8Array: 1920 * 1080 * 4 bytes.
-```
+### WebXR and multiple views
 
-If a display renderer shares the scene, use `layers` or `visible` to keep both Splat renderers from drawing in the same pass.
+WebXR uses the eyes' mean pose for generation and sorting, with a separate projection for each eye. Splats on either eye's layers are visible in both eyes. Eye poses are read directly from Three.js's world matrices, preserving the camera rig transform.
+
+With `autoUpdate = true`, render normally with your application camera; Three.js updates the XR camera when rendering.
+
+For multiple views outside WebXR, use separate cameras. Non-XR `ArrayCamera` rendering is not supported: `update()` throws, and other draws skip Splats and log an error. For independent sorting, give each camera its own Splat renderer on a separate layer.
 
 ### Color management
 
@@ -98,20 +71,12 @@ Built-in materials handle model color conversion. Use your Three.js renderer's o
 | `update({ scene, camera })` | Refresh the scene and camera state; returns `Promise<void>` |
 | `shrinkResources({ scene, camera })` | Reduce retained rendering resources after scene changes |
 | `clearSplats()` | Clear the current Splat display without removing scene objects |
-| `render(scene, camera)` | Renders with this instance active; normally use the Three.js renderer directly |
-| `renderTarget({ scene, camera })` | Renders to the target configured in the constructor |
-| `readTarget()` | Reads the latest offscreen result as an RGBA `Uint8Array` |
-| `renderReadTarget({ scene, camera })` | Renders and reads an offscreen result |
-| `renderCubeMap(...)` | Renders a cube map from a world-space position |
-| `readCubeTargets()` | Reads RGBA bytes from all six cube faces |
-| `renderEnvMap(...)` | Capture an environment map for lighting |
-| `recurseSetEnvMap(root, envMap)` | Assigns an environment map to descendant `MeshStandardMaterial` instances |
 | `dispose()` | Release this renderer's resources |
-| `stochasticActive` | Read whether the current frame uses stochastic rendering |
+| `stochasticActive` | Read whether stochastic rendering is still active while switching modes |
+| `stochasticSample` | Noise pattern index; defaults to 0. Each value selects an independent pattern. Disable `autoAdvanceStochasticSample` to control it yourself |
 | `synchronousSort` | Read whether sorting finishes before drawing: `true` on native WebGPU |
-| `depthMesh` | Depth-only mesh used by depth rendering |
 
-`premultipliedAlpha`, `transparent`, `depthTest`, `depthWrite`, `autoStochastic`, `stochastic`, `stochasticSort`, and `renderDepth` are also writable properties with the behavior listed above.
+`premultipliedAlpha`, `transparent`, `depthTest`, and `depthWrite` are also writable properties with the behavior listed above.
 
 For manual updates after scene or camera changes:
 
@@ -167,4 +132,4 @@ splat.opacity = 0.5;
 requestRender();
 ```
 
-Dispose textures returned by `renderEnvMap()` when no longer needed. See the [overview](Architecture.md) for the main loading and rendering workflow.
+See the [overview](Architecture.md) for the main loading and rendering workflow.

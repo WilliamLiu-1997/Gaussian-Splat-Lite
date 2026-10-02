@@ -8,6 +8,13 @@ import {
 export function decodeSplat(
   splatArrays: [Uint32Array, Uint32Array],
   index: number,
+  result = {
+    center: new THREE.Vector3(),
+    scales: new THREE.Vector3(),
+    quaternion: new THREE.Quaternion(),
+    color: new THREE.Color(),
+    opacity: 0,
+  },
 ): {
   center: THREE.Vector3;
   scales: THREE.Vector3;
@@ -15,8 +22,6 @@ export function decodeSplat(
   color: THREE.Color;
   opacity: number;
 } {
-  // Returns a static object which is reused each time
-  const result = splatFields;
   const i4 = index * 4;
   const [splatA, splatB] = splatArrays;
   result.center.x = uintBitsToFloat(splatA[i4]);
@@ -32,18 +37,6 @@ export function decodeSplat(
   decodeQuatOctXy1010R12(splatB[i4 + 3], result.quaternion);
   return result;
 }
-
-const splatCenter = new THREE.Vector3();
-const splatScales = new THREE.Vector3();
-const splatQuaternion = new THREE.Quaternion();
-const splatColor = new THREE.Color();
-const splatFields = {
-  center: splatCenter,
-  scales: splatScales,
-  quaternion: splatQuaternion,
-  color: splatColor,
-  opacity: 0.0,
-};
 
 const decodedQuaternion = [0, 0, 0, 1];
 

@@ -8,6 +8,14 @@ type PromiseRecord = {
   statusQueue: Promise<void>;
 };
 
+/** Transport/cache loss is recoverable by obtaining a fresh worker. */
+export class WorkerTerminatedError extends Error {
+  constructor(reason: unknown = "Worker terminated") {
+    super(String(reason));
+    this.name = "WorkerTerminatedError";
+  }
+}
+
 /** Typed main-thread transport shared by ordinary and streaming workers. */
 export class WorkerRpc<
   Handlers extends { [K in keyof Handlers]: (...args: never[]) => unknown },
@@ -22,9 +30,10 @@ export class WorkerRpc<
     private readonly onDispose?: () => void,
   ) {
     this.worker.onmessage = (event) => this.onMessage(event);
-    this.worker.onerror = (event) => this.dispose(new Error(event.message));
+    this.worker.onerror = (event) =>
+      this.dispose(new WorkerTerminatedError(event.message));
     this.worker.onmessageerror = () =>
-      this.dispose(new Error("Invalid worker message"));
+      this.dispose(new WorkerTerminatedError("Invalid worker message"));
     void WASM_MODULE.then((module) => {
       if (!this.disposed)
         this.worker.postMessage({ name: "init-wasm", module });
@@ -32,16 +41,22 @@ export class WorkerRpc<
   }
 
   onMessage(event: MessageEvent) {
-    const { id, result, error, status, wasmMemoryBytes } = event.data;
+    const { id, result, error, fatal, status, wasmMemoryBytes } = event.data;
     const promise = this.messages[id];
+    if (fatal) {
+      // Every pending call failed with this instance, not a transient transport
+      // loss. Keep the fatal classification when retiring the worker.
+      Object.defineProperty(error, "fatal", { value: true });
+      this.dispose(error);
+      return;
+    }
     if (!promise) return;
 
     if (status !== undefined) {
-      promise.statusQueue = promise.statusQueue.then(() => {
-        if (this.messages[id] === promise) {
-          return promise.onStatus?.(status);
-        }
-      });
+      const handle = () => {
+        if (this.messages[id] === promise) return promise.onStatus?.(status);
+      };
+      promise.statusQueue = promise.statusQueue.then(handle);
       void promise.statusQueue.catch((error) => this.dispose(error));
       return;
     }
@@ -68,7 +83,7 @@ export class WorkerRpc<
   ): Promise<Awaited<ReturnType<Handlers[Name]>>> {
     type Result = Awaited<ReturnType<Handlers[Name]>>;
     options.signal?.throwIfAborted();
-    if (this.disposed) throw new Error("Worker terminated");
+    if (this.disposed) throw new WorkerTerminatedError();
     const id = ++WorkerRpc.currentId;
     const promise = new Promise<Result>((resolve, reject) => {
       this.messages[id] = {

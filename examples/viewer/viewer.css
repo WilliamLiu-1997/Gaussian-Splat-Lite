@@ -209,6 +209,10 @@ button {
   transform: translateY(0);
 }
 
+.three-inspector.viewer-inspector .toggle-text {
+  display: none;
+}
+
 .three-inspector.viewer-inspector .profiler-panel,
 .three-inspector.viewer-inspector .profiler-mini-panel,
 .three-inspector.viewer-inspector .detached-tab-panel {
@@ -721,47 +725,6 @@ button {
 
 .toolbar-select .option-copy p {
   display: none;
-}
-
-.toolbar-select .option-control {
-  display: flex;
-}
-
-.toolbar-select .select-input {
-  width: auto;
-  background: transparent;
-  font-size: 0.75rem;
-}
-
-.toolbar-select .select-input,
-.toolbar-select .select-input::picker(select) {
-  appearance: base-select;
-}
-
-.toolbar-select .select-input::picker(select) {
-  inset: auto;
-  top: calc(anchor(bottom) + 4px);
-  right: anchor(right);
-  min-width: anchor-size(width);
-  margin: 0;
-  padding: 0.2rem;
-  border: 1px solid rgb(255 255 255 / 13%);
-  border-radius: 0.35rem;
-  background: #171b21;
-  color: #d4d8df;
-  font: inherit;
-  /* biome-ignore lint/correctness/noUnknownProperty: CSS anchor positioning property not recognized by Biome 1.9.4. */
-  position-try-fallbacks: none;
-}
-
-.toolbar-select option {
-  padding: 0.3rem 0.5rem;
-  border-radius: 0.2rem;
-}
-
-.toolbar-select option:hover,
-.toolbar-select option:focus-visible {
-  background: #303640;
 }
 
 .options-footer {

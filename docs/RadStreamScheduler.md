@@ -2,10 +2,9 @@
 
 [Back to documentation](../README.md#documentation)
 
-Loads large RAD scenes with detail that adapts as the camera moves. Supports RAD version 1 with levels of detail (LOD), as a single `.rad` file or split files with `.radc` companions. Works on WebGL2 and WebGPU without a Spark runtime.
+Loads large RAD scenes with detail that adapts as the camera moves. Supports RAD version 1 with levels of detail (LOD), as a single `.rad` file or split files with `.radc` companions. Works on WebGPU and WebGL2 without a Spark runtime.
 
 ```js
-import * as THREE from "three";
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new RadStreamScheduler({
@@ -13,12 +12,12 @@ const streaming = new RadStreamScheduler({
   splatBudget: 3_000_000,
 });
 scene.add(streaming.group);
+streaming.setCamera(camera);
+streaming.setResolutionFromRenderer(camera, renderer); // Again after resizing.
 await streaming.initialized;
 
-const size = new THREE.Vector2();
 renderer.setAnimationLoop(() => {
-  renderer.getDrawingBufferSize(size);
-  streaming.update(camera, { width: size.x, height: size.y });
+  streaming.update();
   renderer.render(scene, camera);
 });
 
@@ -31,6 +30,30 @@ await streaming.firstRenderable;
 ```
 
 Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed models support SDF edits and picking; their data is read-only.
+
+Resolution is in CSS pixels, without the device pixel ratio, so a scene selects the same detail on standard and high-DPI displays. Register several cameras to load detail for all of them; they share one selection at the greatest detail any of them needs.
+
+In WebXR, register `renderer.xr.getCamera()` in place of your camera. Detail is selected for each eye at the headset's resolution, so no resolution is needed:
+
+```js
+const xrCamera = renderer.xr.getCamera();
+renderer.xr.addEventListener("sessionstart", () => {
+  streaming.deleteCamera(camera);
+  streaming.setCamera(xrCamera);
+});
+renderer.xr.addEventListener("sessionend", () => {
+  streaming.deleteCamera(xrCamera);
+  streaming.setCamera(camera);
+  streaming.setResolutionFromRenderer(camera, renderer);
+});
+
+renderer.setAnimationLoop(() => {
+  streaming.update();
+  renderer.render(scene, camera);
+});
+```
+
+Ordinary camera matrices are updated by the scheduler. The XR camera's matrices are read directly from Three.js, so detail selection before rendering may use the previous frame's pose.
 
 For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#raycasting).
 
@@ -61,8 +84,11 @@ Ready pages are written during `update()` without a per-update byte limit. Loadi
 | `group` | Parent group for moving, rotating, scaling, or hiding the scene |
 | `splatBudget` | Positive safe integer; change it at runtime to adjust detail, even while the camera is stationary |
 | `initialized` | Resolves when scene setup is ready; rejects invalid or unsupported input |
-| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; keep calling `update()` while waiting |
-| `update(camera, viewport?)` | Update detail, loading, fades, and cleanup; viewport defaults to 1024 × 1024 |
+| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while waiting |
+| `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that selects detail; `hasCamera(camera)` and `cameras` list them |
+| `setResolution(camera, width, height)` | Set a registered camera's render size in CSS pixels; also accepts a `THREE.Vector2` |
+| `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's resolution from `renderer.getSize()` |
+| `update()` | Update detail, loading, fades, and cleanup for the registered cameras; throws if none are registered |
 | `getBoundingBox()` | Approximate bounds in group coordinates; empty until the first data loads |
 | `getGlobalIndex(mesh, renderedIndex)` | Convert a picking result to a stable node index in the RAD file |
 | `stats` | Visible and retained Splat data, loading progress, and memory estimates; not total browser memory |
@@ -79,3 +105,9 @@ if (hits.length && hits[0].index !== undefined) {
   console.log(nodeIndex, hits[0].point);
 }
 ```
+
+## Error recovery
+
+Temporary download failures and lost decoder workers are retried automatically, waiting longer after each attempt, up to 30 seconds. Retryable HTTP errors are 408, 425, 429, and 5xx. Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and not retried. Each retry calls `onChange`, so on-demand render loops resume loading once the connection returns.
+
+If LOD selection or preparation fails, or the LOD worker is lost during page loading, `onError` is called and the scene keeps its current detail but stops refining; create a new scheduler to try again.

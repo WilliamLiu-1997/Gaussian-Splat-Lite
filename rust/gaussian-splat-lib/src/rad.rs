@@ -997,8 +997,8 @@ impl RadDecoder {
             }
         }
         if labels_present {
-            for band in 0..decode_sh {
-                pending_codes[band]
+            for (band, codes) in pending_codes.iter().enumerate().take(decode_sh) {
+                codes
                     .as_ref()
                     .or(self.codebooks[band].as_ref())
                     .context("RAD SH codebook unavailable; decode chunk 0 first")?;
@@ -1256,9 +1256,9 @@ fn decode_r8_delta(data: &[u8], dims: usize, count: usize, min: f32, max: f32) -
     let mut last = vec![0u8; dims];
     for i in 0..count {
         let mut index = i;
-        for d in 0..dims {
-            let value = last[d].wrapping_add(data[index]);
-            last[d] = value;
+        for previous in &mut last {
+            let value = previous.wrapping_add(data[index]);
+            *previous = value;
             result.push((value as f32 / 255.0) * (max - min) + min);
             index += count;
         }
@@ -1271,9 +1271,9 @@ fn decode_s8_delta(data: &[u8], dims: usize, count: usize, max: f32) -> Vec<f32>
     let mut last = vec![0u8; dims];
     for i in 0..count {
         let mut index = i;
-        for d in 0..dims {
-            let value = last[d].wrapping_add(data[index]);
-            last[d] = value;
+        for previous in &mut last {
+            let value = previous.wrapping_add(data[index]);
+            *previous = value;
             result.push(((value as i8) as f32 / 127.0) * max);
             index += count;
         }

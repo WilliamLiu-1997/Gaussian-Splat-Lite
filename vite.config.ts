@@ -13,22 +13,6 @@ if (!fs.existsSync(wasmPackage)) {
   process.exit(1);
 }
 
-function externalizeThreeCoreForCommonJS() {
-  return {
-    name: "externalize-three-core-for-commonjs",
-    enforce: "pre" as const,
-    resolveId(source: string, importer?: string) {
-      if (
-        source === "./three.core.js" &&
-        importer?.endsWith("/three/build/three.webgpu.js")
-      ) {
-        return { id: "three", external: true };
-      }
-      return null;
-    },
-  };
-}
-
 export default defineConfig(({ mode }) => {
   const isMinify = mode.startsWith("production");
   const isCommonJS = mode.endsWith("-cjs");
@@ -44,7 +28,6 @@ export default defineConfig(({ mode }) => {
       }),
 
       ...(isCommonJS ? [] : [dts({ outDir: "dist/types" })]),
-      ...(isCommonJS ? [externalizeThreeCoreForCommonJS()] : []),
     ],
 
     build: {
@@ -65,9 +48,8 @@ export default defineConfig(({ mode }) => {
       },
       sourcemap: true,
       rollupOptions: {
-        // Three's WebGPU/TSL entries are ESM-only. Keep them external in the
-        // ESM artifact and bundle them into CJS while preserving core identity.
-        external: isCommonJS ? ["three"] : ["three", /^three\//],
+        // Share Three's core and TSL state with the application in both formats.
+        external: ["three", /^three\//],
         output: {
           globals: {
             three: "THREE",
@@ -82,6 +64,22 @@ export default defineConfig(({ mode }) => {
         treeshake: "smallest",
       },
       plugins: () => [
+        {
+          name: "omit-worker-sourcemaps",
+          generateBundle(_options, bundle) {
+            for (const [name, entry] of Object.entries(bundle)) {
+              if (entry.type === "asset" && name.endsWith(".map"))
+                delete bundle[name];
+              else if (entry.type === "chunk") {
+                entry.map = null;
+                entry.code = entry.code.replace(
+                  /\n?\/\/# sourceMappingURL=.*$/gm,
+                  "",
+                );
+              }
+            }
+          },
+        },
         glsl({
           include: ["**/*.glsl"],
         }),

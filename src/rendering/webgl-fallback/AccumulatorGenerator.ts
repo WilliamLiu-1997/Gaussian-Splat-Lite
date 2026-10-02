@@ -14,18 +14,27 @@ export function createWebGLFallbackAccumulatorTarget(
   width: number,
   height: number,
   depth: number,
+  stochasticSeeds: boolean,
 ) {
   // The r186 fallback backend recognizes array attachments only at depth > 1.
-  return createWebGLAccumulatorTarget(width, height, Math.max(2, depth));
+  return createWebGLAccumulatorTarget(
+    width,
+    height,
+    Math.max(2, depth),
+    stochasticSeeds,
+  );
 }
 
-/** Rasterizes Splat records and stable sampling seeds into integer arrays. */
+/**
+ * Rasterizes Splat records, and for stochastic targets stable sampling seeds,
+ * into integer arrays.
+ */
 export class WebGLFallbackAccumulatorGenerator {
   readonly uniforms = makeGenerateUniforms();
   private readonly material = new NodeMaterial();
   private readonly quad = new QuadMesh(this.material);
 
-  constructor() {
+  constructor(stochasticSeeds: boolean) {
     const targetBase = uniformBinding(this.uniforms, "targetBase", "uint");
     const targetLayer = uniformBinding(this.uniforms, "targetLayer", "uint");
     const generate = createGenerateProgram({ uniforms: this.uniforms });
@@ -41,10 +50,12 @@ export class WebGLFallbackAccumulatorGenerator {
         .sub(targetBase);
       const { accumulatorA, accumulatorB, stochasticSeed } = generate(index);
       second.assign(accumulatorB);
-      seed.assign(stochasticSeed);
+      if (stochasticSeeds) seed.assign(stochasticSeed);
       return accumulatorA;
     })();
-    this.material.fragmentNode = N.outputStruct(first, second, seed);
+    this.material.fragmentNode = stochasticSeeds
+      ? N.outputStruct(first, second, seed)
+      : N.outputStruct(first, second);
     this.material.depthTest = false;
     this.material.depthWrite = false;
     this.material.blending = THREE.NoBlending;

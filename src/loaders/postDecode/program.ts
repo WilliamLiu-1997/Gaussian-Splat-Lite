@@ -23,16 +23,17 @@ export type SplatPostDecodeProgram = {
 class SplatPostDecodeProgramImpl implements SplatPostDecodeProgram {
   readonly [SPLAT_POST_DECODE_PROGRAM] = true as const;
 
-  constructor(
-    private readonly builder: ProgramBuilder,
-    private readonly outputs: SplatPostDecodeOutputs,
-  ) {}
+  private readonly compiled: ReturnType<typeof compileProgram>;
+
+  constructor(builder: ProgramBuilder, outputs: SplatPostDecodeOutputs) {
+    this.compiled = compileProgram(builder, outputs);
+  }
 
   static serialize(program: SplatPostDecodeProgram): SerializedSplatPostDecode {
     if (!(program instanceof SplatPostDecodeProgramImpl)) {
       throw new Error("Invalid postDecode program");
     }
-    const compiled = compileProgram(program.builder, program.outputs);
+    const compiled = program.compiled;
     const snapshot = snapshotAttributes(compiled.attributes);
     return {
       instructions: packInstructions(compiled.instructions),

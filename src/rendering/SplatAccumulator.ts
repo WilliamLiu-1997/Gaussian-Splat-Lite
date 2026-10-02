@@ -8,6 +8,7 @@ import { threeRevision } from "../utils/three";
 import { decomposeSplatTransform } from "../utils/transforms";
 import {
   type GaussianSplatCompatibleRenderer,
+  getViews,
   isWebGPURenderer,
   usesNativeWebGPU,
 } from "./rendererUtils";
@@ -19,10 +20,13 @@ import {
   createWebGLAccumulatorTarget,
   generateWebGLAccumulator,
   getWebGLGenerateUniforms,
+  hasStochasticSeeds,
 } from "./webgl/AccumulatorGenerator";
 
 export type SplatMapping = {
   node: SplatMesh;
+  matrixWorld: THREE.Matrix4;
+  source: SplatMesh["splats"];
   version: number;
   sortVersion: number;
   centerVersion: number;
@@ -38,6 +42,7 @@ export class SplatAccumulator {
   time = 0;
   deltaTime = 0;
   viewOrigin = new THREE.Vector3();
+  private readonly previousOrigin = new THREE.Vector3();
   viewDirection = new THREE.Vector3();
   maxSplats = 0;
   numSplats = 0;
@@ -83,6 +88,37 @@ export class SplatAccumulator {
     return this.target?.textures[2] ?? SplatAccumulator.emptyTexture;
   }
 
+  /** Whether this accumulator was generated for stochastic rendering. */
+  get hasStochasticSeeds() {
+    return this.target !== null && hasStochasticSeeds(this.target);
+  }
+
+  /**
+   * Regenerate moved meshes in place, without changing the source ranges used
+   * by an in-flight sort. WebGL backends only.
+   */
+  refreshTransforms(renderer: GaussianSplatCompatibleRenderer) {
+    let changed = false;
+    for (const entry of this.mapping) {
+      const { node, source, base, count } = entry;
+      if (entry.matrixWorld.equals(node.matrixWorld)) continue;
+      // A new source/LOD mapping needs matching indices before it can be shown.
+      if (
+        !source ||
+        source !== node.splats ||
+        source.needsUpdate ||
+        source.getNumSplats() !== count ||
+        entry.centerVersion !== node.centerVersion ||
+        entry.mappingVersion !== node.mappingVersion
+      )
+        continue;
+      this.generate({ mesh: node, base, count, renderer });
+      entry.matrixWorld.copy(node.matrixWorld);
+      changed = true;
+    }
+    if (changed) this.version++;
+  }
+
   generateMapping(splatCounts: number[], compact = false) {
     let maxSplats = 0;
     const mapping = splatCounts.map((count) => {
@@ -99,10 +135,12 @@ export class SplatAccumulator {
     maxSplats,
     renderer,
     shrinkResources = false,
+    stochasticSeeds = false,
   }: {
     maxSplats: number;
     renderer?: GaussianSplatCompatibleRenderer;
     shrinkResources?: boolean;
+    stochasticSeeds?: boolean;
   }) {
     if (renderer && usesNativeWebGPU(renderer)) {
       throw new Error(
@@ -114,7 +152,7 @@ export class SplatAccumulator {
       height,
       depth,
       maxSplats: capacity,
-    } = getTextureSize(Math.max(1, maxSplats));
+    } = getTextureSize(Math.max(1, maxSplats), 1);
     const reusable = shrinkResources
       ? capacity === this.maxSplats
       : capacity <= this.maxSplats;
@@ -123,7 +161,8 @@ export class SplatAccumulator {
     if (
       this.target &&
       reusable &&
-      fallback === (this.fallbackGenerator !== null)
+      fallback === (this.fallbackGenerator !== null) &&
+      stochasticSeeds === hasStochasticSeeds(this.target)
     ) {
       return false;
     }
@@ -133,14 +172,25 @@ export class SplatAccumulator {
 
     this.maxSplats = capacity;
     this.target = fallback
-      ? createWebGLFallbackAccumulatorTarget(width, height, depth)
-      : createWebGLAccumulatorTarget(width, height, depth);
+      ? createWebGLFallbackAccumulatorTarget(
+          width,
+          height,
+          depth,
+          stochasticSeeds,
+        )
+      : createWebGLAccumulatorTarget(width, height, depth, stochasticSeeds);
     if (fallback)
-      this.fallbackGenerator = new WebGLFallbackAccumulatorGenerator();
+      this.fallbackGenerator = new WebGLFallbackAccumulatorGenerator(
+        stochasticSeeds,
+      );
     return true;
   }
 
-  prepareUniforms(mesh: SplatMesh, uniforms: GenerateUniforms) {
+  prepareUniforms(
+    mesh: SplatMesh,
+    uniforms: GenerateUniforms,
+    matrixWorld = mesh.matrixWorld,
+  ) {
     const source = mesh.splats;
     if (!source) {
       throw new Error("SplatMesh has no source");
@@ -152,13 +202,13 @@ export class SplatAccumulator {
       Math.imul(mesh.id + 1, 0x9e3779b9) >>> 0;
     uniforms.numSh.value = Math.min(mesh.maxSh, source.getNumSh());
 
-    decomposeSplatTransform(
-      mesh.matrixWorld,
+    uniforms.objectReflected.value = decomposeSplatTransform(
+      matrixWorld,
       this.transformScale,
       this.transformQuaternion,
     );
-    uniforms.objectBasis.value.setFromMatrix4(mesh.matrixWorld);
-    uniforms.objectOffset.value.setFromMatrixPosition(mesh.matrixWorld);
+    uniforms.objectBasis.value.setFromMatrix4(matrixWorld);
+    uniforms.objectOffset.value.setFromMatrixPosition(matrixWorld);
     // THREE.Vector3 and Matrix4 use JS numbers, so this subtraction happens
     // before the value is narrowed to a float32 WebGL uniform.
     uniforms.objectOffset.value.sub(this.viewOrigin);
@@ -247,19 +297,21 @@ export class SplatAccumulator {
     const previousVersion = previous.version;
     const previousMappingVersion = previous.mappingVersion;
 
-    camera.getWorldPosition(this.viewOrigin);
-    camera.getWorldDirection(this.viewDirection);
+    const previousOrigin = this.previousOrigin.copy(previous.viewOrigin);
+    this.viewOrigin.setFromMatrixPosition(camera.matrixWorld);
+    this.viewDirection
+      .setFromMatrixColumn(camera.matrixWorld, 2)
+      .normalize()
+      .negate();
     this.time = timer.getElapsed();
     this.deltaTime = timer.getDelta();
 
-    // Collect all eyes' meshes; native projection still filters each eye separately.
-    const array = layerCamera as THREE.ArrayCamera;
-    const layerMask =
-      usesNativeWebGPU(renderer) &&
-      array.isArrayCamera &&
-      array.cameras.length > 0
-        ? array.cameras.reduce((mask, eye) => mask | eye.layers.mask, 0)
-        : layerCamera.layers.mask;
+    // Meshes on any eye's layers draw in both eyes; each eye's projection
+    // still culls to its own view.
+    const layerMask = getViews(layerCamera).reduce(
+      (mask, view) => mask | view.layers.mask,
+      0,
+    );
 
     const allMeshes: SplatMesh[] = [];
     scene.traverse((node) => {
@@ -282,7 +334,6 @@ export class SplatAccumulator {
       mesh.frameUpdate({
         time: this.time,
         deltaTime: this.deltaTime,
-        camera,
         globalEdits: Array.from(globalEdits),
       });
     }
@@ -304,6 +355,9 @@ export class SplatAccumulator {
       usesNativeWebGPU(renderer),
     );
 
+    // Native WebGPU rebuilds the mapping every frame. Reuse this accumulator's
+    // pose snapshots; its previous mapping is only compared by version below.
+    const poses = this.mapping.map(({ matrixWorld }) => matrixWorld);
     this.mapping = [];
     this.numSplats = 0;
     ranges.forEach(({ base, count }, index) => {
@@ -311,6 +365,10 @@ export class SplatAccumulator {
       if (!node.splats || count <= 0) return;
       this.mapping.push({
         node,
+        matrixWorld: (poses.pop() ?? new THREE.Matrix4()).copy(
+          node.matrixWorld,
+        ),
+        source: node.splats,
         version: node.version,
         sortVersion: node.sortVersion,
         centerVersion: node.centerVersion,
@@ -325,15 +383,28 @@ export class SplatAccumulator {
       previousMapping,
       this.mapping,
     );
-    this.version = previousVersion + (splatsUpdated ? 1 : 0);
+    const shViewChanged =
+      !this.viewOrigin.equals(previousOrigin) &&
+      this.mapping.some(
+        ({ node, source }) => node.maxSh > 0 && (source?.getNumSh() ?? 0) > 0,
+      );
+    this.version = previousVersion + (splatsUpdated || shViewChanged ? 1 : 0);
     this.mappingVersion = previousMappingVersion + (mappingUpdated ? 1 : 0);
 
     return {
       version: this.version,
       sortUpdated,
-      requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
-      generate: (shrinkResources = false) => {
-        this.ensureGenerate({ maxSplats, renderer, shrinkResources });
+      requiredMaxSplats: getTextureSize(
+        Math.max(1, maxSplats),
+        usesNativeWebGPU(renderer) ? 256 : 1,
+      ).maxSplats,
+      generate: (shrinkResources = false, stochasticSeeds = false) => {
+        this.ensureGenerate({
+          maxSplats,
+          renderer,
+          shrinkResources,
+          stochasticSeeds,
+        });
         for (const { node, base, count } of this.mapping) {
           this.generate({ mesh: node, base, count, renderer });
         }

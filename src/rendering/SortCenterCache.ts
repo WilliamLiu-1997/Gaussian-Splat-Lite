@@ -1,5 +1,5 @@
 import type { SplatMesh } from "../scene/SplatMesh";
-import type { SplatAccumulator } from "./SplatAccumulator";
+import type { SplatAccumulator, SplatMapping } from "./SplatAccumulator";
 
 type SortCenterEntry = {
   meshId: number;
@@ -24,23 +24,34 @@ export class SortCenterCache {
   }
 
   prepare(current: SplatAccumulator) {
-    const rangeMeshIds = new Uint32Array(current.mapping.length);
-    const rangeBases = new Uint32Array(current.mapping.length);
-    const rangeCounts = new Uint32Array(current.mapping.length);
+    const { mapping } = current;
+    // Commit the versions captured now, even if the mapping changes before
+    // the worker accepts this state.
+    const committed: {
+      entry: SortCenterEntry;
+      centerVersion: number;
+      sortVersion: number;
+    }[] = [];
+    const rangeMeshIds = new Uint32Array(mapping.length);
+    const rangeBases = new Uint32Array(mapping.length);
+    const rangeCounts = new Uint32Array(mapping.length);
     const retiredEntries = new Map(this.entries);
     const changedCenters: {
-      node: SplatMesh;
+      source: SplatMapping["source"];
       count: number;
       rangeIndex: number;
     }[] = [];
     const changedMatrices: {
-      node: SplatMesh;
+      matrixWorld: SplatMapping["matrixWorld"];
       rangeIndex: number;
     }[] = [];
     let updateCount = 0;
 
-    current.mapping.forEach(
-      ({ node, base, count, centerVersion, sortVersion }, rangeIndex) => {
+    mapping.forEach(
+      (
+        { node, source, matrixWorld, base, count, centerVersion, sortVersion },
+        rangeIndex,
+      ) => {
         retiredEntries.delete(node);
         let entry = this.entries.get(node);
         if (!entry) {
@@ -54,13 +65,14 @@ export class SortCenterCache {
           this.entries.set(node, entry);
         }
 
+        committed.push({ entry, centerVersion, sortVersion });
         rangeMeshIds[rangeIndex] = entry.meshId;
         rangeBases[rangeIndex] = base;
         rangeCounts[rangeIndex] = count;
 
         if (entry.centerVersion !== centerVersion) {
           changedCenters.push({
-            node,
+            source,
             count,
             rangeIndex,
           });
@@ -68,7 +80,7 @@ export class SortCenterCache {
         }
         if (entry.sortVersion !== sortVersion) {
           changedMatrices.push({
-            node,
+            matrixWorld,
             rangeIndex,
           });
         }
@@ -79,19 +91,19 @@ export class SortCenterCache {
     const updateCenters = new Float32Array(updateCount * 3);
 
     let updateBase = 0;
-    changedCenters.forEach(({ node, count, rangeIndex }, updateIndex) => {
+    changedCenters.forEach(({ source, count, rangeIndex }, updateIndex) => {
       centerUpdateRangeIndices[updateIndex] = rangeIndex;
 
-      if (!node.splats) throw new Error("SplatMesh has no source");
-      node.splats.copySortCenters(updateCenters, updateBase * 3, count);
+      if (!source) throw new Error("Splat mapping has no source");
+      source.copySortCenters(updateCenters, updateBase * 3, count);
       updateBase += count;
     });
 
     const matrixUpdateRangeIndices = new Uint32Array(changedMatrices.length);
     const updateMatrices = new Float64Array(changedMatrices.length * 16);
-    changedMatrices.forEach(({ node, rangeIndex }, updateIndex) => {
+    changedMatrices.forEach(({ matrixWorld, rangeIndex }, updateIndex) => {
       matrixUpdateRangeIndices[updateIndex] = rangeIndex;
-      updateMatrices.set(node.matrixWorld.elements, updateIndex * 16);
+      updateMatrices.set(matrixWorld.elements, updateIndex * 16);
     });
 
     return {
@@ -106,8 +118,7 @@ export class SortCenterCache {
       },
       commit: () => {
         // The renderer serializes updates and skips commit after disposal.
-        for (const { node, centerVersion, sortVersion } of current.mapping) {
-          const entry = this.entries.get(node) as SortCenterEntry;
+        for (const { entry, centerVersion, sortVersion } of committed) {
           entry.centerVersion = centerVersion;
           entry.sortVersion = sortVersion;
         }

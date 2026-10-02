@@ -11,24 +11,26 @@ function toHalfNative(value: number): number {
   return u16[0];
 }
 
+function roundEven(value: number): number {
+  const integer = Math.floor(value);
+  const fraction = value - integer;
+  return (
+    integer +
+    Number(fraction > 0.5 || (fraction === 0.5 && (integer & 1) !== 0))
+  );
+}
+
 function toHalfJs(value: number): number {
-  f32[0] = value;
-  const bits = u32[0];
-  const sign = (bits >>> 16) & 0x8000;
-  const exponent = (bits >>> 23) & 0xff;
-  const fraction = bits & 0x7f_ffff;
-
-  if (exponent === 0xff) {
-    return sign | (fraction === 0 ? 0x7c00 : 0x7fff);
-  }
-
-  const halfExponent = exponent - 127 + 15;
-  if (halfExponent >= 0x1f) return sign | 0x7c00;
-  if (halfExponent <= 0) {
-    if (halfExponent < -10) return sign;
-    return sign | ((fraction | 0x80_0000) >>> (1 - halfExponent + 13));
-  }
-  return sign | (halfExponent << 10) | (fraction >>> 13);
+  const sign = value < 0 || Object.is(value, -0) ? 0x8000 : 0;
+  const magnitude = Math.abs(value);
+  if (Number.isNaN(magnitude)) return 0x7e00;
+  if (magnitude >= 65520) return sign | 0x7c00;
+  if (magnitude < 2 ** -14) return sign | roundEven(magnitude * 2 ** 24);
+  // Round the original double, avoiding double rounding through float32.
+  f32[0] = magnitude;
+  const exponent = ((u32[0] >>> 23) & 0xff) - 127;
+  const mantissa = roundEven(magnitude * 2 ** (10 - exponent));
+  return sign | ((exponent + 14) * 1024 + mantissa);
 }
 
 function fromHalfNative(value: number): number {

@@ -299,8 +299,6 @@ export function createViewerUI({
       dropOverlay.hidden = !visible;
     },
     mountInspector(element) {
-      performanceStats.hidden = Boolean(element);
-      // Mount before assigning renderer.inspector so auto-attach keeps this location.
       if (element) performanceStats.before(element);
     },
     updateStats({ fps, memory, streamStats }) {

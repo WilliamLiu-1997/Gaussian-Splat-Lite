@@ -1,5 +1,6 @@
 import { DefaultLoadingManager } from "three";
 import type { Splats } from "../../../data/Splats";
+import { WorkerTerminatedError } from "../../../runtime/WorkerRpc";
 import { abortable } from "../../../runtime/abort";
 import { getAssetBaseUrl } from "../../assetUrl";
 import type { SplatLoadStatus } from "../../loadTypes";
@@ -32,7 +33,8 @@ export class SogChunkSource {
   }
 
   async extract(ranges: { start: number; count: number }[]) {
-    if (!this.alive) throw new Error("Streaming chunk is no longer cached");
+    if (!this.alive)
+      throw new WorkerTerminatedError("Streaming chunk is no longer cached");
     return this.worker.call("extractSogRegions", { id: this.id, ranges });
   }
 

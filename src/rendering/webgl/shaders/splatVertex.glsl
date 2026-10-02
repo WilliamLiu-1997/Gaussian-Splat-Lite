@@ -7,7 +7,10 @@ precision highp usampler2DArray;
 
 flat out uvec4 vSplat;
 out vec2 vSplatUv;
-flat out uint vStochasticHash;
+#if GSL_STOCHASTIC
+// Noise atlas offset: x in bits 0-4, y in 5-9, temporal slice in 10-14.
+flat out uint vStochasticOffset;
+#endif
 
 uniform vec2 renderSize;
 uniform vec4 renderToViewQuat;
@@ -22,17 +25,19 @@ uniform float blurAmount;
 uniform float preBlurAmount;
 uniform float clipXY;
 uniform float focalAdjustment;
-uniform bool stochastic;
-uniform bool stochasticOrdering;
-uniform vec4 stochasticTemporalSample;
 uniform bool encodeLinear;
-uniform bool depthOnly;
 uniform uint splatCount;
 
 uniform usampler2D ordering;
 uniform usampler2DArray splats;
 uniform usampler2DArray splats2;
+
+#if GSL_STOCHASTIC
+uniform bool stochasticOrdering;
+uniform uint stochasticSample;
+uniform vec2 viewportOrigin;
 uniform usampler2DArray stochasticSeeds;
+#endif
 
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
@@ -73,10 +78,13 @@ void main() {
     if (index >= splatCount) return;
 
     uint splatIndex;
-    if ((stochastic && !stochasticOrdering) || depthOnly) {
-        // Use source indices before the first ordering and for depth-only draws.
+    #if GSL_STOCHASTIC
+    if (!stochasticOrdering) {
+        // Use source indices when stochastic ordering is disabled or not ready.
         splatIndex = index;
-    } else {
+    } else
+    #endif
+    {
         ivec2 orderingCoord = ivec2(int((index >> 2u) & 4095u), int(index >> 14u));
         splatIndex = texelFetch(ordering, orderingCoord, 0)[index & 3u];
     }
@@ -97,7 +105,7 @@ void main() {
     vec3 viewCenter = renderToViewScale * quatVec(renderToViewQuat, center) + renderToViewPos;
 
     // Discard splats behind the camera
-    if (viewCenter.z >= 0.0) {
+    if (isPerspectiveMatrix(projectionMatrix) && viewCenter.z >= 0.0) {
         return;
     }
 
@@ -236,15 +244,19 @@ void main() {
     scale1 *= supportScale;
     scale2 *= supportScale;
 
+    #if GSL_STOCHASTIC
     // Fetch stable coverage seeds only after all projection cutoffs pass.
-    // Sorted color draws do not sample the seed texture.
-    vStochasticHash = 0u;
-    if (stochastic || depthOnly) {
-        vStochasticHash = hashU32(texelFetch(stochasticSeeds, texCoord, 0).r);
-    }
+    // Keep XY fixed so consecutive samples follow the same STBN time sequence.
+    // Independent per-Splat XYZ offsets decorrelate overlapping coverage tests.
+    uint seed = texelFetch(stochasticSeeds, texCoord, 0).r;
+    uint hash = hashU32(seed);
+    uvec2 offset = uvec2(hash, hash >> 5u) - uvec2(viewportOrigin);
+    uint phase = ((hash >> 10u) + stochasticSample) & 31u;
+    vStochasticOffset = (offset.x & 31u) | ((offset.y & 31u) << 5u) | (phase << 10u);
+    #endif
 
     // RGB is constant across the quad, so convert before rasterization.
-    if (encodeLinear && !depthOnly) {
+    if (encodeLinear) {
         rgba.rgb = srgbToLinear(rgba.rgb);
     }
     // Match the TSL varying layout: half RGB/kernel power, float32 alpha/radius.
@@ -265,9 +277,5 @@ void main() {
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
-    if (stochastic && !depthOnly) {
-        gl_Position.xy += stochasticTemporalSample.xy * gl_Position.w;
-    }
-
     #include <logdepthbuf_vertex>
 }

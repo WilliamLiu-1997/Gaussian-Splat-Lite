@@ -7,6 +7,70 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Exported `TAAPass(scene, camera)`, temporal anti-aliasing for WebGLRenderer that renders the scene itself and needs no velocity texture. Its result matches direct canvas colors and needs no `OutputPass`; set `accumulateInOutputSpace = false` for linear effects such as Bloom. Scene depth is exposed for depth effects. Exported `TAANode(scene, camera)` provides the same camera/depth reprojection in TSL for native WebGPU and WebGL2 fallback, accumulating in linear space for `RenderPipeline`, without a velocity attachment.
+- Added `stochasticSample` and `autoAdvanceStochasticSample` to control the stochastic noise pattern, for example in a custom temporal anti-aliasing integration.
+- Added `SplatLoader.abort()`, which cancels every load the loader has in progress.
+- PLY loading now accepts headers with Windows line endings, `int8`–`float64` type names, extra elements before the vertex data, and Gaussian files that store their base color as `red`/`green`/`blue`.
+- RAD and SOG streaming retry temporary download failures and lost decoder workers automatically, waiting up to 30 seconds between attempts. Retryable HTTP errors are 408, 425, 429, and 5xx. Each retry calls `onChange` to wake on-demand render loops. Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and not retried.
+
+### Changed
+
+- Stochastic coverage now uses a 32-frame spatiotemporal blue-noise sequence optimized for exponential history accumulation, with stable per-Splat offsets on WebGL, WebGPU, and WebGL fallback. This reduces temporal sampling error without changing the TAA integration or its frame budget.
+- Stochastic rendering is now manual: set `stochastic` to switch modes, and smooth its noise with the library's `TAANode` on WebGPURenderer or the library's `TAAPass` on WebGLRenderer. See [Stochastic rendering](docs/StochasticRendering.md).
+- The stochastic noise pattern now changes on every render so temporal anti-aliasing keeps converging while the view is still. Previously it stayed fixed unless `StochasticTAAPass` supplied a temporal sample. Set `autoAdvanceStochasticSample = false` to keep it fixed.
+- Changing `stochastic` takes effect at the next update boundary on all backends. WebGL and WebGL fallback also wait for the matching accumulator and sort; `stochasticActive` reports which mode is drawing.
+- While stochastic rendering is active, Splats draw in the opaque list with depth testing and writing; otherwise `transparent`, `depthTest`, and `depthWrite` apply as set. Stochastic rendering no longer keeps sorted frames in the opaque list or sets `renderOrder` to `Number.MAX_SAFE_INTEGER`.
+- Sorted rendering no longer stores stochastic seeds: WebGL accumulators omit the seed layer, and native WebGPU allocates its seed buffer only for stochastic draws. Sorted and stochastic draws compile separate shaders without mode branches on all backends.
+- With unsorted stochastic rendering, `shrinkResources()` releases the sort worker and ordering instead of sorting. Enabling sorting again rebuilds them.
+- WebGL and WebGL fallback show a moved `SplatMesh` in the frame it moves instead of after the next sort, with `autoUpdate` and `preUpdate` enabled outside WebXR.
+- Native WebGPU reuses projection and sorting results while only TAA's sub-pixel jitter changes.
+- WebXR eyes now share generation, culling, and one sort order from the head's mean pose, each with its exact projection. Native WebGPU projects both eyes in one compute pass instead of projecting and sorting each eye, so `stochasticSort` now also applies in WebXR; its two-eye kernels compile when a session starts, and Splats stay hidden until they are ready. Splats on either eye's layers are visible in both eyes.
+- `RadStreamScheduler` and `SogStreamScheduler` select detail for cameras registered with `setCamera()`, and `update()` takes no arguments; it throws if no camera is registered. Set RAD resolution with `setResolution()` or `setResolutionFromRenderer()` in CSS pixels, without the device pixel ratio, so high-DPI displays no longer load extra detail. RAD no longer defaults to 1024 × 1024 and throws for a non-XR camera without a resolution. Several cameras share one selection at the greatest detail any of them needs.
+- RAD and SOG streaming select WebXR detail for each eye of a registered `renderer.xr.getCamera()`. Until the headset reports its first eye poses, the current detail and downloads are kept.
+- If SOG detail selection fails, `SogStreamScheduler` reports the error and disposes itself; create a new one to try again.
+- SDF edit shapes now follow their own `scale`. `SPHERE` and other shapes scale as a whole; `BOX`, `ELLIPSOID`, and `CAPSULE` keep using `scale` for their size without scaling `radius`. A shape scaled to zero on any axis now has no effect instead of affecting the whole model.
+- RAD headers larger than 16 MiB are rejected.
+- Models with more than about 4 million Splats allocate much less unused texture memory.
+- Memory used for native WebGPU two-eye rendering is released when a WebXR session ends.
+- Turning the camera without moving it no longer regenerates Splat data.
+- The CommonJS build now uses `three/webgpu` and `three/tsl` from your installed `three` instead of bundling its own copy. Node.js 20.19+ or 22.12+ is now required.
+- The published worker no longer includes source maps, reducing package size.
+- The viewer's Stochastic control is now On/Off and smooths noise with `TAAPass` on WebGLRenderer or `TAANode` on WebGPURenderer. The TAA/Resolve and Force Splat depth controls were removed.
+
+### Fixed
+
+- Errors from automatic `GaussianSplatRenderer` updates are logged once instead of becoming unhandled promise rejections, and a draw whose preparation fails is skipped instead of interrupting rendering.
+- Mirrored models (negative scale) now show the correct Splat orientation and view-dependent color.
+- Splats drawn into a viewport smaller than the canvas or render target, for example with `setViewport()`, now have the correct size.
+- On WebGLRenderer, orthographic cameras no longer drop Splats behind the camera's position.
+- `TAAPass` now keeps custom projection matrices and `setViewOffset()` views, reprojects correctly with scaled camera rigs, and renders its first frame correctly with a reversed depth buffer.
+- `Splats.getSplat()` returns new objects on each call; previously, successive calls overwrote the same objects.
+- `SplatMesh.initialized`, `isInitialized`, and `onLoad` now follow reinitialized `Splats`, and disposing a mesh resets `numSplats`.
+- `postDecode` attributes now match RAD Splats in their original file order, and attribute data is read when the load starts. Comparisons, `dot`, and `cross` reject mismatched types, and `define()` reports invalid expressions immediately.
+- Splats with an invalid (NaN) opacity now load as fully transparent.
+- In browsers without native float16 support, half-precision values are now rounded to the nearest value instead of truncated.
+- Picking no longer misses very thin Splats.
+- Split RAD datasets now load when their `.rad` header is served with HTTP compression.
+- PLY files are rejected early when they are shorter than their header declares or contain duplicate elements or properties. Gaussian PLY files that also have `red`/`green`/`blue` are no longer loaded as point clouds.
+- SOG images that claim oversized dimensions are rejected before memory is allocated. SPZ files with legacy extensions load without keeping the extensions in memory, and their integrity is still checked.
+- Decode workers that crash or run out of memory are discarded so later loads can use fresh workers, and worker errors now name the file that failed.
+- Importing the library no longer reports an unhandled promise rejection when WebAssembly fails to initialize.
+- If RAD LOD selection or preparation fails, or its LOD worker is lost during page loading, `RadStreamScheduler` reports the error and keeps its current detail but stops refining.
+- A failed SOG refinement keeps already visible regions. Permanent failures before any region is ready reject `firstRenderable`.
+- Updated TSL texture bindings before sampling state so both Three.js r186 and r187 preserve render-target Y orientation without calling removed texture update methods.
+- Preserved WebXR camera rig transforms when reading eye poses for rendering and RAD/SOG detail selection.
+- SOG detail selection now includes a scaled camera rig's scale, like rendering and RAD. It previously measured view distances and culled without it.
+- Draws during a WebXR session that do not use the WebXR camera now use their own camera and viewport instead of the headset's. Examples are render targets drawn with `renderer.xr.enabled` off, such as `Reflector`, and WebGPURenderer render targets other than its output.
+
+### Removed
+
+- Non-XR `ArrayCamera` rendering is no longer supported: `update()` and `shrinkResources()` throw, and other draws skip Splats and log an error. Use separate cameras for other views.
+- Removed `autoStochastic`, `renderDepth`, `depthMesh`, and the exported `StochasticResolvePass` and `StochasticTAAPass`. Use `stochastic` to switch modes, `TAAPass` for WebGLRenderer, and `TAANode` for WebGPURenderer. Without the depth companion draw, sorted Splats write depth only with `depthWrite`.
+- Removed offscreen captures and environment maps: the `target` option, the `target`, `backTarget`, `superXY`, `superPixels`, and `targetPixels` properties, and `renderTarget()`, `readTarget()`, `renderReadTarget()`, `renderCubeMap()`, `readCubeTargets()`, `renderEnvMap()`, and `recurseSetEnvMap()`. Render into Three.js render targets directly instead.
+- Removed `render()` and `GaussianSplatRenderer.gaussianSplatOverride`. Render with the Three.js renderer, and use `layers` or `visible` to choose which Splat renderer draws.
+
 ## [1.1.8] - 2026-09-29
 
 ### Fixed

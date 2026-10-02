@@ -80,28 +80,41 @@ function readAttributeBlock(
   registers: Float32Array,
   outputBase: number,
   sourceIndices?: Uint16Array,
+  sourceIds?: Uint32Array,
 ) {
   const componentBytes = ATTRIBUTE_FORMAT_BYTES[attribute.format];
   const read = ATTRIBUTE_READERS[attribute.format];
-  for (let component = 0; component < attribute.components; component += 1) {
-    const componentOutput = outputBase + component * blockSize;
-    if (sourceIndices) {
-      for (let index = 0; index < blockCount; index += 1) {
-        const inputOffset =
-          attribute.byteOffset +
-          (blockStart + sourceIndices[index]) * attribute.byteStride +
-          component * componentBytes;
-        registers[componentOutput + index] = read(data, inputOffset);
-      }
-    } else {
-      let inputOffset =
+  if (!sourceIndices && !sourceIds) {
+    // Ordinary files retain file order until postDecode finishes. Avoid a
+    // per-lane index lookup and bounds check on this contiguous hot path.
+    for (let component = 0; component < attribute.components; component++) {
+      let offset =
         attribute.byteOffset +
         blockStart * attribute.byteStride +
         component * componentBytes;
-      for (let index = 0; index < blockCount; index += 1) {
-        registers[componentOutput + index] = read(data, inputOffset);
-        inputOffset += attribute.byteStride;
-      }
+      const componentOutput = outputBase + component * blockSize;
+      for (
+        let lane = 0;
+        lane < blockCount;
+        lane++, offset += attribute.byteStride
+      )
+        registers[componentOutput + lane] = read(data, offset);
+    }
+    return;
+  }
+  for (let component = 0; component < attribute.components; component += 1) {
+    const componentOutput = outputBase + component * blockSize;
+    for (let lane = 0; lane < blockCount; lane += 1) {
+      const storageIndex = blockStart + (sourceIndices?.[lane] ?? lane);
+      const fileIndex = sourceIds?.[storageIndex] ?? storageIndex;
+      if (fileIndex >= attribute.count)
+        throw new Error("postDecode attribute does not cover source indices");
+      registers[componentOutput + lane] = read(
+        data,
+        attribute.byteOffset +
+          fileIndex * attribute.byteStride +
+          component * componentBytes,
+      );
     }
   }
 }
@@ -469,6 +482,7 @@ export function executeRange(
           registers,
           outputBase,
           sourceIndices,
+          data.sourceIds,
         );
         break;
       case Opcode.Negate:
