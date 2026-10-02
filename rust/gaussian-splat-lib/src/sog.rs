@@ -228,11 +228,13 @@ impl Image {
         }
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self> {
+    fn decode(bytes: &[u8], max_pixels: usize) -> Result<Self> {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             let mut decoder = png::Decoder::new_with_limits(
                 Cursor::new(bytes),
-                png::Limits { bytes: usize::MAX },
+                png::Limits {
+                    bytes: max_pixels.saturating_mul(8),
+                },
             );
             decoder.set_transformations(png::Transformations::EXPAND);
             let mut reader = decoder.read_info().context("invalid PNG")?;
@@ -243,6 +245,10 @@ impl Image {
             ensure!(
                 reader.info().animation_control.is_none(),
                 "animated PNG is unsupported"
+            );
+            ensure!(
+                (reader.info().width as u64) * (reader.info().height as u64) <= max_pixels as u64,
+                "PNG dimensions exceed dataset capacity"
             );
             let size = reader.output_buffer_size();
             let mut bytes = vec![0; size];
@@ -271,6 +277,10 @@ impl Image {
             "animated or lossy WebP is unsupported"
         );
         let (width, height) = decoder.dimensions();
+        ensure!(
+            (width as u64) * (height as u64) <= max_pixels as u64,
+            "WebP dimensions exceed dataset capacity"
+        );
         let size = decoder
             .output_buffer_size()
             .context("WebP dimensions overflow")?;
@@ -338,7 +348,7 @@ pub struct SogDecoder<T: SplatReceiver> {
 impl<T: SplatReceiver> SogDecoder<T> {
     pub fn new(splats: T, metadata: &str) -> Result<Self> {
         let meta = Metadata::parse(metadata)?;
-        let mut session = Self {
+        Ok(Self {
             meta,
             splats,
             initialized: false,
@@ -350,12 +360,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
             positions: Vec::new(),
             floats: Vec::new(),
             labels: Vec::new(),
-        };
-        // Missing SH bands (including V1) need the palette before allocation.
-        if session.meta.degree != 0 || session.meta.groups[0].0 != "centroids" {
-            session.init_splats()?;
-        }
-        Ok(session)
+        })
     }
 
     pub fn plan(&self) -> Vec<&[String]> {
@@ -391,7 +396,17 @@ impl<T: SplatReceiver> SogDecoder<T> {
             "invalid asset sequence"
         );
         let bytes = unpack(bytes, method, size, crc)?;
-        let image = Image::decode(&bytes)?;
+        let max_pixels = if self.meta.groups[self.group].0 == "centroids" {
+            65536 * 45
+        } else {
+            self.meta
+                .count
+                .checked_next_power_of_two()
+                .and_then(|n| n.checked_mul(2))
+                .context("SOG texture capacity overflow")?
+                .max(65536)
+        };
+        let image = Image::decode(&bytes, max_pixels)?;
         if self.meta.groups[self.group].0 != "centroids" {
             ensure!(
                 image.width * image.height >= self.meta.count,
@@ -470,6 +485,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
             self.group += 1;
             return Ok(true);
         }
+        self.init_splats()?;
         let count = BATCH.min(self.meta.count - self.base);
         let splats = &mut self.splats;
         let image = &self.images[0];
@@ -576,5 +592,38 @@ impl<T: SplatReceiver> SogDecoder<T> {
             return Ok(true);
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::Image;
+
+    #[test]
+    fn png_dimensions_must_fit_dataset_capacity() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255; 16 * 16 * 4])
+                .unwrap();
+        }
+        let image = Image::decode(&bytes, 256).unwrap();
+        assert_eq!((image.width, image.height), (16, 16));
+        assert!(Image::decode(&bytes, 255).is_err());
+    }
+
+    #[test]
+    fn webp_dimensions_are_checked_before_image_allocation() {
+        // A lossless header advertises 1024 squared without any pixel data.
+        let mut bytes = b"RIFF\x12\0\0\0WEBPVP8L\x05\0\0\0\x2f".to_vec();
+        bytes.extend_from_slice(&0x00ff_c3ffu32.to_le_bytes());
+        bytes.push(0);
+        let error = Image::decode(&bytes, 65_536).err().unwrap();
+        assert!(error.to_string().contains("dimensions exceed"), "{error}");
     }
 }

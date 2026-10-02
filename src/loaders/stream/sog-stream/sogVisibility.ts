@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { prepareStreamCamera } from "../StreamCameras";
+import { streamViews } from "../StreamCameras";
 import {
   type SogLodIndex,
   type SogLodLeaf,
@@ -30,8 +30,7 @@ type CameraState = {
 
 /**
  * Capture the cameras that see the group without traversing the manifest or
- * reducing matrix precision. A WebXR camera is captured as its eyes' combined
- * frustum.
+ * reducing matrix precision. WebXR selects detail from each eye's current pose and frustum.
  */
 export function captureSogView(
   cameras: readonly THREE.Camera[],
@@ -39,8 +38,7 @@ export function captureSogView(
 ): SogView {
   group.updateWorldMatrix(true, false);
   const views: SogCamera[] = [];
-  for (const camera of cameras) {
-    if (!prepareStreamCamera(camera)) continue;
+  for (const camera of streamViews(cameras)) {
     views.push({
       // Invert matrixWorld like the splat projection: Camera.matrixWorldInverse
       // can omit rig scale.

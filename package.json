@@ -55,7 +55,7 @@
     "THIRD_PARTY_LICENSES.md"
   ],
   "engines": {
-    "node": ">=20.9"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "repository": {
     "type": "git",

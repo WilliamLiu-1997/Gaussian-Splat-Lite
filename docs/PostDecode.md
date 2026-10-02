@@ -4,7 +4,7 @@
 
 Changes each Splat while loading PLY/SPZ/SOG/RAD files. Use `define()` to describe the changes, then pass the result as `postDecode`.
 
-`define()` runs its callback immediately to build an expression program; the decode worker executes that program for each Splat.
+`define()` runs its callback immediately, so mistakes in the expression throw right away; the result is then applied to each Splat while loading.
 
 ```ts
 import { postDecode, SplatFileType, SplatMesh } from "gaussian-splat-lite";
@@ -68,7 +68,8 @@ const weights = attribute({
 
 - `data` accepts any `ArrayBufferView`, including `DataView`; `byteOffset` is relative to that view.
 - `components` accepts 1–4. Formats: `f32`, `f16`, `u8`, `unorm8`, `i8`, `snorm8`, `u16`, `unorm16`, `i16`, `snorm16`, `u32`, `i32`.
-- Match attributes to Splats in file order. If an attribute array is shorter than the model, only the matching prefix is changed.
+- Attribute data is read when a load starts. Changing it afterwards affects only later loads.
+- Match attributes to Splats in their original file order, including for RAD files. If an attribute array is shorter than the model, only the matching prefix is changed.
 
 ## Expression operations
 
@@ -80,5 +81,7 @@ Use `op` to calculate per-Splat values; JavaScript `if` does not evaluate indivi
 - rotations: `quaternion`, `quatMul`, and `rotateVector`;
 
 A number can be combined with a vector, for example `op.mul(splat.scale, 2)`. Values from different `postDecode` programs cannot be combined.
+
+Comparisons and vector products do not accept a number in place of a vector: `eq` and `ne` compare values of the same type, `lt`, `lte`, `gt`, and `gte` compare numbers, `dot` takes two vectors of the same size, and `cross` takes two `vec3` values.
 
 To change a model after loading, use [SplatMesh properties](SplatMesh.md#common-properties) or [region edits](SplatEdit.md).

@@ -1,4 +1,5 @@
 import type { Group, LoadingManager } from "three";
+import { retryDelay } from "../../runtime/retry";
 import type { SplatRequestOptions } from "../loadTypes";
 
 export type StreamRequestOptions = SplatRequestOptions & {
@@ -68,8 +69,21 @@ export function streamPendingLimit(concurrency: number, unitBytes = 0) {
   return concurrency * Math.max(pendingBytesPerLoad, unitBytes);
 }
 
-export function retryDelay(failures: number) {
-  return Math.min(30_000, 1000 * 2 ** failures);
+/** Format errors are permanent; transient failures retry with capped backoff. */
+export function streamRetryAt(error: unknown, failures: number) {
+  const failure = error as { fatal?: boolean } | undefined;
+  if (failure?.fatal) return Number.POSITIVE_INFINITY;
+  const message = error instanceof Error ? error.message : String(error);
+  const status = /\bHTTP (\d{3})\b/.exec(message)?.[1];
+  const retryable = status
+    ? [408, 425, 429].includes(Number(status)) || Number(status) >= 500
+    : error instanceof TypeError ||
+      (error instanceof Error && error.name === "NetworkError");
+  const workerLost =
+    error instanceof Error && error.name === "WorkerTerminatedError";
+  return retryable || workerLost
+    ? performance.now() + retryDelay(failures)
+    : Number.POSITIVE_INFINITY;
 }
 
 export function notifyStreamChange(options: StreamSchedulerOptions) {

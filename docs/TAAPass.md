@@ -18,7 +18,7 @@ const taa = new TAAPass(scene, camera);
 
 ## WebGLRenderer setup
 
-This example assumes an existing `renderer`, `scene`, and `camera`. If smoothing [stochastic rendering](StochasticRendering.md), also set `splatRenderer.stochastic = true`. The [viewer](../examples/viewer/viewerTAA.js) uses this same setup.
+This example assumes an existing `renderer`, `scene`, and `camera`. If smoothing [stochastic rendering](StochasticRendering.md), also set `splatRenderer.stochastic = true`. The repository's `examples/viewer/viewerTAA.js` uses this same setup.
 
 ```js
 import { TAAPass } from "gaussian-splat-lite";

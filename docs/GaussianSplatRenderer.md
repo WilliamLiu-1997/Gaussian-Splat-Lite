@@ -48,6 +48,8 @@ new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
 
 Native WebGPU sorts before drawing. On WebGL, the current sort order stays in use until a new sort is ready.
 
+Automatic update errors are caught and logged once per error message, preventing unhandled promise rejections. If draw preparation fails, that draw is skipped so rendering can continue. Explicit `update()` calls report errors to the caller.
+
 See [Stochastic rendering](StochasticRendering.md) for setup and temporal anti-aliasing.
 
 ### WebXR and multiple views

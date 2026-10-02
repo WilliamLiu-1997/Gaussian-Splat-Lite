@@ -1,5 +1,6 @@
 import { set_sort_center_state, sort32_centers } from "gaussian-splat-rs";
 import { loadSplats, resolveAsset, resolveFile } from "../loaders/workerDecode";
+import { wasmCall } from "./wasmCall";
 import { startWorker } from "./workerServer";
 
 const rpcHandlers = {
@@ -30,14 +31,16 @@ function setSortCenterState({
   rangeBases: Uint32Array;
   rangeCounts: Uint32Array;
 }) {
-  set_sort_center_state(
-    centerUpdateRangeIndices,
-    updateCenters,
-    matrixUpdateRangeIndices,
-    updateMatrices,
-    rangeMeshIds,
-    rangeBases,
-    rangeCounts,
+  wasmCall(() =>
+    set_sort_center_state(
+      centerUpdateRangeIndices,
+      updateCenters,
+      matrixUpdateRangeIndices,
+      updateMatrices,
+      rangeMeshIds,
+      rangeBases,
+      rangeCounts,
+    ),
   );
 }
 
@@ -59,14 +62,16 @@ function sortCenters32({
   frontSort: boolean;
   ordering: Uint32Array;
 }) {
-  const activeSplats = sort32_centers(
-    numSplats,
-    ...cameraPosition,
-    ...direction,
-    radial,
-    fastSort,
-    frontSort,
-    ordering,
+  const activeSplats = wasmCall(() =>
+    sort32_centers(
+      numSplats,
+      ...cameraPosition,
+      ...direction,
+      radial,
+      fastSort,
+      frontSort,
+      ordering,
+    ),
   );
   return { ordering, activeSplats };
 }

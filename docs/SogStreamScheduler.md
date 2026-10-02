@@ -28,7 +28,7 @@ Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed mo
 
 Detail follows distance from the camera, so cameras need no resolution. Register several cameras to load detail for all of them; each region follows the nearest camera that sees it.
 
-In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown for [RadStreamScheduler](RadStreamScheduler.md). Selection uses the combined frustum of both eyes, the one Three.js culls with, and may follow the previous frame's pose when `update()` runs before rendering.
+In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown for [RadStreamScheduler](RadStreamScheduler.md). Detail is selected for each eye. Calling `update()` before rendering uses the previous frame's eye poses, and until the headset reports its first poses, the current detail and downloads are kept.
 
 For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#raycasting).
 
@@ -61,7 +61,7 @@ Ready regions are attached during `update()` once their previous fade completes,
 | `group` | Parent group for moving, rotating, scaling, or hiding the scene |
 | `splatBudget` | Positive safe integer including the environment; change it at runtime to adjust detail |
 | `initialized` | Resolves when the index is ready; rejects invalid input |
-| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; keep calling `update()` while waiting |
+| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; rejects if the first data cannot be loaded or prepared. Keep calling `update()` while waiting |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that selects detail; `hasCamera(camera)` and `cameras` list them |
 | `update()` | Update detail, loading, fades, and cleanup for the registered cameras; throws if none are registered |
 | `getBoundingBox()` | Group-local index bounds, available after initialization |
@@ -71,3 +71,9 @@ Ready regions are attached during `update()` once their previous fade completes,
 For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so loading, retries, fades, and cleanup progress.
 
 Cooldown uses elapsed time, independent of update frequency. Expired data releases during updates or after accepted LOD decisions once no longer needed. Pending decisions defer cleanup so newly needed data can be reused; each accepted decision permits cleanup even during camera movement.
+
+## Error recovery
+
+Temporary download failures and lost decoder workers are retried automatically, waiting longer after each attempt, up to 30 seconds. Retryable HTTP errors are 408, 425, 429, and 5xx. Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and not retried. Each retry calls `onChange`, so on-demand render loops resume loading once the connection returns.
+
+Regions already on screen stay visible when loading more detail fails. If detail selection itself fails, `onError` is called and the scheduler disposes itself; create a new one to try again.

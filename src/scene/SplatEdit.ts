@@ -101,7 +101,7 @@ export class SplatEdit extends THREE.Object3D {
 
 export type SplatEditGroup = { edit: SplatEdit; sdfs: SplatEditSdf[] };
 
-const SDF_TEXELS = 5;
+const SDF_TEXELS = 6;
 const SDF_RGBA_MASK_SHIFT = 16;
 const MIN_CAPACITY = 16;
 const scratchFloat = new Float32Array(1);
@@ -150,10 +150,8 @@ export class SplatEdits {
       updated = true;
     }
 
-    const center = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const inverseScale = new THREE.Vector3();
     const sizes = new THREE.Vector4();
+    const inverseOwnScale = new THREE.Vector3();
     const worldToSdf = new THREE.Matrix4();
     let sdfIndex = 0;
     let sdfUpdated = false;
@@ -164,32 +162,43 @@ export class SplatEdits {
         this.encodeEdit(editIndex, edit, sdfIndex, sdfs.length) || editUpdated;
 
       for (const sdf of sdfs) {
-        sizes.set(sdf.scale.x, sdf.scale.y, sdf.scale.z, sdf.radius);
-        const originalScale = sdf.scale.clone();
-        try {
-          sdf.scale.setScalar(1);
-          sdf.updateWorldMatrix(true, false);
-          worldToSdf.copy(sdf.matrixWorld).invert();
-          // Only the internal numeric frame changes. SDF Object3D transforms,
-          // sizes, smoothing distances, and edit semantics remain world-space.
-          if (coordinateOrigin) {
-            rebaseAffineTransform(worldToSdf, coordinateOrigin);
-          }
-          worldToSdf.decompose(center, quaternion, inverseScale);
-        } finally {
-          sdf.scale.copy(originalScale);
-          sdf.updateWorldMatrix(true, false);
-        }
-
+        sdf.updateWorldMatrix(true, false);
+        worldToSdf.copy(sdf.matrixWorld);
+        // These shapes already use scale as dimensions. Preserve their
+        // independent corner/cap radius instead of scaling it a second time.
+        const dimensional =
+          sdf.type === SplatEditSdfType.BOX ||
+          sdf.type === SplatEditSdfType.ELLIPSOID ||
+          sdf.type === SplatEditSdfType.CAPSULE;
+        sizes.set(
+          dimensional ? Math.abs(sdf.scale.x) : 1,
+          dimensional ? Math.abs(sdf.scale.y) : 1,
+          dimensional ? Math.abs(sdf.scale.z) : 1,
+          sdf.radius,
+        );
+        const collapsed = worldToSdf.determinant() === 0;
+        if (dimensional && !collapsed)
+          worldToSdf.scale(
+            inverseOwnScale.set(
+              1 / sdf.scale.x,
+              1 / sdf.scale.y,
+              1 / sdf.scale.z,
+            ),
+          );
+        const e = worldToSdf.elements;
+        const distanceScale = collapsed
+          ? 0
+          : Math.min(
+              Math.hypot(e[0], e[1], e[2]),
+              Math.hypot(e[4], e[5], e[6]),
+              Math.hypot(e[8], e[9], e[10]),
+            );
+        worldToSdf.invert();
+        if (coordinateOrigin)
+          rebaseAffineTransform(worldToSdf, coordinateOrigin);
         sdfUpdated =
-          this.encodeSdf(
-            sdfIndex,
-            sdf,
-            center,
-            quaternion,
-            inverseScale,
-            sizes,
-          ) || sdfUpdated;
+          this.encodeSdf(sdfIndex, sdf, worldToSdf, distanceScale, sizes) ||
+          sdfUpdated;
         sdfIndex += 1;
       }
     });
@@ -245,9 +254,8 @@ export class SplatEdits {
   private encodeSdf(
     index: number,
     sdf: SplatEditSdf,
-    center: THREE.Vector3,
-    quaternion: THREE.Quaternion,
-    scale: THREE.Vector3,
+    matrix: THREE.Matrix4,
+    distanceScale: number,
     sizes: THREE.Vector4,
   ) {
     const base = index * SDF_TEXELS * 4;
@@ -261,20 +269,17 @@ export class SplatEdits {
       sdfTypeToNumber(sdf.type) |
       (sdf.invert ? 1 << 8 : 0) |
       (rgbaMask << SDF_RGBA_MASK_SHIFT);
-    let updated = this.setSdfFloat(base, center.x);
-    updated = this.setSdfFloat(base + 1, center.y) || updated;
-    updated = this.setSdfFloat(base + 2, center.z) || updated;
+    const e = matrix.elements;
+    let updated = this.setSdfFloat(base, e[12]);
+    updated = this.setSdfFloat(base + 1, e[13]) || updated;
+    updated = this.setSdfFloat(base + 2, e[14]) || updated;
     updated = this.setSdfUint(base + 3, flags) || updated;
-
-    updated = this.setSdfFloat(base + 4, quaternion.x) || updated;
-    updated = this.setSdfFloat(base + 5, quaternion.y) || updated;
-    updated = this.setSdfFloat(base + 6, quaternion.z) || updated;
-    updated = this.setSdfFloat(base + 7, quaternion.w) || updated;
-
-    updated = this.setSdfFloat(base + 8, scale.x) || updated;
-    updated = this.setSdfFloat(base + 9, scale.y) || updated;
-    updated = this.setSdfFloat(base + 10, scale.z) || updated;
-    updated = this.setSdfUint(base + 11, 0) || updated;
+    for (let axis = 0; axis < 3; axis++) {
+      updated = this.setSdfFloat(base + 4 + axis, e[axis]) || updated;
+      updated = this.setSdfFloat(base + 8 + axis, e[4 + axis]) || updated;
+      updated = this.setSdfFloat(base + 20 + axis, e[8 + axis]) || updated;
+    }
+    updated = this.setSdfFloat(base + 23, distanceScale) || updated;
 
     updated = this.setSdfFloat(base + 12, sizes.x) || updated;
     updated = this.setSdfFloat(base + 13, sizes.y) || updated;

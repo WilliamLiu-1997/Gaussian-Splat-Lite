@@ -51,6 +51,7 @@ const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
 function createSplatFragment(
   minAlpha: Node<"float">,
   stochasticNoise: TextureNode<"uvec4"> | null,
+  velocity: SplatVelocity,
 ) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
@@ -88,6 +89,7 @@ function createSplatFragment(
         .div(32768);
       randomValue.greaterThanEqual(alpha).discard();
     }
+    velocity.alpha.assign(stochasticNoise ? 1 : alpha);
     // Decode color only after the fragment survives coverage tests.
     return N.vec4(
       N.unpackHalf2x16(vSplat.x),
@@ -188,6 +190,7 @@ export function createSplatNodeMaterial({
     createSplatFragment(
       minAlpha,
       stochastic ? textureBinding(uniforms, "stochasticNoise") : null,
+      velocity,
     );
 
   function buildVertex(builder: NodeBuilder) {

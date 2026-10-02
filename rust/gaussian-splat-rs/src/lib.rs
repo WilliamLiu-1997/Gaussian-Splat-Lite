@@ -6,6 +6,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::{decoder::ChunkDecoder, splats::SplatsData};
 
+#[cfg(target_arch = "wasm32")]
+mod allocation;
 mod bounds;
 mod decoder;
 mod morton;
@@ -240,6 +242,7 @@ pub fn get_raycast_indices() -> Uint32Array {
 }
 
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)] // Flat arguments match the WASM/caller interface.
 pub fn raycast_splat_buffers(
     origin_x: f32,
     origin_y: f32,
@@ -280,6 +283,6 @@ pub fn raycast_splat_buffers(
             far,
         );
 
-        unsafe { Float32Array::view(&distances) }
+        unsafe { Float32Array::view(distances) }
     })
 }

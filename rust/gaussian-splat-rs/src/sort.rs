@@ -1,10 +1,10 @@
 use std::ops::Range;
 
 const DEPTH_INFINITY_F32: u32 = 0x7f800000;
-// Full precision uses two 16-bit passes; fast sorting uses one 24-bit pass.
+// Nonnegative depth keys use 31 bits; fast sorting drops the lowest eight.
 const FULL_RADIX_BITS: u32 = 16;
 const FAST_KEY_SHIFT: u32 = 8;
-const FAST_RADIX_BITS: u32 = 32 - FAST_KEY_SHIFT;
+const FAST_RADIX_BITS: u32 = 31 - FAST_KEY_SHIFT;
 
 /// Persistent raw/radial centers and affine state for one renderer mesh.
 pub struct MeshSortState {
@@ -161,7 +161,8 @@ impl Sort32Buffers {
         if FAST {
             // Only the previous occupied range can contain counts or offsets.
             self.buckets_lo[self.bucket_range.clone()].fill(0);
-            self.bucket_range = usize::MAX..0;
+            self.bucket_range.start = usize::MAX;
+            self.bucket_range.end = 0;
         } else {
             self.buckets_lo.fill(0);
             self.buckets_hi.resize(1 << bits, 0);
@@ -585,9 +586,11 @@ mod tests {
 
     #[test]
     fn returns_early_when_every_key_is_invalid() {
-        let mut buffers = Sort32Buffers::default();
-        buffers.keys = vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000];
-        buffers.ordering = vec![7, 7, 7, 7];
+        let mut buffers = Sort32Buffers {
+            keys: vec![0x7f800000, 0x7fc00000, 0x80000000, 0xff800000],
+            ordering: vec![7, 7, 7, 7],
+            ..Default::default()
+        };
 
         assert_eq!(sort_internal::<false>(&mut buffers, 4, 4), 0);
         assert_eq!(buffers.ordering, [7, 7, 7, 7]);
@@ -595,16 +598,18 @@ mod tests {
 
     #[test]
     fn orders_finite_keys_descending_and_stably() {
-        let mut buffers = Sort32Buffers::default();
-        buffers.keys = vec![
-            0x3f800000, // 1.0
-            0x7f800000, // +infinity, excluded
-            0x00000000, // +0.0
-            0x3f800000, // 1.0, kept after the first equal key
-            0x7f7fffff, // largest finite f32
-            0x80000000, // -0.0, excluded
-            0x7fc00000, // NaN, excluded
-        ];
+        let mut buffers = Sort32Buffers {
+            keys: vec![
+                0x3f800000, // 1.0
+                0x7f800000, // +infinity, excluded
+                0x00000000, // +0.0
+                0x3f800000, // 1.0, kept after the first equal key
+                0x7f7fffff, // largest finite f32
+                0x80000000, // -0.0, excluded
+                0x7fc00000, // NaN, excluded
+            ],
+            ..Default::default()
+        };
 
         let active = sort_internal::<false>(&mut buffers, 7, 7);
 

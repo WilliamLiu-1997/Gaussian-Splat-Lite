@@ -85,7 +85,7 @@ Loaders own transport and parsing; schedulers own selection, fades, publication,
 
 `splatBudget` controls selected detail, not total memory. Resident-byte estimates exclude pending copies and WASM memory, which are reported separately; resident storage has no byte cap. Pending copies allow 8 MiB per concurrent load (32 MiB by default), enlarged for an indivisible RAD page; one oversized item can proceed alone. This bounds the waiting queue, not the bytes published or uploaded per frame.
 
-Applications must keep calling `update()` while waiting for `firstRenderable` and while loading, fades, retries, or retirement need to advance. `onChange` requests redraws; it does not drive scheduler updates. Schedulers update ordinary camera matrices, but read a WebXR camera's matrices directly and select detail with its eyes' combined frustum, as Three.js culls. Streaming updates before rendering may use the previous frame's XR pose.
+Applications must keep calling `update()` while waiting for `firstRenderable` and while loading, fades, retries, or retirement need to advance. `onChange` requests redraws; it does not drive scheduler updates. Schedulers update ordinary camera matrices, but read a WebXR camera's eye matrices directly and select detail for each eye. Streaming updates before rendering may use the previous frame's XR pose.
 
 ## Streamed SOG boundaries
 

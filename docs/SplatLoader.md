@@ -35,7 +35,7 @@ const loading = loader.loadAsync("/assets/model.sog", undefined, controller.sign
 controller.abort(); // `loading` rejects with the signal's reason.
 ```
 
-For `Splats` or `SplatMesh`, call `dispose()` to cancel a pending load.
+`loader.abort()` cancels every load the loader has in progress; loads started afterwards are not affected. For `Splats` or `SplatMesh`, call `dispose()` to cancel a pending load.
 
 For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md).
 For `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).

@@ -306,6 +306,13 @@ function runProgram(
   const outputWordBases = outputPlan.writesOutputs
     ? new Uint32Array(blockSize)
     : undefined;
+  const attributeCount = Math.min(
+    ...program.attributes.map((attribute) => attribute.count),
+  );
+  const attributeIndices =
+    data.sourceIds && attributeCount !== Number.POSITIVE_INFINITY
+      ? new Uint16Array(blockSize)
+      : undefined;
 
   for (let instruction = 0; instruction < instructionCount; instruction += 1) {
     const instructionOffset =
@@ -333,6 +340,16 @@ function runProgram(
   for (let blockStart = 0; blockStart < processCount; blockStart += blockSize) {
     let blockCount = Math.min(blockSize, processCount - blockStart);
     let sourceIndices: Uint16Array | undefined;
+    if (attributeIndices && data.sourceIds) {
+      let count = 0;
+      for (let lane = 0; lane < blockCount; lane++) {
+        if (data.sourceIds[blockStart + lane] < attributeCount)
+          attributeIndices[count++] = lane;
+      }
+      // Keep the contiguous path when every lane is covered by attributes.
+      if (count < blockCount) sourceIndices = attributeIndices;
+      blockCount = count;
+    }
     if (carry) {
       carry.nextStage = 0;
       carry.activeCount = 0;
@@ -570,7 +587,7 @@ function writeOutputBlock(
       const wordIndex = outputWordBases[blockIndex] + 3;
       data.splat0[wordIndex] =
         ((data.splat0[wordIndex] & 0xffff_0000) |
-          toHalf(clamp(registers[alphaBase + blockIndex], 0, 1))) >>>
+          toHalf(clamp(registers[alphaBase + blockIndex] || 0, 0, 1))) >>>
         0;
     }
   }
@@ -637,8 +654,9 @@ export function applySplatPostDecode(
   onProgress?: (loaded: number, total: number) => void,
 ) {
   let processCount = data.numSplats;
-  for (const attribute of program.attributes) {
-    processCount = Math.min(processCount, attribute.count);
+  if (!data.sourceIds) {
+    for (const attribute of program.attributes)
+      processCount = Math.min(processCount, attribute.count);
   }
   if (processCount === 0 || program.instructions.length === 0) {
     onProgress?.(1, 1);

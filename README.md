@@ -170,7 +170,7 @@ const streaming = new SogStreamScheduler({
 
 ## Development
 
-Requires Node.js 20.9+, Rust via `rustup`, and the `wasm32-unknown-unknown` target. `build:wasm` installs `wasm-pack` through Cargo if needed.
+Requires Node.js 20.19+ or 22.12+, Rust via `rustup`, and the `wasm32-unknown-unknown` target. `build:wasm` installs `wasm-pack` through Cargo if needed.
 
 ```sh
 npm ci

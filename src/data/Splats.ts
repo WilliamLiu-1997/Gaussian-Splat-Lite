@@ -9,7 +9,6 @@ import {
   type ReorderedSplatResult,
   SPLAT_BLOCKS_DISABLED,
   SPLAT_BOUNDS_BLOCK_SIZE,
-  SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
   type SplatExtra,
   type SplatFileType,
@@ -384,8 +383,9 @@ export class Splats {
       color: THREE.Color,
     ) => void,
   ) {
+    let splat: ReturnType<typeof decodeSplat> | undefined;
     for (let index = 0; index < this.numSplats; index += 1) {
-      const splat = decodeSplat(this.splatArrays, index);
+      splat = decodeSplat(this.splatArrays, index, splat);
       callback(
         index,
         splat.center,
@@ -400,10 +400,10 @@ export class Splats {
   setTextureUniforms(uniforms: Record<string, THREE.IUniform>) {
     const [splats, splats2] = this.getSplatTextures();
     const sh = this.getShTextures();
-    uniforms.sourceLayerBits.value =
-      SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
-    uniforms.sourceLayerMask.value =
-      (1 << (SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS)) - 1;
+    const height = (splats.image as { height: number }).height;
+    const layerBits = SPLAT_TEX_WIDTH_BITS + Math.ceil(Math.log2(height));
+    uniforms.sourceLayerBits.value = layerBits;
+    uniforms.sourceLayerMask.value = 2 ** layerBits - 1;
     uniforms.sourceBlockBits.value = SPLAT_BLOCKS_DISABLED;
     uniforms.sourceBlocks.value = Splats.emptyTexture;
     uniforms.sourceOpacities.value = Splats.emptyTexture;

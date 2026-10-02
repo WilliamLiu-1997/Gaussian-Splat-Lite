@@ -8,13 +8,14 @@ import {
   getSplatByteLength,
   getSplatTextureBytes,
 } from "../../../data/splatData";
+import { RetryTimer } from "../../../runtime/retry";
 import type { RadMeta, RadStreamChunk } from "../../rad/radFormat";
 import { getRadChunkSpan } from "../../rad/radFormat";
 import { StreamByteBudget } from "../StreamByteBudget";
 import {
   StreamCameras,
   type StreamResolutionSource,
-  prepareStreamCamera,
+  streamViews,
 } from "../StreamCameras";
 import {
   type StreamSchedulerOptions,
@@ -22,8 +23,8 @@ import {
   notifyStreamChange,
   notifyStreamError,
   positiveInteger,
-  retryDelay,
   streamPendingLimit,
+  streamRetryAt,
   streamSettings,
 } from "../streamOptions";
 import { RadStreamBatch } from "./RadStreamBatch";
@@ -121,7 +122,6 @@ export class RadStreamScheduler {
   private readonly matrix = new THREE.Matrix4();
   private meta?: RadMeta;
   private pageSize = 0;
-  private pageStride = 0;
   private pageBudget = 0;
   private numSh = 0;
   private maxPagePendingBytes = 0;
@@ -134,6 +134,7 @@ export class RadStreamScheduler {
   private wanted = new Set<number>();
   private revision = 0;
   private lastRequestedRevision = -1;
+  private refinementStopped = false;
   private lastViewKey = "";
   private views: RadLodView[] = [];
   private lodTimeMs = 0;
@@ -292,10 +293,11 @@ export class RadStreamScheduler {
         this.pageSize,
         getRadChunkSpan(meta, index).count,
       );
-    this.pageStride = radPageTextureLayout({
+    // Validate the largest page against the texture layout limits.
+    radPageTextureLayout({
       pageSize: this.pageSize,
       pageCount: 1,
-    }).pageStride;
+    });
     const paddedCount = Math.ceil(this.pageSize / 2048) * 2048;
     this.maxPagePendingBytes =
       getSplatTextureBytes(paddedCount, this.numSh) +
@@ -314,9 +316,18 @@ export class RadStreamScheduler {
    * detail any of them needs.
    */
   update(): boolean {
-    if (this.disposed || !this.meta) return false;
+    if (this.disposed) return false;
     const cameras = this.streamCameras.seeing(this.group.layers);
+    if (!this.meta) return false;
     const now = performance.now();
+    if (this.refinementStopped) {
+      for (const { batch } of this.pools)
+        batch.layers.mask = this.group.layers.mask;
+      let changed = this.updateFade(now);
+      changed = this.releaseUnused(now, true) || changed;
+      if (changed) this.changed();
+      return changed;
+    }
     this.group.updateWorldMatrix(true, false);
     let shown = cameras.length > 0;
     for (
@@ -339,14 +350,10 @@ export class RadStreamScheduler {
     for (const { batch } of this.pools)
       batch.layers.mask = this.group.layers.mask;
     this.views = [];
-    for (const camera of cameras) {
-      if (!prepareStreamCamera(camera)) continue;
+    for (const camera of streamViews(cameras)) {
       // A WebXR camera is sized by an eye's viewport: a headset has only
       // physical pixels.
-      const array = camera as THREE.ArrayCamera;
-      const viewport = array.isArrayCamera
-        ? array.cameras[0].viewport
-        : undefined;
+      const viewport = (camera as THREE.PerspectiveCamera).viewport;
       const resolution = this.streamCameras.getResolution(camera);
       const width = viewport?.z ?? resolution?.x;
       const height = viewport?.w ?? resolution?.y;
@@ -428,6 +435,7 @@ export class RadStreamScheduler {
   private async requestSelection() {
     if (
       this.disposed ||
+      this.refinementStopped ||
       !this.shown ||
       this.traversal ||
       this.preparation ||
@@ -494,8 +502,7 @@ export class RadStreamScheduler {
       this.changed();
     } catch (error) {
       if (!this.disposed) {
-        this.rejectFirst(error);
-        this.failed(error, -1);
+        this.stopRefinement(error);
       }
     } finally {
       if (this.traversal === traversal) this.traversal = undefined;
@@ -605,8 +612,7 @@ export class RadStreamScheduler {
       this.preparation = undefined;
       this.lastRequestedRevision = -1;
       if (!preparation?.cancelled) {
-        this.rejectFirst(error);
-        this.failed(error, -1);
+        this.stopRefinement(error);
       }
     }
     this.changed();
@@ -722,7 +728,7 @@ export class RadStreamScheduler {
   }
 
   private pump() {
-    if (this.disposed || !this.meta) return;
+    if (this.disposed || this.refinementStopped || !this.meta) return;
     let loading = 0;
     let pendingBytes = 0;
     for (const page of this.pages.values()) {
@@ -770,11 +776,15 @@ export class RadStreamScheduler {
       this.reservePages();
     } catch (error) {
       if (active()) {
-        page.retryAt = performance.now() + retryDelay(page.failures++);
+        if (this.loader.lodWorkerLost) return this.stopRefinement(error);
+        page.retryAt = streamRetryAt(error, page.failures++);
+        if (page.index === 0 && page.retryAt === Number.POSITIVE_INFINITY)
+          this.rejectFirst(error);
         this.failed(error, page.index);
       }
     } finally {
       if (page.load === load) page.load = undefined;
+      this.scheduleRetry();
       if (!this.disposed) {
         void this.requestSelection();
         this.changed();
@@ -911,9 +921,38 @@ export class RadStreamScheduler {
     notifyStreamError(this.options, error, this.loader.getChunkUrl(index));
   }
 
+  private stopRefinement(error: unknown) {
+    this.refinementStopped = true;
+    this.ready = undefined;
+    this.preparation = undefined;
+    this.wanted.clear();
+    this.retryTimer.dispose();
+    for (const page of this.pages.values()) page.load?.controller.abort(error);
+    this.loader.dispose();
+    for (const page of this.pages.values())
+      if (page.storage?.phase === "decoded") this.releasePage(page);
+    this.rejectFirst(error);
+    this.failed(error, -1);
+    this.changed();
+  }
+
+  private scheduleRetry() {
+    if (!this.refinementStopped) this.retryTimer.update(this.retryDeadlines());
+  }
+
+  private *retryDeadlines() {
+    for (const index of this.wanted) {
+      const page = this.pages.get(index);
+      if (page && !page.storage) yield page.retryAt;
+    }
+  }
+
+  private readonly retryTimer = new RetryTimer(() => this.changed());
+
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.retryTimer.dispose();
     const reason = new DOMException("RAD scheduler disposed", "AbortError");
     this.abort.abort(reason);
     this.rejectFirst(reason);

@@ -42,6 +42,7 @@ export class SplatAccumulator {
   time = 0;
   deltaTime = 0;
   viewOrigin = new THREE.Vector3();
+  private readonly previousOrigin = new THREE.Vector3();
   viewDirection = new THREE.Vector3();
   maxSplats = 0;
   numSplats = 0;
@@ -151,7 +152,7 @@ export class SplatAccumulator {
       height,
       depth,
       maxSplats: capacity,
-    } = getTextureSize(Math.max(1, maxSplats));
+    } = getTextureSize(Math.max(1, maxSplats), 1);
     const reusable = shrinkResources
       ? capacity === this.maxSplats
       : capacity <= this.maxSplats;
@@ -201,7 +202,7 @@ export class SplatAccumulator {
       Math.imul(mesh.id + 1, 0x9e3779b9) >>> 0;
     uniforms.numSh.value = Math.min(mesh.maxSh, source.getNumSh());
 
-    decomposeSplatTransform(
+    uniforms.objectReflected.value = decomposeSplatTransform(
       matrixWorld,
       this.transformScale,
       this.transformQuaternion,
@@ -296,6 +297,7 @@ export class SplatAccumulator {
     const previousVersion = previous.version;
     const previousMappingVersion = previous.mappingVersion;
 
+    const previousOrigin = this.previousOrigin.copy(previous.viewOrigin);
     this.viewOrigin.setFromMatrixPosition(camera.matrixWorld);
     this.viewDirection
       .setFromMatrixColumn(camera.matrixWorld, 2)
@@ -382,13 +384,21 @@ export class SplatAccumulator {
       previousMapping,
       this.mapping,
     );
-    this.version = previousVersion + (splatsUpdated ? 1 : 0);
+    const shViewChanged =
+      !this.viewOrigin.equals(previousOrigin) &&
+      this.mapping.some(
+        ({ node, source }) => node.maxSh > 0 && (source?.getNumSh() ?? 0) > 0,
+      );
+    this.version = previousVersion + (splatsUpdated || shViewChanged ? 1 : 0);
     this.mappingVersion = previousMappingVersion + (mappingUpdated ? 1 : 0);
 
     return {
       version: this.version,
       sortUpdated,
-      requiredMaxSplats: getTextureSize(Math.max(1, maxSplats)).maxSplats,
+      requiredMaxSplats: getTextureSize(
+        Math.max(1, maxSplats),
+        usesNativeWebGPU(renderer) ? 256 : 1,
+      ).maxSplats,
       generate: (shrinkResources = false, stochasticSeeds = false) => {
         this.ensureGenerate({
           maxSplats,

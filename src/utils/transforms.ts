@@ -35,7 +35,7 @@ export function decomposeSplatTransform(
   const nonZeroAxes = Number(sx > 0) + Number(sy > 0) + Number(sz > 0);
   if (nonZeroAxes === 0) {
     rotation.identity();
-    return;
+    return false;
   }
 
   if (nonZeroAxes === 1) {
@@ -51,16 +51,18 @@ export function decomposeSplatTransform(
         localAxis === 0 ? axisX : localAxis === 1 ? axisY : axisZ,
       )
       .normalize();
-    return;
+    return false;
   }
 
   if (sx === 0) axisX.copy(axisY).cross(axisZ).normalize();
   if (sy === 0) axisY.copy(axisZ).cross(axisX).normalize();
   if (sz === 0) axisZ.copy(axisX).cross(axisY).normalize();
-  if (matrix.determinant() < 0) axisX.negate();
+  const reflected = matrix.determinant() < 0;
+  if (reflected) axisX.negate();
 
   rotationMatrix.makeBasis(axisX, axisY, axisZ);
   rotation.setFromRotationMatrix(rotationMatrix).normalize();
+  return reflected;
 }
 
 /**

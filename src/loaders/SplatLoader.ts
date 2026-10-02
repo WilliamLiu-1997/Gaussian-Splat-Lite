@@ -1,5 +1,6 @@
 import { Loader } from "three";
 import { Splats } from "../data/Splats";
+import { linkedAbortController } from "../runtime/abort";
 import { SplatMesh } from "../scene/SplatMesh";
 import { type SplatDataLoadOptions, loadSplatData } from "./loadSplatData";
 import type { SplatProgressEvent } from "./loadTypes";
@@ -11,6 +12,14 @@ type SplatLoadOptions = Omit<SplatDataLoadOptions, "onLoad"> & {
 
 // SplatLoader implements the THREE.Loader interface for PLY, SPZ, SOG and RAD.
 export class SplatLoader extends Loader {
+  private readonly requests = new Set<AbortController>();
+
+  override abort() {
+    for (const request of this.requests)
+      request.abort(new DOMException("Splat load aborted", "AbortError"));
+    return this;
+  }
+
   load(
     url: string,
     onLoad?: (decoded: Splats) => void,
@@ -41,18 +50,26 @@ export class SplatLoader extends Loader {
     onLoad,
     ...options
   }: SplatLoadOptions): Promise<Splats> {
-    let result!: Splats;
-    await loadSplatData(
-      {
-        ...options,
-        onLoad: (decoded) => {
-          result = splats ?? new Splats();
-          result.initializeDecoded(decoded);
-          onLoad?.(result);
+    const request = linkedAbortController(options.signal);
+    this.requests.add(request.controller);
+    try {
+      let result!: Splats;
+      await loadSplatData(
+        {
+          ...options,
+          signal: request.signal,
+          onLoad: (decoded) => {
+            result = splats ?? new Splats();
+            result.initializeDecoded(decoded);
+            onLoad?.(result);
+          },
         },
-      },
-      this,
-    );
-    return result;
+        this,
+      );
+      return result;
+    } finally {
+      this.requests.delete(request.controller);
+      request.cleanup();
+    }
   }
 }

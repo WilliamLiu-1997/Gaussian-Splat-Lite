@@ -30,8 +30,8 @@ new SplatAccumulator()
 | --- | --- |
 | `getTextures()` | Return the combined Splat textures |
 | `generateMapping(splatCounts, compact?)` | Assign model ranges and return the required capacity; `compact` reduces unused space |
-| `ensureGenerate({ maxSplats, renderer?, shrinkResources? })` | Prepare storage for the requested capacity; optionally shrink unused resources |
-| `generate({ mesh, base, count, renderer })` | Update one model's range in the combined data |
-| `prepareGenerate({ renderer, scene, timer, camera, previous })` | Collect visible models and prepare their updates |
+| `ensureGenerate({ maxSplats, renderer?, shrinkResources?, stochasticSeeds? })` | Prepare storage for the requested capacity; optionally shrink unused resources or reserve storage for stochastic rendering |
+| `generate({ mesh, base, count, renderer })` | Update one model's range at its current world position |
+| `prepareGenerate({ renderer, scene, timer, camera, layerCamera?, previous })` | Collect visible models and prepare their updates; `layerCamera` (default `camera`) decides which layers are visible |
 | `checkVersions(mapping)` | Check whether data, model ranges, or sorting need updating |
 | `dispose()` | Release this accumulator's resources |

@@ -43,5 +43,30 @@ jobs:
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
       - name: Run release checks
         run: npm run release:check
+
+  rust:
+    name: Rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.82.0"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo test --manifest-path rust/Cargo.toml --workspace --locked
+      - run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - if: matrix.toolchain == 'stable'
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check

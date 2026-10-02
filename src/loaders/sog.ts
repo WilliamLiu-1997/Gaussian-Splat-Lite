@@ -1,5 +1,6 @@
 import { SogDecodeSession, decode_sog_meta } from "gaussian-splat-rs";
 import { linkedAbortController } from "../runtime/abort";
+import { wasmCall, wasmFree } from "../runtime/wasmCall";
 import type { SplatSourceArgs } from "./loadTypes";
 import type { PostDecodeSplatData } from "./postDecode/protocol";
 import { openSogSource, readSogAsset } from "./sog/SogSource";
@@ -61,13 +62,16 @@ async function decodeSog(args: LoadArgs, controller: AbortController) {
   if (!isSogPrefix(prefix))
     fail("input is neither a ZIP archive nor SOG metadata");
   const zip = isJson(prefix) ? undefined : await readZip(source);
-  const metadata = decode_sog_meta(
-    zip
-      ? join(await zip.read(zip.meta), zip.meta.compressedSize)
-      : await source.read(0, source.size),
-    zip?.meta.method ?? 0,
-    zip?.meta.size ?? source.size,
-    zip?.meta.crc ?? -1,
+  const metadataBytes = zip
+    ? join(await zip.read(zip.meta), zip.meta.compressedSize)
+    : await source.read(0, source.size);
+  const metadata = wasmCall(() =>
+    decode_sog_meta(
+      metadataBytes,
+      zip?.meta.method ?? 0,
+      zip?.meta.size ?? source.size,
+      zip?.meta.crc ?? -1,
+    ),
   );
   if (args.expectedSogCount !== undefined) {
     const meta = JSON.parse(metadata.replace(/^\uFEFF+/, ""));
@@ -78,10 +82,10 @@ async function decodeSog(args: LoadArgs, controller: AbortController) {
       );
   }
   controller.signal.throwIfAborted();
-  const session = new SogDecodeSession(metadata);
+  const session = wasmCall(() => new SogDecodeSession(metadata));
   let consumed = false;
   try {
-    const groups = JSON.parse(session.plan()) as string[][];
+    const groups = JSON.parse(wasmCall(() => session.plan())) as string[][];
     // Metadata and bundles with external assets do not describe the total input size.
     if (!zip || groups.some((group) => group.some((name) => !zip.entry(name))))
       progress(0, 0);
@@ -120,15 +124,17 @@ async function decodeSog(args: LoadArgs, controller: AbortController) {
           if (hasNextGroup)
             await new Promise<void>((resolve) => setTimeout(resolve, 0));
           controller.signal.throwIfAborted();
-          session.decode_asset(
-            chunks,
-            entry?.method ?? 0,
-            entry?.size ?? 0,
-            entry?.crc ?? -1,
+          wasmCall(() =>
+            session.decode_asset(
+              chunks,
+              entry?.method ?? 0,
+              entry?.size ?? 0,
+              entry?.crc ?? -1,
+            ),
           );
         }
         let lastYield = performance.now();
-        while (!session.decode_batch()) {
+        while (!wasmCall(() => session.decode_batch())) {
           if (
             (hasNextGroup || args.signal) &&
             performance.now() - lastYield >= 16
@@ -147,10 +153,10 @@ async function decodeSog(args: LoadArgs, controller: AbortController) {
     }
     controller.signal.throwIfAborted();
     consumed = true;
-    const result = session.finish() as PostDecodeSplatData;
+    const result = wasmCall(() => session.finish()) as PostDecodeSplatData;
     progress(0, loaded);
     return result;
   } finally {
-    if (!consumed) session.free();
+    if (!consumed) wasmFree(session);
   }
 }

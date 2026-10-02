@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import type { Node, NodeFrame } from "three/webgpu";
+import {
+  BlendMode,
+  type MRTNode,
+  type Node,
+  type NodeFrame,
+} from "three/webgpu";
 import { SPLAT_TEX_WIDTH } from "../../data/defines";
 import type { SplatMesh } from "../../scene/SplatMesh";
 import type { SplatAccumulator, SplatMapping } from "../SplatAccumulator";
@@ -50,6 +55,38 @@ export class SplatVelocity {
   private readonly viewProjection = new THREE.Matrix4();
   readonly current = N.varyingProperty("vec4", "gslVelocityCurrent");
   readonly previous = N.varyingProperty("vec4", "gslVelocityPrevious");
+  readonly alpha = N.property("float", "gslVelocityAlpha");
+  private readonly premultiplied = N.uniform(true, "bool");
+  private readonly blend: BlendMode = Object.assign(
+    new BlendMode(THREE.CustomBlending),
+    {
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.OneFactor,
+      blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+    },
+  );
+  private target: MRTNode | null = null;
+  private previousBlend: BlendMode | null = null;
+
+  configure(target: MRTNode, premultipliedAlpha: boolean) {
+    this.restore();
+    this.target = target;
+    this.premultiplied.value = premultipliedAlpha;
+    this.blend.blendSrc = premultipliedAlpha
+      ? THREE.OneFactor
+      : THREE.SrcAlphaFactor;
+    this.previousBlend = target.getBlendMode("velocity");
+    target.setBlendMode("velocity", this.blend);
+  }
+
+  restore() {
+    if (this.target && this.previousBlend)
+      this.target.setBlendMode("velocity", this.previousBlend);
+    this.target = null;
+    this.previousBlend = null;
+  }
+
   readonly mrt = N.mrt({
     velocity: N.vec4(
       N.select(
@@ -58,9 +95,9 @@ export class SplatVelocity {
           .div(this.current.w)
           .sub(this.previous.xy.div(this.previous.w)),
         N.vec2(2),
-      ),
+      ).mul(N.select(this.premultiplied, this.alpha, 1)),
       0,
-      1,
+      this.alpha,
     ),
   });
   private readonly matrices = N.texture(this.texture).onObjectUpdate(
@@ -225,7 +262,7 @@ export class SplatVelocity {
       );
       const history = this.advanceHistory(view, frameId, this.viewProjection);
       this.currentClips[eye] ??= new THREE.Matrix4();
-      const currentClip = this.currentClips[eye].multiplyMatrices(
+      this.currentClips[eye].multiplyMatrices(
         this.viewProjection,
         this.translation,
       );
@@ -239,18 +276,19 @@ export class SplatVelocity {
         const matrix = entry.matrixWorld;
         const source = entry.source;
         const previous = history.previousPoses.get(node);
-        let previousClip = currentClip;
-        if (previous && previous.source === source) {
-          if (previous.matrix.equals(matrix)) {
-            previousClip = this.stillClip;
-          } else if (matrix.determinant() !== 0) {
-            this.inverseModel.copy(matrix).invert();
-            previousClip = this.previousClip
-              .copy(history.previousViewProjection)
-              .multiply(previous.matrix)
-              .multiply(this.inverseModel)
-              .multiply(this.translation);
-          }
+        let previousClip = this.stillClip;
+        if (
+          previous &&
+          previous.source === source &&
+          !previous.matrix.equals(matrix) &&
+          matrix.determinant() !== 0
+        ) {
+          this.inverseModel.copy(matrix).invert();
+          previousClip = this.previousClip
+            .copy(history.previousViewProjection)
+            .multiply(previous.matrix)
+            .multiply(this.inverseModel)
+            .multiply(this.translation);
         }
         previousClip.toArray(data, (eye * this.stride + index) * 16);
         let pose = history.poses.get(node);

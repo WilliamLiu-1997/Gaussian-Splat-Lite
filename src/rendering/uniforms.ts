@@ -105,6 +105,7 @@ export function makeGenerateUniforms(): Uniforms {
     objectOffset: { value: new THREE.Vector3() },
     objectLnScale: { value: new THREE.Vector3() },
     objectQuaternion: { value: new THREE.Quaternion() },
+    objectReflected: { value: false },
     recolor: { value: new THREE.Vector4(1, 1, 1, 1) },
     numSdfs: { value: 0 },
     numEdits: { value: 0 },

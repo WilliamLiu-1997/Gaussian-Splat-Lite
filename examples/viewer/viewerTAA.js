@@ -1,5 +1,5 @@
 import { TAAPass } from "gaussian-splat-lite";
-import { Matrix4, WebGLCoordinateSystem } from "three";
+import { Matrix4, REVISION, WebGLCoordinateSystem } from "three";
 import { traa } from "three/addons/tsl/display/TRAANode.js";
 import * as N from "three/tsl";
 import { RenderPipeline } from "three/webgpu";
@@ -44,6 +44,7 @@ function createNodeTAA(renderer, scene, camera) {
     camera,
   );
   if (
+    REVISION === "186" &&
     renderer.coordinateSystem === WebGLCoordinateSystem &&
     renderer.reversedDepthBuffer
   ) {

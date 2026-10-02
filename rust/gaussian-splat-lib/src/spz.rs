@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub const SPZ_MAGIC: u32 = 0x5053474e; // "NGSP"
-const SH_C0: f32 = 0.28209479177387814;
+const SH_C0: f32 = 0.282_094_8;
 static ALPHA_LOOKUP: LazyLock<ScalarLookup> =
     LazyLock::new(|| QuantizedProperty::Opacity.lookup(array::from_fn(|b| b as f32 / 255.0)));
 static RGB_LOOKUP: LazyLock<ScalarLookup> = LazyLock::new(|| {
@@ -156,6 +156,15 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         }
         if self.state.is_some() {
             self.poll_sections();
+            if self
+                .state
+                .as_ref()
+                .is_some_and(|state| matches!(state.stage, SpzDecoderStage::Done))
+            {
+                // Legacy v3 extensions follow the splat sections. The gzip
+                // reader still validates their CRC/length; retain none of them.
+                self.buffer_offset = self.buffer.len();
+            }
         }
         Ok(())
     }
@@ -1412,6 +1421,41 @@ mod tests {
         }
         assert_eq!(splats.scales, [1.0, 1.0, 1.0]);
         assert_eq!(splats.quats, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn rejects_zero_count_before_decompressed_legacy_tail() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&SPZ_MAGIC.to_le_bytes());
+        raw.extend_from_slice(&3_u32.to_le_bytes());
+        raw.extend_from_slice(&0_u32.to_le_bytes());
+        raw.extend_from_slice(&[0, 12, 0, 0]);
+        raw.resize(2 * 1024 * 1024, 0);
+        let file = gzip_file(&raw);
+        let mut decoder = SpzDecoder::new(TestSplats::default());
+        assert!(decoder.push(&file).is_err());
+        assert!(decoder.buffer.len() <= decoder.decompressed.len());
+    }
+
+    #[test]
+    fn discards_legacy_v3_extensions_with_bounded_memory_and_validates_crc() {
+        let original = legacy_v3_file();
+        let mut raw =
+            miniz_oxide::inflate::decompress_to_vec(&original[10..original.len() - 8]).unwrap();
+        raw[14] = 2; // v3 extensions flag
+        raw.resize(2 * 1024 * 1024, 0);
+        let file = gzip_file(&raw);
+        let mut decoder = SpzDecoder::new(TestSplats::default());
+        for chunk in file.chunks(17) {
+            decoder.push(chunk).unwrap();
+            assert!(decoder.buffer.len() <= decoder.decompressed.len());
+        }
+        decoder.finish().unwrap();
+        assert_eq!(decoder.into_splats().centers, [1.0, -2.0, 0.5]);
+        let mut corrupt = file;
+        let crc = corrupt.len() - 8;
+        corrupt[crc] ^= 1;
+        assert!(decode_in_chunks(&corrupt, 17).is_err());
     }
 
     #[test]

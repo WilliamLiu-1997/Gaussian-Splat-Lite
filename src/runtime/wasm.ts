@@ -9,6 +9,9 @@ let initialized = false;
 export const WASM_READY = initWasm({ module_or_path: WASM_MODULE }).then(() => {
   initialized = true;
 });
+// Consumers still receive the rejection; loading the module alone must not
+// create an unhandled rejection when WebAssembly initialization fails.
+void WASM_READY.catch(() => {});
 
 export function isInitialized() {
   return initialized;

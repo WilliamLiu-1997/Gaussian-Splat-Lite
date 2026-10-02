@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Requires Node.js 20.9+, Rust via `rustup`, and the `wasm32-unknown-unknown` target.
+Requires Node.js 20.19+ or 22.12+, Rust via `rustup`, and the `wasm32-unknown-unknown` target.
 
 ```bash
 npm ci

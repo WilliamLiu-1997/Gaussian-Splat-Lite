@@ -5,6 +5,7 @@ import {
   type SplatResult,
 } from "../data/defines";
 import { SH_KEYS } from "../data/splatData";
+import { wasmCall } from "../runtime/wasmCall";
 
 /** Reorder packed attributes together and retain their original source indices. */
 export function reorderSplats(
@@ -23,22 +24,24 @@ export function reorderSplats(
     const array = data.extra[key];
     if (array) arrays.push(array);
   }
-  const order = morton_reorder(
-    numSplats,
-    arrays,
-    sortCenters
-      ? new Uint32Array(
-          sortCenters.buffer,
-          sortCenters.byteOffset,
-          sortCenters.length,
-        )
-      : undefined,
-    sourceIds,
-    centerBounds,
-    bounds,
-    boundsBlocks,
-    spatialBounds,
-    onProgress,
+  const order = wasmCall(() =>
+    morton_reorder(
+      numSplats,
+      arrays,
+      sortCenters
+        ? new Uint32Array(
+            sortCenters.buffer,
+            sortCenters.byteOffset,
+            sortCenters.length,
+          )
+        : undefined,
+      sourceIds,
+      centerBounds,
+      bounds,
+      boundsBlocks,
+      spatialBounds,
+      onProgress,
+    ),
   );
   data.sourceIds = order;
   data.centerOnlyBoundingBox = centerBounds;

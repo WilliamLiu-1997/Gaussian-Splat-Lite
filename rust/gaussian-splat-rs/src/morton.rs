@@ -157,6 +157,7 @@ fn report_progress(progress: Option<&Function>, loaded: f64, total: f64) -> Resu
 }
 
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)] // Flat arguments match the WASM/caller interface.
 pub fn morton_reorder(
     count: u32,
     arrays: Array,

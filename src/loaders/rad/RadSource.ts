@@ -359,7 +359,7 @@ export class RadSource {
       if (
         encoding &&
         encoding.toLowerCase() !== "identity" &&
-        (response.status === 206 || !this.allowFullDownload)
+        response.status === 206
       )
         throw new Error(
           "RAD: byte-range resources must use identity Content-Encoding",

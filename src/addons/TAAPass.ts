@@ -217,7 +217,8 @@ export class TAAPass extends Pass {
   private _jitterIndex = 0;
   private readonly _previousViewProjection = new Matrix4();
   private readonly _previousWorld = new Matrix4();
-  private _view: PerspectiveCamera["view"] = null;
+  private readonly _baseProjection = new Matrix4();
+  private readonly _viewMatrix = new Matrix4();
   private readonly _uniforms;
   private readonly _resolveMaterial: ShaderMaterial;
   private readonly _copyMaterial: ShaderMaterial;
@@ -328,34 +329,22 @@ export class TAAPass extends Pass {
   /** Apply this frame's Halton jitter before rendering the input textures. */
   private setViewOffset(): void {
     const { camera } = this;
+    this._baseProjection.copy(camera.projectionMatrix);
+    const [x, y] = jitterOffsets[this._jitterIndex];
     const { x: width, y: height } = this._uniforms.renderSize.value;
-    const view = camera.view;
-    this._view = view;
-    const jitter = jitterOffsets[this._jitterIndex];
-    const viewWidth = view?.enabled ? view.width : width;
-    const viewHeight = view?.enabled ? view.height : height;
-    // setViewOffset() also changes PerspectiveCamera.aspect; preserve framing.
-    camera.view = {
-      enabled: true,
-      fullWidth: view?.enabled ? view.fullWidth : width,
-      fullHeight: view?.enabled ? view.fullHeight : height,
-      offsetX:
-        (view?.enabled ? view.offsetX : 0) + (jitter[0] * viewWidth) / width,
-      offsetY:
-        (view?.enabled ? view.offsetY : 0) + (jitter[1] * viewHeight) / height,
-      width: viewWidth,
-      height: viewHeight,
-    };
-    camera.updateProjectionMatrix();
+    const elements = camera.projectionMatrix.elements;
+    // Translate clip coordinates, preserving custom and off-axis projections.
+    for (let column = 0; column < 16; column += 4) {
+      elements[column] -= ((2 * x) / width) * elements[column + 3];
+      elements[column + 1] += ((2 * y) / height) * elements[column + 3];
+    }
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   }
 
-  /** Restore the camera after the input render and before resolving TAA. */
   private clearViewOffset(): void {
-    // Capture the projection actually used, including Three's first-frame
-    // reversed-depth setup, before restoring the unjittered camera.
     this._uniforms.projection.value.copy(this.camera.projectionMatrix);
-    this.camera.view = this._view;
-    this.camera.updateProjectionMatrix();
+    this.camera.projectionMatrix.copy(this._baseProjection);
+    this.camera.projectionMatrixInverse.copy(this._baseProjection).invert();
   }
 
   /** Render the scene and TAA to the canvas, a target, or the composer's buffer. */
@@ -387,6 +376,7 @@ export class TAAPass extends Pass {
     try {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
+      const reversedDepth = camera.reversedDepth;
       this.setViewOffset();
       try {
         renderer.setRenderTarget(this._source);
@@ -399,6 +389,10 @@ export class TAAPass extends Pass {
         renderer.render(this.scene, camera);
       } finally {
         this.clearViewOffset();
+        // Three may initialize reversed depth during the first draw. Keep its
+        // new depth convention when restoring the unjittered projection.
+        if (camera.reversedDepth !== reversedDepth)
+          camera.updateProjectionMatrix();
       }
 
       const input = this._history[this._historyIndex];
@@ -422,7 +416,7 @@ export class TAAPass extends Pass {
         camera.matrixWorld,
       );
       uniforms.previousViewToView.value.multiplyMatrices(
-        camera.matrixWorldInverse,
+        this._viewMatrix.copy(camera.matrixWorld).invert(),
         this._previousWorld,
       );
       uniforms.depthThreshold.value = this.depthThreshold;
@@ -447,7 +441,7 @@ export class TAAPass extends Pass {
 
       this._previousViewProjection.multiplyMatrices(
         camera.projectionMatrix,
-        camera.matrixWorldInverse,
+        this._viewMatrix,
       );
       this._previousWorld.copy(camera.matrixWorld);
       uniforms.previousProjection.value.copy(uniforms.projection.value);

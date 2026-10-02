@@ -1,7 +1,7 @@
 import { DefaultLoadingManager, type Loader } from "three";
 import type { ReorderedSplatResult, SplatFileType } from "../data/defines";
 import { workerPool } from "../runtime/SplatWorker";
-import { abortable } from "../runtime/abort";
+import { abortable, linkedAbortController } from "../runtime/abort";
 import { getAssetBaseUrl } from "./assetUrl";
 import type {
   SplatFileResolver,
@@ -56,11 +56,14 @@ export async function loadSplatData(
 ): Promise<ReorderedSplatResult> {
   let resolvedURL: string | undefined;
   let started = false;
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal?.reason);
-  signal?.addEventListener("abort", abort, { once: true });
+  const request = linkedAbortController(signal);
+  const { controller } = request;
   try {
     signal?.throwIfAborted();
+    // Snapshot application attributes at the load call, before waiting for a worker.
+    const serializedPostDecode = postDecode
+      ? serializeSplatPostDecode(postDecode)
+      : undefined;
     if (
       [url, file, fileBytes].filter((input) => input !== undefined).length !== 1
     ) {
@@ -101,9 +104,7 @@ export async function loadSplatData(
             hasFileResolver: resolveFile !== undefined,
             reportProcessingProgress: onProgress !== undefined,
             baseUrl: getAssetBaseUrl(requestUrl) ?? resourceUrl,
-            postDecode: postDecode
-              ? serializeSplatPostDecode(postDecode)
-              : undefined,
+            postDecode: serializedPostDecode,
           },
           {
             signal: controller.signal,
@@ -167,7 +168,7 @@ export async function loadSplatData(
     onError?.(error);
     throw error;
   } finally {
-    signal?.removeEventListener("abort", abort);
+    request.cleanup();
     controller.abort();
     if (started) context.manager.itemEnd(resolvedURL ?? "");
   }

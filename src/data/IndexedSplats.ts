@@ -116,7 +116,7 @@ export abstract class IndexedSplats extends Splats {
       count > this.sourceIndices.length ||
       count < this.sourceIndices.length / 4
     ) {
-      const layout = getTextureSize(Math.max(1, Math.ceil(count / 4)));
+      const layout = getTextureSize(Math.max(1, Math.ceil(count / 4)), 1);
       const capacity = layout.maxSplats * 4;
       if (capacity !== this.sourceIndices.length) {
         if (this.indexTexture !== Splats.emptyTexture)
@@ -379,8 +379,13 @@ export abstract class IndexedSplats extends Splats {
   override forEachSplat(callback: Parameters<Splats["forEachSplat"]>[0]) {
     this.assertLive();
     this.ensureIndices();
+    let splat: ReturnType<typeof decodeSplat> | undefined;
+    const records: [Uint32Array, Uint32Array] = [
+      this.sourceArrays[0],
+      this.sourceArrays[1],
+    ];
     for (let index = 0; index < this.numSplats; index++) {
-      const splat = this.getSplat(index, false);
+      splat = decodeSplat(records, this.sourceIndices[index], splat);
       callback(
         index,
         splat.center,

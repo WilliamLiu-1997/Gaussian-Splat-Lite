@@ -59,7 +59,14 @@ function getProjectionJitter(
   const a = jittered.elements;
   const b = base.elements;
   for (let i = 0; i < 16; i++) {
-    if (i !== 8 && i !== 9 && i !== 12 && i !== 13 && a[i] !== b[i]) {
+    if (
+      i !== 8 &&
+      i !== 9 &&
+      i !== 12 &&
+      i !== 13 &&
+      Math.abs(a[i] - b[i]) >
+        4 * Number.EPSILON * Math.max(1, Math.abs(a[i]), Math.abs(b[i]))
+    ) {
       return false;
     }
   }
@@ -107,6 +114,11 @@ export class ProjectedSplats {
   private readonly slotSets = new Map<number, SlotSet>();
   private readonly compilations: Promise<void>[] = [];
   private readonly onSessionStart = () => void this.getSlots(2);
+  private shrinkViews = false;
+  private readonly onSessionEnd = () => {
+    this.shrinkViews = true;
+    this.onKernelsReady?.();
+  };
   private readonly resetCount: ComputeNode;
   private readonly finish: ComputeNode;
   private readonly state: Uniforms;
@@ -193,6 +205,7 @@ export class ProjectedSplats {
       });
     this.compilations.push(this.ready.then(() => this.compileSlots(mono)));
     renderer.xr.addEventListener("sessionstart", this.onSessionStart);
+    renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }
 
   private createSlot(eyeCount = 1): ComputeSlot {
@@ -525,7 +538,9 @@ export class ProjectedSplats {
               Math.ceil((this.capacity * 1.5) / 2048) * 2048,
             ),
           );
-    const viewCapacity = shrink ? views : Math.max(views, this.viewCapacity);
+    const viewCapacity =
+      shrink || this.shrinkViews ? views : Math.max(views, this.viewCapacity);
+    this.shrinkViews = false;
     if (capacity === this.capacity && viewCapacity === this.viewCapacity)
       return;
     const size = getProjectionCacheSize(capacity * viewCapacity, this.limits);
@@ -555,7 +570,7 @@ export class ProjectedSplats {
       // Draw nothing until the kernels for this eye count compile.
       geometry.setIndirect(null);
       geometry.instanceCount = 0;
-      return;
+      return false;
     }
     this.resize(accumulator.numSplats, cameras.length, shrink);
     const { uniforms } = this;
@@ -631,7 +646,7 @@ export class ProjectedSplats {
       inputs.length === this.projectedInputs.length &&
       inputs.every((value, index) => value === this.projectedInputs[index])
     )
-      return;
+      return true;
     // A failed or partially submitted update must not reuse the old snapshot.
     this.projectedInputs = [];
     cameras.forEach((view, eye) => {
@@ -640,6 +655,7 @@ export class ProjectedSplats {
     this.setSortPose(cameras, accumulator);
     this.dispatch(slots, cameras, accumulator, sortMode);
     this.projectedInputs = inputs;
+    return true;
   }
 
   /** Projection uniforms for one eye; eye 0 also serves mono draws. */
@@ -731,6 +747,7 @@ export class ProjectedSplats {
     this.disposed = true;
     this.projectedInputs = [];
     this.renderer.xr.removeEventListener("sessionstart", this.onSessionStart);
+    this.renderer.xr.removeEventListener("sessionend", this.onSessionEnd);
     void Promise.all(this.compilations).then(() => this.disposeResources());
   }
 

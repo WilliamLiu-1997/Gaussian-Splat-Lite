@@ -67,8 +67,6 @@ Include the `velocity` output so TRAA can reproject history during movement. Cam
 
 The passes follow the renderer size automatically. When finished, stop the animation loop and dispose `pipeline`, `taa`, and `scenePass`.
 
-For WebGL2 fallback with `reversedDepthBuffer: true`, also apply the Three.js r186 depth correction in the [viewer example](../examples/viewer/viewerTAA.js). That example includes history reset and on-demand rendering helpers.
-
 ### WebGLRenderer: TAAPass
 
 ```js
@@ -85,7 +83,7 @@ renderer.setAnimationLoop(() => {
 
 `TAAPass` renders the scene itself, so no `RenderPass` or `OutputPass` is needed. It tracks camera movement but not object motion; call `taa.reset()` after a camera cut or scene replacement. See [TAAPass](TAAPass.md) for linear effects, depth effects, and offscreen rendering.
 
-For on-demand rendering with either setup, keep rendering for several frames after camera, model, or streamed-content changes, including the Splat renderer's `onDirty` callback; the viewer uses 32. The [viewer example](../examples/viewer/viewerTAA.js) shows both setups.
+For on-demand rendering with either setup, keep rendering for several frames after camera, model, or streamed-content changes, including the Splat renderer's `onDirty` callback; the viewer uses 32. The repository's `examples/viewer/viewerTAA.js` shows both setups.
 
 ## Control the noise pattern
 
@@ -118,3 +116,5 @@ On WebGL, switching in either direction takes effect once the next update and it
 await splatRenderer.update({ scene, camera });
 renderer.render(scene, camera);
 ```
+
+If you keep TAA running with sorted rendering, set `splatRenderer.depthWrite = true` so TAA can see Splat depth.

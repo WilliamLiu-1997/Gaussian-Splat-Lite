@@ -6,19 +6,41 @@ export type StreamResolutionSource = {
 };
 
 const size = new THREE.Vector2();
+const identity = new THREE.Matrix4();
 
 /**
  * Bring a registered camera's world matrices up to date and report whether it
- * can select detail. A WebXR camera stands for both eyes through the combined
- * frustum Three culls with. It keeps the matrices Three composed from the
- * camera's parent and the eyes, which updating would drop, and has none until
- * its session renders a frame.
+ * can select detail. WebXR uses the eye matrices supplied by Three, preserving
+ * their rig transforms. Wait until the eyes have a projection and viewport.
  */
-export function prepareStreamCamera(camera: THREE.Camera) {
+function prepareStreamCamera(camera: THREE.Camera) {
   const array = camera as THREE.ArrayCamera;
-  if (array.isArrayCamera) return array.cameras.length > 0;
+  if (array.isArrayCamera) {
+    return (
+      array.cameras.length > 0 &&
+      array.cameras.every(
+        (eye) =>
+          (eye.viewport?.z ?? 0) > 0 &&
+          (eye.viewport?.w ?? 0) > 0 &&
+          !eye.projectionMatrix.equals(identity) &&
+          !(eye.matrixWorld.equals(identity) && !eye.matrix.equals(identity)),
+      )
+    );
+  }
   camera.updateWorldMatrix(true, false);
   return true;
+}
+
+/** Capture actual eye poses; the ArrayCamera rig can be unset on its first frame. */
+export function streamViews(cameras: readonly THREE.Camera[]) {
+  const views: THREE.Camera[] = [];
+  for (const camera of cameras) {
+    if (!prepareStreamCamera(camera)) continue;
+    const array = camera as THREE.ArrayCamera;
+    if (array.isArrayCamera) views.push(...array.cameras);
+    else views.push(camera);
+  }
+  return views;
 }
 
 /** Cameras that select a streamed model's detail, with their resolutions. */

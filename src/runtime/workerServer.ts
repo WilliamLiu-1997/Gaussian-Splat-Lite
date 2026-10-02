@@ -1,5 +1,6 @@
 import init_wasm from "gaussian-splat-rs";
 import { getTransferable } from "./transferable";
+import { isMemoryAllocationError, wasmFailure } from "./wasmCall";
 
 /** Start a worker with its own RPC table and WASM instance. */
 export function startWorker(
@@ -11,6 +12,8 @@ export function startWorker(
     const { id, name, args }: { id: unknown; name: string; args: unknown } =
       event.data;
     try {
+      const failure = wasmFailure();
+      if (failure.failed) throw failure.error;
       const handler = rpcHandlers[name] as (
         args: unknown,
         options: { sendStatus: (data: unknown) => void },
@@ -27,11 +30,41 @@ export function startWorker(
         { id, result, wasmMemoryBytes: wasmMemory.buffer.byteLength },
         { transfer: getTransferable(result) },
       );
-    } catch (error) {
-      if (!(error instanceof Error && error.name === "AbortError"))
-        console.warn(`Worker error: ${error}`);
+    } catch (caught) {
+      const failure = wasmFailure();
+      const context = args as {
+        url?: string;
+        pathName?: string;
+        request?: { resourceUrl?: string };
+      };
+      const label =
+        context?.pathName ??
+        context?.url ??
+        context?.request?.resourceUrl ??
+        name;
+      const message = `${label}: ${caught instanceof Error || caught instanceof DOMException ? caught.message : String(caught)}`;
+      // DOMException.message and user errors can be read-only. Never mutate
+      // the thrown object; retain transport/abort types on the new error.
+      const error =
+        caught instanceof DOMException
+          ? new DOMException(message, caught.name)
+          : caught instanceof TypeError
+            ? new TypeError(message)
+            : caught instanceof RangeError
+              ? new RangeError(message)
+              : new Error(message);
+      if (caught instanceof Error && !(error instanceof DOMException)) {
+        error.name = caught.name;
+        error.stack = caught.stack;
+      }
+      if (error.name !== "AbortError") console.warn(`Worker error: ${error}`);
       self.postMessage(
-        { id, error, wasmMemoryBytes: wasmMemory.buffer.byteLength },
+        {
+          id,
+          error,
+          fatal: failure.failed || isMemoryAllocationError(caught),
+          wasmMemoryBytes: wasmMemory.buffer.byteLength,
+        },
         { transfer: getTransferable(error) },
       );
     }

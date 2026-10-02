@@ -105,7 +105,7 @@ void main() {
     vec3 viewCenter = renderToViewScale * quatVec(renderToViewQuat, center) + renderToViewPos;
 
     // Discard splats behind the camera
-    if (viewCenter.z >= 0.0) {
+    if (isPerspectiveMatrix(projectionMatrix) && viewCenter.z >= 0.0) {
         return;
     }
 

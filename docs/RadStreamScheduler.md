@@ -33,7 +33,7 @@ Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed mo
 
 Resolution is in CSS pixels, without the device pixel ratio, so a scene selects the same detail on standard and high-DPI displays. Register several cameras to load detail for all of them; they share one selection at the greatest detail any of them needs.
 
-In WebXR, register `renderer.xr.getCamera()` in place of your camera. Selection uses the combined frustum of both eyes, the one Three.js culls with, sized by an eye's viewport, so no resolution is needed:
+In WebXR, register `renderer.xr.getCamera()` in place of your camera. Detail is selected for each eye at the headset's resolution, so no resolution is needed:
 
 ```js
 const xrCamera = renderer.xr.getCamera();
@@ -84,7 +84,7 @@ Ready pages are written during `update()` without a per-update byte limit. Loadi
 | `group` | Parent group for moving, rotating, scaling, or hiding the scene |
 | `splatBudget` | Positive safe integer; change it at runtime to adjust detail, even while the camera is stationary |
 | `initialized` | Resolves when scene setup is ready; rejects invalid or unsupported input |
-| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; keep calling `update()` while waiting |
+| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while waiting |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that selects detail; `hasCamera(camera)` and `cameras` list them |
 | `setResolution(camera, width, height)` | Set a registered camera's render size in CSS pixels; also accepts a `THREE.Vector2` |
 | `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's resolution from `renderer.getSize()` |
@@ -105,3 +105,9 @@ if (hits.length && hits[0].index !== undefined) {
   console.log(nodeIndex, hits[0].point);
 }
 ```
+
+## Error recovery
+
+Temporary download failures and lost decoder workers are retried automatically, waiting longer after each attempt, up to 30 seconds. Retryable HTTP errors are 408, 425, 429, and 5xx. Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and not retried. Each retry calls `onChange`, so on-demand render loops resume loading once the connection returns.
+
+If LOD selection or preparation fails, or the LOD worker is lost during page loading, `onError` is called and the scene keeps its current detail but stops refining; create a new scheduler to try again.

@@ -149,6 +149,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const objectOffset = bindUniform("objectOffset", "vec3");
   const objectLnScale = bindUniform("objectLnScale", "vec3");
   const objectQuaternion = bindUniform("objectQuaternion", "vec4");
+  const objectReflected = bindUniform("objectReflected", "bool");
   const recolor = bindUniform("recolor", "vec4");
   const numSdfs = bindUniform("numSdfs", "int");
   const numEdits = bindUniform("numEdits", "int");
@@ -274,7 +275,12 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
       const sourceViewDirection = quatVec(
         inverseObjectQuaternion,
         center.add(objectOffset),
-      ).normalize();
+      )
+        .normalize()
+        .toVar();
+      N.If(objectReflected, () => {
+        sourceViewDirection.x.negateAssign();
+      });
       rgb.addAssign(evaluateSH(coord, sourceViewDirection));
     });
   };
@@ -338,9 +344,11 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
         valid.assign(true);
         center.assign(objectBasis.mul(decodeCenter(sourceA)));
         lnScales.assign(decodeLnScales(sourceB).add(objectLnScale));
-        quaternion.assign(
-          quatQuat(objectQuaternion, decodeQuaternion(sourceB.w)),
-        );
+        const sourceQuaternion = decodeQuaternion(sourceB.w).toVar();
+        N.If(objectReflected, () => {
+          sourceQuaternion.yz.negateAssign();
+        });
+        quaternion.assign(quatQuat(objectQuaternion, sourceQuaternion));
         rgba.assign(decodeRgba(sourceB, alphaShape.x));
         shapeAmount.assign(alphaShape.y);
 
@@ -406,8 +414,15 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                 ).toVar();
                 const flags = data0.w;
                 const sdfCenter = N.uintBitsToFloat(data0.xyz);
-                const sdfQuaternion = N.uintBitsToFloat(data1);
-                const sdfScale = N.uintBitsToFloat(data2.xyz);
+                const data5 = load2D(sdfTexture, N.ivec2(N.int(5), sdfIndex));
+                N.If(N.uintBitsToFloat(data5.w).lessThanEqual(0), () => {
+                  N.Continue();
+                });
+                const sdfBasis = N.mat3(
+                  N.uintBitsToFloat(data1.xyz),
+                  N.uintBitsToFloat(data2.xyz),
+                  N.uintBitsToFloat(data5.xyz),
+                );
                 // These expressions are shared by mutually exclusive branches.
                 // Materialize them here so TSL cannot first cache them in just
                 // one shape/blend branch and leave the others uninitialized.
@@ -419,10 +434,8 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                   N.select(flags.bitAnd(0x40000).notEqual(N.uint(0)), 1, 0),
                   N.select(flags.bitAnd(0x80000).notEqual(N.uint(0)), 1, 0),
                 ).toVar();
-                const sdfPosition = quatVec(
-                  sdfQuaternion,
-                  editPosition.mul(sdfScale),
-                )
+                const sdfPosition = sdfBasis
+                  .mul(editPosition)
                   .add(sdfCenter)
                   .toVar();
                 const sdfType = flags.bitAnd(0xff);
@@ -495,6 +508,7 @@ export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
                     );
                   });
 
+                distance.mulAssign(N.uintBitsToFloat(data5.w));
                 N.If(flags.bitAnd(0x100).notEqual(N.uint(0)), () => {
                   distance.negateAssign();
                 });

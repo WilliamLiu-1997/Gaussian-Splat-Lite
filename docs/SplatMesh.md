@@ -58,6 +58,8 @@ Choose at most one of `url`, `file`, `fileBytes`, or `splats`; mixing inputs thr
 | `splats` | `Splats \| undefined` | Current underlying Splat data |
 | `needsUpdate` | `boolean` setter | Set to `true` to force a refresh; `false` does nothing |
 
+When the mesh's `Splats` is reinitialized, `initialized` and `isInitialized` follow the new load, and `onLoad` runs again once it finishes.
+
 ## Common methods
 
 ```ts

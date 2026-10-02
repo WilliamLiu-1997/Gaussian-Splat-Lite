@@ -1,6 +1,7 @@
 import { type ChunkDecoder, decode_to_splats } from "gaussian-splat-rs";
 import type { ReorderedSplatResult, SplatResult } from "../data/defines";
 import { abortable } from "../runtime/abort";
+import { wasmCall, wasmFree } from "../runtime/wasmCall";
 import { getAssetBaseUrl } from "./assetUrl";
 import type {
   SplatFileInput,
@@ -88,7 +89,7 @@ async function decodeInput(args: DecodeArgs): Promise<PostDecodeSplatData> {
     const response = await fetch(request);
     if (!response.ok || !response.body) {
       throw new Error(
-        `Failed to fetch "${url}": ${response.status} ${response.statusText}`,
+        `HTTP ${response.status} loading "${url}": ${response.statusText}`,
       );
     }
     responseBody = response.body;
@@ -171,9 +172,15 @@ async function decodeInput(args: DecodeArgs): Promise<PostDecodeSplatData> {
           : await loadSog(streamingArgs);
       }
     }
-    decoder = decode_to_splats(fileType, pathName ?? url);
+    args.signal?.throwIfAborted();
+    const activeDecoder = wasmCall(() =>
+      decode_to_splats(fileType, pathName ?? url),
+    );
+    decoder = activeDecoder;
     if (expectedInputLength > 0) {
-      decoder.set_expected_input_size(expectedInputLength);
+      wasmCall(() =>
+        activeDecoder.set_expected_input_size(expectedInputLength),
+      );
     }
 
     while (true) {
@@ -187,7 +194,7 @@ async function decodeInput(args: DecodeArgs): Promise<PostDecodeSplatData> {
         );
       }
       sendStatus({ loaded, total: streamLength });
-      decoder.push(value);
+      wasmCall(() => activeDecoder.push(value));
     }
 
     if (expectedInputLength > 0 && loaded !== expectedInputLength) {
@@ -202,12 +209,12 @@ async function decodeInput(args: DecodeArgs): Promise<PostDecodeSplatData> {
 
     const complete = decoder;
     decoder = undefined;
-    return complete.finish();
+    return wasmCall(() => complete.finish());
   } catch (error) {
     await streamReader?.cancel(error).catch(() => {});
     throw error;
   } finally {
-    decoder?.free();
+    wasmFree(decoder);
     streamReader?.releaseLock();
   }
 }

@@ -511,7 +511,49 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
   }
 
+  private reportedRenderError = "";
+  private runAutomaticUpdate(request: UpdateRequest) {
+    try {
+      void this.updateInternal(request).catch((error) =>
+        this.reportRenderError(error),
+      );
+    } catch (error) {
+      this.reportRenderError(error);
+    }
+  }
+  private readonly viewportSize = new THREE.Vector4();
+
+  private reportRenderError(error: unknown) {
+    const message = String(error);
+    if (message !== this.reportedRenderError) {
+      this.reportedRenderError = message;
+      console.error("Gaussian Splat render failed", error);
+    }
+  }
+
   onBeforeRender(
+    renderer: GaussianSplatCompatibleRenderer,
+    scene: THREE.Scene,
+    camera: THREE.Camera,
+  ) {
+    try {
+      this.prepareDraw(renderer, scene, camera);
+    } catch (error) {
+      this.reportRenderError(error);
+      if (this.backend.kind !== "webgl") this.backend.velocity.restore();
+      this.geometry.setIndirect(null);
+      this.geometry.instanceCount = 0;
+    } finally {
+      // Generation can render nested quads, advancing Three's render counter.
+      this.lastFrame = getRenderFrame(renderer);
+    }
+  }
+
+  override onAfterRender() {
+    if (this.backend.kind !== "webgl") this.backend.velocity.restore();
+  }
+
+  private prepareDraw(
     renderer: GaussianSplatCompatibleRenderer,
     scene: THREE.Scene,
     camera: THREE.Camera,
@@ -538,11 +580,14 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const currentRenderTarget = renderer.getRenderTarget();
     if (currentRenderTarget) {
       this.renderSize.set(
-        currentRenderTarget.width,
-        currentRenderTarget.height,
+        currentRenderTarget.viewport.z,
+        currentRenderTarget.viewport.w,
       );
     } else {
-      renderer.getDrawingBufferSize(this.renderSize);
+      renderer.getViewport(this.viewportSize);
+      this.renderSize
+        .set(this.viewportSize.z, this.viewportSize.w)
+        .multiplyScalar(renderer.getPixelRatio());
     }
 
     const xrView = isXRCamera(camera, renderer);
@@ -579,11 +624,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         shrinkResources: false,
       };
       if (preUpdate) {
-        this.updateInternal(updateRequest);
+        this.runAutomaticUpdate(updateRequest);
       } else if (this.updateTimeoutId === -1) {
         this.updateTimeoutId = setTimeout(() => {
           this.updateTimeoutId = -1;
-          this.updateInternal(updateRequest);
+          this.runAutomaticUpdate(updateRequest);
         }, 0);
       }
     }
@@ -641,7 +686,10 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     configureSplatOutput(renderer, currentRenderTarget, this.uniforms);
 
     if (this.backend.kind !== "webgl") {
-      const enabled = this.backend.renderer.getMRT()?.has("velocity") === true;
+      const mrt = this.backend.renderer.getMRT();
+      const enabled = mrt?.has("velocity") === true;
+      if (enabled && mrt)
+        this.backend.velocity.configure(mrt, this.material.premultipliedAlpha);
       this.uniforms.velocityEnabled.value = enabled;
       this.backend.velocity.accumulator = display;
       (this.material as SplatNodeMaterial).mrtNode = enabled
@@ -654,7 +702,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       if (this.backend.precompile) {
         geometry.instanceCount = 0;
       } else {
-        this.backend.projection.render(
+        const projected = this.backend.projection.render(
           display,
           camera,
           geometry,
@@ -662,7 +710,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
           this.fastSort,
           this.pendingProjectionShrink,
         );
-        this.pendingProjectionShrink = false;
+        if (projected) this.pendingProjectionShrink = false;
       }
     } else {
       const splatTextures = display.getTextures();
@@ -677,7 +725,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   clearSplats() {
     this.activeSplats = 0;
     this.display.numSplats = 0;
-    if (this.backend.kind === "webgpu") this.display.mapping = [];
+    this.display.mapping = [];
     this.syncStochasticFrame();
     this.setDirty();
   }
@@ -690,6 +738,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     camera: THREE.Camera;
   }) {
     assertSupportedCamera(camera, this.renderer);
+    this.reportedRenderError = "";
     if (this.backend.kind === "webgpu") {
       await this.backend.precompile;
       if (this.backend.sortError) throw this.backend.sortError;
@@ -710,6 +759,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     camera: THREE.Camera;
   }) {
     assertSupportedCamera(camera, this.renderer);
+    this.reportedRenderError = "";
     if (this.backend.kind !== "webgl") this.backend.velocity.shrink();
     await this.updateInternal({
       scene,
@@ -824,14 +874,17 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       .setFromMatrixColumn(camera.matrixWorld, 2)
       .normalize()
       .negate();
+    const moveTolerance =
+      0.001 * getCameraWorldScale(getViews(updateCamera)[0]);
     const viewChanged =
       mode !== this.sortedMode ||
       (mode === "back" &&
         (this.sortRadial !== this.sortedRadial ||
           this.fastSort !== this.sortedFastSort)) ||
-      center.distanceTo(this.sortedCenter) >
-        0.001 * getCameraWorldScale(getViews(updateCamera)[0]) ||
-      direction.dot(this.sortedDir) < 0.999;
+      center.distanceTo(this.sortedCenter) > moveTolerance ||
+      (mode !== "identity" &&
+        (mode === "front" || !this.sortRadial) &&
+        direction.dot(this.sortedDir) < 0.999);
 
     const previousVersion = this.current.version;
     let preparation: ReturnType<SplatAccumulator["prepareGenerate"]>;
@@ -853,12 +906,17 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       shrinkResources &&
       this.backend.getOrderingCapacity(requiredMaxSplats) < this.maxSplats;
     const doUpdate =
-      shrinkResources || viewChanged || version !== previousVersion;
+      shrinkResources ||
+      mode !== this.sortedMode ||
+      center.distanceTo(this.current.viewOrigin) > moveTolerance ||
+      version !== previousVersion;
     const needsSort = orderingNeedsShrink || viewChanged || sortUpdated;
     // Unsorted stochastic draws read source indices directly.
     const skipSort = mode === "identity";
 
     if (!doUpdate) {
+      this.current.viewDirection.copy(direction);
+      this.sortDirty ||= needsSort;
       this.releaseAccumulator(next);
     } else {
       try {
@@ -973,10 +1031,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     const nextSortTime = this.lastSortTime
       ? this.lastSortTime + this.minSortIntervalMs
       : now;
-    if (!forceSort && now < nextSortTime) {
-      await new Promise((resolve) => setTimeout(resolve, nextSortTime - now));
-      if (this.disposed) return;
-    }
 
     this.sorting = true;
     this.sortDirty = false;
@@ -1002,8 +1056,27 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       }
 
       const stateRevision = this.sortStateRevision;
-      if (this.uploadedSortStateRevision !== stateRevision) {
-        const { payload, commit } = this.sortCenterCache.prepare(current);
+      const stateUpdate =
+        this.uploadedSortStateRevision !== stateRevision
+          ? this.sortCenterCache.prepare(current)
+          : undefined;
+      const cameraPosition = current.viewOrigin.toArray() as [
+        number,
+        number,
+        number,
+      ];
+      const direction = current.viewDirection.toArray() as [
+        number,
+        number,
+        number,
+      ];
+      if (!forceSort && now < nextSortTime) {
+        await new Promise((resolve) => setTimeout(resolve, nextSortTime - now));
+        if (this.disposed) return;
+      }
+      this.lastSortTime = performance.now();
+      if (stateUpdate) {
+        const { payload, commit } = stateUpdate;
         await sortWorker.call("setSortCenterState", payload);
         if (this.disposed) return;
         commit();
@@ -1015,16 +1088,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         "sortCenters32",
         {
           numSplats,
-          cameraPosition: current.viewOrigin.toArray() as [
-            number,
-            number,
-            number,
-          ],
-          direction: current.viewDirection.toArray() as [
-            number,
-            number,
-            number,
-          ],
+          cameraPosition,
+          direction,
           radial: sortRadial,
           fastSort,
           frontSort: mode !== "back",
@@ -1049,8 +1114,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
           ? previousOrdering
           : new Uint32Array(this.maxSplats);
 
-      this.sortedCenter.copy(current.viewOrigin);
-      this.sortedDir.copy(current.viewDirection);
+      this.sortedCenter.fromArray(cameraPosition);
+      this.sortedDir.fromArray(direction);
       this.sortedRadial = sortRadial;
       this.sortedFastSort = fastSort;
       this.sortedMode = mode;
@@ -1075,7 +1140,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       throw error;
     } finally {
       this.sorting = false;
-      if (!this.disposed && this.sortDirty) this.setDirty();
     }
   }
 

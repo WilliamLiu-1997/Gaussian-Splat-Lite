@@ -74,8 +74,37 @@ function validateSplatMeshInitializationInputs(options: SplatMeshOptions) {
 
 /** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
 export class SplatMesh extends THREE.Object3D {
-  initialized: Promise<SplatMesh>;
-  isInitialized = false;
+  private lastInitialization?: Promise<Splats>;
+  private readiness!: Promise<SplatMesh>;
+  private onLoad?: SplatMeshOptions["onLoad"];
+
+  get isInitialized() {
+    return this.splats?.isInitialized ?? false;
+  }
+
+  get initialized(): Promise<SplatMesh> {
+    const source = this.splats;
+    if (!source) return Promise.resolve(this);
+    const pending = source.initialized;
+    if (pending !== this.lastInitialization) {
+      this.lastInitialization = pending;
+      this.readiness = pending.then(
+        async () => {
+          if (pending !== this.splats?.initialized) return this.initialized;
+          this.numSplats = source.getNumSplats();
+          this.updateMappingVersion();
+          await this.onLoad?.(this);
+          return this;
+        },
+        (error) => {
+          if (pending !== this.splats?.initialized) return this.initialized;
+          throw error;
+        },
+      );
+      void this.readiness.catch(() => {});
+    }
+    return this.readiness;
+  }
 
   splats?: Splats;
 
@@ -103,8 +132,6 @@ export class SplatMesh extends THREE.Object3D {
   private lastMatrixWorld = new THREE.Matrix4();
   private hasLastMatrixWorld = false;
   private lastRecolor = new THREE.Vector4().setScalar(Number.NaN);
-  private viewOrigin = new THREE.Vector3();
-  private lastViewOrigin = new THREE.Vector3().setScalar(Number.NaN);
   private sdfCoordinateOrigin = new THREE.Vector3();
 
   constructor(options: SplatMeshOptions = {}) {
@@ -133,21 +160,8 @@ export class SplatMesh extends THREE.Object3D {
     this.minRaycastOpacity = options.minRaycastOpacity ?? 0.15;
     this.onFrame = options.onFrame;
 
-    if (!this.splats.isInitialized) {
-      this.initialized = this.splats.initialized.then(async () => {
-        this.numSplats = this.splats?.getNumSplats() ?? 0;
-        this.updateMappingVersion();
-        this.isInitialized = true;
-        await options.onLoad?.(this);
-        return this;
-      });
-    } else {
-      this.isInitialized = true;
-      this.initialized = Promise.resolve(options.onLoad?.(this)).then(
-        () => this,
-      );
-    }
-    void this.initialized.catch(() => {});
+    this.onLoad = options.onLoad;
+    void this.initialized;
   }
 
   forEachSplat(
@@ -170,6 +184,8 @@ export class SplatMesh extends THREE.Object3D {
     this.sdfEdits = null;
     this.splats?.dispose();
     this.splats = undefined;
+    this.numSplats = 0;
+    this.updateMappingVersion();
   }
 
   /** Copy cached local bounds; false includes scale/rotation and shape at source alpha 0.01. */
@@ -191,6 +207,8 @@ export class SplatMesh extends THREE.Object3D {
     if (!source) {
       return;
     }
+    // Follow source reinitialization even when callers only keep rendering.
+    void this.initialized;
     let updated = false;
     let centersUpdated = false;
     let transformUpdated = false;
@@ -214,15 +232,6 @@ export class SplatMesh extends THREE.Object3D {
     if (this.maxSh !== this.lastMaxSh) {
       this.lastMaxSh = this.maxSh;
       updated = true;
-    }
-    if (this.maxSh > 0 && source.getNumSh() > 0) {
-      // The renderer has updated the camera; WebXR eyes must not recompute.
-      this.viewOrigin.setFromMatrixPosition(camera.matrixWorld);
-      if (!this.viewOrigin.equals(this.lastViewOrigin)) {
-        this.lastViewOrigin.copy(this.viewOrigin);
-        // Directional SH changes appearance but never changes splat depth.
-        updated = true;
-      }
     }
 
     this.updateWorldMatrix(true, false);

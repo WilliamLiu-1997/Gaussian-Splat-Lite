@@ -350,9 +350,9 @@ impl SplatReceiver for SplatsData {
 
     fn set_opacity(&mut self, base: usize, count: usize, opacity: &[f32]) {
         self.prepare_buffer(base, count, 0, false);
-        for i in 0..count {
+        for (i, value) in opacity.iter().enumerate().take(count) {
             let i4 = i * 4;
-            encode_splat_opacity(&mut self.buffer_a[i4..i4 + 4], opacity[i]);
+            encode_splat_opacity(&mut self.buffer_a[i4..i4 + 4], *value);
         }
     }
 
@@ -491,8 +491,13 @@ impl SplatReceiver for SplatsData {
         let offsets = [0, 3, 8, 15];
         let (start, end) = (offsets[band - 1], offsets[band]);
         let outputs = [&self.sh1, &self.sh2, &self.sh3a, &self.sh3b];
-        for block in start / 4..=(end - 1) / 4 {
-            let Some(output) = outputs[block] else {
+        for (block, output) in outputs
+            .iter()
+            .enumerate()
+            .take((end - 1) / 4 + 1)
+            .skip(start / 4)
+        {
+            let Some(output) = output else {
                 continue;
             };
             let first = start.max(block * 4);
