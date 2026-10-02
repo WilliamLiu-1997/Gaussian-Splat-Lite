@@ -8,7 +8,7 @@
 
 **Three.js Gaussian Splatting · WebGPU · Streaming**
 
-Gaussian Splatting renderer for **Three.js**, with **WebGPU/WebGL2** and **large-scene streaming**. Load PLY/SPZ/SOG/RAD models, combine them with regular 3D objects, and explore large scenes as detail loads around the camera.
+High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **WebGPU**/**WebGL2**. Supports PLY, SPZ, Streaming LOD including SOG and RAD.
 
 <div align="center">
 
