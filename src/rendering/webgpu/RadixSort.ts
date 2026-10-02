@@ -19,8 +19,13 @@ export const RADIX_SORT_MODE_IDS = {
   fast: 1,
   front: 2,
 } as const satisfies Record<RadixSortMode, number>;
+/**
+ * Input key of an absent record. The first pass drops these records and
+ * compacts the rest in input order, so the output order is deterministic.
+ */
+export const INVALID_SORT_KEY = 0xffffffff;
 
-const RADIX_BITS = 4;
+const RADIX_BITS = 8;
 const RADIX_BUCKETS = 1 << RADIX_BITS;
 const RADIX_PASSES = 32 / RADIX_BITS;
 const MODE_PASSES = {
@@ -38,7 +43,7 @@ const PREFIX_LEVELS = 3;
 type BufferRef = { value: StorageBufferAttribute };
 
 type WebGPURadixSortOptions = {
-  /** GPU count of compact input records. */
+  /** GPU count of input keys other than INVALID_SORT_KEY. */
   count: Node<"uint">;
   /** RADIX_SORT_MODE_IDS value matching the input key encoding. */
   mode: Node<"uint">;
@@ -95,9 +100,7 @@ function makeHistogramTask({
     const tid = N.invocationLocalIndex;
     const workgroup = workgroupIndex();
 
-    N.If(tid.lessThan(RADIX_BUCKETS), () => {
-      N.atomicStore(histogram.element(tid), N.uint(0));
-    });
+    N.atomicStore(histogram.element(tid), N.uint(0));
     N.workgroupBarrier();
 
     N.Loop(
@@ -114,18 +117,22 @@ function makeHistogramTask({
           .add(tid);
         N.If(index.lessThan(elementCount), () => {
           const key = inputKeys.element(index).toVar();
-          const digit = key.shiftRight(bit).bitAnd(RADIX_BUCKETS - 1);
-          N.atomicAdd(histogram.element(digit), N.uint(1));
+          const tally = () => {
+            const digit = key.shiftRight(bit).bitAnd(RADIX_BUCKETS - 1);
+            N.atomicAdd(histogram.element(digit), N.uint(1));
+          };
+          // The first pass drops absent records.
+          if (bitOffset === 0)
+            N.If(key.notEqual(N.uint(INVALID_SORT_KEY)), tally);
+          else tally();
         });
       },
     );
 
     N.workgroupBarrier();
-    N.If(tid.lessThan(RADIX_BUCKETS), () => {
-      sums
-        .element(tid.mul(workgroupCount).add(workgroup))
-        .assign(N.atomicLoad(histogram.element(tid)));
-    });
+    sums
+      .element(tid.mul(workgroupCount).add(workgroup))
+      .assign(N.atomicLoad(histogram.element(tid)));
   })()
     .computeKernel([WORKGROUP_SIZE])
     .setName("Splat radix histogram");
@@ -240,7 +247,6 @@ function makeReorderTask({
   prefixAttribute,
   elementCount,
   bitOffset,
-  firstPass,
   lastPass,
   workgroupCount,
 }: {
@@ -251,7 +257,6 @@ function makeReorderTask({
   prefixAttribute: BufferRef;
   elementCount: Node<"uint">;
   bitOffset: number;
-  firstPass: boolean;
   lastPass: boolean | Node<"bool">;
   workgroupCount: Node<"uint">;
 }) {
@@ -281,14 +286,12 @@ function makeReorderTask({
     const word = tid.shiftRight(5);
     const bit = tid.bitAnd(31);
 
-    N.If(tid.lessThan(RADIX_BUCKETS), () => {
-      digitOffsets
-        .element(tid)
-        .assign(prefix.element(tid.mul(workgroupCount).add(workgroup)));
-    });
-    N.If(tid.lessThan(RADIX_BUCKETS * 8), () => {
-      N.atomicStore(digitMasks.element(tid), N.uint(0));
-    });
+    digitOffsets
+      .element(tid)
+      .assign(prefix.element(tid.mul(workgroupCount).add(workgroup)));
+    // Each thread clears one mask word per group of WORKGROUP_SIZE words.
+    for (let offset = 0; offset < RADIX_BUCKETS * 8; offset += WORKGROUP_SIZE)
+      N.atomicStore(digitMasks.element(tid.add(offset)), N.uint(0));
     N.workgroupBarrier();
 
     N.Loop(
@@ -303,14 +306,19 @@ function makeReorderTask({
           .mul(ELEMENTS_PER_WORKGROUP)
           .add(round.mul(WORKGROUP_SIZE))
           .add(tid);
-        const valid = index.lessThan(elementCount);
+        const valid = index.lessThan(elementCount).toVar();
         const key = N.uint(0).toVar();
         const digit = N.uint(0).toVar();
-        const value = index.toVar();
+        const value = N.uint(0).toVar();
         N.If(valid, () => {
           key.assign(inputKeys.element(index));
+          // Absent records take no rank or output slot.
+          if (bitOffset === 0)
+            valid.assign(key.notEqual(N.uint(INVALID_SORT_KEY)));
+        });
+        N.If(valid, () => {
           digit.assign(key.shiftRight(bitOffsetNode).bitAnd(RADIX_BUCKETS - 1));
-          if (!firstPass) value.assign(inputValues.element(index));
+          value.assign(inputValues.element(index));
           N.atomicOr(
             digitMasks.element(word.mul(RADIX_BUCKETS).add(digit)),
             N.uint(1).shiftLeft(bit),
@@ -361,26 +369,24 @@ function makeReorderTask({
         N.If(round.lessThan(ELEMENTS_PER_THREAD - 1), () => {
           // Finish all rank reads before updating offsets and clearing masks.
           N.workgroupBarrier();
-          N.If(tid.lessThan(RADIX_BUCKETS), () => {
-            const count = N.uint(0).toVar();
-            N.Loop(
-              {
-                start: N.uint(0),
-                end: N.uint(8),
-                type: "uint",
-                condition: "<",
-              },
-              ({ i: maskWord }) => {
-                const maskIndex = maskWord.mul(RADIX_BUCKETS).add(tid);
-                count.addAssign(
-                  N.countOneBits(
-                    N.atomicAnd(digitMasks.element(maskIndex), N.uint(0)),
-                  ),
-                );
-              },
-            );
-            digitOffsets.element(tid).addAssign(count);
-          });
+          const count = N.uint(0).toVar();
+          N.Loop(
+            {
+              start: N.uint(0),
+              end: N.uint(8),
+              type: "uint",
+              condition: "<",
+            },
+            ({ i: maskWord }) => {
+              const maskIndex = maskWord.mul(RADIX_BUCKETS).add(tid);
+              count.addAssign(
+                N.countOneBits(
+                  N.atomicAnd(digitMasks.element(maskIndex), N.uint(0)),
+                ),
+              );
+            },
+          );
+          digitOffsets.element(tid).addAssign(count);
           N.workgroupBarrier();
         });
       },
@@ -390,7 +396,11 @@ function makeReorderTask({
     .setName("Splat radix reorder");
 }
 
-/** Stable 16-, 24- or 32-bit radix sort. Borrows and overwrites input keys; their owner manages storage. */
+/**
+ * Stable 16-, 24- or 32-bit radix sort. The first pass compacts records whose
+ * key is not INVALID_SORT_KEY, with the values the caller wrote to
+ * `inputValues`. Borrows and overwrites input keys; their owner manages storage.
+ */
 export class WebGPURadixSort {
   capacity: number;
   readonly maxCapacity: number;
@@ -407,6 +417,8 @@ export class WebGPURadixSort {
     1,
   );
   private readonly prefixLevels: PrefixLevel[] = [];
+  // Mode of the last prepared sort; its pass count selects the output buffer.
+  private mode: RadixSortMode = "full";
   private readonly maxWorkgroups: number;
   // Per mode, the dispatch list for each prefix depth.
   private readonly dispatchNodes: Record<RadixSortMode, ComputeNode[][]>;
@@ -434,7 +446,16 @@ export class WebGPURadixSort {
     this.blockSums = makeBufferRef(histogramCount);
     const counts = storage(this.counts, "gslRadixCounts").toReadOnly();
     this.createPrefixLevels(histogramCount, counts);
-    const setup = this.makeSetupTask(options.count);
+    // The first pass reads every input record; later passes read only the
+    // valid records it compacted.
+    const inputSetup = this.makeSetupTask(
+      this.elementCount,
+      "Splat radix input setup",
+    );
+    const compactSetup = this.makeSetupTask(
+      options.count.min(this.elementCount),
+      "Splat radix compact setup",
+    );
     // Prebuild dispatch lists for every supported prefix depth. Choosing a
     // smaller list only omits work; it never creates or recompiles a node.
     const prefixNodes = this.prefixLevels.map((_, lastLevel) => {
@@ -447,14 +468,13 @@ export class WebGPURadixSort {
       }
       return nodes;
     });
-    this.nodes = [setup, ...prefixNodes[PREFIX_LEVELS - 1]];
+    this.nodes = [inputSetup, compactSetup, ...prefixNodes[PREFIX_LEVELS - 1]];
     this.dispatchNodes = {
-      full: prefixNodes.map(() => [setup]),
-      fast: prefixNodes.map(() => [setup]),
-      front: prefixNodes.map(() => [setup]),
+      full: prefixNodes.map(() => [inputSetup]),
+      fast: prefixNodes.map(() => [inputSetup]),
+      front: prefixNodes.map(() => [inputSetup]),
     };
     for (let pass = 0; pass < RADIX_PASSES; pass++) {
-      const firstPass = pass === 0;
       const inputIndex = pass & 1;
       const outputIndex = inputIndex ^ 1;
       const histogram = makeHistogramTask({
@@ -473,7 +493,6 @@ export class WebGPURadixSort {
         elementCount: counts.element(0),
         workgroupCount: counts.element(1),
         bitOffset: pass * RADIX_BITS,
-        firstPass,
         lastPass:
           pass === RADIX_PASSES - 1
             ? true
@@ -488,6 +507,7 @@ export class WebGPURadixSort {
       this.nodes.push(histogram, reorder);
       for (let level = 0; level < PREFIX_LEVELS; level++) {
         const nodes = [histogram, ...prefixNodes[level], reorder];
+        if (pass === 0) nodes.push(compactSetup);
         for (const mode of MODES)
           if (pass < MODE_PASSES[mode])
             this.dispatchNodes[mode][level].push(...nodes);
@@ -495,9 +515,14 @@ export class WebGPURadixSort {
     }
   }
 
+  /** Values the caller writes for valid input records; sorting overwrites them. */
+  get inputValues() {
+    return this.values[0].value;
+  }
+
   get ordering() {
-    // All modes use an even pass count, leaving values in the first buffer.
-    return this.values[RADIX_PASSES & 1].value;
+    // Each pass writes the other value buffer.
+    return this.values[MODE_PASSES[this.mode] & 1].value;
   }
 
   private validateCapacity(capacity: number) {
@@ -516,7 +541,7 @@ export class WebGPURadixSort {
     return width * Math.ceil(groups / this.maxWorkgroups);
   }
 
-  private makeSetupTask(gpuCount: Node<"uint">) {
+  private makeSetupTask(inputCount: Node<"uint">, name: string) {
     const counts = storage(this.counts, "gslRadixCounts");
     const dispatchBuffers = [
       this.sortDispatch,
@@ -525,7 +550,7 @@ export class WebGPURadixSort {
     const maxWorkgroups = N.uint(this.maxWorkgroups);
 
     return N.Fn(() => {
-      const count = gpuCount.min(this.elementCount).toVar();
+      const count = inputCount.toVar();
       counts.element(0).assign(count);
       let itemCount = count;
       for (let index = 0; index < dispatchBuffers.length; index++) {
@@ -558,7 +583,7 @@ export class WebGPURadixSort {
       }
     })()
       .compute(1, [1])
-      .setName("Splat radix indirect setup");
+      .setName(name);
   }
 
   private replaceBuffer(buffer: BufferRef, count: number) {
@@ -620,7 +645,10 @@ export class WebGPURadixSort {
     this.capacity = requiredCapacity;
   }
 
-  /** Prepare the persistent graph; GPU count is clamped to this input bound. */
+  /**
+   * Prepare the persistent graph for this many input records. The GPU count
+   * of valid records is clamped to it.
+   */
   prepare(elementCount: number, mode: RadixSortMode): ComputeNode[] {
     if (
       !Number.isSafeInteger(elementCount) ||
@@ -631,6 +659,7 @@ export class WebGPURadixSort {
         "Sort count must be an integer within buffer capacity",
       );
     }
+    this.mode = mode;
     if (elementCount === 0) return [];
     this.elementCount.value = elementCount;
     // The CPU knows an upper bound, while the live count stays on the GPU.

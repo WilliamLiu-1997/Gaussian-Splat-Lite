@@ -342,8 +342,11 @@ export class SplatAccumulator {
     scene.traverseVisible((node) => {
       // Mesh opacity is the final multiplier after SDF opacity edits, so zero
       // remains fully transparent even when an SDF sets or adds opacity.
+      // Meshes without data reserve no range: native sorting reads every
+      // index below numSplats.
       if (
         node instanceof SplatMesh &&
+        node.splats &&
         (layerMask & node.layers.mask) !== 0 &&
         node.opacity > 0
       ) {

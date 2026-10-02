@@ -18,6 +18,7 @@ import { splatViewportUniforms } from "../tsl/viewUniforms";
 import { type Uniforms, makeGenerateUniforms } from "../uniforms";
 import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache";
 import {
+  INVALID_SORT_KEY,
   RADIX_SORT_MODE_IDS,
   type RadixSortMode,
   WebGPURadixSort,
@@ -242,11 +243,23 @@ export class ProjectedSplats {
     const centerRange = u("clipXY", "float").abs().max(1).mul(1.000001);
     const keys = bindBuffer(this.keys);
     const seeds = bindBuffer(this.seeds);
+    // Compact slot of each mapped Splat, read by the first sort pass.
+    const sortValues = N.storage(this.sorter.inputValues, "uint")
+      .setName("gslSortInputValues")
+      .onObjectUpdate(() => this.sorter.inputValues);
     const counter = N.storage(this.visibleCount, "uint")
       .setName("gslVisibleCount")
       .toAtomic();
     const node = N.Fn(() => {
       const index = N.uint(N.instanceIndex);
+      // Sorted draws key each Splat at its mapping index, not its atomic slot.
+      // The first radix pass compacts keys in mapping order, so equal keys
+      // keep source order every frame.
+      const sorted = stochastic
+        .not()
+        .or(u("stochasticOrdering", "bool"))
+        .toVar();
+      const mappingIndex = u("targetBase", "uint").add(index).toVar();
       // Decode, edit and evaluate color once, then project for each eye.
       const generated = generate.prepare(index);
       const projected = eyes.map(({ project }) => {
@@ -291,7 +304,7 @@ export class ProjectedSplats {
         });
         // Sorted blending orders back to front by depth or distance;
         // stochastic ordering uses front-to-back depth.
-        N.If(stochastic.not().or(u("stochasticOrdering", "bool")), () => {
+        N.If(sorted, () => {
           const center = generated.center.add(sortOffset);
           const metric = N.select(
             radial.and(front.not()),
@@ -299,7 +312,8 @@ export class ProjectedSplats {
             center.dot(direction),
           );
           const bits = N.floatBitsToUint(metric);
-          const key = N.uint(0xffffffff).toVar();
+          // Non-finite metrics draw last; INVALID_SORT_KEY marks absence.
+          const key = N.uint(INVALID_SORT_KEY - 1).toVar();
           N.If(
             bits.bitAnd(N.uint(0x7fffffff)).lessThan(N.uint(0x7f800000)),
             () => {
@@ -329,7 +343,12 @@ export class ProjectedSplats {
               N.uint(0),
             ),
           );
-          keys.element(slot).assign(key.shiftRight(shift));
+          keys.element(mappingIndex).assign(key.shiftRight(shift));
+          sortValues.element(mappingIndex).assign(slot);
+        });
+      }).Else(() => {
+        N.If(sorted, () => {
+          keys.element(mappingIndex).assign(N.uint(INVALID_SORT_KEY));
         });
       });
     })()
@@ -677,7 +696,10 @@ export class ProjectedSplats {
     );
   }
 
-  /** Generates, projects, compacts and sorts the meshes any view draws. */
+  /**
+   * Generates, projects, compacts and sorts the meshes any view draws. Sorted
+   * modes also visit hidden meshes, which only mark their keys absent.
+   */
   private dispatch(
     slots: ComputeSlot[],
     views: THREE.Camera[],
@@ -686,8 +708,10 @@ export class ProjectedSplats {
   ) {
     const pending: ComputeNode[] = [this.resetCount];
     let slotCount = 0;
-    for (const { node, count, matrixWorld } of accumulator.mapping) {
-      if (!views.some((view) => view.layers.test(node.layers))) continue;
+    for (const { node, base, count, matrixWorld } of accumulator.mapping) {
+      const drawn = views.some((view) => view.layers.test(node.layers));
+      // Sorting reads a key for every mapped Splat, including hidden meshes.
+      if (!drawn && !sortMode) continue;
       // A slot's uniforms can only be changed after its preceding batch has
       // been submitted. Keep the last batch open for draw arguments and sorting.
       if (slotCount === slots.length) {
@@ -696,8 +720,10 @@ export class ProjectedSplats {
         slotCount = 0;
       }
       const slot = slots[slotCount++];
-      accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
-      slot.uniforms.targetCount.value = count;
+      if (drawn) accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
+      slot.uniforms.targetBase.value = base;
+      // Hidden meshes read no source data; each Splat fails visibility.
+      slot.uniforms.targetCount.value = drawn ? count : 0;
       slot.node.count = count;
       pending.push(slot.node);
     }

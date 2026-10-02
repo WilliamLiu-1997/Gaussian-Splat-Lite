@@ -26,6 +26,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - With unsorted stochastic rendering, `shrinkResources()` releases the sort worker and ordering instead of sorting. Enabling sorting again rebuilds them.
 - WebGL and WebGL fallback show a moved `SplatMesh` in the frame it moves instead of after the next sort, with `autoUpdate` and `preUpdate` enabled outside WebXR.
 - Native WebGPU reuses projection and sorting results while only TAA's sub-pixel jitter changes.
+- Native WebGPU sorts 8 bits per GPU radix pass instead of 4: three passes for `fastSort` (the default), four without it, and two for stochastic front-to-back ordering. Sorting takes about a third less GPU time and produces the same order.
 - WebXR eyes now share generation, culling, and one sort order from the head's mean pose, each with its exact projection. Native WebGPU projects both eyes in one compute pass instead of projecting and sorting each eye, so `stochasticSort` now also applies in WebXR; its two-eye kernels compile when a session starts, and Splats stay hidden until they are ready. Splats on either eye's layers are visible in both eyes.
 - `RadStreamScheduler` and `SogStreamScheduler` select detail for cameras registered with `setCamera()`, and `update()` takes no arguments; it throws if no camera is registered. Set RAD resolution with `setResolution()` or `setResolutionFromRenderer()` in CSS pixels, without the device pixel ratio, so high-DPI displays no longer load extra detail. RAD no longer defaults to 1024 × 1024 and throws for a non-XR camera without a resolution. Several cameras share one selection at the greatest detail any of them needs.
 - RAD and SOG streaming select WebXR detail for each eye of a registered `renderer.xr.getCamera()`. Until the headset reports its first eye poses, the current detail and downloads are kept.
@@ -63,6 +64,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Preserved WebXR camera rig transforms when reading eye poses for rendering and RAD/SOG detail selection.
 - SOG detail selection now includes a scaled camera rig's scale, like rendering and RAD. It previously measured view distances and culled without it.
 - Draws during a WebXR session that do not use the WebXR camera now use their own camera and viewport instead of the headset's. Examples are render targets drawn with `renderer.xr.enabled` off, such as `Reflector`, and WebGPURenderer render targets other than its output.
+- On native WebGPU, Splats with equal sort keys now keep their source order instead of an order set by GPU scheduling. Projecting the same view again draws an identical frame, and tied Splats no longer swap places from frame to frame while the camera moves. This applies to sorted rendering and stochastic front-to-back ordering.
 
 ### Removed
 
