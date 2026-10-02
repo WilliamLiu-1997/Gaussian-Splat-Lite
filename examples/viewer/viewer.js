@@ -544,7 +544,7 @@ function frameSplat(splat) {
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
 
-  camera.near = radius * 0.001;
+  camera.near = Math.min(radius * 0.001, 0.1);
   camera.far = radius * 100;
   camera.updateProjectionMatrix();
   camera.position
