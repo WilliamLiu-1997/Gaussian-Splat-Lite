@@ -17,6 +17,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- SPZ v4 decoding now accepts ZSTD windows up to 128 MiB instead of 100 MiB. Building the Rust/WASM decoder now requires Rust 1.87 or newer.
 - Stochastic coverage now uses a 32-frame spatiotemporal blue-noise sequence optimized for exponential history accumulation, with stable per-Splat offsets on WebGL, WebGPU, and WebGL fallback. This reduces temporal sampling error without changing the TAA integration or its frame budget.
 - Stochastic rendering is now manual: set `stochastic` to switch modes, and smooth its noise with the library's `TAANode` on WebGPURenderer or the library's `TAAPass` on WebGLRenderer. See [Stochastic rendering](docs/StochasticRendering.md).
 - The stochastic noise pattern now changes on every render so temporal anti-aliasing keeps converging while the view is still. Previously it stayed fixed unless `StochasticTAAPass` supplied a temporal sample. Set `autoAdvanceStochasticSample = false` to keep it fixed.
@@ -32,7 +33,6 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - RAD and SOG streaming select WebXR detail for each eye of a registered `renderer.xr.getCamera()`. Until the headset reports its first eye poses, the current detail and downloads are kept.
 - If SOG detail selection fails, `SogStreamScheduler` reports the error and disposes itself; create a new one to try again.
 - SDF edit shapes now follow their own `scale`. `SPHERE` and other shapes scale as a whole; `BOX`, `ELLIPSOID`, and `CAPSULE` keep using `scale` for their size without scaling `radius`. A shape scaled to zero on any axis now has no effect instead of affecting the whole model.
-- RAD headers larger than 16 MiB are rejected.
 - Models with more than about 4 million Splats allocate much less unused texture memory.
 - Memory used for native WebGPU two-eye rendering is released when a WebXR session ends.
 - Turning the camera without moving it no longer regenerates Splat data.
@@ -55,7 +55,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Picking no longer misses very thin Splats.
 - Split RAD datasets now load when their `.rad` header is served with HTTP compression.
 - PLY files are rejected early when they are shorter than their header declares or contain duplicate elements or properties. Gaussian PLY files that also have `red`/`green`/`blue` are no longer loaded as point clouds.
-- SOG images that claim oversized dimensions are rejected before memory is allocated. SPZ files with legacy extensions load without keeping the extensions in memory, and their integrity is still checked.
+- SPZ files with legacy extensions load without keeping the extensions in memory, and their integrity is still checked.
 - Decode workers that crash or run out of memory are discarded so later loads can use fresh workers, and worker errors now name the file that failed.
 - Importing the library no longer reports an unhandled promise rejection when WebAssembly fails to initialize.
 - If RAD LOD selection or preparation fails, or its LOD worker is lost during page loading, `RadStreamScheduler` reports the error and keeps its current detail but stops refining.

@@ -78,9 +78,6 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     .map(|end| (end, 12))
             });
         let Some((header_end, terminator_len)) = terminator else {
-            if self.buffer.len() >= 65536 {
-                return Err(anyhow!("PLY header too large"));
-            }
             return Ok(());
         };
 
@@ -1445,6 +1442,33 @@ mod tests {
         }
         decoder.finish().unwrap();
         assert_eq!(decoder.into_splats().0, [1.0, 2.0, 3.0]);
+    }
+    #[test]
+    fn decodes_large_headers_independently_of_input_chunks() {
+        let mut header = String::from("ply\nformat binary_little_endian 1.0\n");
+        header.push_str(&format!("comment {}\n", "x".repeat(70_000)));
+        header.push_str("element vertex 1\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\n");
+        let mut incomplete = PlyDecoder::new(Points::default());
+        incomplete.push(header.as_bytes()).unwrap();
+        assert!(incomplete.finish().is_err());
+
+        header.push_str("end_header\n");
+        let mut file = header.into_bytes();
+        for value in [1.0_f32, 2.0, 3.0] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        file.extend_from_slice(&[255, 128, 0]);
+        for chunk_size in [4096, file.len()] {
+            let mut decoder = PlyDecoder::new(Points::default());
+            decoder.set_expected_input_size(file.len() as u64).unwrap();
+            for bytes in file.chunks(chunk_size) {
+                decoder.push(bytes).unwrap();
+            }
+            decoder.finish().unwrap();
+            let points = decoder.into_splats();
+            assert_eq!(points.0, [1.0, 2.0, 3.0]);
+            assert_eq!(points.1, [1.0, 128.0 / 255.0, 0.0]);
+        }
     }
     #[test]
     fn gaussian_rgb_without_dc_keeps_shape_and_normalized_color() {

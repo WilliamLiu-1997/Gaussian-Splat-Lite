@@ -349,7 +349,7 @@ impl RadLodTree {
             || !hysteresis.is_finite()
             || !(0.0..1.0).contains(&hysteresis)
             || views.is_empty()
-            || views.len() % VIEW_VALUES != 0
+            || !views.len().is_multiple_of(VIEW_VALUES)
         {
             return Err(js_error("Invalid RAD LOD request"));
         }

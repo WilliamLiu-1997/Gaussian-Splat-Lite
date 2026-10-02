@@ -228,13 +228,11 @@ impl Image {
         }
     }
 
-    fn decode(bytes: &[u8], max_pixels: usize) -> Result<Self> {
+    fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             let mut decoder = png::Decoder::new_with_limits(
                 Cursor::new(bytes),
-                png::Limits {
-                    bytes: max_pixels.saturating_mul(8),
-                },
+                png::Limits { bytes: usize::MAX },
             );
             decoder.set_transformations(png::Transformations::EXPAND);
             let mut reader = decoder.read_info().context("invalid PNG")?;
@@ -245,10 +243,6 @@ impl Image {
             ensure!(
                 reader.info().animation_control.is_none(),
                 "animated PNG is unsupported"
-            );
-            ensure!(
-                (reader.info().width as u64) * (reader.info().height as u64) <= max_pixels as u64,
-                "PNG dimensions exceed dataset capacity"
             );
             let size = reader.output_buffer_size();
             let mut bytes = vec![0; size];
@@ -277,10 +271,6 @@ impl Image {
             "animated or lossy WebP is unsupported"
         );
         let (width, height) = decoder.dimensions();
-        ensure!(
-            (width as u64) * (height as u64) <= max_pixels as u64,
-            "WebP dimensions exceed dataset capacity"
-        );
         let size = decoder
             .output_buffer_size()
             .context("WebP dimensions overflow")?;
@@ -396,17 +386,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
             "invalid asset sequence"
         );
         let bytes = unpack(bytes, method, size, crc)?;
-        let max_pixels = if self.meta.groups[self.group].0 == "centroids" {
-            65536 * 45
-        } else {
-            self.meta
-                .count
-                .checked_next_power_of_two()
-                .and_then(|n| n.checked_mul(2))
-                .context("SOG texture capacity overflow")?
-                .max(65536)
-        };
-        let image = Image::decode(&bytes, max_pixels)?;
+        let image = Image::decode(&bytes)?;
         if self.meta.groups[self.group].0 != "centroids" {
             ensure!(
                 image.width * image.height >= self.meta.count,
@@ -600,30 +580,39 @@ mod image_tests {
     use super::Image;
 
     #[test]
-    fn png_dimensions_must_fit_dataset_capacity() {
+    fn decodes_png_and_webp_with_large_padding() {
+        let pixels = vec![255; 512 * 512 * 4];
         let mut bytes = Vec::new();
         {
-            let mut encoder = png::Encoder::new(&mut bytes, 16, 16);
+            let mut encoder = png::Encoder::new(&mut bytes, 512, 512);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
             encoder
                 .write_header()
                 .unwrap()
-                .write_image_data(&[255; 16 * 16 * 4])
+                .write_image_data(&pixels)
                 .unwrap();
         }
-        let image = Image::decode(&bytes, 256).unwrap();
-        assert_eq!((image.width, image.height), (16, 16));
-        assert!(Image::decode(&bytes, 255).is_err());
+        let image = Image::decode(&bytes).unwrap();
+        assert_eq!((image.width, image.height), (512, 512));
+        assert_eq!(image.bytes, pixels);
+
+        bytes.clear();
+        image_webp::WebPEncoder::new(&mut bytes)
+            .encode(&pixels, 512, 512, image_webp::ColorType::Rgba8)
+            .unwrap();
+        let image = Image::decode(&bytes).unwrap();
+        assert_eq!((image.width, image.height), (512, 512));
+        assert_eq!(image.channel(512 * 512 - 1, 0), 255);
+        assert_eq!(image.channel(512 * 512 - 1, 3), 255);
     }
 
     #[test]
-    fn webp_dimensions_are_checked_before_image_allocation() {
+    fn rejects_webp_without_pixel_data() {
         // A lossless header advertises 1024 squared without any pixel data.
         let mut bytes = b"RIFF\x12\0\0\0WEBPVP8L\x05\0\0\0\x2f".to_vec();
         bytes.extend_from_slice(&0x00ff_c3ffu32.to_le_bytes());
         bytes.push(0);
-        let error = Image::decode(&bytes, 65_536).err().unwrap();
-        assert!(error.to_string().contains("dimensions exceed"), "{error}");
+        assert!(Image::decode(&bytes).is_err());
     }
 }

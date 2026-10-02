@@ -52,9 +52,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-## ruzstd 0.7.3
+## ruzstd 0.9.0
 
-Gaussian Splat Lite includes ruzstd 0.7.3 in its WebAssembly build.
+Gaussian Splat Lite includes ruzstd 0.9.0 in its WebAssembly build.
 
 MIT License
 

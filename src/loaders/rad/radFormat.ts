@@ -89,8 +89,6 @@ export function getRadHeaderSize(prefix: Uint8Array) {
     prefix.byteOffset,
     prefix.byteLength,
   ).getUint32(4, true);
-  if (jsonLength > 16 * 1024 * 1024)
-    throw new Error("RAD: header exceeds 16 MiB");
   return { jsonLength, headerLength: 8 + Math.ceil(jsonLength / 8) * 8 };
 }
 

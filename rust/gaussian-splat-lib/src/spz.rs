@@ -28,7 +28,7 @@ static SH_LOOKUP: LazyLock<ShLookup> =
 const MAX_SPLAT_CHUNK: usize = 65536;
 const NGSP_HEADER_SIZE: usize = 32;
 const TOC_ENTRY_SIZE: usize = 16;
-const MAX_ZSTD_WINDOW_SIZE: u64 = 100 * 1024 * 1024;
+const MAX_ZSTD_WINDOW_SIZE: u64 = 128 * 1024 * 1024;
 // ZSTD blocks contain at most 128 KiB of compressed payload. This buffer can
 // hold a complete block and checksum; frame headers are smaller than that.
 const MAX_ZSTD_BLOCK_SIZE: usize = 128 * 1024;
@@ -92,7 +92,7 @@ struct V4StreamInfo {
 
 #[derive(Default)]
 struct V4StreamDecoder {
-    decoder: ruzstd::FrameDecoder,
+    decoder: ruzstd::decoding::FrameDecoder,
     compressed_received: u64,
     decoded_size: u64,
     header_validated: bool,
@@ -388,14 +388,23 @@ impl<T: SplatReceiver> SpzDecoder<T> {
             if self.raw.len() < MAX_ZSTD_FRAME_HEADER_SIZE && !input_complete {
                 return Ok(false);
             }
-            let (has_checksum, header_size) =
-                validate_zstd_frame(&self.raw, stream.uncompressed_size)?;
-            stream_decoder.has_checksum = has_checksum;
-            let mut header = &self.raw[..header_size];
+            let mut header = self.raw.as_slice();
+            stream_decoder
+                .decoder
+                .set_max_window_size(MAX_ZSTD_WINDOW_SIZE);
             stream_decoder
                 .decoder
                 .init(&mut header)
                 .map_err(|error| anyhow::anyhow!("v4 ZSTD init failed: {}", error))?;
+            let content_size = stream_decoder.decoder.content_size();
+            if content_size != 0 && content_size != stream.uncompressed_size {
+                return Err(anyhow::anyhow!(
+                    "v4 ZSTD frame content size differs from TOC"
+                ));
+            }
+            let header_size = self.raw.len() - header.len();
+            // ZSTD's frame descriptor follows the four-byte magic number.
+            stream_decoder.has_checksum = self.raw[4] & 0x04 != 0;
             self.raw.drain(..header_size);
             stream_decoder.header_validated = true;
         }
@@ -839,31 +848,6 @@ fn expected_v4_stream_sizes(header: &V4HeaderInfo) -> Vec<u64> {
     sizes
 }
 
-fn validate_zstd_frame(compressed: &[u8], expected_size: u64) -> anyhow::Result<(bool, usize)> {
-    let (frame, header_size) = ruzstd::frame::read_frame_header(compressed)
-        .map_err(|error| anyhow::anyhow!("v4 ZSTD header failed: {}", error))?;
-    let content_size = frame.header.frame_content_size();
-    if content_size != 0 && content_size != expected_size {
-        return Err(anyhow::anyhow!(
-            "v4 ZSTD frame content size differs from TOC"
-        ));
-    }
-    let window_size = frame
-        .header
-        .window_size()
-        .map_err(|error| anyhow::anyhow!("v4 ZSTD window failed: {}", error))?;
-    if window_size > MAX_ZSTD_WINDOW_SIZE {
-        return Err(anyhow::anyhow!(
-            "v4 ZSTD window too large: {} bytes",
-            window_size
-        ));
-    }
-    Ok((
-        frame.header.descriptor.content_checksum_flag(),
-        header_size as usize,
-    ))
-}
-
 fn next_zstd_block_input(input: &[u8], has_checksum: bool) -> anyhow::Result<Option<usize>> {
     if input.len() < ZSTD_BLOCK_HEADER_SIZE {
         return Ok(None);
@@ -1219,7 +1203,7 @@ mod tests {
                 + MAX_ZSTD_FRAME_HEADER_SIZE
                 + uncompressed_size.div_ceil(MAX_ZSTD_BLOCK_SIZE) * ZSTD_BLOCK_HEADER_SIZE,
         );
-        frame.extend_from_slice(&ruzstd::frame::MAGIC_NUM.to_le_bytes());
+        frame.extend_from_slice(&0xfd2f_b528u32.to_le_bytes());
         if uncompressed_size <= u8::MAX as usize {
             // Single segment, one-byte frame content size, no checksum.
             frame.push(0x20);
@@ -1527,7 +1511,7 @@ mod tests {
         // Resume just before the boundary, then decode one real final record.
         decoder.state.as_mut().unwrap().next_splat = num_splats - 1;
         decoder.splats.centers = num_splats - 1;
-        let mut frame = ruzstd::frame::MAGIC_NUM.to_le_bytes().to_vec();
+        let mut frame = 0xfd2f_b528u32.to_le_bytes().to_vec();
         frame.extend_from_slice(&[0xc0, 0]); // 64-bit content size, 1 KiB window.
         frame.extend_from_slice(&size.to_le_bytes());
         frame.extend_from_slice(&[0x4b, 0, 0, 0]); // Last RLE block: nine zero bytes.
@@ -1550,6 +1534,43 @@ mod tests {
     fn decodes_chunked_spz_v4_and_detects_raw_ngsp_magic() {
         let splats = decode_in_chunks(&v4_file(), 1).unwrap();
         assert_test_splat(&splats);
+    }
+
+    #[test]
+    fn decodes_large_windows_across_attribute_stream_resets() {
+        let mut file = v4_file_with_sh_degree(3);
+        let expected = decode_in_chunks(&file, 7).unwrap();
+        let mut offset = NGSP_HEADER_SIZE + file[15] as usize * TOC_ENTRY_SIZE;
+        for index in 0..file[15] as usize {
+            assert_eq!(file[offset + 5], 0x60); // Original 4 MiB window.
+            file[offset + 5] = 0x88; // A valid 128 MiB window.
+            let entry = NGSP_HEADER_SIZE + index * TOC_ENTRY_SIZE;
+            offset += read_u64_le(&file[entry..entry + 8]) as usize;
+        }
+        for chunk_size in [1, 13] {
+            assert_eq!(decode_in_chunks(&file, chunk_size).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_windows_above_128_mib_on_initialization_and_reset() {
+        for stream_index in [0, 1] {
+            let mut file = v4_file();
+            let mut offset = NGSP_HEADER_SIZE + file[15] as usize * TOC_ENTRY_SIZE;
+            for index in 0..stream_index {
+                let entry = NGSP_HEADER_SIZE + index * TOC_ENTRY_SIZE;
+                offset += read_u64_le(&file[entry..entry + 8]) as usize;
+            }
+            file[offset + 5] = 0x89; // 144 MiB: the next encodable window above 128 MiB.
+            for chunk_size in [1, 13] {
+                let error = decode_in_chunks(&file, chunk_size).unwrap_err();
+                assert!(
+                    error.to_string().contains("Requested: 150994944"),
+                    "{error}"
+                );
+                assert!(error.to_string().contains("Max: 134217728"), "{error}");
+            }
+        }
     }
 
     #[test]
