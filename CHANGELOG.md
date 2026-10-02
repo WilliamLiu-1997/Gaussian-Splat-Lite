@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-03
+
 ### Added
 
 - Exported `TAAPass(scene, camera)`, temporal anti-aliasing for WebGLRenderer that renders the scene itself and needs no velocity texture. Its result matches direct canvas colors and needs no `OutputPass`; set `accumulateInOutputSpace = false` for linear effects such as Bloom. Scene depth is exposed for depth effects. Exported `TAANode(scene, camera)` provides the same camera/depth reprojection in TSL for native WebGPU and WebGL2 fallback, accumulating in linear space for `RenderPipeline`, without a velocity attachment.
@@ -509,7 +511,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.8...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.8...v1.2.0
 [1.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.5...v1.1.6
