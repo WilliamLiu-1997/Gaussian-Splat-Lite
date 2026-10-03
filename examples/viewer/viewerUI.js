@@ -43,6 +43,7 @@ export function createViewerUI({
   const renderOptionsPanel = document.querySelector("#render-options");
   const renderOptionsClose = document.querySelector("#render-options-close");
   const performanceStats = document.querySelector("#performance-stats");
+  const performanceTooltip = document.querySelector("#performance-tooltip");
   const performanceFps = document.querySelector("#performance-fps");
   const performanceHeap = document.querySelector("#performance-heap");
 
@@ -78,15 +79,29 @@ export function createViewerUI({
   function updateHeapStat(memory) {
     if (!memory || !Number.isFinite(memory.usedJSHeapSize)) {
       performanceHeap.value = "N/A";
-      performanceStats.dataset.tooltip =
+      performanceTooltip.textContent =
         "JS heap reporting is not available in this browser.";
       return;
     }
 
     performanceHeap.value = formatHeapSize(memory.usedJSHeapSize);
-    performanceStats.dataset.tooltip = Number.isFinite(memory.jsHeapSizeLimit)
+    performanceTooltip.textContent = Number.isFinite(memory.jsHeapSizeLimit)
       ? `${formatHeapSize(memory.usedJSHeapSize)} used of ${formatHeapSize(memory.jsHeapSizeLimit)}`
       : `${formatHeapSize(memory.usedJSHeapSize)} used`;
+  }
+
+  function setPerformanceTooltipOpen(open) {
+    if (open === performanceTooltip.matches(":popover-open")) return;
+    performanceStats.classList.toggle("is-tooltip-open", open);
+    performanceStats.setAttribute("aria-expanded", String(open));
+    if (open) {
+      performanceTooltip.showPopover();
+      const bounds = performanceStats.getBoundingClientRect();
+      performanceTooltip.style.left = `${Math.max(12, Math.min(bounds.left, window.innerWidth - performanceTooltip.offsetWidth - 12))}px`;
+      performanceTooltip.style.top = `${bounds.bottom + 6}px`;
+    } else {
+      performanceTooltip.hidePopover();
+    }
   }
 
   function setRenderOptionsOpen(open) {
@@ -103,6 +118,7 @@ export function createViewerUI({
   function syncBackgroundInteractivity() {
     const sourcePanelOpen = !emptyState.hidden;
     const loading = !loadingPanel.hidden;
+    if (sourcePanelOpen || loading) setPerformanceTooltipOpen(false);
     toolbarActions.inert = sourcePanelOpen || loading;
     statusBar.inert = sourcePanelOpen || loading;
     modelControls.hidden = !hasModel;
@@ -258,6 +274,34 @@ export function createViewerUI({
     target.addEventListener(type, handler, { signal: events.signal });
   }
 
+  listen(performanceStats, "pointerenter", (event) => {
+    if (event.pointerType === "mouse") setPerformanceTooltipOpen(true);
+  });
+  listen(performanceStats, "pointerleave", (event) => {
+    if (event.pointerType === "mouse") setPerformanceTooltipOpen(false);
+  });
+  listen(performanceStats, "focus", () => {
+    if (performanceStats.matches(":focus-visible")) {
+      setPerformanceTooltipOpen(true);
+    }
+  });
+  listen(performanceStats, "blur", () => setPerformanceTooltipOpen(false));
+  listen(window, "resize", () => setPerformanceTooltipOpen(false));
+  listen(performanceStats, "click", () =>
+    setPerformanceTooltipOpen(
+      !performanceStats.classList.contains("is-tooltip-open"),
+    ),
+  );
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!performanceStats.contains(event.target)) {
+        setPerformanceTooltipOpen(false);
+      }
+    },
+    { capture: true, signal: events.signal },
+  );
+
   listen(sourcePanelToggle, "click", () =>
     setSourcePanelOpen(true, { moveFocus: true }),
   );
@@ -273,7 +317,9 @@ export function createViewerUI({
   listen(renderOptionsClose, "click", closeRenderOptions);
   listen(window, "keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (!loadingPanel.hidden) requestCancelLoad();
+    if (performanceStats.classList.contains("is-tooltip-open")) {
+      setPerformanceTooltipOpen(false);
+    } else if (!loadingPanel.hidden) requestCancelLoad();
     else if (!renderOptionsPanel.hidden) closeRenderOptions();
     else if (!emptyState.hidden && hasModel) closeSourcePanel();
   });
@@ -308,6 +354,7 @@ export function createViewerUI({
       }
     },
     dispose() {
+      setPerformanceTooltipOpen(false);
       events.abort();
       clearToastTimers();
       toast.classList.remove("is-visible");

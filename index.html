@@ -41,11 +41,13 @@
         </div>
 
         <div class="toolbar-actions" inert>
-          <div
+          <button
             id="performance-stats"
             class="performance-stats"
-            role="group"
-            tabindex="0"
+            type="button"
+            aria-expanded="false"
+            aria-controls="performance-tooltip"
+            aria-describedby="performance-tooltip"
             aria-label="Performance metrics"
           >
             <span class="performance-stat">
@@ -56,7 +58,7 @@
               <output id="performance-heap">—</output>
               <small>JS heap</small>
             </span>
-          </div>
+          </button>
           <button
             id="reset-view"
             class="button button-quiet"
@@ -296,6 +298,7 @@
       </div>
     </div>
 
+    <div id="performance-tooltip" class="performance-tooltip" role="tooltip" popover="manual"></div>
     <div id="toast" class="toast" role="alert" hidden></div>
     <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp" multiple hidden />
 
