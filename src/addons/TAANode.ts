@@ -9,12 +9,13 @@ import {
   type PerspectiveCamera,
   type Scene,
   type Texture,
+  UnsignedInt248Type,
   Vector2,
   type Vector3,
   WebGLCoordinateSystem,
 } from "three";
 import {
-  type Node,
+  Node,
   type NodeBuilder,
   type NodeFrame,
   NodeMaterial,
@@ -22,16 +23,16 @@ import {
   QuadMesh,
   RenderTarget,
   RendererUtils,
-  TempNode,
   type TextureNode,
   type UniformNode,
   type WebGPURenderer,
 } from "three/webgpu";
+import { usesNativeWebGPU } from "../rendering/rendererUtils";
 import { N } from "../rendering/tsl/tslCompat";
 import { createTAAState } from "./taaShared";
 
 /** Camera/depth TAA for WebGPURenderer, including its WebGL2 fallback. */
-export class TAANode extends TempNode<"vec4"> {
+export class TAANode extends Node<"vec4"> {
   static get type() {
     return "TAANode";
   }
@@ -131,6 +132,17 @@ export class TAANode extends TempNode<"vec4"> {
       renderer.getDrawingBufferSize(this.drawingSize);
       this.setSize(this.drawingSize.x, this.drawingSize.y);
     }
+    // Float depth with stencil is an optional WebGPU feature.
+    state.setStencil(
+      renderer.stencil,
+      renderer.stencil &&
+        !(
+          usesNativeWebGPU(renderer) &&
+          renderer.hasFeature("depth32float-stencil8")
+        )
+        ? UnsignedInt248Type
+        : FloatType,
+    );
     try {
       renderer.xr.enabled = false;
       renderer.setMRT(null);

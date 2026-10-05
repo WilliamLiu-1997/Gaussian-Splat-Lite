@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Added a Blend buffer option to the viewer, set to Half float by default. It removes the overlapping rings that 8-bit blending leaves in faint gradients. Very bright Splats behind others can look slightly brighter than before; choose 8-bit to return to the previous image.
+- Added stencil masking to `TAAPass` and `TAANode`. Create the Three.js renderer with `stencil: true` and the scene's stencil masks apply as they do without TAA, including the stencil settings on your Splat renderer's `material`; before, they were ignored. `WebGPURenderer` on WebGPU needs Three.js r187 or later for this; on r186, leave `stencil` off there when using `TAANode`.
 
 ### Changed
 

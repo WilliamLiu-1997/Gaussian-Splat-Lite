@@ -2,11 +2,15 @@ import {
   AlwaysDepth,
   type Camera,
   ColorManagement,
+  DepthFormat,
+  DepthStencilFormat,
+  type DepthTexture,
   Matrix4,
   NeverDepth,
   type OrthographicCamera,
   type PerspectiveCamera,
   type RenderTarget,
+  type TextureDataType,
   Vector2,
   Vector3,
 } from "three";
@@ -72,6 +76,17 @@ export function createTAAState<
       for (const target of targets) target.setSize(w, h);
       uniforms.renderSize.value.set(w, h);
       this.reset();
+    },
+    // Only the capture target takes stencil; history stores plain depth.
+    setStencil(stencil: boolean, depthType: TextureDataType) {
+      const source = targets[0];
+      const depthTexture = source.depthTexture as DepthTexture;
+      if (source.stencilBuffer === stencil && depthTexture.type === depthType)
+        return;
+      source.dispose();
+      source.stencilBuffer = stencil;
+      depthTexture.format = stencil ? DepthStencilFormat : DepthFormat;
+      depthTexture.type = depthType;
     },
     beginCapture(camera: TAACamera) {
       jitterProjection(
