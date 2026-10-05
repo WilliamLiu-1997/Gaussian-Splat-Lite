@@ -10,10 +10,9 @@ import {
   NoToneMapping,
   type OrthographicCamera,
   type PerspectiveCamera,
+  SRGBTransfer,
   type Scene,
   ShaderMaterial,
-  type ToneMapping,
-  Vector2,
   WebGLRenderTarget,
   type WebGLRenderer,
 } from "three";
@@ -180,9 +179,10 @@ function makeTarget(name: string) {
 /**
  * Temporal reprojection for WebGLRenderer, using depth and camera motion.
  * Object motion is not tracked; no velocity texture is required.
- * Owns scene capture, camera jitter, and history. By default it blends and
- * accumulates in the output color space, like direct canvas rendering, and
- * presents the result without OutputPass.
+ * Owns scene capture, camera jitter, and history. It blends and accumulates
+ * in the output color space, like direct canvas rendering, then hands the
+ * composer a working-space result. Use EffectComposer with OutputPass for
+ * output.
  */
 export class TAAPass extends Pass {
   /** Depth difference above which non-edge history is rejected. */
@@ -193,31 +193,20 @@ export class TAAPass extends Pass {
   maxMotionLength = 128;
   /** Increase current-frame weight for subpixel camera motion. */
   useSubpixelCorrection = true;
-  /**
-   * Capture and accumulate in the renderer's output color space, ready for
-   * presentation. Set false to stay in the working color space for linear
-   * effects, followed by OutputPass.
-   */
-  accumulateInOutputSpace = true;
-
   // Three uses this flag to honor the target's output color space for both
   // ordinary materials and splats, matching direct canvas blending.
   private readonly _source = Object.assign(makeTarget("TAAPass.scene"), {
-    isXRRenderTarget: false,
+    isXRRenderTarget: true,
   });
   private readonly _history = [
     makeTarget("TAAPass.history0"),
     makeTarget("TAAPass.history1"),
   ];
-  private readonly _size = new Vector2();
   private readonly _clearColor = new Color();
   private readonly _state = createTAAState(
     <T>(value: T) => ({ value }),
     [this._source, ...this._history],
   );
-  private _workingColorSpace = ColorManagement.workingColorSpace;
-  private _toneMapping: ToneMapping = NoToneMapping;
-  private _toneMappingExposure = 1;
   private readonly _uniforms;
   private readonly _resolveMaterial: ShaderMaterial;
   private readonly _copyMaterial: ShaderMaterial;
@@ -249,13 +238,21 @@ export class TAAPass extends Pass {
     });
     this._copyMaterial = new ShaderMaterial({
       name: "TAAPass.copy",
-      uniforms: { source: { value: null } },
+      uniforms: { source: { value: null }, decode: { value: false } },
       vertexShader,
+      // Inverts OutputPass's transfer, so the two round-trip at any alpha.
       fragmentShader: /* glsl */ `
         uniform sampler2D source;
+        uniform bool decode;
         in vec2 vUv;
         out vec4 fragColor;
-        void main() { fragColor = texture(source, vUv); }
+        void main() {
+          fragColor = texture(source, vUv);
+          if (decode) {
+            vec4 color = vec4(max(fragColor.rgb, 0.0), 1.0);
+            fragColor.rgb = sRGBTransferEOTF(color).rgb;
+          }
+        }
       `,
       glslVersion: GLSL3,
       blending: NoBlending,
@@ -286,48 +283,27 @@ export class TAAPass extends Pass {
     this._state.reset();
   }
 
-  /** Render the scene and TAA to the canvas, a target, or the composer's buffer. */
+  /** Render the scene and resolve TAA into the composer's working-space buffer. */
   override render(
     renderer: WebGLRenderer,
-    writeBuffer: WebGLRenderTarget | null = null,
+    writeBuffer: WebGLRenderTarget,
   ): void {
     const { camera, _state: state, _uniforms: uniforms } = this;
-    if (writeBuffer) {
-      this.setSize(writeBuffer.width, writeBuffer.height);
-    } else {
-      renderer.getDrawingBufferSize(this._size);
-      this.setSize(this._size.x, this._size.y);
-    }
-    const workingColorSpace = ColorManagement.workingColorSpace;
-    const colorSpace = this.accumulateInOutputSpace
-      ? renderer.outputColorSpace
-      : workingColorSpace;
-    // Only transforms applied during capture affect accumulated history.
-    const toneMapping = this.accumulateInOutputSpace
-      ? renderer.toneMapping
-      : NoToneMapping;
-    const exposure =
-      toneMapping === NoToneMapping ? 1 : renderer.toneMappingExposure;
-    if (
-      this._source.texture.colorSpace !== colorSpace ||
-      this._source.isXRRenderTarget !== this.accumulateInOutputSpace ||
-      this._workingColorSpace !== workingColorSpace ||
-      this._toneMapping !== toneMapping ||
-      this._toneMappingExposure !== exposure
-    ) {
+    this.setSize(writeBuffer.width, writeBuffer.height);
+    const colorSpace = renderer.outputColorSpace;
+    if (this._source.texture.colorSpace !== colorSpace) {
       this._source.texture.colorSpace = colorSpace;
-      this._source.isXRRenderTarget = this.accumulateInOutputSpace;
-      this._workingColorSpace = workingColorSpace;
-      this._toneMapping = toneMapping;
-      this._toneMappingExposure = exposure;
       this.reset();
     }
     const previousTarget = renderer.getRenderTarget();
     const autoClear = renderer.autoClear;
     const xrEnabled = renderer.xr.enabled;
+    const toneMapping = renderer.toneMapping;
     try {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
+      // The output pass tone-maps the resolved image.
+      renderer.toneMapping = NoToneMapping;
       const reversedDepth = camera.reversedDepth;
       state.beginCapture(camera);
       try {
@@ -366,6 +342,10 @@ export class TAAPass extends Pass {
       this._quad.render(renderer);
 
       this._copyMaterial.uniforms.source.value = output.texture;
+      // As the last pass, present the output-space image as it is.
+      this._copyMaterial.uniforms.decode.value =
+        !this.renderToScreen &&
+        ColorManagement.getTransfer(colorSpace) === SRGBTransfer;
       renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
       this._quad.material = this._copyMaterial;
       this._quad.render(renderer);
@@ -375,6 +355,7 @@ export class TAAPass extends Pass {
       renderer.setRenderTarget(previousTarget);
       renderer.autoClear = autoClear;
       renderer.xr.enabled = xrEnabled;
+      renderer.toneMapping = toneMapping;
     }
   }
 

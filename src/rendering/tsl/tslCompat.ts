@@ -53,6 +53,11 @@ type UintWorkgroup = WorkgroupInfoNode & {
 // Only override incomplete declarations; every other export keeps Three's
 // original overloads. These assertions do not wrap or replace runtime nodes.
 type Compatibility = {
+  convertColorSpace(
+    value: Node<"vec4">,
+    source: string,
+    target: string,
+  ): Node<"vec4">;
   floatBitsToUint<T extends keyof FloatToUint>(
     value: Node<T>,
   ): Node<FloatToUint[T]>;

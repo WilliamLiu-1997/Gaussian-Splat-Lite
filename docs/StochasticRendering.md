@@ -2,11 +2,11 @@
 
 [Back to documentation](../README.md#documentation)
 
-Stochastic rendering is an optional mode for `GaussianSplatRenderer`. It produces visible noise; use temporal anti-aliasing (TAA) to smooth the result. Sorted alpha blending remains the default.
+Stochastic rendering is an optional way for `GaussianSplatRenderer` to draw transparency. It produces visible noise, so pair it with temporal anti-aliasing (TAA) to get a smooth image. Sorted alpha blending remains the default.
 
-Supported on WebGPU, WebGL2, and WebGPURenderer's WebGL2 fallback, including WebXR.
+It works on WebGPU, WebGL2, and `WebGPURenderer`'s WebGL2 fallback, including WebXR.
 
-## Enable stochastic rendering
+## Turn it on
 
 With an existing [GaussianSplatRenderer](GaussianSplatRenderer.md):
 
@@ -20,19 +20,15 @@ Splats are sorted from front to back by default. To skip this sorting:
 splatRenderer.stochasticSort = false;
 ```
 
-Both options can be changed at runtime. While stochastic rendering is active, transparent blending is disabled and depth testing and writing are enabled. Your `transparent`, `depthTest`, and `depthWrite` settings take effect again when you return to sorted rendering.
+Both can be changed at any time. While stochastic rendering is active, Splats are drawn without blending and with depth testing and depth writing on. Your `transparent`, `depthTest`, and `depthWrite` settings apply again when you return to sorted rendering.
 
 ## Smooth the noise
 
-Use the library's [TAAPass](TAAPass.md) with **WebGLRenderer**, or the library's **TAANode** with **WebGPURenderer** (including its WebGL2 fallback). The examples below assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with the Splat renderer already added to the scene. They use the default `autoUpdate = true` and a single non-XR camera.
-
-The noise pattern changes on each render by default so TAA can smooth it over time. The library does not enable TAA or schedule these extra renders for you. With on-demand rendering, keep rendering while TAA accumulates.
-
-WebGPURenderer blends in Three.js's linear working color space, which makes partially transparent Splats slightly brighter than WebGLRenderer drawing directly to the canvas. `TAAPass` matches direct canvas rendering by default; see [TAAPass color space](TAAPass.md#color-space).
+Use [`TAANode`](TAAPass.md#taanode-webgpurenderer) with `WebGPURenderer`, or [`TAAPass`](TAAPass.md#taapass-webglrenderer) with `WebGLRenderer`. The library does not turn TAA on for you. The examples assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with one camera outside WebXR.
 
 ### WebGPURenderer: TAANode
 
-Use this setup for both native WebGPU and WebGPURenderer's WebGL2 fallback, after `await renderer.init()`:
+Use this on both WebGPU and the WebGL2 fallback, after `await renderer.init()`:
 
 ```js
 import { TAANode } from "gaussian-splat-lite";
@@ -41,8 +37,7 @@ import { RenderPipeline } from "three/webgpu";
 splatRenderer.stochastic = true;
 
 const taa = new TAANode(scene, camera);
-// Chain Bloom or other linear effects from taa here.
-// RenderPipeline applies the final tone mapping and output conversion.
+// Chain Bloom or other effects from taa here.
 const pipeline = new RenderPipeline(renderer, taa);
 
 renderer.setAnimationLoop(() => {
@@ -51,44 +46,46 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-Call `taa.reset()` after a camera cut, scene replacement, or an abrupt object change. See [TAANode](TAAPass.md#webgpurenderer-tsl-version) for behavior, supported cameras, and cleanup.
-
 ### WebGLRenderer: TAAPass
 
 ```js
 import { TAAPass } from "gaussian-splat-lite";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 splatRenderer.stochastic = true;
 
 const taa = new TAAPass(scene, camera);
+const composer = new EffectComposer(renderer);
+composer.addPass(taa);
+// Insert Bloom or other effects here.
+composer.addPass(new OutputPass());
+
 renderer.setAnimationLoop(() => {
   // Update controls / animation here.
-  taa.render(renderer);
+  composer.render();
 });
 ```
 
-`TAAPass` renders the scene itself, so no `RenderPass` or `OutputPass` is needed. It tracks camera movement but not object motion; call `taa.reset()` after a camera cut or scene replacement. See [TAAPass](TAAPass.md) for linear effects, depth effects, and offscreen rendering.
+`TAAPass` takes the place of `RenderPass`. On resize, call `composer.setSize(width, height)` along with the renderer.
 
-For on-demand rendering with either setup, keep rendering for several frames after camera, model, or streamed-content changes, including the Splat renderer's `onDirty` callback; the viewer uses 32. The repository's `examples/viewer/viewerTAA.js` shows both setups.
+### With either setup
+
+- Call `taa.reset()` after a camera cut, a scene replacement, or an abrupt change to an object. TAA follows camera movement, not moving objects.
+- With on-demand rendering, keep rendering for several frames after the camera, a model, or streamed content changes, and after the Splat renderer's `onDirty` callback, so the noise can settle. The viewer renders 32.
+
+See [TAAPass and TAANode](TAAPass.md) for effects, depth, color, and cleanup. The repository's `examples/viewer/viewerTAA.js` shows both setups.
 
 ## Control the noise pattern
 
-To keep the noise fixed, or control samples in your own TAA integration:
+The noise pattern changes on every render, which is what lets TAA smooth it over time. To keep it fixed, or to drive it from your own TAA:
 
 ```js
 splatRenderer.autoAdvanceStochasticSample = false;
-splatRenderer.stochasticSample = 0; // Keep fixed, or increment it yourself.
+splatRenderer.stochasticSample = 0; // Keep fixed, or increase it yourself.
 ```
 
-Set `autoAdvanceStochasticSample = true` to restore automatic updates.
-
-Coverage uses a 32-frame spatiotemporal blue-noise sequence on all backends.
-Each Splat keeps its own spatial offset and temporal phase, so consecutive
-samples follow the texture's time axis instead of choosing unrelated offsets.
-The temporal sequence is optimized for exponential history accumulation.
-The sequence wraps after 32 samples; this reduces temporal sampling error but
-does not guarantee a noise-free result after 32 renders. Keep advancing the
-sample once per scene render, including when using camera jitter.
+When you advance it yourself, increase it by one for each render of the scene. The patterns repeat every 32 samples; a smooth image is not guaranteed after exactly 32 renders. Set `autoAdvanceStochasticSample = true` to hand control back.
 
 ## Return to sorted rendering
 
@@ -96,11 +93,11 @@ sample once per scene render, including when using camera jitter.
 splatRenderer.stochastic = false;
 ```
 
-Switching in either direction takes effect at the next update boundary, after the current draw. WebGL backends also wait for the matching accumulator and sort. `stochasticActive` reports whether stochastic rendering is in use. Keep TAA running until it turns `false`. With `autoUpdate = false`, update before drawing:
+The switch, in either direction, takes effect on a later frame rather than immediately. `stochasticActive` tells you which mode is being drawn; keep TAA running until it is `false`. With `autoUpdate = false`, update before drawing:
 
 ```js
 await splatRenderer.update({ scene, camera });
 renderer.render(scene, camera);
 ```
 
-If you keep TAA running with sorted rendering, set `splatRenderer.depthWrite = true` so TAA can see Splat depth.
+If you keep TAA running with sorted rendering, set `splatRenderer.depthWrite = true` so TAA can see the Splats' depth.

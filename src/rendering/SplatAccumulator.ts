@@ -281,6 +281,7 @@ export class SplatAccumulator {
     camera,
     layerCamera = camera,
     previous,
+    frameCallbacks = true,
   }: {
     renderer: GaussianSplatCompatibleRenderer;
     scene: THREE.Scene;
@@ -288,6 +289,7 @@ export class SplatAccumulator {
     camera: THREE.Camera;
     layerCamera?: THREE.Camera;
     previous: SplatAccumulator;
+    frameCallbacks?: boolean;
   }) {
     // Preserve the previous metadata before replacing this accumulator's
     // mapping. Native WebGPU prepares this metadata in place, so reading these
@@ -330,12 +332,13 @@ export class SplatAccumulator {
       if (!ancestor) globalEdits.add(node);
     });
 
+    const frameContext = {
+      time: this.time,
+      deltaTime: this.deltaTime,
+      globalEdits: Array.from(globalEdits),
+    };
     for (const mesh of allMeshes) {
-      mesh.frameUpdate({
-        time: this.time,
-        deltaTime: this.deltaTime,
-        globalEdits: Array.from(globalEdits),
-      });
+      mesh.frameUpdate(frameContext, frameCallbacks);
     }
 
     const visibleMeshes: SplatMesh[] = [];

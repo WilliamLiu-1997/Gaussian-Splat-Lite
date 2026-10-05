@@ -2,12 +2,15 @@ export {
   GaussianSplatRenderer,
   type GaussianSplatRendererOptions,
 } from "./rendering/GaussianSplatRenderer";
-export {
-  SplatAccumulator,
-  type SplatMapping,
-} from "./rendering/SplatAccumulator";
 export { TAAPass } from "./addons/TAAPass";
 export { TAANode } from "./addons/TAANode";
+export {
+  SplatCapture,
+  type SplatCaptureOptions,
+  type SplatCaptureTargetOptions,
+  type SplatCaptureCubeOptions,
+  type SplatCaptureEnvOptions,
+} from "./capture/SplatCapture";
 
 export { SplatLoader } from "./loaders/SplatLoader";
 export {

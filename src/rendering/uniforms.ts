@@ -22,7 +22,7 @@ export const emptyOrdering = new THREE.DataTexture(
 );
 emptyOrdering.needsUpdate = true;
 
-export const DEFAULT_MIN_ALPHA = 0.5 / 255;
+export const DEFAULT_MIN_ALPHA = 1 / 255;
 
 export function makeSplatUniforms() {
   const emptySplats: THREE.Texture = emptySplatTexture;
@@ -44,8 +44,6 @@ export function makeSplatUniforms() {
     maxStdDev: { value: 1.0 },
     // Minimum pixel radius for splat rendering
     minPixelRadius: { value: 1.0 },
-    // Maximum pixel radius for splat rendering
-    maxPixelRadius: { value: 256.0 },
     // Minimum alpha value for splat rendering
     minAlpha: { value: DEFAULT_MIN_ALPHA },
     // Add to projected 2D splat covariance diagonal (thickens and brightens)

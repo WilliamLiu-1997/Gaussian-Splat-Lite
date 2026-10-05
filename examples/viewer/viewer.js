@@ -62,8 +62,7 @@ const rendererParameters = {
   powerPreference: "high-performance",
   reversedDepthBuffer: true,
 };
-let outputColorSpace = THREE.SRGBColorSpace;
-THREE.ColorManagement.workingColorSpace = outputColorSpace;
+THREE.ColorManagement.workingColorSpace = THREE.SRGBColorSpace;
 
 function configureRenderer(value) {
   value.setClearColor(0x000000, 0);
@@ -176,11 +175,11 @@ function mountRendererState(state, attachInspector = true) {
   const { renderer, controls, splatRenderer, inspector } = state;
   const webGPU = usesNodeRenderer(renderer);
   THREE.ColorManagement.workingColorSpace = webGPU
-    ? outputColorSpace
+    ? THREE.SRGBColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
   // WebGL's output setter requires the linear working space to be set first.
-  renderer.outputColorSpace = outputColorSpace;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   referenceHelpers.setBackend(webGPU);
   controlsOverlayScene.add(controls.indicator);
   controls.addEventListener("update", requestRender);
@@ -278,16 +277,6 @@ function drawFrame(time) {
 const renderOptionActions = {
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
-  },
-  outputColorSpace: (enabled) => {
-    outputColorSpace = enabled
-      ? THREE.SRGBColorSpace
-      : THREE.LinearSRGBColorSpace;
-    renderer.outputColorSpace = outputColorSpace;
-    if (usesNodeRenderer(renderer)) {
-      THREE.ColorManagement.workingColorSpace = outputColorSpace;
-    }
-    referenceHelpers.syncColors();
   },
   renderOnDemand: (value) => {
     renderOnDemand = value;
@@ -729,6 +718,7 @@ function resizeRenderer() {
   const width = viewport.clientWidth;
   const height = viewport.clientHeight;
   renderer.setSize(width, height, false);
+  taa?.setSize(width, height);
   camera.aspect = width / Math.max(height, 1);
   camera.updateProjectionMatrix();
   syncStreamResolution();

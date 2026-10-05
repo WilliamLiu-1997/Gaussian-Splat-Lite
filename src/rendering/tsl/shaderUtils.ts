@@ -65,7 +65,11 @@ export function textureBinding(
   placeholder.needsUpdate = true;
 
   const getTexture = () => uniforms[name].value as THREE.Texture;
-  return uintTexture(placeholder).onObjectUpdate(getTexture);
+  const binding = uintTexture(placeholder).onObjectUpdate(getTexture);
+  // Dynamic bindings can temporarily share an empty texture before diverging.
+  // Keep them distinct when a pipeline rebuilds the material shader.
+  binding.getUniformHash = () => binding.uuid;
+  return binding;
 }
 
 export function load2D<T extends TextureNode<unknown>>(
@@ -88,6 +92,7 @@ function updateTextureLoad<T extends TextureNode<unknown>>(
   binding: T,
   texel: T,
 ) {
+  texel.getUniformHash = (builder) => binding.getUniformHash(builder);
   texel.updateBeforeType = NodeUpdateType.OBJECT;
   texel.updateBefore = (frame) => {
     // Bind the real texture before r186's texture update or r187's shared

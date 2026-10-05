@@ -99,8 +99,8 @@ export class ProjectionCache {
     const axis1 = projection.axis1.mul(pixelScale).toVar();
     const axis2 = projection.axis2.mul(pixelScale).toVar();
     const largest = axis1.abs().max(axis2.abs());
-    // Scale only unusually large axes, per splat, so an unlimited radius
-    // does not overflow half or reduce the precision of unrelated splats.
+    // Scale only unusually large axes, per splat, to avoid overflowing half
+    // without reducing the precision of unrelated splats.
     const exponent = N.int(
       N.floatBitsToUint(largest.x.max(largest.y)).shiftRight(23),
     );

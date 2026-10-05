@@ -132,14 +132,8 @@ export interface GaussianSplatRendererOptions {
    */
   minPixelRadius?: number;
   /**
-   * Maximum screen-pixel radius for splat rendering, independent of the
-   * internal projection scale used by focalAdjustment.
-   * @default 256.0
-   */
-  maxPixelRadius?: number;
-  /**
    * Minimum alpha value for splat rendering.
-   * @default 0.5 / 255
+   * @default 1 / 255
    */
   minAlpha?: number;
   /**
@@ -243,11 +237,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   autoUpdate: boolean;
   preUpdate: boolean;
+  /** @internal False for a second renderer on the same scene, so each `onFrame` runs once per frame. */
+  frameCallbacks = true;
 
   renderSize = new THREE.Vector2();
   maxStdDev: number;
   minPixelRadius: number;
-  maxPixelRadius: number;
   minAlpha: number;
   preBlurAmount: number;
   blurAmount: number;
@@ -360,7 +355,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     this.maxStdDev = options.maxStdDev ?? Math.sqrt(8.0);
     this.minPixelRadius = options.minPixelRadius ?? 1.0;
-    this.maxPixelRadius = options.maxPixelRadius ?? 256.0;
     this.minAlpha = options.minAlpha ?? DEFAULT_MIN_ALPHA;
     this.preBlurAmount = options.preBlurAmount ?? 0.3;
     this.blurAmount = options.blurAmount ?? 0.0;
@@ -670,7 +664,6 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       3;
     this.uniforms.maxStdDev.value = this.maxStdDev;
     this.uniforms.minPixelRadius.value = this.minPixelRadius;
-    this.uniforms.maxPixelRadius.value = this.maxPixelRadius;
     this.uniforms.minAlpha.value = this.minAlpha;
     this.uniforms.preBlurAmount.value = this.preBlurAmount;
     this.uniforms.blurAmount.value = this.blurAmount;
@@ -779,6 +772,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         camera,
         layerCamera: request.camera,
         previous: this.current,
+        frameCallbacks: this.frameCallbacks,
       });
       // The accumulator only carries source mappings and the camera-relative
       // origin here. Projection, compaction and ordering happen on the GPU
@@ -879,6 +873,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         camera,
         layerCamera: updateCamera,
         previous: this.current,
+        frameCallbacks: this.frameCallbacks,
       });
     } catch (error) {
       this.releaseAccumulator(next);

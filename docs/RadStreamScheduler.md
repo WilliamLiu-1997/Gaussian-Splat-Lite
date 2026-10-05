@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Loads large RAD scenes with detail that adapts as the camera moves. Supports RAD version 1 with levels of detail (LOD), as a single `.rad` file or split files with `.radc` companions. Works on WebGPU and WebGL2 without a Spark runtime.
+Shows large RAD scenes by loading only the detail the camera needs, and updating it as the camera moves. It supports RAD version 1 files with levels of detail (LOD), either as a single `.rad` file or split into a header and `.radc` pages. It works on WebGPU and WebGL2, and needs no Spark runtime.
 
 ```js
 import { RadStreamScheduler } from "gaussian-splat-lite";
@@ -21,7 +21,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
 });
 
-// Requires update() to keep running.
+// Resolves when the first data is on screen. update() must be running.
 await streaming.firstRenderable;
 
 // When removing the model:
@@ -29,11 +29,23 @@ await streaming.firstRenderable;
 // streaming.group.removeFromParent();
 ```
 
-Use `streaming.group` to position, rotate, scale, or hide the scene. Streamed models support SDF edits and picking; their data is read-only.
+The three steps that matter:
 
-Resolution is in CSS pixels, without the device pixel ratio, so a scene selects the same detail on standard and high-DPI displays. Register several cameras to load detail for all of them; they share one selection at the greatest detail any of them needs.
+1. Add `streaming.group` to the scene. Move, rotate, scale, or hide the scene through this group.
+2. Register the camera and its resolution.
+3. Call `streaming.update()` before every render.
 
-In WebXR, register `renderer.xr.getCamera()` in place of your camera. Detail is selected for each eye at the headset's resolution, so no resolution is needed:
+Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only.
+
+## Cameras and resolution
+
+Detail depends on how large the scene appears, so each camera needs a resolution. It is in CSS pixels, without the device pixel ratio, so a scene loads the same detail on standard and high-DPI displays. Set it again whenever the canvas is resized.
+
+Register several cameras to load detail for all of them. They share one selection, at the highest detail any of them needs.
+
+### WebXR
+
+Register `renderer.xr.getCamera()` in place of your camera. Detail is chosen for each eye at the headset's resolution, so no resolution is needed:
 
 ```js
 const xrCamera = renderer.xr.getCamera();
@@ -53,50 +65,48 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-Ordinary camera matrices are updated by the scheduler. The XR camera's matrices are read directly from Three.js, so detail selection before rendering may use the previous frame's pose.
-
-For original Splat IDs, use the picking hit's [`sourceIndex`](SplatMesh.md#raycasting).
-
 ## Options
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `url` / `file` / `fileBytes` | Exactly one required | URL, `Blob`/`File`, or complete `Uint8Array`/`ArrayBuffer` |
-| `resolveFile` | Relative URL resolution | Companion-page resolver: `(filename, signal) => URL \| Blob \| Uint8Array \| ArrayBuffer`, optionally asynchronous |
-| `group` | New `THREE.Group` | Parent group for moving, rotating, scaling, or hiding the scene |
-| `splatBudget` | `3_000_000` | Maximum selected Splat count before transition overlap |
-| `cooldownMs` | `2000` | Milliseconds to retain unused pages after fade-out; `0` releases eligible pages immediately |
-| `fadeDurationMs` | `200` | Initial visibility and LOD fade duration in milliseconds; `0` switches immediately |
-| `maxConcurrentLoads` | `4` | Maximum simultaneous loads |
-| `manager` | `THREE.DefaultLoadingManager` | Loading manager and URL modifiers |
-| `requestHeader` / `withCredentials` | `{}` / `false` | Request settings; sensitive settings are not forwarded to other origins |
-| `onChange` | — | Request a redraw when data or visibility changes |
-| `onError` | Console error | Failure callback: `(error, url)` |
+| `resolveFile` | Relative URLs | Supply the `.radc` pages of a split scene yourself: `(filename, signal) => URL \| Blob \| Uint8Array \| ArrayBuffer`, directly or as a promise |
+| `group` | New `THREE.Group` | Group that holds the scene |
+| `splatBudget` | `3_000_000` | Maximum number of Splats shown at once. Higher values show more detail and use more memory |
+| `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
+| `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
+| `maxConcurrentLoads` | `4` | Maximum number of loads in progress at the same time |
+| `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
+| `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Sensitive settings are not sent to other origins |
+| `onChange` | — | Called when the scene needs a redraw |
+| `onError` | Logs to the console | Called when loading fails: `(error, url)` |
 
-Existing detail stays visible while replacement detail loads. Fades can temporarily exceed `splatBudget`; use `fadeDurationMs: 0` to switch immediately. Cached data also uses memory, so the budget is not a total memory limit.
+Detail that is already on screen stays there while its replacement loads. During a fade, old and new detail overlap, so the scene can briefly exceed `splatBudget`; use `fadeDurationMs: 0` to prevent this. The budget limits what is shown, not total memory: detail kept for reuse takes memory too.
 
-Ready pages are written during `update()` without a per-update byte limit. Loading concurrency and pending decode memory remain bounded.
-
-## Common properties and methods
+## Properties and methods
 
 | API | Description |
 | --- | --- |
-| `group` | Parent group for moving, rotating, scaling, or hiding the scene |
-| `splatBudget` | Positive safe integer; change it at runtime to adjust detail, even while the camera is stationary |
-| `initialized` | Resolves when scene setup is ready; rejects invalid or unsupported input |
-| `firstRenderable` | Resolves when the first data becomes visible, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while waiting |
-| `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that selects detail; `hasCamera(camera)` and `cameras` list them |
-| `setResolution(camera, width, height)` | Set a registered camera's render size in CSS pixels; also accepts a `THREE.Vector2` |
-| `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's resolution from `renderer.getSize()` |
-| `update()` | Update detail, loading, fades, and cleanup for the registered cameras; throws if none are registered |
-| `getBoundingBox()` | Approximate bounds in group coordinates; empty until the first data loads |
-| `getGlobalIndex(mesh, renderedIndex)` | Convert a picking result to a stable node index in the RAD file |
-| `stats` | Visible and retained Splat data, loading progress, and memory estimates; not total browser memory |
-| `dispose()` | Cancel loading and release scene resources; pending readiness promises reject with `AbortError` |
+| `group` | Group that holds the scene |
+| `splatBudget` | Change it at any time to adjust detail, even while the camera is still. Must be a positive integer |
+| `initialized` | Resolves when the scene is set up; rejects for invalid or unsupported files |
+| `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while you wait |
+| `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |
+| `setResolution(camera, width, height)` | Set a registered camera's size in CSS pixels; also accepts a `THREE.Vector2` |
+| `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's size from `renderer.getSize()` |
+| `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
+| `getBoundingBox()` | Approximate box around the scene, in the group's coordinates; empty until the first data loads |
+| `getGlobalIndex(mesh, renderedIndex)` | Convert a picking hit into a node index that stays the same for the whole RAD file |
+| `stats` | Numbers for monitoring, such as `visibleSplats`, `loadingChunks`, `downloadedBytes`, and `residentBytes`. Memory figures are estimates, not total browser memory |
+| `dispose()` | Stop loading and release the scene. Pending `initialized` and `firstRenderable` promises reject with `AbortError` |
 
-For on-demand rendering, use `onChange` to request redraws and keep calling `update()` each animation tick so loading, retries, fades, and cleanup progress.
+### On-demand rendering
 
-Cooldown uses elapsed time, independent of update frequency. Pending LOD decisions defer expired-page cleanup so newly needed pages can be reused. Each accepted decision updates demand before cleanup, even during camera movement; existing page pins still apply.
+Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render. Loading, retries, and fades only make progress inside `update()`.
+
+### Picking
+
+Hits from a streamed scene refer to the detail that is currently shown. Use `getGlobalIndex()`, or the hit's [`sourceIndex`](SplatMesh.md#raycasting), for an ID that does not change:
 
 ```js
 const hits = raycaster.intersectObject(streaming.group, true);
@@ -108,6 +118,8 @@ if (hits.length && hits[0].index !== undefined) {
 
 ## Error recovery
 
-Temporary download failures and lost decoder workers are retried automatically, waiting longer after each attempt, up to 30 seconds. Retryable HTTP errors are 408, 425, 429, and 5xx. Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and not retried. Each retry calls `onChange`, so on-demand render loops resume loading once the connection returns.
+Temporary download failures are retried automatically, waiting longer after each attempt, up to 30 seconds. This covers network errors and HTTP 408, 425, 429, and 5xx responses. Each retry calls `onChange`, so an on-demand render loop resumes loading when the connection returns.
 
-If LOD selection or preparation fails, or the LOD worker is lost during page loading, `onError` is called and the scene keeps its current detail but stops refining; create a new scheduler to try again.
+Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and are not retried.
+
+If the scheduler can no longer choose detail after an internal failure, it calls `onError` and keeps showing its current detail without refining further. Create a new scheduler to try again.

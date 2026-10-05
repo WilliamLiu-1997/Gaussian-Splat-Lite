@@ -2,83 +2,80 @@
 
 [Back to documentation](../README.md#documentation)
 
-Renders all visible `SplatMesh` objects in a scene. One instance can display multiple models.
+Draws every visible `SplatMesh` in a scene. Add one to the scene; a single instance displays all your models.
 
-```ts
-new GaussianSplatRenderer(options: GaussianSplatRendererOptions)
+```js
+import { GaussianSplatRenderer } from "gaussian-splat-lite";
+
+const splatRenderer = new GaussianSplatRenderer({ renderer });
+scene.add(splatRenderer);
 ```
+
+With `WebGPURenderer`, call `await renderer.init()` before creating it. Create your Three.js renderer with `antialias: false`: multisampling slows Splats down without improving them.
+
+Every option except `renderer` and `timer` is also a property, so you can change it at any time.
 
 ## Basic options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `renderer` | `WebGPURenderer \| THREE.WebGLRenderer` | Required | Three.js renderer; call `await renderer.init()` first when using WebGPURenderer |
-| `onDirty` | `() => void` | `undefined` | Called when the image needs a redraw |
-| `premultipliedAlpha` | `boolean` | `true` | Use premultiplied alpha for blending |
-| `timer` | `THREE.Timer` | New internal timer | Optional shared timer; update it yourself when supplied |
-| `autoUpdate` | `boolean` | `true` | Update visible Splats when rendering |
-| `preUpdate` | `boolean` | `true` | Update before rendering on WebGL; XR updates follow the render pass. Unused on native WebGPU |
+| `renderer` | `WebGPURenderer \| THREE.WebGLRenderer` | Required | Your Three.js renderer |
+| `onDirty` | `() => void` | `undefined` | Called when the image needs a redraw; see [on-demand rendering](#on-demand-rendering) |
+| `autoUpdate` | `boolean` | `true` | Update Splats automatically on each render. Set to `false` to call `update()` yourself |
+| `preUpdate` | `boolean` | `true` | On WebGL, update before drawing so changes show in the same frame. In WebXR, updates run after drawing. Not used on native WebGPU |
+| `timer` | `THREE.Timer` | New internal timer | Share your own timer with [`onFrame`](SplatMesh.md#scene-integration) animations; update it yourself when supplied |
+| `premultipliedAlpha` | `boolean` | `true` | Blend with premultiplied alpha |
 
-## Quality and appearance options
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `maxStdDev` | `number` | `Math.sqrt(8)` | Control the extent of each Splat; lower values crop its outer edges |
-| `minPixelRadius` | `number` | `1` | Skip Splats smaller than this screen radius in pixels |
-| `maxPixelRadius` | `number` | `256` | Limit Splat screen radius in pixels, independently of `focalAdjustment` |
-| `minAlpha` | `number` | `0.5 / 255` | Hide parts more transparent than this value |
-| `preBlurAmount` | `number` | `0.3` | Enlarge and soften Splats |
-| `blurAmount` | `number` | `0` | Add smoothing with an opacity adjustment |
-| `clipXY` | `number` | `1.25` | Allow centers slightly outside the view; `1` clips at its edge |
-| `focalAdjustment` | `number` | `2` | Adjust projected size; higher values generally look sharper |
-
-## Sorting and material options
+## Quality options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sortRadial` | `boolean` | `false` | Sort by distance when `true`, or by camera depth when `false` |
-| `fastSort` | `boolean` | `true` | Lower-precision back-to-front sorting; does not affect stochastic rendering |
-| `minSortIntervalMs` | `number` | `0` | Minimum time between WebGL sorts; unused on native WebGPU |
-| `stochastic` | `boolean` | `false` | Enable stochastic rendering; use temporal anti-aliasing to smooth its noise |
-| `autoAdvanceStochasticSample` | `boolean` | `true` | Change the noise pattern on each render while stochastic rendering is active, including WebXR |
-| `stochasticSort` | `boolean` | `true` | Sort stochastic Splats from front to back; set to `false` to skip sorting |
-| `transparent` | `boolean` | `true` | Enable transparent blending in sorted rendering |
-| `depthTest` | `boolean` | `true` | Respect depth from other geometry |
-| `depthWrite` | `boolean` | `false` | Write depth directly; normally leave off for transparent Splats |
+| `maxStdDev` | `number` | `Math.sqrt(8)` | How far each Splat extends from its center. Lower values trim its soft outer edge and render faster; `Math.sqrt(4)` to `Math.sqrt(9)` looks acceptable |
+| `minPixelRadius` | `number` | `1` | Skip Splats smaller than this radius in screen pixels |
+| `minAlpha` | `number` | `1 / 255` | Hide the parts of a Splat more transparent than this |
+| `preBlurAmount` | `number` | `0.3` | Enlarge and soften Splats. Use `0` for models trained with anti-aliasing |
+| `blurAmount` | `number` | `0` | Soften Splats while adjusting their opacity to compensate. For models trained with anti-aliasing, use `0.3` together with `preBlurAmount: 0` |
+| `clipXY` | `number` | `1.25` | How far outside the view a Splat's center may be before the Splat is skipped; `1` cuts exactly at the edge |
+| `focalAdjustment` | `number` | `2` | Adjust the size of Splats on screen; higher values generally look sharper |
 
-Native WebGPU sorts before drawing. On WebGL, the current sort order stays in use until a new sort is ready.
+A Splat's radius on screen is limited automatically to the short side of the viewport.
 
-Automatic update errors are caught and logged once per error message, preventing unhandled promise rejections. If draw preparation fails, that draw is skipped so rendering can continue. Explicit `update()` calls report errors to the caller.
+## Sorting and blending options
 
-See [Stochastic rendering](StochasticRendering.md) for setup and temporal anti-aliasing.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sortRadial` | `boolean` | `false` | Sort by distance from the camera instead of by depth. Depth suits most models; distance is steadier while the camera rotates |
+| `fastSort` | `boolean` | `true` | Faster, lower-precision sorting. Has no effect on stochastic rendering |
+| `minSortIntervalMs` | `number` | `0` | Minimum time between sorts on WebGL. Not used on native WebGPU |
+| `transparent` | `boolean` | `true` | Blend Splats as transparent objects |
+| `depthTest` | `boolean` | `true` | Let other geometry hide the Splats behind it |
+| `depthWrite` | `boolean` | `false` | Write Splat depth. Normally leave off, because most of a Splat is transparent |
 
-### WebXR and multiple views
+On native WebGPU, Splats are sorted before every draw. On WebGL, sorting finishes in the background: after the view changes, the previous order stays on screen until the new one is ready.
 
-WebXR uses the eyes' mean pose for generation and sorting, with a separate projection for each eye. Splats on either eye's layers are visible in both eyes. Eye poses are read directly from Three.js's world matrices, preserving the camera rig transform.
+## Stochastic rendering options
 
-With `autoUpdate = true`, render normally with your application camera; Three.js updates the XR camera when rendering.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `stochastic` | `boolean` | `false` | Use stochastic rendering; smooth its noise with temporal anti-aliasing |
+| `stochasticSort` | `boolean` | `true` | Sort Splats from front to back in stochastic rendering; `false` skips sorting |
+| `autoAdvanceStochasticSample` | `boolean` | `true` | Change the noise pattern on every render, including in WebXR |
 
-For multiple views outside WebXR, use separate cameras. Non-XR `ArrayCamera` rendering is not supported: `update()` throws, and other draws skip Splats and log an error. For independent sorting, give each camera its own Splat renderer on a separate layer.
+See [Stochastic rendering](StochasticRendering.md) for setup.
 
-### Color management
-
-Built-in materials handle model color conversion. Use your Three.js renderer's output color-space settings to control the final image.
-
-## Common properties and methods
+## Properties and methods
 
 | API | Description |
 | --- | --- |
-| `update({ scene, camera })` | Refresh the scene and camera state; returns `Promise<void>` |
-| `shrinkResources({ scene, camera })` | Reduce retained rendering resources after scene changes |
-| `clearSplats()` | Clear the current Splat display without removing scene objects |
+| `update({ scene, camera })` | Bring the Splats up to date with the scene and camera; returns a promise. Only needed with `autoUpdate = false` |
+| `shrinkResources({ scene, camera })` | Update, then release memory that is no longer needed, for example after removing large models; returns a promise |
+| `clearSplats()` | Clear the Splats from the display without removing models from the scene |
 | `dispose()` | Release this renderer's resources |
-| `stochasticActive` | Read whether stochastic rendering is still active while switching modes |
-| `stochasticSample` | Noise pattern index; defaults to 0. Each value selects an independent pattern. Disable `autoAdvanceStochasticSample` to control it yourself |
-| `synchronousSort` | Read whether sorting finishes before drawing: `true` on native WebGPU |
+| `stochasticActive` | Read-only. Whether stochastic rendering is currently being drawn; it changes shortly after you set `stochastic` |
+| `stochasticSample` | Noise pattern index, `0` by default. Set `autoAdvanceStochasticSample = false` to control it yourself |
+| `synchronousSort` | Read-only. `true` when Splats are always sorted before they are drawn, as on native WebGPU |
 
-`premultipliedAlpha`, `transparent`, `depthTest`, and `depthWrite` are also writable properties with the behavior listed above.
-
-For manual updates after scene or camera changes:
+To update manually after the scene or camera changes:
 
 ```js
 splatRenderer.autoUpdate = false;
@@ -86,9 +83,23 @@ await splatRenderer.update({ scene, camera });
 renderer.render(scene, camera);
 ```
 
+Errors during automatic updates are logged to the console, once per message, and rendering continues. Errors from your own `update()` calls are thrown to you.
+
+## WebXR and multiple views
+
+WebXR needs no extra setup: render with your application camera as usual. A Splat model on either eye's layers is visible in both eyes.
+
+For several views outside WebXR, render each one with its own camera. `ArrayCamera` is supported only in WebXR: elsewhere `update()` throws, and automatic draws skip the Splats and log an error. If each view needs its own sort order, give each camera its own Splat renderer on a separate layer.
+
+## Color and postprocessing
+
+Model colors are converted for you. Control the final image with your Three.js renderer's output color space, as for any other scene.
+
+For temporal anti-aliasing and effects such as Bloom, see [TAAPass and TAANode](TAAPass.md). To render offscreen, read pixels back, or build cube and environment maps, use [SplatCapture](SplatCapture.md).
+
 ## On-demand rendering
 
-Connect `onDirty` and `OrbitControls` to the same render scheduler. This example assumes `renderer`, `scene`, and `camera` already exist; use it in place of the earlier Splat renderer setup and render loop.
+To render only when something changes, connect `onDirty` and your controls to the same render request. This example assumes `renderer`, `scene`, and `camera` already exist:
 
 ```js
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -124,12 +135,14 @@ const splat = new SplatMesh({ url: "/assets/model.spz" });
 scene.add(splat);
 requestRender();
 await splat.initialized;
-requestRender(); // Loading may finish after the render scheduler becomes idle.
+requestRender(); // Loading may finish after the last requested render.
 ```
+
+Request a render yourself after changing a model:
 
 ```js
 splat.opacity = 0.5;
 requestRender();
 ```
 
-See the [overview](Architecture.md) for the main loading and rendering workflow.
+See the [quick start](../README.md#quick-start) for a complete setup.

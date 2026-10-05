@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-`SplatLoader` follows the Three.js `Loader` API. Load a model as `Splats` data, then use `parse()` to create a scene object.
+`SplatLoader` works like other Three.js loaders. It loads a model as [Splats](Splats.md) data, and `parse()` turns that data into a `SplatMesh` for your scene. The format is detected automatically.
 
 ```js
 import { SplatLoader } from "gaussian-splat-lite";
@@ -16,7 +16,7 @@ const splat = loader.parse(decoded);
 scene.add(splat);
 ```
 
-The callback form matches the normal Three.js Loader pattern:
+The callback form matches the usual Three.js pattern:
 
 ```js
 loader.load(
@@ -27,7 +27,13 @@ loader.load(
 );
 ```
 
-`loadAsync(url, onProgress?, signal?)` accepts an optional `AbortSignal`. Use it to cancel loading:
+If you do not need the loader API, `new SplatMesh({ url })` loads a model in one step; see [SplatMesh](SplatMesh.md).
+
+For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md). For SOG `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).
+
+## Cancel loading
+
+`loadAsync(url, onProgress?, signal?)` accepts an optional `AbortSignal`:
 
 ```js
 const controller = new AbortController();
@@ -35,26 +41,25 @@ const loading = loader.loadAsync("/assets/model.sog", undefined, controller.sign
 controller.abort(); // `loading` rejects with the signal's reason.
 ```
 
-`loader.abort()` cancels every load the loader has in progress; loads started afterwards are not affected. For `Splats` or `SplatMesh`, call `dispose()` to cancel a pending load.
-
-For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md).
-For `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).
+`loader.abort()` cancels every load the loader has in progress; loads started afterwards are not affected. For a `Splats` or `SplatMesh` that is still loading, call its `dispose()`.
 
 ## Loading progress
 
-`onProgress` receives a `SplatProgressEvent` (a `ProgressEvent` with a `stage` field). This also applies to `Splats` and `SplatMesh`:
+`onProgress` receives a `SplatProgressEvent`: a standard `ProgressEvent` with an extra `stage` field. `Splats` and `SplatMesh` report progress the same way.
 
 | `stage` | `loaded` / `total` |
 | --- | --- |
-| `download` | Bytes read or downloaded; `total === 0` means unknown size |
-| `postDecode` | Splats processed by the configured `postDecode` program |
-| `optimize` | Completed work units for Morton ordering and bounding-box calculation |
+| `download` | Bytes read or downloaded; `total === 0` means the size is unknown |
+| `postDecode` | Splats processed by your [`postDecode`](PostDecode.md) program; skipped when none is set |
+| `optimize` | Steps completed while preparing the model for rendering |
 
-Progress restarts for each stage. Use `event.loaded / event.total` when `event.lengthComputable` is true. `postDecode` is skipped when no program is configured; empty work reports completion immediately. Percentages describe completed work, not elapsed time. Download completion can precede the end of decoding; wait for `loadAsync()` or `.initialized` to resolve before using the model.
+Progress starts again from zero for each stage. Use `event.loaded / event.total` when `event.lengthComputable` is true. It measures completed work, not time.
+
+The model is ready when `loadAsync()` or `.initialized` resolves, which can be a little after the download reaches 100%.
 
 ## Local split files
 
-Single `.sog` and `.rad` files need only `file`. For a local SOG `meta.json` with external `.webp` images, supply those images through `resolveFile`. The same option resolves external RAD `.radc` pages:
+A single `.sog` or `.rad` file needs only `file`. Some models are split across several files: a SOG `meta.json` with `.webp` images, or a RAD file with `.radc` pages. For these, pass the main file as `file` and supply the others through `resolveFile`:
 
 ```js
 import { SplatMesh } from "gaussian-splat-lite";
@@ -75,4 +80,4 @@ scene.add(mesh);
 await mesh.initialized;
 ```
 
-A resolver may return a URL, `Blob`, `Uint8Array`, or `ArrayBuffer`, directly or as a promise. For subfolders, match the paths referenced by the model.
+`resolveFile` is called with each file name the model refers to. Return a URL, `Blob`, `Uint8Array`, or `ArrayBuffer`, directly or as a promise. If the model refers to files in subfolders, match those paths.

@@ -19,7 +19,6 @@ uniform vec3 renderToViewPos;
 uniform float renderToViewScale;
 uniform float maxStdDev;
 uniform float minPixelRadius;
-uniform float maxPixelRadius;
 uniform float minAlpha;
 uniform float blurAmount;
 uniform float preBlurAmount;
@@ -225,9 +224,9 @@ void main() {
         : ((a >= d) ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
     vec2 eigenVec2 = vec2(eigenVec1.y, -eigenVec1.x);
 
-    // Apply maxPixelRadius to the original support first, then shrink both the
-    // quad and its UV extent by the same ratio to preserve the Gaussian profile.
-    float maxProjectedRadius = maxPixelRadius * focalAdjustment;
+    // Limit support to the viewport's short side, then shrink both the quad
+    // and its UV extent by the same ratio to preserve the Gaussian profile.
+    float maxProjectedRadius = min(renderSize.x, renderSize.y) * focalAdjustment;
     float scale1 = min(maxProjectedRadius, maximumSupportRadius * sqrt(eigen1));
     float scale2 = min(maxProjectedRadius, maximumSupportRadius * sqrt(eigen2));
     float supportScale = (maximumSupportRadius > 0.0)

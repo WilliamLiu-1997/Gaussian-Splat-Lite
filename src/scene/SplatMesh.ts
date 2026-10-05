@@ -199,8 +199,11 @@ export class SplatMesh extends THREE.Object3D {
     );
   }
 
-  frameUpdate({ time, deltaTime, globalEdits }: SplatMeshFrameContext) {
-    this.onFrame?.({ mesh: this, time, deltaTime });
+  frameUpdate(
+    { time, deltaTime, globalEdits }: SplatMeshFrameContext,
+    callbacks = true,
+  ) {
+    if (callbacks) this.onFrame?.({ mesh: this, time, deltaTime });
 
     const source = this.splats;
     if (!source) {

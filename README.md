@@ -29,8 +29,9 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 | Focus | What you get |
 | --- | --- |
 | **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
-| **Stochastic rendering** | Optional transparency mode for use with temporal anti-aliasing |
 | **Large-scene streaming** | Load RAD and SOG detail as the camera moves, with smooth transitions |
+| **Stochastic rendering** | Optional transparency mode, with built-in temporal anti-aliasing to smooth it |
+| **Offscreen capture** | Render Splats to images, cube maps, and environment maps for reflections |
 | **SDF edits** | Recolor or hide parts of a model without moving Splats |
 | **Data and precision** | Load URLs, files, or bytes; place local models in large GIS/ECEF scenes |
 
@@ -107,7 +108,7 @@ Sorted alpha blending is the default. To enable stochastic rendering:
 splatRenderer.stochastic = true;
 ```
 
-This mode produces visible noise. Use the library's [TAAPass / TAANode](docs/TAAPass.md) to smooth it: `TAAPass` for `WebGLRenderer`, and `TAANode` for `WebGPURenderer` (including its WebGL2 fallback). See [Stochastic rendering](docs/StochasticRendering.md) for sorting options and TAA setup.
+This mode produces visible noise. Smooth it with the library's [temporal anti-aliasing](docs/TAAPass.md): `TAAPass` for `WebGLRenderer`, and `TAANode` for `WebGPURenderer` (including its WebGL2 fallback). See [Stochastic rendering](docs/StochasticRendering.md) for the setup.
 
 ## Streaming large scenes
 
@@ -155,18 +156,26 @@ const streaming = new SogStreamScheduler({
 
 ## Documentation
 
-- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options and sorting.
-- [Stochastic rendering](docs/StochasticRendering.md) — Optional rendering mode, noise control, and temporal anti-aliasing.
-- [TAAPass / TAANode](docs/TAAPass.md) — Temporal reprojection for WebGLRenderer and WebGPURenderer without a velocity texture.
-- [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and raycasting.
-- [SplatLoader](docs/SplatLoader.md) — File loading.
+**Rendering**
+
+- [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, sorting, and on-demand rendering.
+- [Stochastic rendering](docs/StochasticRendering.md) — The optional transparency mode and how to smooth its noise.
+- [TAAPass and TAANode](docs/TAAPass.md) — Temporal anti-aliasing for WebGLRenderer and WebGPURenderer.
+- [SplatCapture](docs/SplatCapture.md) — Offscreen images, pixel readback, cube maps, and environment maps.
+
+**Models**
+
+- [SplatMesh](docs/SplatMesh.md) — Loading, transforms, animation, and picking.
+- [SplatLoader](docs/SplatLoader.md) — Three.js-style loading, progress, cancellation, and split files.
+- [SplatFileType](docs/SplatFileType.md) — PLY, SPZ, SOG, and RAD formats.
+- [postDecode](docs/PostDecode.md) — Change Splats while a model loads.
+- [SplatEdit and SplatEditSdf](docs/SplatEdit.md) — Recolor, fade, or hide parts of a model.
+- [Splats](docs/Splats.md) — Read a loaded model's data.
+
+**Large scenes**
+
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
 - [SogStreamScheduler](docs/SogStreamScheduler.md) — Large SOG scenes with adaptive detail.
-- [Splats](docs/Splats.md) — Data access and updates.
-- [SplatFileType](docs/SplatFileType.md) — PLY/SPZ/SOG/RAD formats.
-- [SplatEdit / SplatEditSdf](docs/SplatEdit.md) — Color and opacity editing.
-- [postDecode](docs/PostDecode.md) — Transform models while loading.
-- [SplatAccumulator](docs/SplatAccumulator.md) — Combined model data for custom integrations.
 
 ## Development
 
@@ -180,7 +189,7 @@ npm run dev
 
 Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
 
-See [Contributing](CONTRIBUTING.md#validation) for validation commands. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
+See [Contributing](CONTRIBUTING.md#validation) for validation commands, and [Architecture](docs/Architecture.md) for how the library is built internally. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
 
 ## Acknowledgements
 

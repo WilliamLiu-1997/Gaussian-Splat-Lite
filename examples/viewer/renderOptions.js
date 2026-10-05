@@ -16,15 +16,6 @@ export const renderOptionGroups = [
         ],
       },
       {
-        property: "outputColorSpace",
-        label: "Output color space",
-        description:
-          "Chooses whether the canvas presents linear RGB values directly or encodes them for an sRGB display.",
-        defaultValue: true,
-        falseLabel: "Linear",
-        trueLabel: "sRGB",
-      },
-      {
         property: "splatBudget",
         label: "Streaming splat budget",
         description:
@@ -131,22 +122,13 @@ export const renderOptionGroups = [
         format: (value) => `${value.toFixed(2)} px`,
       },
       {
-        property: "maxPixelRadius",
-        description: "Caps very large nearby splats to limit overdraw.",
-        min: 16,
-        max: 1024,
-        step: 16,
-        defaultValue: 256,
-        format: (value) => `${Math.round(value)} px`,
-      },
-      {
         property: "minAlpha",
         description:
           "Discards faint splats and fragments. Raise it to reveal the cutoff boundary.",
         min: 0,
         max: 0.1,
         step: 0.5 / 255,
-        defaultValue: 0.5 / 255,
+        defaultValue: 1 / 255,
         format: (value) => value.toFixed(4),
       },
       {

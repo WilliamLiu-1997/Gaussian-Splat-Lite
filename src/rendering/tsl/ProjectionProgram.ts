@@ -125,7 +125,6 @@ export function createProjectionProgram(
   } = view;
   const maxStdDev = uniformBinding(uniforms, "maxStdDev", "float");
   const minPixelRadius = uniformBinding(uniforms, "minPixelRadius", "float");
-  const maxPixelRadius = uniformBinding(uniforms, "maxPixelRadius", "float");
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const preBlurAmount = uniformBinding(uniforms, "preBlurAmount", "float");
   const blurAmount = uniformBinding(uniforms, "blurAmount", "float");
@@ -275,7 +274,9 @@ export function createProjectionProgram(
               supportRadius.div(maximumSupportRadius),
               0,
             );
-            const maxProjectedRadius = maxPixelRadius.mul(focalAdjustment);
+            const maxProjectedRadius = renderSize.x
+              .min(renderSize.y)
+              .mul(focalAdjustment);
             const fullScale1 = maxProjectedRadius.min(
               maximumSupportRadius.mul(eigen1.sqrt()),
             );

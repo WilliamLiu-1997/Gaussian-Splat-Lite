@@ -2,7 +2,9 @@
 
 [Back to documentation](../README.md#documentation)
 
-`Splats` stores decoded Splat data. Wait for initialization before reading:
+`Splats` holds the data of a loaded model. Every `SplatMesh` has one as `mesh.splats`. Use it to read individual Splats, or to share one model's data between meshes.
+
+Wait for loading to finish before reading:
 
 ```js
 await splat.initialized;
@@ -17,42 +19,47 @@ The constructor and `initialize()` accept `SplatsOptions`:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `url` | `string` | `undefined` | PLY/SPZ/SOG/RAD file or SOG metadata URL |
+| `url` | `string` | `undefined` | PLY/SPZ/SOG/RAD file or SOG `meta.json` URL |
 | `file` | `Blob` (including `File`) | `undefined` | Local file |
-| `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | In-memory file data |
-| `fileType` | `SplatFileType` | Inferred from name | Explicit file format |
-| `fileName` | `string` | `File.name` when available | Name used to infer the input format |
-| `resolveFile` | `SplatFileResolver` | `undefined` | Resolves external SOG images or RAD pages by metadata filename; see [local split files](SplatLoader.md#local-split-files) |
-| `postDecode` | `SplatPostDecodeProgram` | `undefined` | Apply a [load-time transform](PostDecode.md) to each Splat |
-| `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Per-stage loading progress](SplatLoader.md#loading-progress) callback |
+| `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | Complete file data in memory |
+| `fileType` | `SplatFileType` | Detected from the name | Set the format explicitly |
+| `fileName` | `string` | `File.name` when available | Name used to detect the format |
+| `resolveFile` | `SplatFileResolver` | `undefined` | Supply the extra files of a split SOG or RAD model; see [local split files](SplatLoader.md#local-split-files) |
+| `postDecode` | `SplatPostDecodeProgram` | `undefined` | [Change each Splat while loading](PostDecode.md) |
+| `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Loading progress](SplatLoader.md#loading-progress) callback |
 
-Choose at most one of `url`, `file`, or `fileBytes`; mixing inputs throws.
-
-`initialize()` returns the new `initialized` promise and replaces earlier data. Reinitializing or disposing cancels pending file loading with `AbortError`.
+Choose at most one of `url`, `file`, or `fileBytes`; combining them throws.
 
 ## Methods
 
 | API | Description |
 | --- | --- |
-| `initialized` / `isInitialized` | Asynchronous initialization state |
-| `getNumSplats()` / `getNumSh()` | Returns Splat count and available SH degree |
-| `getByteLength()` | Return memory used by the retained data arrays |
-| `getSplat(index, includeSh?)` | Read one Splat; pass `false` to skip spherical harmonics |
-| `getSourceIndex(index)` | Map a current data index to its original source ID |
-| `forEachCenter(callback)` | Iterates centers only, suitable for spatial-index construction |
+| `initialized` / `isInitialized` | Promise that resolves when loading finishes, and whether it has |
+| `initialize(options)` | Load new data from a URL, file, or bytes, replacing what was there. Returns the new `initialized` promise |
+| `getNumSplats()` / `getNumSh()` | Splat count, and the level of view-dependent color (spherical harmonics degree) the model has |
+| `getByteLength()` | Memory used by the data, in bytes |
+| `getSplat(index, includeSh?)` | Read one Splat; pass `false` to skip its view-dependent color |
+| `getSourceIndex(index)` | The Splat's ID in the original file |
+| `forEachCenter(callback)` | Visit only the center of every Splat, for example to build a spatial index |
 | `forEachSplat(callback)` | Visit every Splat |
-| `initialize(options)` | Initializes or replaces data from a URL, file, or bytes |
-| `dispose()` | Cancel pending loading and release data resources |
+| `dispose()` | Cancel loading and release the data |
+
+Calling `initialize()` again or `dispose()` cancels a load still in progress; its promise rejects with `AbortError`.
 
 ## Data rules
 
-- File data is spatially reordered after `postDecode`; indices refer to the loaded order. Use `getSourceIndex(index)` or a picking hit's `sourceIndex` for the original source ID. Passing existing `Splats` to a mesh keeps their order.
-- `getSplat()` returns new `center`, `scales`, `quaternion`, `opacity`, `color`, and `sh` (0, 3, 8, or 15 RGB coefficients for SH0/1/2/3) values on each call. Changing them does not update the source. `forEachSplat()` reuses the same objects for every Splat; clone any you need to keep after the callback returns.
-- Streamed RAD/SOG data cannot be reinitialized.
-- Read bounds through [`mesh.getBoundingBox()`](SplatMesh.md#common-methods). They update when data is reinitialized or the streaming selection changes.
+- **Indices are not file order.** Splats are reordered while loading. Use `getSourceIndex(index)`, or a picking hit's `sourceIndex`, to get the ID from the original file. Passing existing `Splats` to a mesh keeps their order.
+- **Reads return copies.** `getSplat()` returns new `center`, `scales`, `quaternion`, `opacity`, `color`, and `sh` values on each call; changing them does not change the model. `sh` holds 0, 3, 8, or 15 RGB coefficients, depending on the model's degree.
+- **`forEachSplat()` reuses its objects.** The same objects are passed for every Splat, so clone anything you want to keep after the callback returns.
+- **Streamed data is read-only.** Data from [RadStreamScheduler](RadStreamScheduler.md) or [SogStreamScheduler](SogStreamScheduler.md) cannot be reinitialized.
+- **Bounds live on the mesh.** Use [`mesh.getBoundingBox()`](SplatMesh.md#bounding-box).
 
-Use [postDecode](PostDecode.md) to transform data at load time, or [SplatMesh properties](SplatMesh.md#common-properties) to adjust display color and opacity.
+To change a model, use [postDecode](PostDecode.md) while loading, or [SplatMesh properties](SplatMesh.md#properties) and [SDF edits](SplatEdit.md) for display color and opacity.
 
-Reinitialized data becomes visible after the renderer updates it and any required sorting completes. Sorted WebGL rendering keeps the previous display while waiting for an asynchronous sort. For [on-demand rendering](GaussianSplatRenderer.md#on-demand-rendering), request a redraw after initialization and connect `onDirty` to the same render scheduler. With `autoUpdate: false`, await `splatRenderer.update({ scene, camera })` before rendering.
+## After reloading data
 
-For loading progress, cancellation, and companion files, see [SplatLoader](SplatLoader.md).
+Data loaded with `initialize()` appears once the renderer has processed it. On WebGL this can take a few frames, and the previous data stays on screen meanwhile.
+
+With [on-demand rendering](GaussianSplatRenderer.md#on-demand-rendering), request a redraw when `initialized` resolves, and connect `onDirty` to the same render request. With `autoUpdate: false`, await `splatRenderer.update({ scene, camera })` before rendering.
+
+For loading progress, cancellation, and split files, see [SplatLoader](SplatLoader.md).

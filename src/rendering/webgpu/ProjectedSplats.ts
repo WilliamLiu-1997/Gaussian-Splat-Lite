@@ -610,7 +610,6 @@ export class ProjectedSplats {
       sortMode,
       uniforms.maxStdDev.value,
       uniforms.minPixelRadius.value,
-      uniforms.maxPixelRadius.value,
       uniforms.minAlpha.value,
       uniforms.preBlurAmount.value,
       uniforms.blurAmount.value,

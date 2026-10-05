@@ -14,10 +14,10 @@ export function isWebGPURenderer(
 
 export function usesNativeWebGPU(
   renderer: GaussianSplatCompatibleRenderer,
-): renderer is WebGPURenderer & { backend: { isWebGPUBackend: true } } {
+): boolean {
   return (
     isWebGPURenderer(renderer) &&
-    (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
+    renderer.coordinateSystem === THREE.WebGPUCoordinateSystem
   );
 }
 

@@ -7,11 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `SplatCapture` for rendering Splat scenes offscreen: render targets with optional supersampling and double buffering, RGBA pixel readback, cube maps, and environment maps for reflections. It works on WebGLRenderer and on WebGPURenderer with WebGPU or its WebGL2 fallback. Your render loop can keep running while a capture is in progress, and captures use your Splat renderer's quality settings. This brings back the capture methods `GaussianSplatRenderer` had in 1.1.8, under the same names. See [SplatCapture](docs/SplatCapture.md).
+
+### Changed
+
+- The default `minAlpha` is now `1 / 255` instead of `0.5 / 255`. Set `minAlpha: 0.5 / 255` to keep the previous look.
+- `TAAPass` is now used through `EffectComposer` with a final Three.js `OutputPass`; calling `taa.render(renderer)` on its own is no longer supported. Bloom and other effects go between the two passes without extra settings. Splat colors still match direct canvas rendering. `OutputPass` applies the renderer's tone mapping to the whole image, Splats included. See [TAAPass and TAANode](docs/TAAPass.md).
+
+### Removed
+
+- Removed `maxPixelRadius`. A Splat's radius on screen is now limited automatically to the short side of the viewport.
+- Removed `TAAPass.accumulateInOutputSpace`. Delete it from your code; effects after `TAAPass` no longer need it.
+- Removed the `SplatAccumulator` class and the `SplatMapping` type from the package exports. `GaussianSplatRenderer` manages the combined scene data itself. To read a model's Splats, use [Splats](docs/Splats.md).
+
+### Fixed
+
+- Fixed incorrect Splat colors that could appear on WebGPURenderer as models loaded into a previously empty scene.
+
 ## [1.2.0] - 2026-10-03
 
 ### Added
 
-- Exported `TAAPass(scene, camera)`, temporal anti-aliasing for WebGLRenderer that renders the scene itself and needs no velocity texture. Its result matches direct canvas colors and needs no `OutputPass`; set `accumulateInOutputSpace = false` for linear effects such as Bloom. Scene depth is exposed for depth effects. Exported `TAANode(scene, camera)` provides the same camera/depth reprojection in TSL for native WebGPU and WebGL2 fallback, accumulating in linear space for `RenderPipeline`, without a velocity attachment.
+- Exported `TAAPass(scene, camera)`, temporal anti-aliasing for WebGLRenderer that renders the scene itself and needs no velocity texture. Its result matches direct canvas colors and needs no `OutputPass`. Scene depth is exposed for depth effects. Exported `TAANode(scene, camera)` provides the same camera/depth reprojection in TSL for native WebGPU and WebGL2 fallback, accumulating in the working color space for `RenderPipeline`, without a velocity attachment.
 - Added `stochasticSample` and `autoAdvanceStochasticSample` to control the stochastic noise pattern, for example in a custom temporal anti-aliasing integration.
 - Added `SplatLoader.abort()`, which cancels every load the loader has in progress.
 - PLY loading now accepts headers with Windows line endings, `int8`–`float64` type names, extra elements before the vertex data, and Gaussian files that store their base color as `red`/`green`/`blue`.

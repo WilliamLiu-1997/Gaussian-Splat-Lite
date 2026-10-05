@@ -2,9 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Changes each Splat while loading PLY/SPZ/SOG/RAD files. Use `define()` to describe the changes, then pass the result as `postDecode`.
-
-`define()` runs its callback immediately, so mistakes in the expression throw right away; the result is then applied to each Splat while loading.
+Changes every Splat of a model while it loads: move it, scale it, recolor it, or adjust its opacity. Describe the change once with `postDecode.define()`, then pass the result as the `postDecode` option of `SplatMesh` or `Splats`. It works for PLY, SPZ, SOG, and RAD files.
 
 ```ts
 import { postDecode, SplatFileType, SplatMesh } from "gaussian-splat-lite";
@@ -22,38 +20,55 @@ const mesh = new SplatMesh({
 await mesh.initialized;
 ```
 
-Also accepted by `Splats`. The example shifts the model and gives it a warmer tint. All `postDecode` transforms preserve Splat count and order; [spatial reordering](Splats.md#data-rules) runs afterward.
+This example shifts the model and gives it a warmer tint.
 
-## Logical input
+Your callback runs once, right away, to record the calculation; it does not run for each Splat. That has two consequences:
+
+- Build the calculation with the `op` functions. A JavaScript `if` or `+` cannot see individual Splats.
+- Mistakes in the calculation throw immediately from `define()`, not later during loading.
+
+A transform never adds, removes, or reorders Splats. The [reordering done by loading](Splats.md#data-rules) happens afterwards.
+
+To change a model after it has loaded, use [SplatMesh properties](SplatMesh.md#properties) or [SDF edits](SplatEdit.md) instead.
+
+## Splat fields
+
+Read these from `splat`:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `splat.position` | `vec3` | xyz center |
-| `splat.scale` | `vec3` | Linear scale along each axis |
-| `splat.quaternion` | `quaternion` | xyzw rotation |
-| `splat.opacity` | `float` | Model opacity, including values above 1 |
-| `splat.alpha` | `float` | Alpha from 0 (transparent) to 1 (opaque) |
+| `splat.position` | `vec3` | Center, xyz |
+| `splat.scale` | `vec3` | Size along each axis |
+| `splat.quaternion` | `quaternion` | Rotation, xyzw |
+| `splat.opacity` | `float` | Opacity as stored in the model, which can be above 1 |
+| `splat.alpha` | `float` | Opacity from 0 (transparent) to 1 (opaque) |
 | `splat.color` | `vec3` | RGB color |
-| `splat.sh.coefficient(index)` | `vec3` | One of the 15 degree-1-through-3 RGB coefficients |
+| `splat.sh.coefficient(index)` | `vec3` | One of the 15 view-dependent color coefficients |
 
-`splat.sh.map((coefficient, { degree }) => ...)` builds expressions for all 15 coefficients; only those present in the source are updated.
+`splat.sh.map((coefficient, { degree }) => ...)` builds a calculation for all 15 coefficients at once. Only the ones the model has are updated.
 
-## Patch output
+## Returning changes
 
-Return any subset of `position`, `scale`, `quaternion`, `opacity`, `alpha`, `color`, or `sh`. Omitted fields stay unchanged. Use `when` to apply changes only to matching Splats; when false, the entire Splat stays byte-for-byte unchanged.
+Return any of `position`, `scale`, `quaternion`, `opacity`, `alpha`, `color`, or `sh`. Fields you leave out stay as they are.
 
-- Negative `opacity` values become zero. Values above 1 use an extended kernel shape and saturate at the codec's maximum shape.
-- `alpha` is clamped to `[0, 1]`, preserving other opacity state. Output either `opacity` or `alpha`, never both.
-- Quaternions are normalized. Invalid or zero-length results preserve the original.
-- Position and scale updates keep sorting centers synchronized.
+Add `when` to change only the Splats that match a condition. Splats that do not match stay exactly as loaded:
 
-`when` short-circuits nested `and`, `or`, and `not` expressions, so put cheap, selective conditions first. For example, `op.or(A, op.and(B, C))` means `A || (B && C)`.
+```ts
+const transform = postDecode.define(({ splat, op }) => ({
+  when: op.lt(op.component(splat.position, 1), 0), // Only Splats below y = 0.
+  alpha: 0,
+}));
+```
 
-Expressions use float32 precision. Programs are limited to 4096 instructions, and compiled conditions to 4096 flow nodes; exceeding either limit throws. Output uses the `Splats` packed codecs, so stored values may be quantized. SH NaN channels become zero without affecting other channels' shared exponent.
+Rules for the values you return:
 
-## External attributes
+- Return `opacity` or `alpha`, never both. `alpha` is limited to 0–1. A negative `opacity` becomes 0, and values above 1 are allowed up to a fixed maximum.
+- Quaternions are normalized for you. An invalid or zero-length result keeps the original rotation.
+- Values are stored in a compact format, so what you read back later can differ slightly from what you calculated.
 
-Inside `define(({ splat, op, attribute }) => ...)`, bind per-Splat data with `attribute()`:
+## External data
+
+Inside `define(({ splat, op, attribute }) => ...)`, use `attribute()` to bring in your own per-Splat data, such as a weight or label for each Splat:
 
 ```ts
 const weights = attribute({
@@ -67,21 +82,22 @@ const weights = attribute({
 ```
 
 - `data` accepts any `ArrayBufferView`, including `DataView`; `byteOffset` is relative to that view.
-- `components` accepts 1–4. Formats: `f32`, `f16`, `u8`, `unorm8`, `i8`, `snorm8`, `u16`, `unorm16`, `i16`, `snorm16`, `u32`, `i32`.
-- Attribute data is read when a load starts. Changing it afterwards affects only later loads.
-- Match attributes to Splats in their original file order, including for RAD files. If an attribute array is shorter than the model, only the matching prefix is changed.
+- `components` can be 1 to 4. Formats: `f32`, `f16`, `u8`, `unorm8`, `i8`, `snorm8`, `u16`, `unorm16`, `i16`, `snorm16`, `u32`, `i32`.
+- Order the data like the Splats in the original file, for RAD files too. If it is shorter than the model, only the Splats it covers are changed.
+- The data is read when a load starts. Changing it afterwards affects only later loads.
 
-## Expression operations
+## Operations
 
-Use `op` to calculate per-Splat values; JavaScript `if` does not evaluate individual Splats.
+- **Arithmetic:** `add`, `sub`, `mul`, `div`, `min`, `max`, `pow`, `clamp`, `mix`, `neg`, `abs`, `sqrt`, `log`, `exp`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
+- **Conditions:** `isFinite`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `and`, `or`, `not`, `select`
+- **Vectors:** `vec2`, `vec3`, `vec4`, `component`, `length`, `normalize`, `dot`, `cross`, `maxComponentIndex`
+- **Rotations:** `quaternion`, `quatMul`, `rotateVector`
 
-- arithmetic: `add`, `sub`, `mul`, `div`, `min`, `max`, `pow`, `clamp`, `mix`, `neg`, `abs`, `sqrt`, `log`, `exp`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, and `atan2`;
-- predicates: `isFinite`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `and`, `or`, `not`, and `select`;
-- vectors: `vec2`, `vec3`, `vec4`, `component`, `length`, `normalize`, `dot`, `cross`, and `maxComponentIndex`;
-- rotations: `quaternion`, `quatMul`, and `rotateVector`;
+Things to know:
 
-A number can be combined with a vector, for example `op.mul(splat.scale, 2)`. Values from different `postDecode` programs cannot be combined.
-
-Comparisons and vector products do not accept a number in place of a vector: `eq` and `ne` compare values of the same type, `lt`, `lte`, `gt`, and `gte` compare numbers, `dot` takes two vectors of the same size, and `cross` takes two `vec3` values.
-
-To change a model after loading, use [SplatMesh properties](SplatMesh.md#common-properties) or [region edits](SplatEdit.md).
+- A number can be combined with a vector: `op.mul(splat.scale, 2)`.
+- Comparisons and vector products need matching types. `eq` and `ne` compare two values of the same type; `lt`, `lte`, `gt`, and `gte` compare numbers; `dot` takes two vectors of the same size; `cross` takes two `vec3` values.
+- `op.or(A, op.and(B, C))` means `A || (B && C)`. Conditions stop as soon as the answer is known, so put cheap conditions that rule out many Splats first.
+- Values from different `define()` calls cannot be combined.
+- Calculations use 32-bit floats.
+- Very large calculations throw: the limit is 4096 operations.
