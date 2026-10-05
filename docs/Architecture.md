@@ -53,6 +53,11 @@ In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `Projecti
 
 Projected Splat support is capped at the viewport's short side, in projection space scaled by `focalAdjustment`, in both the TSL projection program and the GLSL vertex shader. The quad and its UV extent shrink by the same ratio, preserving the Gaussian profile.
 
+A kernel still above `minAlpha` where its support ends is faded there instead of cut off. The fragment stage rescales it about its peak, `(alpha + fade) * kernel - fade`, so it reaches `minAlpha` at the support edge. The quad is never enlarged.
+
+- **Gaussians.** Only `maxStdDev` can end a Gaussian early, so its fade follows from its alpha and the per-draw `edgeFade` uniform, a scale and offset derived from `maxStdDev` and `minAlpha`. It needs no per-Splat data, and a Gaussian that `minAlpha` already ends is drawn exactly as before.
+- **Wide kernels.** The edge value depends on the kernel power, so the projection computes the fade and stores it as a half in the low 16 bits of the squared support radius. That radius is first rounded down to its high 16 bits, at most 0.6% of the radius, which keeps the fragment stage's radius test exact. The squared radius therefore passes to the fragment stage bit for bit, and native WebGPU caches it in place of the radius.
+
 Errors from automatic updates are caught and logged once per message; a draw whose preparation fails is skipped. Explicit `update()` calls rethrow to the caller. `frameCallbacks` is an internal flag for a second renderer on the same scene, so each `SplatMesh.onFrame` runs once per frame.
 
 Resource rules:

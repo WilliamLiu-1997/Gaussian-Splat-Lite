@@ -22,6 +22,7 @@ export type ProjectedVertexData = {
   splatUv: Node<"vec2">;
   /** Stochastic variant only. */
   stochasticSeed?: Node<"uint">;
+  /** A wide kernel's low 16 bits hold its edge fade as a half. */
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
@@ -41,6 +42,7 @@ const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
 
 function createSplatFragment(
   minAlpha: Node<"float">,
+  edgeFade: Node<"vec2">,
   stochasticNoise: TextureNode<"uvec4"> | null,
 ) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
@@ -58,12 +60,21 @@ function createSplatFragment(
     const blueKernelPower = N.unpackHalf2x16(vSplat.y);
     const kernelPower = blueKernelPower.y;
     const kernelAlpha = z2.mul(-0.5).exp().toVar();
+    const peakAlpha = N.uintBitsToFloat(vSplat.z);
+    // A kernel still above minAlpha where its support ends fades to minAlpha
+    // there: it is rescaled about its peak. A Gaussian's fade follows from
+    // its alpha; a wide kernel carries its own in the low half of its squared
+    // radius.
+    const fade = N.float(0).toVar();
     N.If(kernelPower.notEqual(0), () => {
       kernelAlpha.assign(
         N.float(1).sub(N.float(1).sub(kernelAlpha).pow(kernelPower)),
       );
+      fade.assign(N.unpackHalf2x16(vSplat.w).x);
+    }).Else(() => {
+      fade.assign(peakAlpha.mul(edgeFade.x).sub(edgeFade.y).max(0));
     });
-    const alpha = N.uintBitsToFloat(vSplat.z).mul(kernelAlpha).toVar();
+    const alpha = peakAlpha.add(fade).mul(kernelAlpha).sub(fade).toVar();
     alpha.lessThan(minAlpha).discard();
     if (stochasticNoise && vStochasticOffset) {
       const pixel = N.uvec2(N.screenCoordinate.xy);
@@ -115,7 +126,8 @@ function stochasticTileOffset(
 
 // Half RGB saturates at its largest finite value instead of overflowing after
 // sRGB linearization. Source alpha keeps float32 bits, but half kernel power
-// can still change the final coverage of wide kernels.
+// can still change the final coverage of wide kernels. The squared support
+// radius passes bit for bit: a wide kernel's low half is its edge fade.
 function packSplatVarying(
   rgba: Node<"vec4">,
   supportRadiusSquared: Node<"float">,
@@ -159,6 +171,7 @@ export function createSplatNodeMaterial({
   stochastic: boolean;
 }): SplatNodeMaterial {
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
+  const edgeFade = uniformBinding(uniforms, "edgeFade", "vec2");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
   const stochasticSample = stochastic
     ? uniformBinding(uniforms, "stochasticSample", "uint")
@@ -176,6 +189,7 @@ export function createSplatNodeMaterial({
   const { vSplat, vSplatUv, vStochasticOffset, fragmentNode } =
     createSplatFragment(
       minAlpha,
+      edgeFade,
       stochastic ? textureBinding(uniforms, "stochasticNoise") : null,
     );
 
@@ -269,9 +283,7 @@ export function createSplatNodeMaterial({
           stochasticSeed: accumulator.seeds
             ? loadArray(accumulator.seeds, texCoord).r
             : undefined,
-          supportRadiusSquared: projected.supportRadius.mul(
-            projected.supportRadius,
-          ),
+          supportRadiusSquared: projected.supportRadiusSquared,
           kernelPower: projected.kernelPower,
           viewportOrigin: view.viewportOrigin,
         });

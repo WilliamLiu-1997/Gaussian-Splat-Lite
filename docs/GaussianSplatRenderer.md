@@ -30,7 +30,7 @@ Every option except `renderer` and `timer` is also a property, so you can change
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `maxStdDev` | `number` | `Math.sqrt(8)` | How far each Splat extends from its center. Lower values trim its soft outer edge and render faster; `Math.sqrt(4)` to `Math.sqrt(9)` looks acceptable |
+| `maxStdDev` | `number` | `Math.sqrt(8)` | How far each Splat extends from its center. Lower values trim its soft outer edge and render faster; a trimmed Splat fades to `minAlpha` at its edge instead of ending in a step. `Math.sqrt(4)` to `Math.sqrt(9)` looks acceptable |
 | `minPixelRadius` | `number` | `1` | Skip Splats smaller than this radius in screen pixels |
 | `minAlpha` | `number` | `1 / 255` | Hide the parts of a Splat more transparent than this |
 | `preBlurAmount` | `number` | `0.3` | Enlarge and soften Splats. Use `0` for models trained with anti-aliasing |

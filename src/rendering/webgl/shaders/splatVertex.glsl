@@ -69,6 +69,17 @@ float wideSupportRadius(float alpha, float power, float maximumRadius) {
     return min(maximumRadius, sqrt(max(0.0, radiusSquared)));
 }
 
+// A wide kernel can still be above minAlpha where its support ends. Return
+// the edge fade: the amount the fragment stage subtracts so the kernel,
+// rescaled about its peak, reaches minAlpha there instead. A Gaussian's fade
+// follows from its alpha alone; see the edgeFade uniform.
+float wideEdgeFade(float alpha, float power, float radiusSquared) {
+    float edgeKernel = 1.0 - pow(1.0 - exp(-0.5 * radiusSquared), power);
+    // A kernel still flat at its edge cannot fade; bound the slope instead.
+    return max(0.0, alpha * edgeKernel - minAlpha)
+        / max(1.0 - edgeKernel, 0.001);
+}
+
 void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -210,7 +221,6 @@ void main() {
     } else {
         supportRadius = wideSupportRadius(alpha, kernelPower, supportRadius);
     }
-    vSplatUv = position.xy * supportRadius;
 
     // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
     float eigenAvg = 0.5 * (a + d);
@@ -232,14 +242,32 @@ void main() {
     float supportScale = (maximumSupportRadius > 0.0)
         ? supportRadius / maximumSupportRadius
         : 0.0;
-    // Wide kernels previously used their full support for the size cutoff.
-    // Keep that visibility decision when trimming only their transparent tails.
-    float cullScale = (kernelPower == 0.0) ? supportScale : 1.0;
     // Projected radii use scaledRenderSize; convert the screen-pixel cutoff too.
     float minProjectedRadius = minPixelRadius * focalAdjustment;
-    if (scale1 * cullScale < minProjectedRadius && scale2 * cullScale < minProjectedRadius) {
+    if (scale1 * supportScale < minProjectedRadius && scale2 * supportScale < minProjectedRadius) {
         return;
     }
+
+    float supportRadiusSquared = supportRadius * supportRadius;
+    if (kernelPower != 0.0) {
+        // A wide kernel carries its edge fade in the low half of its squared
+        // radius. Round that radius down to its high half first, with room
+        // for the fade, so the support never grows. Only kernels that passed
+        // the size cutoff pay for this.
+        uint highHalf = floatBitsToUint(supportRadiusSquared * 0.996)
+            & 0xffff0000u;
+        float edgeFade = wideEdgeFade(
+            alpha, kernelPower, uintBitsToFloat(highHalf)
+        );
+        supportRadiusSquared = uintBitsToFloat(
+            highHalf | packHalf2x16(vec2(edgeFade, 0.0))
+        );
+        supportRadius = sqrt(supportRadiusSquared);
+        supportScale = (maximumSupportRadius > 0.0)
+            ? supportRadius / maximumSupportRadius
+            : 0.0;
+    }
+    vSplatUv = position.xy * supportRadius;
     scale1 *= supportScale;
     scale2 *= supportScale;
 
@@ -264,7 +292,7 @@ void main() {
         packHalf2x16(rgb.rg),
         packHalf2x16(vec2(rgb.b, kernelPower)),
         floatBitsToUint(alpha),
-        floatBitsToUint(supportRadius * supportRadius)
+        floatBitsToUint(supportRadiusSquared)
     );
 
     // Compute the NDC coordinates for the ellipsoid's diagonal axes.

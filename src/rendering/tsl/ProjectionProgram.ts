@@ -44,6 +44,8 @@ export type SplatProjection = {
   /** Source color space; the draw stage applies encodeLinear. */
   rgba: Node<"vec4">;
   supportRadius: Node<"float">;
+  /** A wide kernel's low 16 bits hold its edge fade as a half. */
+  supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
 };
 
@@ -109,6 +111,29 @@ const wideSupportRadius = N.Fn(
   },
 );
 
+// A wide kernel can still be above minAlpha where its support ends. Returns
+// the edge fade: the amount the fragment stage subtracts so the kernel,
+// rescaled about its peak, reaches minAlpha there instead. A Gaussian's fade
+// follows from its alpha alone; see the edgeFade uniform.
+const wideEdgeFade = N.Fn(
+  ([alpha, power, radiusSquared, minimumAlpha]: [
+    Node<"float">,
+    Node<"float">,
+    Node<"float">,
+    Node<"float">,
+  ]) => {
+    const edgeKernel = N.float(1)
+      .sub(N.float(1).sub(radiusSquared.mul(-0.5).exp()).pow(power))
+      .toVar();
+    // A kernel still flat at its edge cannot fade; bound the slope instead.
+    return alpha
+      .mul(edgeKernel)
+      .sub(minimumAlpha)
+      .max(0)
+      .div(N.float(1).sub(edgeKernel).max(0.001));
+  },
+);
+
 /** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
 export function createProjectionProgram(
   uniforms: Uniforms,
@@ -142,6 +167,7 @@ export function createProjectionProgram(
     const projectedAxis2 = N.vec2(0).toVar();
     const projectedRgba = N.vec4(0).toVar();
     const projectedSupportRadius = N.float(0).toVar();
+    const projectedSupportRadiusSquared = N.float(0).toVar();
     const projectedKernelPower = N.float(0).toVar();
     const alphaShape = packed
       ? decodeAlphaShape(source.first)
@@ -273,7 +299,7 @@ export function createProjectionProgram(
               maximumSupportRadius.greaterThan(0),
               supportRadius.div(maximumSupportRadius),
               0,
-            );
+            ).toVar();
             const maxProjectedRadius = renderSize.x
               .min(renderSize.y)
               .mul(focalAdjustment);
@@ -283,23 +309,53 @@ export function createProjectionProgram(
             const fullScale2 = maxProjectedRadius.min(
               maximumSupportRadius.mul(eigen2.sqrt()),
             );
-            const scale1 = fullScale1.mul(supportScale);
-            const scale2 = fullScale2.mul(supportScale);
-            // Preserve the original wide-kernel minimum-size cutoff.
-            const cullScale = N.select(kernelPower.equal(0), supportScale, 1);
             // Match the internal projection scale to keep the cutoff in screen pixels.
             const minProjectedRadius = minPixelRadius.mul(focalAdjustment);
 
             N.If(
               fullScale1
-                .mul(cullScale)
+                .mul(supportScale)
                 .greaterThanEqual(minProjectedRadius)
                 .or(
                   fullScale2
-                    .mul(cullScale)
+                    .mul(supportScale)
                     .greaterThanEqual(minProjectedRadius),
                 ),
               () => {
+                const supportRadiusSquared = supportRadius
+                  .mul(supportRadius)
+                  .toVar();
+                N.If(kernelPower.notEqual(0), () => {
+                  // A wide kernel carries its edge fade in the low half of
+                  // its squared radius. Round that radius down to its high
+                  // half first, with room for the fade, so the support never
+                  // grows. Only kernels that passed the size cutoff pay for
+                  // this.
+                  const highHalf = N.floatBitsToUint(
+                    supportRadiusSquared.mul(0.996),
+                  )
+                    .bitAnd(N.uint(0xffff0000))
+                    .toVar();
+                  const edgeFade = wideEdgeFade(
+                    alpha,
+                    kernelPower,
+                    N.uintBitsToFloat(highHalf),
+                    minAlpha,
+                  );
+                  supportRadiusSquared.assign(
+                    N.uintBitsToFloat(
+                      highHalf.bitOr(N.packHalf2x16(N.vec2(edgeFade, 0))),
+                    ),
+                  );
+                  supportRadius.assign(supportRadiusSquared.sqrt());
+                  supportScale.assign(
+                    N.select(
+                      maximumSupportRadius.greaterThan(0),
+                      supportRadius.div(maximumSupportRadius),
+                      0,
+                    ),
+                  );
+                });
                 // Only surviving splats need an oriented covariance basis.
                 const eigenVector1 = N.vec2(0).toVar();
                 N.If(b.abs().greaterThan(0.001), () => {
@@ -315,6 +371,8 @@ export function createProjectionProgram(
                 );
                 projectedClipCenter.assign(clipCenter);
                 projectedViewDepth.assign(viewCenter.z.negate());
+                const scale1 = fullScale1.mul(supportScale);
+                const scale2 = fullScale2.mul(supportScale);
                 projectedAxis1.assign(
                   eigenVector1.mul(scale1).mul(2).div(scaledRenderSize),
                 );
@@ -333,6 +391,7 @@ export function createProjectionProgram(
                   ),
                 );
                 projectedSupportRadius.assign(supportRadius);
+                projectedSupportRadiusSquared.assign(supportRadiusSquared);
                 projectedKernelPower.assign(kernelPower);
                 valid.assign(true);
               },
@@ -350,6 +409,7 @@ export function createProjectionProgram(
       axis2: projectedAxis2,
       rgba: projectedRgba,
       supportRadius: projectedSupportRadius,
+      supportRadiusSquared: projectedSupportRadiusSquared,
       kernelPower: projectedKernelPower,
     };
   };

@@ -73,7 +73,8 @@ function store(
 /** Native projected records: compact layout, paired codec and texture ownership. */
 export class ProjectionCache {
   // 32 bytes per compact slot and eye. RGB retains half precision; alpha,
-  // support radius, kernel power and view depth retain their float32 bits.
+  // squared support radius, kernel power and view depth retain their float32
+  // bits.
   readonly textures = [makeTexture(), makeTexture()];
   readonly size = new THREE.Vector4(1, 1, 1, 0);
   private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
@@ -143,7 +144,7 @@ export class ProjectionCache {
       N.uvec4(
         greenBlue,
         N.floatBitsToUint(projection.rgba.a),
-        N.floatBitsToUint(projection.supportRadius),
+        N.floatBitsToUint(projection.supportRadiusSquared),
         N.floatBitsToUint(projection.kernelPower),
       ),
     );
@@ -219,12 +220,14 @@ export class ProjectionCache {
       .mul(N.positionGeometry.x)
       .add(axis2.mul(N.positionGeometry.y))
       .mul(axisScale.div(pixelScale));
-    const supportRadius = N.uintBitsToFloat(second.z);
+    // The squared radius passes to the fragment stage bit for bit: a wide
+    // kernel's low half carries its edge fade.
+    const supportRadiusSquared = N.uintBitsToFloat(second.z);
     return {
       clipPosition: N.vec4(ndc.add(offset).mul(clipW), clipZ, clipW),
       rgba: N.vec4(ratioRed.y, greenBlue, N.uintBitsToFloat(second.y)),
-      splatUv: N.positionGeometry.xy.mul(supportRadius),
-      supportRadiusSquared: supportRadius.mul(supportRadius),
+      splatUv: N.positionGeometry.xy.mul(supportRadiusSquared.sqrt()),
+      supportRadiusSquared,
       kernelPower: N.uintBitsToFloat(second.w),
     };
   }

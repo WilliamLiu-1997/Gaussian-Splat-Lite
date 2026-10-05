@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- A Splat that `maxStdDev` trims while it is still more opaque than `minAlpha` now fades to `minAlpha` at its edge instead of ending in a visible step. This includes the wide Splats of LOD data. Splats are not drawn any larger, so lower `maxStdDev` values keep their speed and look smoother. Edges are slightly more transparent than before, most visibly at low `maxStdDev`; Splats that are not trimmed look the same.
+- `minPixelRadius` now measures the wide Splats of LOD data by their visible size, as it already did for other Splats, so the smallest ones are skipped slightly earlier.
+
 ## [1.2.1] - 2026-10-06
 
 ### Added

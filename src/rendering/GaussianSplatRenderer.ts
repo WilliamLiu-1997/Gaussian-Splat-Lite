@@ -127,7 +127,8 @@ export interface GaussianSplatRendererOptions {
   /**
    * Maximum standard deviations from the center to render Gaussians. Values
    * Math.sqrt(4)..Math.sqrt(9) produce acceptable results and can be tweaked for
-   * performance.
+   * performance. A Gaussian still above minAlpha at this distance fades to
+   * minAlpha there instead of ending in a step.
    * @default Math.sqrt(8)
    */
   maxStdDev?: number;
@@ -672,7 +673,17 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       3;
     this.uniforms.maxStdDev.value = this.maxStdDev;
     this.uniforms.minPixelRadius.value = this.minPixelRadius;
-    this.uniforms.minAlpha.value = this.minAlpha;
+    // Negative thresholds hide nothing, like zero.
+    const minAlpha = Math.max(0, this.minAlpha);
+    this.uniforms.minAlpha.value = minAlpha;
+    // A Gaussian's kernel where maxStdDev ends it. One still flat there cannot
+    // fade; bound the slope instead.
+    const edgeKernel = Math.exp(-0.5 * Math.fround(this.maxStdDev) ** 2);
+    const edgeScale = 1 / Math.max(1 - edgeKernel, 0.001);
+    this.uniforms.edgeFade.value.set(
+      edgeKernel * edgeScale,
+      minAlpha * edgeScale,
+    );
     this.uniforms.preBlurAmount.value = this.preBlurAmount;
     this.uniforms.blurAmount.value = this.blurAmount;
     this.uniforms.clipXY.value = this.clipXY;

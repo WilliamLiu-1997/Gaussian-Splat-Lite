@@ -3,6 +3,7 @@ precision highp float;
 precision highp int;
 
 uniform float minAlpha;
+uniform vec2 edgeFade;
 #if GSL_STOCHASTIC
 uniform highp usampler2D stochasticNoise;
 #endif
@@ -27,10 +28,19 @@ void main() {
     vec2 blueKernelPower = unpackHalf2x16(vSplat.y);
     float kernelPower = blueKernelPower.y;
     float kernelAlpha = exp(-0.5 * z2);
+    float alpha = uintBitsToFloat(vSplat.z);
+    // A kernel still above minAlpha where its support ends fades to minAlpha
+    // there: it is rescaled about its peak. A Gaussian's fade follows from
+    // its alpha; a wide kernel carries its own in the low half of its squared
+    // radius.
+    float fade;
     if (kernelPower != 0.0) {
         kernelAlpha = 1.0 - pow(1.0 - kernelAlpha, kernelPower);
+        fade = unpackHalf2x16(vSplat.w).x;
+    } else {
+        fade = max(alpha * edgeFade.x - edgeFade.y, 0.0);
     }
-    float alpha = uintBitsToFloat(vSplat.z) * kernelAlpha;
+    alpha = (alpha + fade) * kernelAlpha - fade;
 
     if (alpha < minAlpha) {
         discard;

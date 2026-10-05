@@ -46,6 +46,9 @@ export function makeSplatUniforms() {
     minPixelRadius: { value: 1.0 },
     // Minimum alpha value for splat rendering
     minAlpha: { value: DEFAULT_MIN_ALPHA },
+    // Scale and offset from a Gaussian's alpha to its edge fade, which takes
+    // the alpha maxStdDev would cut it off at down to minAlpha
+    edgeFade: { value: new THREE.Vector2() },
     // Add to projected 2D splat covariance diagonal (thickens and brightens)
     preBlurAmount: { value: 0.3 },
     // Add to 2D splat covariance diagonal and adjust opacity (anti-aliasing)
