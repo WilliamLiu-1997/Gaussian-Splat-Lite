@@ -48,6 +48,7 @@ A Splat's radius on screen is limited automatically to the short side of the vie
 | `fastSort` | `boolean` | `true` | Faster, lower-precision sorting. Has no effect on stochastic rendering |
 | `minSortIntervalMs` | `number` | `0` | Minimum time between sorts on WebGL. Not used on native WebGPU |
 | `transparent` | `boolean` | `true` | Blend Splats as transparent objects |
+| `encodeLinear` | `boolean` | `undefined` | Convert model colors from sRGB to linear before blending; `false` keeps their sRGB values. Chosen automatically when unset |
 | `depthTest` | `boolean` | `true` | Let other geometry hide the Splats behind it |
 | `depthWrite` | `boolean` | `false` | Write Splat depth. Normally leave off, because most of a Splat is transparent |
 
@@ -94,6 +95,8 @@ For several views outside WebXR, render each one with its own camera. `ArrayCame
 ## Color and postprocessing
 
 Model colors are converted for you. Control the final image with your Three.js renderer's output color space, as for any other scene.
+
+Set `encodeLinear` to choose the conversion yourself. For example, to blend Splats in sRGB next to a linear scene, render them into their own target with `encodeLinear: false`, then unpremultiply that layer, convert it to linear, and premultiply it again before compositing.
 
 For temporal anti-aliasing and effects such as Bloom, see [TAAPass and TAANode](TAAPass.md). To render offscreen, read pixels back, or build cube and environment maps, use [SplatCapture](SplatCapture.md).
 

@@ -101,6 +101,12 @@ export interface GaussianSplatRendererOptions {
    */
   premultipliedAlpha?: boolean;
   /**
+   * Decode stored sRGB Splat colors to linear before blending. When omitted,
+   * conversion follows the active blend space automatically.
+   * @default undefined
+   */
+  encodeLinear?: boolean;
+  /**
    * Pass in a THREE.Timer to synchronize time-based effects across different
    * systems. A supplied timer remains owned and updated by the caller.
    * @default new THREE.Timer()
@@ -261,6 +267,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   private stochasticFrame: boolean;
   private _stochasticSort: boolean;
   private _premultipliedAlpha: boolean;
+  private _encodeLinear: boolean | undefined;
   private _transparent: boolean;
   private readonly sortedBlending: THREE.Blending;
   private _depthTest: boolean;
@@ -333,6 +340,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this._depthTest = options.depthTest ?? true;
     this._depthWrite = options.depthWrite ?? false;
     this._premultipliedAlpha = premultipliedAlpha;
+    this._encodeLinear = options.encodeLinear;
     this._transparent = options.transparent ?? true;
     this._stochastic = stochastic;
     this.autoAdvanceStochasticSample =
@@ -671,7 +679,12 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     this.uniforms.focalAdjustment.value = this.focalAdjustment;
     this.uniforms.stochastic.value = this.stochasticFrame;
     this.uniforms.stochasticSample.value = this.stochasticSample >>> 0;
-    configureSplatOutput(renderer, currentRenderTarget, this.uniforms);
+    configureSplatOutput(
+      renderer,
+      currentRenderTarget,
+      this.uniforms,
+      this._encodeLinear,
+    );
 
     if (this.backend.kind === "webgpu") {
       if (this.backend.sortError) throw this.backend.sortError;
@@ -1119,6 +1132,17 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     } finally {
       this.sorting = false;
     }
+  }
+
+  /** Decode sRGB before blending; undefined follows the active blend space. */
+  get encodeLinear(): boolean | undefined {
+    return this._encodeLinear;
+  }
+
+  set encodeLinear(value: boolean | undefined) {
+    if (value === this._encodeLinear) return;
+    this._encodeLinear = value;
+    this.setDirty();
   }
 
   get premultipliedAlpha(): boolean {

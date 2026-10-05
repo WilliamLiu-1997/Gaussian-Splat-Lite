@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added `encodeLinear` to `GaussianSplatRenderer` to choose how model colors are converted before blending: `true` converts them to linear, `false` keeps their sRGB values. Left unset, the conversion is automatic as before.
 - Added `SplatCapture` for rendering Splat scenes offscreen: render targets with optional supersampling and double buffering, RGBA pixel readback, cube maps, and environment maps for reflections. It works on WebGLRenderer and on WebGPURenderer with WebGPU or its WebGL2 fallback. Your render loop can keep running while a capture is in progress, and captures use your Splat renderer's quality settings. This brings back the capture methods `GaussianSplatRenderer` had in 1.1.8, under the same names. See [SplatCapture](docs/SplatCapture.md).
 
 ### Changed

@@ -33,13 +33,15 @@ export function configureSplatOutput(
   renderer: GaussianSplatCompatibleRenderer,
   target: THREE.RenderTarget | null,
   uniforms: Uniforms,
+  encodeLinear?: boolean,
 ) {
   let blendSpace = THREE.ColorManagement.workingColorSpace;
   if (!isWebGPURenderer(renderer)) {
     if (target === null) blendSpace = renderer.outputColorSpace;
     else if (isXRRenderTarget(target)) blendSpace = target.texture.colorSpace;
   }
-  uniforms.encodeLinear.value = blendSpace !== THREE.SRGBColorSpace;
+  uniforms.encodeLinear.value =
+    encodeLinear ?? blendSpace !== THREE.SRGBColorSpace;
 }
 
 export type CPUOrderingUpdate = {

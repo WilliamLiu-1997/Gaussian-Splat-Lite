@@ -54,7 +54,7 @@ export function makeSplatUniforms() {
     clipXY: { value: 1.25 },
     // Debug renderSize scale factor
     focalAdjustment: { value: 2.0 },
-    // Whether to decode stored sRGB Splat colors before blending
+    // Resolved from GaussianSplatRenderer.encodeLinear or the active blend space.
     encodeLinear: { value: false },
     // Exact draw count; the final instance may contain unused quads.
     splatCount: { value: 0 },
