@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-06
+
 ### Added
 
 - Added `encodeLinear` to `GaussianSplatRenderer` to choose how model colors are converted before blending: `true` converts them to linear, `false` keeps their sRGB values. Left unset, the conversion is automatic as before.
@@ -531,7 +533,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.8...v1.2.0
 [1.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.6...v1.1.7
