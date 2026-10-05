@@ -34,6 +34,15 @@ export const renderOptionGroups = [
         falseLabel: "Continuous",
         trueLabel: "On demand",
       },
+      {
+        property: "halfFloatBlending",
+        label: "Blend buffer",
+        description:
+          "Half float blends at high precision and rounds to the display once, removing the overlapping rings 8-bit blending leaves in faint gradients. Stochastic rendering always uses half float.",
+        defaultValue: true,
+        falseLabel: "8-bit",
+        trueLabel: "Half float",
+      },
     ],
   },
   {
@@ -128,7 +137,7 @@ export const renderOptionGroups = [
         min: 0,
         max: 0.1,
         step: 0.5 / 255,
-        defaultValue: 1 / 255,
+        defaultValue: 0.5 / 255,
         format: (value) => value.toFixed(4),
       },
       {

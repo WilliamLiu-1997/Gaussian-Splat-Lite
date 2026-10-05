@@ -140,7 +140,7 @@ export interface GaussianSplatRendererOptions {
   minPixelRadius?: number;
   /**
    * Minimum alpha value for splat rendering.
-   * @default 1 / 255
+   * @default 0.5 / 255
    */
   minAlpha?: number;
   /**

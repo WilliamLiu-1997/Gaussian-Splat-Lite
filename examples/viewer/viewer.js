@@ -19,6 +19,7 @@ import {
 import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
 import { createRenderOptionsPanel } from "./renderOptionsPanel.js";
+import { createViewerHalfFloat } from "./viewerHalfFloat.js";
 import { ViewerInspector } from "./viewerInspector.js";
 import { createViewerTAA } from "./viewerTAA.js";
 import { createViewerUI } from "./viewerUI.js";
@@ -161,6 +162,7 @@ function disposeRendererState(state) {
   state.controls?.removeEventListener("update", requestRender);
   state.controls?.dispose();
   state.taa?.dispose();
+  state.halfFloat?.dispose();
   state.splatRenderer?.removeFromParent();
   state.splatRenderer?.dispose();
   // An attached Inspector is owned and disposed by the renderer.
@@ -202,6 +204,7 @@ let taa = null;
 // resizeRenderer() reads it while mounting the first renderer.
 let activeStream = null;
 let renderOnDemand = true;
+let halfFloatBlending = true;
 let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
 mountRendererState(rendererState);
@@ -256,6 +259,10 @@ function drawFrame(time) {
     if (!splatRenderer.stochastic && !splatRenderer.stochasticActive) {
       retireTAA();
     }
+  } else if (halfFloatBlending) {
+    // Each renderer builds its buffer on its first sorted draw.
+    rendererState.halfFloat ??= createViewerHalfFloat(renderer, scene, camera);
+    rendererState.halfFloat.render();
   } else {
     renderer.render(scene, camera);
   }
@@ -280,6 +287,13 @@ const renderOptionActions = {
   },
   renderOnDemand: (value) => {
     renderOnDemand = value;
+  },
+  halfFloatBlending: (value) => {
+    halfFloatBlending = value;
+    if (!value) {
+      rendererState.halfFloat?.dispose();
+      rendererState.halfFloat = null;
+    }
   },
   splatBudget: (value) => {
     if (activeStream) activeStream.splatBudget = value;

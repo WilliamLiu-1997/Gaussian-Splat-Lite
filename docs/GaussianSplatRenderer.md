@@ -32,7 +32,7 @@ Every option except `renderer` and `timer` is also a property, so you can change
 | --- | --- | --- | --- |
 | `maxStdDev` | `number` | `Math.sqrt(8)` | How far each Splat extends from its center. Lower values trim its soft outer edge and render faster; a trimmed Splat fades to `minAlpha` at its edge instead of ending in a step. `Math.sqrt(4)` to `Math.sqrt(9)` looks acceptable |
 | `minPixelRadius` | `number` | `1` | Skip Splats smaller than this radius in screen pixels |
-| `minAlpha` | `number` | `1 / 255` | Hide the parts of a Splat more transparent than this |
+| `minAlpha` | `number` | `0.5 / 255` | Hide the parts of a Splat more transparent than this |
 | `preBlurAmount` | `number` | `0.3` | Enlarge and soften Splats. Use `0` for models trained with anti-aliasing |
 | `blurAmount` | `number` | `0` | Soften Splats while adjusting their opacity to compensate. For models trained with anti-aliasing, use `0.3` together with `preBlurAmount: 0` |
 | `clipXY` | `number` | `1.25` | How far outside the view a Splat's center may be before the Splat is skipped; `1` cuts exactly at the edge |

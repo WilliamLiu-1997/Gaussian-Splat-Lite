@@ -22,7 +22,7 @@ export const emptyOrdering = new THREE.DataTexture(
 );
 emptyOrdering.needsUpdate = true;
 
-export const DEFAULT_MIN_ALPHA = 1 / 255;
+export const DEFAULT_MIN_ALPHA = 0.5 / 255;
 
 export function makeSplatUniforms() {
   const emptySplats: THREE.Texture = emptySplatTexture;
