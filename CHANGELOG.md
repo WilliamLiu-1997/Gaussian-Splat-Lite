@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `TAANode` avoids redundant screen-texture transforms and repeated depth sampling while retaining its single-pass temporal filter.
 - The default `minAlpha` is now `0.5 / 255` instead of `1 / 255`, so faint Splats and the outer edge of others reach a little further. Set `minAlpha: 1 / 255` to keep the previous look.
 - A Splat that `maxStdDev` trims while it is still more opaque than `minAlpha` now fades to `minAlpha` at its edge instead of ending in a visible step. This includes the wide Splats of LOD data. Splats are not drawn any larger, so lower `maxStdDev` values keep their speed and look smoother. Edges are slightly more transparent than before, most visibly at low `maxStdDev`; Splats that are not trimmed look the same.
 - `minPixelRadius` now measures the wide Splats of LOD data by their visible size, as it already did for other Splats, so the smallest ones are skipped slightly earlier.

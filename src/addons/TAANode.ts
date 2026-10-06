@@ -47,6 +47,14 @@ export class TAANode extends Node<"vec4"> {
     this.makeTarget("TAA.history0"),
     this.makeTarget("TAA.history1"),
   ];
+  private readonly historyColor = N.texture(
+    this.history[0].texture,
+    N.screenUV,
+  );
+  private readonly historyDepth = N.texture(
+    this.history[0].depthTexture,
+    N.screenUV,
+  );
   private readonly textureNode = (
     N.passTexture as unknown as (pass: TAANode, texture: Texture) => TextureNode
   )(this, this.history[0].texture);
@@ -174,6 +182,9 @@ export class TAANode extends Node<"vec4"> {
       this.material.depthFunc = state.prepareResolve(camera, this);
       if (!uniforms.valid.value)
         for (const target of this.history) renderer.initRenderTarget(target);
+      const previous = this.history[state.historyIndex];
+      this.historyColor.value = previous.texture;
+      this.historyDepth.value = previous.depthTexture;
       const output = this.history[1 - state.historyIndex];
       renderer.setRenderObjectFunction(null);
       renderer.setRenderTarget(output);
@@ -210,14 +221,11 @@ export class TAANode extends Node<"vec4"> {
       });
     }
     const u = this.state.uniforms;
-    const source = N.texture(this.source.texture);
-    const sourceDepth = N.texture(this.depthTexture);
-    const history = N.texture(this.history[0].texture).onObjectUpdate(
-      () => this.history[this.state.historyIndex].texture,
-    );
-    const historyDepth = N.texture(this.history[0].depthTexture).onObjectUpdate(
-      () => this.history[this.state.historyIndex].depthTexture,
-    );
+    // Explicit screen UVs avoid identity texture matrices on every sample/load.
+    const source = N.texture(this.source.texture, N.screenUV);
+    const sourceDepth = N.texture(this.depthTexture, N.screenUV);
+    const history = this.historyColor;
+    const historyDepth = this.historyDepth;
     const bounded = (p: Node<"ivec2">) =>
       p.clamp(N.ivec2(0), N.ivec2(u.renderSize).sub(1));
     // TSL texture coordinates have a top-left origin on both backends.
@@ -319,7 +327,7 @@ export class TAANode extends Node<"vec4"> {
               .all()
               .and(historyUV.lessThan(1).all()),
             () => {
-              const oldDepth = historyDepth.sample(historyUV).r;
+              const oldDepth = historyDepth.sample(historyUV).r.toVar();
               const previousView = viewPosition(
                 historyUV,
                 oldDepth,
