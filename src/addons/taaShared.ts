@@ -38,6 +38,9 @@ export function createTAAState<
     (value: Matrix4): Mat4Uniform;
   },
   targets: RenderTarget[],
+  // Logarithmic depth is log2(distance + 1) / log2(far + 1) on WebGLRenderer
+  // and log2(distance / near) / log2(far / near) on the node renderers.
+  nodeLogDepth = false,
 ) {
   const uniforms = {
     renderSize: makeUniform(new Vector2(1, 1)),
@@ -49,7 +52,9 @@ export function createTAAState<
     valid: makeUniform(false),
     reversed: makeUniform(false),
     logarithmic: makeUniform(false),
+    // Log-depth parameters: x is the current frame, y is the previous frame.
     logFar: makeUniform(new Vector2()),
+    logNear: makeUniform(new Vector2()),
     // Parameters are copied from the owner before each resolve.
     depthThreshold: makeUniform(0),
     edgeDepthDiff: makeUniform(0),
@@ -102,7 +107,12 @@ export function createTAAState<
       restoreProjection(camera, baseProjection);
     },
     prepareResolve(camera: TAACamera, parameters: TAAParameters) {
-      uniforms.logFar.value.x = Math.log2(camera.far + 1);
+      // Three.js clamps the near plane the same way.
+      const near = Math.max(camera.near, 1e-6);
+      uniforms.logFar.value.x = Math.log2(
+        nodeLogDepth ? camera.far / near : camera.far + 1,
+      );
+      uniforms.logNear.value.x = near;
       uniforms.unjitteredProjection.value.copy(camera.projectionMatrix);
       uniforms.viewToPreviousClip.value.multiplyMatrices(
         previousViewProjection,
@@ -130,6 +140,7 @@ export function createTAAState<
       previousWorld.copy(camera.matrixWorld);
       uniforms.previousProjection.value.copy(uniforms.projection.value);
       uniforms.logFar.value.y = uniforms.logFar.value.x;
+      uniforms.logNear.value.y = uniforms.logNear.value.x;
       this.historyIndex = 1 - this.historyIndex;
       uniforms.valid.value = true;
       this.jitterIndex = (this.jitterIndex + 1) % taaJitterOffsets.length;

@@ -66,7 +66,7 @@ export class TAANode extends Node<"vec4"> {
     UniformNode<"vec2", Vector2>,
     UniformNode<"vec3", Vector3>,
     UniformNode<"mat4", Matrix4>
-  >(N.uniform, [this.source, ...this.history]);
+  >(N.uniform, [this.source, ...this.history], true);
   private readonly zeroToOne = N.uniform(true);
   private readonly drawingSize = new Vector2();
   private workingColorSpace = ColorManagement.workingColorSpace;
@@ -234,6 +234,7 @@ export class TAANode extends Node<"vec4"> {
       depth: Node<"float">,
       p: Node<"mat4">,
       far: Node<"float">,
+      near: Node<"float">,
     ) => {
       const z = N.select(this.zeroToOne, depth, depth.mul(2).sub(1));
       const orientation = N.select(u.reversed, -1, 1);
@@ -248,7 +249,7 @@ export class TAANode extends Node<"vec4"> {
         .mul(orientation)
         .toVar();
       N.If(u.logarithmic, () => {
-        viewZ.assign(N.float(1).sub(depth.mul(far).exp2()));
+        viewZ.assign(near.mul(depth.mul(far).exp2()).negate());
         viewW.assign(1);
       });
       const clipW = p.element(2).w.mul(viewZ).add(p.element(3).w.mul(viewW));
@@ -311,6 +312,7 @@ export class TAANode extends Node<"vec4"> {
           closestRawDepth,
           u.projection,
           u.logFar.x,
+          u.logNear.x,
         );
         const previousClip = u.viewToPreviousClip.mul(positionView).toVar();
         N.If(previousClip.w.greaterThan(0), () => {
@@ -333,15 +335,16 @@ export class TAANode extends Node<"vec4"> {
                 oldDepth,
                 u.previousProjection,
                 u.logFar.y,
+                u.logNear.y,
               );
               const previousDepth = forwardDepth(
                 u.previousViewToView.mul(previousView),
               );
               N.If(u.logarithmic, () => {
                 closestDepth.assign(forwardDepth(positionView));
-                const farthestZ = N.float(1).sub(
-                  farthestDepth.mul(u.logFar.x).exp2(),
-                );
+                const farthestZ = u.logNear.x
+                  .mul(farthestDepth.mul(u.logFar.x).exp2())
+                  .negate();
                 farthestDepth.assign(forwardDepth(N.vec4(0, 0, farthestZ, 1)));
               });
               const isEdge = farthestDepth
