@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-07
+
 ### Added
 
 - Added a Blend buffer option to the viewer, set to Half float by default. It removes the overlapping rings that 8-bit blending leaves in faint gradients. Very bright Splats behind others can look slightly brighter than before; choose 8-bit to return to the previous image.
@@ -549,7 +551,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.8...v1.2.0
 [1.1.8]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.1.7...v1.1.8
