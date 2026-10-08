@@ -53,10 +53,33 @@ export const renderOptionGroups = [
         property: "stochastic",
         label: "Stochastic",
         description:
-          "Uses stochastic coverage with Three.js temporal anti-aliasing in this viewer. Off restores sorted alpha blending.",
+          "Uses stochastic coverage, smoothed by the stochastic denoiser below. Off restores sorted alpha blending.",
         defaultValue: false,
         falseLabel: "Off",
         trueLabel: "On",
+      },
+      {
+        property: "denoiser",
+        label: "Stochastic denoiser",
+        description:
+          "Neural leaves no trail behind moving objects and stays clean while the camera moves. Fast motion looks softer, and it takes more GPU time and memory.",
+        defaultValue: "taa",
+        choices: [
+          ["taa", "TAA"],
+          ["neural", "Neural"],
+        ],
+      },
+      {
+        property: "denoiserQuality",
+        label: "Neural denoiser quality",
+        description:
+          "Balanced and Quality follow content that moves, which keeps its detail sharp. Each step up takes more GPU time.",
+        defaultValue: "balanced",
+        choices: [
+          ["performance", "Performance"],
+          ["balanced", "Balanced"],
+          ["quality", "Quality"],
+        ],
       },
       {
         property: "sortRadial",

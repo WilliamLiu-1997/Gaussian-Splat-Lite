@@ -1,17 +1,32 @@
-import { TAANode, TAAPass } from "gaussian-splat-lite";
+import { NeuralDenoiseNode, TAANode, TAAPass } from "gaussian-splat-lite";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RenderPipeline } from "three/webgpu";
 
 // Frames to render after invalidation for temporal reprojection.
 const TAA_SETTLE_FRAMES = 32;
+// The neural denoiser accumulates a still view for longer.
+const NEURAL_SETTLE_FRAMES = 96;
 
-/** Viewer-only temporal anti-aliasing integration. */
-export function createViewerTAA(renderer, scene, camera) {
+/**
+ * Viewer-only smoothing of stochastic rendering: temporal anti-aliasing, or
+ * the neural denoiser where it was asked for and native WebGPU can run it.
+ */
+export function createViewerTAA(
+  renderer,
+  scene,
+  camera,
+  { neural = false, quality = "balanced" } = {},
+) {
   const nodeRenderer = renderer.isWebGPURenderer;
-  const taa = nodeRenderer
-    ? new TAANode(scene, camera)
-    : new TAAPass(scene, camera);
+  const useNeural =
+    neural && nodeRenderer && renderer.backend.isWebGPUBackend === true;
+  const taa = useNeural
+    ? new NeuralDenoiseNode(scene, camera, quality)
+    : nodeRenderer
+      ? new TAANode(scene, camera)
+      : new TAAPass(scene, camera);
+  const settleFrames = useNeural ? NEURAL_SETTLE_FRAMES : TAA_SETTLE_FRAMES;
   const pipeline = nodeRenderer
     ? new RenderPipeline(renderer, taa)
     : new EffectComposer(renderer);
@@ -20,7 +35,7 @@ export function createViewerTAA(renderer, scene, camera) {
     pipeline.addPass(taa);
     pipeline.addPass(output);
   }
-  let remainingFrames = TAA_SETTLE_FRAMES;
+  let remainingFrames = settleFrames;
   return {
     render() {
       pipeline.render();
@@ -31,11 +46,11 @@ export function createViewerTAA(renderer, scene, camera) {
       if (!nodeRenderer) pipeline.setSize(width, height);
     },
     invalidate() {
-      remainingFrames = TAA_SETTLE_FRAMES;
+      remainingFrames = settleFrames;
     },
     reset() {
       taa.reset();
-      remainingFrames = TAA_SETTLE_FRAMES;
+      remainingFrames = settleFrames;
     },
     get needsRender() {
       return remainingFrames > 0;

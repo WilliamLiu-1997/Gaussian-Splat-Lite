@@ -30,7 +30,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 | --- | --- |
 | **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
 | **Large-scene streaming** | Load RAD and SOG detail as the camera moves, with smooth transitions |
-| **Stochastic rendering** | Optional transparency mode, with built-in temporal anti-aliasing to smooth it |
+| **Stochastic rendering** | Optional transparency mode, with built-in temporal anti-aliasing or a neural denoiser to smooth it |
 | **Offscreen capture** | Render Splats to images, cube maps, and environment maps for reflections |
 | **SDF edits** | Recolor or hide parts of a model without moving Splats |
 | **Data and precision** | Load URLs, files, or bytes; place local models in large GIS/ECEF scenes |
@@ -108,7 +108,7 @@ Sorted alpha blending is the default. To enable stochastic rendering:
 splatRenderer.stochastic = true;
 ```
 
-This mode produces visible noise. Smooth it with the library's [temporal anti-aliasing](docs/TAAPass.md): `TAAPass` for `WebGLRenderer`, and `TAANode` for `WebGPURenderer` (including its WebGL2 fallback). See [Stochastic rendering](docs/StochasticRendering.md) for the setup.
+This mode produces visible noise. Smooth it with the library's [temporal anti-aliasing](docs/TAAPass.md): `TAAPass` for `WebGLRenderer`, and `TAANode` for `WebGPURenderer` (including its WebGL2 fallback). On native WebGPU, [`NeuralDenoiseNode`](docs/NeuralDenoiseNode.md) is an alternative for scenes with moving objects. See [Stochastic rendering](docs/StochasticRendering.md) for the setup.
 
 ## Streaming large scenes
 
@@ -161,6 +161,7 @@ const streaming = new SogStreamScheduler({
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, sorting, and on-demand rendering.
 - [Stochastic rendering](docs/StochasticRendering.md) — The optional transparency mode and how to smooth its noise.
 - [TAAPass and TAANode](docs/TAAPass.md) — Temporal anti-aliasing for WebGLRenderer and WebGPURenderer.
+- [NeuralDenoiseNode](docs/NeuralDenoiseNode.md) — A neural denoiser for stochastic rendering on WebGPU, for scenes with moving objects.
 - [SplatCapture](docs/SplatCapture.md) — Offscreen images, pixel readback, cube maps, and environment maps.
 
 **Models**

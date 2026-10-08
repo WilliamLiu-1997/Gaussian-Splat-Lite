@@ -23,7 +23,14 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   }
 
   function syncDependencies() {
-    setHidden("minSortIntervalMs", getValue("rendererBackend") === "webgpu");
+    const nativeWebGPU = getValue("rendererBackend") === "webgpu";
+    setHidden("minSortIntervalMs", nativeWebGPU);
+    // The neural denoiser runs on native WebGPU only.
+    setHidden("denoiser", !nativeWebGPU);
+    setHidden(
+      "denoiserQuality",
+      !nativeWebGPU || getValue("denoiser") !== "neural",
+    );
   }
 
   function createRow(option) {

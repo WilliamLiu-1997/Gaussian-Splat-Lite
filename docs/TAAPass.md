@@ -14,7 +14,7 @@ Both render the scene themselves and need no velocity buffer or other scene setu
 ## Before you start
 
 - **One camera.** A `PerspectiveCamera` or `OrthographicCamera`, including custom projections, scaled camera rigs, reversed depth, and logarithmic depth. WebXR is not supported.
-- **Camera movement only.** Moving objects and changes to individual Splats are not tracked, and may leave a faint trail.
+- **Camera movement only.** Moving objects and changes to individual Splats are not tracked, and may leave a faint trail. On native WebGPU, [`NeuralDenoiseNode`](NeuralDenoiseNode.md) is an alternative that leaves none.
 - **Stencil follows your renderer.** Create the Three.js renderer with `stencil: true` and stencil masks work as they do without TAA, including the stencil settings on your Splat renderer's `material`.
 - **Reset after a jump.** Call `taa.reset()` after a camera cut or after replacing the scene. Resizing resets automatically.
 - **Keep rendering while the image settles.** With on-demand rendering, render several more frames after each change. The viewer renders 32.

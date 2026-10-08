@@ -4,6 +4,8 @@ export {
 } from "./rendering/GaussianSplatRenderer";
 export { TAAPass } from "./addons/TAAPass";
 export { TAANode } from "./addons/TAANode";
+export { NeuralDenoiseNode } from "./addons/NeuralDenoiseNode";
+export type { NeuralDenoiseQuality } from "./addons/neuralDenoiseWeights";
 export {
   SplatCapture,
   type SplatCaptureOptions,

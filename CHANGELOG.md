@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `NeuralDenoiseNode`, a neural denoiser for stochastic rendering on `WebGPURenderer` with native WebGPU, used in place of `TAANode`. It leaves no trail behind moving objects, keeps the detail of content that moves slowly enough to follow, and stays smooth while the camera moves. Faster motion looks softer. It has three quality levels and takes more GPU time and four to five times the memory of `TAANode`. See [NeuralDenoiseNode](docs/NeuralDenoiseNode.md).
+- Added a Stochastic denoiser option to the viewer, to choose between TAA and the neural denoiser on WebGPU, and a Neural denoiser quality option for its three levels. TAA remains the default.
+
 ## [1.2.2] - 2026-10-07
 
 ### Added
