@@ -7,8 +7,8 @@ import { getShaders } from "./shaders";
 export function createWebGLSplatMaterial(
   uniforms: Uniforms,
   options: SplatMaterialOptions,
+  shaders = getShaders(),
 ) {
-  const shaders = getShaders();
   return new THREE.ShaderMaterial({
     ...options,
     defines: {

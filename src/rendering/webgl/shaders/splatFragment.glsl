@@ -18,6 +18,7 @@ flat in uint vStochasticOffset;
 #endif
 
 #include <logdepthbuf_pars_fragment>
+#include <splatShadingPars>
 
 void main() {
     float z2 = dot(vSplatUv, vSplatUv);
@@ -57,6 +58,7 @@ void main() {
 
     // Decode color only after the fragment survives coverage tests.
     vec4 rgba = vec4(unpackHalf2x16(vSplat.x), blueKernelPower.x, alpha);
+    #include <splatShading>
 
     #if GSL_STOCHASTIC
         fragColor = vec4(rgba.rgb, 1.0);

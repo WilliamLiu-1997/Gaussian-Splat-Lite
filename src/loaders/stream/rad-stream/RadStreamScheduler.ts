@@ -26,6 +26,7 @@ import {
   streamPendingLimit,
   streamRetryAt,
   streamSettings,
+  syncStreamBatch,
 } from "../streamOptions";
 import { RadStreamBatch } from "./RadStreamBatch";
 import {
@@ -321,8 +322,7 @@ export class RadStreamScheduler {
     if (!this.meta) return false;
     const now = performance.now();
     if (this.refinementStopped) {
-      for (const { batch } of this.pools)
-        batch.layers.mask = this.group.layers.mask;
+      for (const { batch } of this.pools) syncStreamBatch(batch, this.group);
       let changed = this.updateFade(now);
       changed = this.releaseUnused(now, true) || changed;
       if (changed) this.changed();
@@ -347,8 +347,7 @@ export class RadStreamScheduler {
         this.cancelUnusedLoads();
       }
     }
-    for (const { batch } of this.pools)
-      batch.layers.mask = this.group.layers.mask;
+    for (const { batch } of this.pools) syncStreamBatch(batch, this.group);
     this.views = [];
     for (const camera of streamViews(cameras)) {
       // A WebXR camera is sized by an eye's viewport: a headset has only
@@ -819,7 +818,7 @@ export class RadStreamScheduler {
       pageCount: count,
       numSh: this.numSh,
     });
-    batch.layers.mask = this.group.layers.mask;
+    syncStreamBatch(batch, this.group);
     const pool: Pool = {
       batch,
       slots: Array(count).fill(undefined),

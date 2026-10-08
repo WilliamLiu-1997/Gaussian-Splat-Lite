@@ -33,17 +33,21 @@ export default defineConfig(({ mode }) => {
     build: {
       minify: isMinify,
       lib: {
-        entry: path.resolve(__dirname, "src/index.ts"),
+        entry: {
+          "gaussian-splat-lite": path.resolve(__dirname, "src/index.ts"),
+          "gaussian-splat-lite-plugins": path.resolve(
+            __dirname,
+            "src/plugins/index.ts",
+          ),
+        },
         name: "GaussianSplatLite",
         formats: [isCommonJS ? "cjs" : "es"],
-        fileName: (format) => {
+        fileName: (format, entryName) => {
           if (format === "es") {
-            const base = "gaussian-splat-lite.module";
+            const base = `${entryName}.module`;
             return isMinify ? `${base}.min.js` : `${base}.js`;
           }
-          return isMinify
-            ? "gaussian-splat-lite.min.cjs"
-            : "gaussian-splat-lite.cjs";
+          return isMinify ? `${entryName}.min.cjs` : `${entryName}.cjs`;
         },
       },
       sourcemap: true,
@@ -51,6 +55,7 @@ export default defineConfig(({ mode }) => {
         // Share Three's core and TSL state with the application in both formats.
         external: ["three", /^three\//],
         output: {
+          chunkFileNames: `chunks/[name]-${mode}-[hash].${isCommonJS ? "cjs" : "js"}`,
           globals: {
             three: "THREE",
           },

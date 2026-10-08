@@ -123,6 +123,10 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   return {
     getValue,
     setHidden,
+    // Identify a group by one of its option properties.
+    setGroupHidden(property, hidden) {
+      entries.get(property).row.closest(".option-group").hidden = hidden;
+    },
     // Programmatic synchronization is silent unless emit is requested.
     setValue,
     setDisabled(property, disabled) {

@@ -48,9 +48,11 @@ export function uniformBinding<Type extends UniformType>(
   );
 }
 
+/** The shader's owner disposes these placeholders, never the bound textures. */
 export function textureBinding(
   uniforms: Uniforms,
   name: string,
+  placeholders: THREE.Texture[],
   array = false,
 ) {
   const data = new Uint32Array(4);
@@ -63,6 +65,7 @@ export function textureBinding(
   placeholder.minFilter = THREE.NearestFilter;
   placeholder.generateMipmaps = false;
   placeholder.needsUpdate = true;
+  placeholders.push(placeholder);
 
   const getTexture = () => uniforms[name].value as THREE.Texture;
   const binding = uintTexture(placeholder).onObjectUpdate(getTexture);
@@ -95,8 +98,8 @@ function updateTextureLoad<T extends TextureNode<unknown>>(
   texel.getUniformHash = (builder) => binding.getUniformHash(builder);
   texel.updateBeforeType = NodeUpdateType.OBJECT;
   texel.updateBefore = (frame) => {
-    // Bind the real texture before r186's texture update or r187's shared
-    // uniforms derive the GL render-target Y flip.
+    // Bind the real texture before shared uniforms derive the GL render-target
+    // Y flip.
     frame.updateNode(binding);
     return undefined;
   };

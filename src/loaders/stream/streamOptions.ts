@@ -1,5 +1,6 @@
 import type { Group, LoadingManager } from "three";
 import { retryDelay } from "../../runtime/retry";
+import type { SplatMesh } from "../../scene/SplatMesh";
 import type { SplatRequestOptions } from "../loadTypes";
 
 export type StreamRequestOptions = SplatRequestOptions & {
@@ -33,6 +34,11 @@ export type StreamStats = {
   downloadedBytes: number;
   peakWasmMemoryBytes: number;
 };
+
+/** Batches follow their scheduler's layers, like one model. */
+export function syncStreamBatch(batch: SplatMesh, group: Group) {
+  batch.layers.mask = group.layers.mask;
+}
 
 export function positiveInteger(value: number, name: string) {
   if (!Number.isSafeInteger(value) || value <= 0)

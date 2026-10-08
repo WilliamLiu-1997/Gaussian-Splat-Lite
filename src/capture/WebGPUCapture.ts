@@ -36,9 +36,7 @@ export class WebGPUCapture {
     const depthFormat = output.stencilBuffer
       ? THREE.DepthStencilFormat
       : THREE.DepthFormat;
-    // r186's WebGL fallback allocates MSAA depth renderbuffers as DEPTH_COMPONENT24.
-    let depthType: THREE.TextureDataType =
-      !native && output.samples > 0 ? THREE.UnsignedIntType : THREE.FloatType;
+    let depthType: THREE.TextureDataType = THREE.FloatType;
     if (output.stencilBuffer) {
       const float = output.depthTexture
         ? output.depthTexture.type === THREE.FloatType

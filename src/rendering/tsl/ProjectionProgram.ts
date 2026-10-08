@@ -34,7 +34,7 @@ type ProjectionInput =
       shapeAmount: Node<"float">;
     };
 
-export type SplatProjection = {
+export type SplatProjection<Extra = undefined> = {
   valid: Node<"bool">;
   clipCenter: Node<"vec4">;
   viewDepth: Node<"float">;
@@ -47,6 +47,46 @@ export type SplatProjection = {
   /** A wide kernel's low 16 bits hold its edge fade as a half. */
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
+  /** Outputs of the program's ProjectionExtension. */
+  extra: Extra;
+};
+
+/** A Splat that draws, as a ProjectionExtension sees it. */
+export type ProjectedGaussian = {
+  projectionMatrix: Node<"mat4">;
+  isOrthographic: Node<"bool">;
+  viewCenter: Node<"vec3">;
+  /** View-space scales and rotation, and the matrix of both. */
+  scales: Node<"vec3">;
+  viewQuaternion: Node<"vec4">;
+  rotationScale: Node<"mat3">;
+  /** Rows of the pixel Jacobian in the Gaussian's frame. */
+  p0: Node<"vec3">;
+  p1: Node<"vec3">;
+  /** The pixel covariance they give: [[a, b], [b, d]]. */
+  a: Node<"float">;
+  b: Node<"float">;
+  d: Node<"float">;
+  /** Its unit axes, and the quad's extent along each in pixels. */
+  eigenVector1: Node<"vec2">;
+  eigenVector2: Node<"vec2">;
+  scale1: Node<"float">;
+  scale2: Node<"float">;
+  /** NDC offsets for each +/-1 quad corner. */
+  axis1: Node<"vec2">;
+  axis2: Node<"vec2">;
+  supportRadius: Node<"float">;
+};
+
+/**
+ * Extra outputs computed beside a projection. Programs built without one
+ * carry no trace of it.
+ */
+export type ProjectionExtension<Extra> = {
+  /** Declares the outputs, before any branch. */
+  declare(): Extra;
+  /** Assigns them for a Splat that draws. */
+  assign(outputs: Extra, gaussian: ProjectedGaussian): void;
 };
 
 const scaleQuaternionToMatrix = N.Fn(
@@ -135,9 +175,10 @@ const wideEdgeFade = N.Fn(
 );
 
 /** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
-export function createProjectionProgram(
+export function createProjectionProgram<Extra = undefined>(
   uniforms: Uniforms,
   view: ProjectionView,
+  extension?: ProjectionExtension<Extra>,
 ) {
   const {
     projectionMatrix,
@@ -156,7 +197,10 @@ export function createProjectionProgram(
   const clipXY = uniformBinding(uniforms, "clipXY", "float");
   const focalAdjustment = uniformBinding(uniforms, "focalAdjustment", "float");
 
-  return (source: ProjectionInput, includeColor = true): SplatProjection => {
+  return (
+    source: ProjectionInput,
+    includeColor = true,
+  ): SplatProjection<Extra> => {
     // This is a JS-time choice, not a shader branch. WebGL still reads its
     // packed accumulator; native compute consumes transformed float32 values.
     const packed = "first" in source;
@@ -169,6 +213,7 @@ export function createProjectionProgram(
     const projectedSupportRadius = N.float(0).toVar();
     const projectedSupportRadiusSquared = N.float(0).toVar();
     const projectedKernelPower = N.float(0).toVar();
+    const extra = extension?.declare() as Extra;
     const alphaShape = packed
       ? decodeAlphaShape(source.first)
       : N.vec2(source.rgba.a, source.shapeAmount).clamp(0, 1);
@@ -379,6 +424,26 @@ export function createProjectionProgram(
                 projectedAxis2.assign(
                   eigenVector2.mul(scale2).mul(2).div(scaledRenderSize),
                 );
+                extension?.assign(extra, {
+                  projectionMatrix,
+                  isOrthographic,
+                  viewCenter,
+                  scales,
+                  viewQuaternion,
+                  rotationScale,
+                  p0,
+                  p1,
+                  a,
+                  b,
+                  d,
+                  eigenVector1,
+                  eigenVector2,
+                  scale1,
+                  scale2,
+                  axis1: projectedAxis1,
+                  axis2: projectedAxis2,
+                  supportRadius,
+                });
                 projectedRgba.assign(
                   N.vec4(
                     includeColor
@@ -411,6 +476,7 @@ export function createProjectionProgram(
       supportRadius: projectedSupportRadius,
       supportRadiusSquared: projectedSupportRadiusSquared,
       kernelPower: projectedKernelPower,
+      extra,
     };
   };
 }

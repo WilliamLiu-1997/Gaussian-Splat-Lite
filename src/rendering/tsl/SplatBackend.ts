@@ -5,6 +5,7 @@ import type { Uniforms } from "../uniforms";
 import {
   type ProjectedVertexData,
   type SplatNodeMaterial,
+  type SplatShading,
   createSplatNodeMaterial,
 } from "./SplatMaterial";
 
@@ -12,6 +13,11 @@ import {
 export class NodeSplatBackend {
   readonly sortedMaterial: SplatNodeMaterial;
   readonly stochasticMaterial: SplatNodeMaterial;
+  /** Builds a material of this backend; with `shading`, a shaded variant. */
+  readonly createMaterial: <Extra>(
+    stochastic: boolean,
+    shading?: SplatShading<Extra>,
+  ) => SplatNodeMaterial;
 
   constructor(
     readonly renderer: WebGPURenderer,
@@ -21,18 +27,20 @@ export class NodeSplatBackend {
     vertexData?: (
       camera: THREE.Camera,
       stochastic: boolean,
+      shaded: boolean,
     ) => ProjectedVertexData,
   ) {
-    const create = (stochastic: boolean) =>
+    this.createMaterial = (stochastic, shading) =>
       createSplatNodeMaterial({
         uniforms,
         ...options,
         orderingNode,
         vertexData,
         stochastic,
+        shading,
       });
-    this.sortedMaterial = create(false);
-    this.stochasticMaterial = create(true);
+    this.sortedMaterial = this.createMaterial(false);
+    this.stochasticMaterial = this.createMaterial(true);
   }
 
   selectMaterial(stochastic: boolean) {

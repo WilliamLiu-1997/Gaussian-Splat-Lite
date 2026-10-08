@@ -162,6 +162,7 @@ const streaming = new SogStreamScheduler({
 - [Stochastic rendering](docs/StochasticRendering.md) — The optional transparency mode and how to smooth its noise.
 - [TAAPass and TAANode](docs/TAAPass.md) — Temporal anti-aliasing for WebGLRenderer and WebGPURenderer.
 - [SplatCapture](docs/SplatCapture.md) — Offscreen images, pixel readback, cube maps, and environment maps.
+- [SplatLightingPlugin](docs/Lighting.md) — Optional experimental plugin for Three.js lights and shadows between Splats and meshes, imported from `gaussian-splat-lite/plugins`.
 
 **Models**
 

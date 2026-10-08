@@ -1,5 +1,57 @@
 export const renderOptionGroups = [
   {
+    title: "Lighting & shadows",
+    description:
+      "A spotlight cycles through red, green and blue while lighting the model.",
+    options: [
+      {
+        property: "lightingEnabled",
+        label: "Spotlight",
+        description: "Illuminate the model with a color-changing spotlight.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "rotateLights",
+        label: "Rotate light",
+        description:
+          "Move the spotlight across the model's front half; its color keeps changing when paused.",
+        defaultValue: true,
+        falseLabel: "Paused",
+        trueLabel: "Moving",
+      },
+      {
+        property: "lightShadows",
+        label: "Cast / receive shadows",
+        description: "The model casts shadows onto itself and other surfaces.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "lightAmbient",
+        label: "Ambient brightness",
+        description: "Brightness retained in areas outside the spotlight.",
+        min: 0,
+        max: 1,
+        step: 0.01,
+        defaultValue: 0.35,
+        format: (value) => value.toFixed(2),
+      },
+      {
+        property: "lightIntensity",
+        label: "Light intensity",
+        description: "Strength of the spotlight.",
+        min: 0,
+        max: 5,
+        step: 0.05,
+        defaultValue: 1,
+        format: (value) => value.toFixed(2),
+      },
+    ],
+  },
+  {
     title: "Performance & diagnostics",
     description: "Frame scheduling and live metrics.",
     options: [
@@ -54,7 +106,7 @@ export const renderOptionGroups = [
         label: "Stochastic",
         description:
           "Uses stochastic coverage with Three.js temporal anti-aliasing in this viewer. Off restores sorted alpha blending.",
-        defaultValue: false,
+        defaultValue: true,
         falseLabel: "Off",
         trueLabel: "On",
       },

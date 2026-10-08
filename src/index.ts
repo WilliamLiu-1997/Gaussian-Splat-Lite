@@ -2,6 +2,7 @@ export {
   GaussianSplatRenderer,
   type GaussianSplatRendererOptions,
 } from "./rendering/GaussianSplatRenderer";
+export type { SplatRendererPlugin } from "./rendering/SplatRendererPlugin";
 export { TAAPass } from "./addons/TAAPass";
 export { TAANode } from "./addons/TAANode";
 export {

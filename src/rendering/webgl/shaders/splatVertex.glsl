@@ -38,6 +38,9 @@ uniform vec2 viewportOrigin;
 uniform usampler2DArray stochasticSeeds;
 #endif
 
+// Empty unless a shaded variant puts its code here; see shaders.ts.
+#include <splatShadingPars>
+
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
     return m[ 2 ][ 3 ] == -1.0;
@@ -171,49 +174,8 @@ void main() {
 
     // Compute the scaled rotation basis of the splat.
     mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);
-
-    // Compute the two relevant columns of the projection Jacobian.
-    vec2 scaledRenderSize = renderSize * focalAdjustment;
-    vec2 focal = 0.5 * scaledRenderSize * vec2(projectionMatrix[0][0], projectionMatrix[1][1]);
-
-    vec3 j0;
-    vec3 j1;
-    if (isOrthographic) {
-        j0 = vec3(focal.x, 0.0, 0.0);
-        j1 = vec3(0.0, focal.y, 0.0);
-    } else {
-        float invZ = 1.0 / viewCenter.z;
-        vec2 J1 = focal * invZ;
-        vec2 J2 = -(J1 * viewCenter.xy) * invZ;
-        j0 = vec3(J1.x, 0.0, J2.x);
-        j1 = vec3(0.0, J1.y, J2.y);
-    }
-
-    // Project only the 2D covariance entries that are consumed below:
-    // j^T * RS * RS^T * j = dot(RS^T * j, RS^T * j).
-    vec3 p0 = transpose(RS) * j0;
-    vec3 p1 = transpose(RS) * j1;
-    float a = dot(p0, p0);
-    float b = dot(p0, p1);
-    float d = dot(p1, p1);
-
-    // Optionally pre-blur the splat to match non-antialias optimized splats
-    a += preBlurAmount;
-    d += preBlurAmount;
-
-    float detOrig = a * d - b * b;
-    // Do convolution with a 0.5-pixel Gaussian for anti-aliasing: sqrt(0.3) ~= 0.5
-    a += blurAmount;
-    d += blurAmount;
-    float det = a * d - b * b;
-    if (det <= 0.0) return;
-
-    // Compute anti-aliasing intensity scaling factor
-    float blurAdjust = sqrt(max(0.0, detOrig / det));
-    alpha *= blurAdjust;
-    if (!(alpha > 0.0) || alpha < minAlpha) {
-        return;
-    }
+    bool orthographic = isOrthographic;
+    #include <splatCovariance>
 
     // Only cover fragments that can reach minAlpha for either kernel.
     if (kernelPower == 0.0) {
@@ -222,26 +184,7 @@ void main() {
         supportRadius = wideSupportRadius(alpha, kernelPower, supportRadius);
     }
 
-    // Compute the eigenvalue and eigenvectors of the 2D covariance matrix
-    float eigenAvg = 0.5 * (a + d);
-    float eigenDelta = length(vec2(0.5 * (a - d), b));
-    float eigen1 = eigenAvg + eigenDelta;
-    // Keep a small positive minor axis when subtraction rounds to zero.
-    float eigen2 = max(eigenAvg - eigenDelta, 1e-4);
-
-    vec2 eigenVec1 = (abs(b) > 0.001)
-        ? normalize(vec2(b, eigen1 - a))
-        : ((a >= d) ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
-    vec2 eigenVec2 = vec2(eigenVec1.y, -eigenVec1.x);
-
-    // Limit support to the viewport's short side, then shrink both the quad
-    // and its UV extent by the same ratio to preserve the Gaussian profile.
-    float maxProjectedRadius = min(renderSize.x, renderSize.y) * focalAdjustment;
-    float scale1 = min(maxProjectedRadius, maximumSupportRadius * sqrt(eigen1));
-    float scale2 = min(maxProjectedRadius, maximumSupportRadius * sqrt(eigen2));
-    float supportScale = (maximumSupportRadius > 0.0)
-        ? supportRadius / maximumSupportRadius
-        : 0.0;
+    #include <splatFootprint>
     // Projected radii use scaledRenderSize; convert the screen-pixel cutoff too.
     float minProjectedRadius = minPixelRadius * focalAdjustment;
     if (scale1 * supportScale < minProjectedRadius && scale2 * supportScale < minProjectedRadius) {
@@ -304,5 +247,6 @@ void main() {
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
 
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
+    #include <splatShading>
     #include <logdepthbuf_vertex>
 }

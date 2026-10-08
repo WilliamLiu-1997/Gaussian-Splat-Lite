@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { CubeRenderTarget, PMREMGenerator } from "three/webgpu";
 import { GaussianSplatRenderer } from "../rendering/GaussianSplatRenderer";
+import type { SplatRendererPlugin } from "../rendering/SplatRendererPlugin";
 import {
   isWebGPURenderer,
   setRendererRenderTarget,
@@ -56,6 +57,10 @@ export class SplatCapture {
 
   private disposed = false;
   private readonly captureRenderer: GaussianSplatRenderer;
+  private readonly capturePlugins = new Map<
+    SplatRendererPlugin,
+    SplatRendererPlugin
+  >();
   private readonly capturePass: WebGLCapture | WebGPUCapture;
   // Captures share one Splat renderer and its sort, so they run one at a time.
   private pending: Promise<unknown> = Promise.resolve();
@@ -156,6 +161,22 @@ export class SplatCapture {
   ) {
     this.assertActive();
     const { splatRenderer: source, captureRenderer } = this;
+
+    for (const [plugin, clone] of this.capturePlugins) {
+      if (source.plugins.includes(plugin)) continue;
+      captureRenderer.unregisterPlugin(clone);
+      this.capturePlugins.delete(plugin);
+    }
+    for (const plugin of source.plugins) {
+      if (!plugin.clone) continue;
+      let clone = this.capturePlugins.get(plugin);
+      if (!clone) {
+        clone = plugin.clone();
+        captureRenderer.registerPlugin(clone);
+        this.capturePlugins.set(plugin, clone);
+      }
+      clone.copy?.(plugin);
+    }
 
     Object.assign(captureRenderer, {
       maxStdDev: source.maxStdDev,
@@ -464,6 +485,7 @@ export class SplatCapture {
     if (this.disposed) return;
     this.disposed = true;
     this.captureRenderer.dispose();
+    this.capturePlugins.clear();
     this.capturePass.dispose();
     this.target?.dispose();
     this.backTarget?.dispose();

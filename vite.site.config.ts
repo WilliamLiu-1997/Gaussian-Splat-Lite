@@ -12,9 +12,16 @@ export default defineConfig({
   ],
 
   resolve: {
-    alias: {
-      "gaussian-splat-lite": path.resolve(__dirname, "src/index.ts"),
-    },
+    alias: [
+      {
+        find: /^gaussian-splat-lite\/plugins$/,
+        replacement: path.resolve(__dirname, "src/plugins/index.ts"),
+      },
+      {
+        find: /^gaussian-splat-lite$/,
+        replacement: path.resolve(__dirname, "src/index.ts"),
+      },
+    ],
   },
 
   build: {

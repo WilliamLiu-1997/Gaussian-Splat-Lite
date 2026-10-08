@@ -14,7 +14,7 @@ export class WebGLSplatBackend {
   constructor(
     readonly renderer: THREE.WebGLRenderer,
     private readonly uniforms: Uniforms,
-    options: SplatMaterialOptions,
+    readonly options: SplatMaterialOptions,
   ) {
     this.material = createWebGLSplatMaterial(uniforms, options);
     const extension = renderer

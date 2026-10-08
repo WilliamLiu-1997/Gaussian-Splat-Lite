@@ -3,7 +3,10 @@ import type { Node, NodeBuilder } from "three/webgpu";
 import { NodeMaterial, type TextureNode } from "three/webgpu";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry";
 import { ORDERING_TEXTURE_WIDTH, type Uniforms } from "../uniforms";
-import { createProjectionProgram } from "./ProjectionProgram";
+import {
+  type ProjectionExtension,
+  createProjectionProgram,
+} from "./ProjectionProgram";
 import {
   N,
   load2D,
@@ -26,11 +29,27 @@ export type ProjectedVertexData = {
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
+  /** Shaded variants only: the record SplatShading hands to its fragments. */
+  record?: Node<"uvec4">;
+};
+
+/**
+ * Shades a Splat's fragments from a record its vertex stage hands over.
+ * Materials built without it carry none of this.
+ */
+export type SplatShading<Extra = unknown> = {
+  /** Extra outputs of the accumulator projection, and the record they make. */
+  projection: ProjectionExtension<Extra>;
+  record(extra: Extra, splatIndex: Node<"uint">): Node<"uvec4">;
+  /** Vertex stage. Without data: what a Splat that does not draw hands over. */
+  setVertex(data?: ProjectedVertexData): void;
+  /** The material that shades a Splat's color, read as its diffuse color. */
+  createMaterial(splatUv: Node<"vec2">): NodeMaterial;
 };
 
 export type SplatNodeMaterial = NodeMaterial & { uniforms: Uniforms };
 
-const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
+export const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
   const value = N.uint(input).toVar();
   value.bitXorAssign(value.shiftRight(16));
   value.mulAssign(N.uint(0x7feb352d));
@@ -40,10 +59,11 @@ const stochasticHash = N.Fn(([input]: [Node<"uint">]) => {
   return value;
 });
 
-function createSplatFragment(
+export function createSplatFragment(
   minAlpha: Node<"float">,
   edgeFade: Node<"vec2">,
   stochasticNoise: TextureNode<"uvec4"> | null,
+  color: Node<"vec4"> | null = null,
 ) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
@@ -90,6 +110,8 @@ function createSplatFragment(
         .div(32768);
       randomValue.greaterThanEqual(alpha).discard();
     }
+    // A constant output avoids decoding Splat RGB after coverage tests.
+    if (color) return color;
     // Decode color only after the fragment survives coverage tests.
     return N.vec4(
       N.unpackHalf2x16(vSplat.x),
@@ -128,7 +150,7 @@ function stochasticTileOffset(
 // sRGB linearization. Source alpha keeps float32 bits, but half kernel power
 // can still change the final coverage of wide kernels. The squared support
 // radius passes bit for bit: a wide kernel's low half is its edge fade.
-function packSplatVarying(
+export function packSplatVarying(
   rgba: Node<"vec4">,
   supportRadiusSquared: Node<"float">,
   kernelPower: Node<"float">,
@@ -144,9 +166,10 @@ function packSplatVarying(
 
 /**
  * Sorted and stochastic variants compile separate graphs, so sorted drawing
- * carries no coverage varyings, seed loads or mode branches.
+ * carries no coverage varyings, seed loads or mode branches. Shaded variants
+ * are separate too.
  */
-export function createSplatNodeMaterial({
+export function createSplatNodeMaterial<Extra>({
   uniforms,
   orderingNode,
   vertexData,
@@ -155,6 +178,7 @@ export function createSplatNodeMaterial({
   depthTest,
   depthWrite,
   stochastic,
+  shading,
 }: {
   uniforms: Uniforms;
   /** CPU ordering for drawing from accumulator textures. */
@@ -163,13 +187,16 @@ export function createSplatNodeMaterial({
   vertexData?: (
     camera: THREE.Camera,
     stochastic: boolean,
+    shaded: boolean,
   ) => ProjectedVertexData;
   premultipliedAlpha: boolean;
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
   stochastic: boolean;
+  shading?: SplatShading<Extra>;
 }): SplatNodeMaterial {
+  const placeholders: THREE.Texture[] = [];
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const edgeFade = uniformBinding(uniforms, "edgeFade", "vec2");
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
@@ -180,17 +207,19 @@ export function createSplatNodeMaterial({
   const accumulator = vertexData
     ? null
     : {
-        splats: textureBinding(uniforms, "splats", true),
-        splats2: textureBinding(uniforms, "splats2", true),
+        splats: textureBinding(uniforms, "splats", placeholders, true),
+        splats2: textureBinding(uniforms, "splats2", placeholders, true),
         seeds: stochastic
-          ? textureBinding(uniforms, "stochasticSeeds", true)
+          ? textureBinding(uniforms, "stochasticSeeds", placeholders, true)
           : null,
       };
   const { vSplat, vSplatUv, vStochasticOffset, fragmentNode } =
     createSplatFragment(
       minAlpha,
       edgeFade,
-      stochastic ? textureBinding(uniforms, "stochasticNoise") : null,
+      stochastic
+        ? textureBinding(uniforms, "stochasticNoise", placeholders)
+        : null,
     );
 
   function buildVertex(builder: NodeBuilder) {
@@ -199,6 +228,7 @@ export function createSplatNodeMaterial({
     vSplat.assign(N.uvec4(0));
     vSplatUv.assign(N.vec2(0));
     vStochasticOffset?.assign(N.uint(0));
+    shading?.setVertex();
     const assignVertexData = (data: ProjectedVertexData) => {
       const rgba = data.rgba.toVar();
       // RGB is constant across the quad; decode its color space once
@@ -211,6 +241,7 @@ export function createSplatNodeMaterial({
         packSplatVarying(rgba, data.supportRadiusSquared, data.kernelPower),
       );
       vSplatUv.assign(data.splatUv);
+      shading?.setVertex(data);
       if (vStochasticOffset && stochasticSample && data.stochasticSeed) {
         // Coverage uses the same offset across every fragment of this Splat.
         vStochasticOffset.assign(
@@ -224,7 +255,7 @@ export function createSplatNodeMaterial({
     };
 
     if (vertexData) {
-      assignVertexData(vertexData(camera, stochastic));
+      assignVertexData(vertexData(camera, stochastic, Boolean(shading)));
       return clipPosition;
     }
     if (!accumulator || !orderingNode) {
@@ -232,10 +263,11 @@ export function createSplatNodeMaterial({
     }
 
     const view = splatViewUniforms(uniforms, camera);
-    const project = createProjectionProgram(uniforms, {
-      ...view,
-      projectionMatrix: N.cameraProjectionMatrix,
-    });
+    const project = createProjectionProgram(
+      uniforms,
+      { ...view, projectionMatrix: N.cameraProjectionMatrix },
+      shading?.projection,
+    );
     const index = N.uint(N.instanceIndex)
       .mul(SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z))
@@ -286,6 +318,7 @@ export function createSplatNodeMaterial({
           supportRadiusSquared: projected.supportRadiusSquared,
           kernelPower: projected.kernelPower,
           viewportOrigin: view.viewportOrigin,
+          record: shading?.record(projected.extra, splatIndex),
         });
       });
     });
@@ -293,7 +326,11 @@ export function createSplatNodeMaterial({
     return clipPosition;
   }
 
-  return Object.assign(new NodeMaterial(), {
+  const material = shading?.createMaterial(vSplatUv) ?? new NodeMaterial();
+  material.addEventListener("dispose", () => {
+    for (const texture of placeholders) texture.dispose();
+  });
+  return Object.assign(material, {
     uniforms,
     vertexNode: N.Fn(buildVertex)(),
     colorNode: fragmentNode,

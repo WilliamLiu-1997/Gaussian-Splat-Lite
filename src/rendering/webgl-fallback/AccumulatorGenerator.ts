@@ -6,24 +6,8 @@ import { N, uniformBinding } from "../tsl/shaderUtils";
 import { makeGenerateUniforms } from "../uniforms";
 import {
   type AccumulatorRenderOptions,
-  createWebGLAccumulatorTarget,
   renderAccumulatorLayers,
 } from "../webgl/AccumulatorGenerator";
-
-export function createWebGLFallbackAccumulatorTarget(
-  width: number,
-  height: number,
-  depth: number,
-  stochasticSeeds: boolean,
-) {
-  // The r186 fallback backend recognizes array attachments only at depth > 1.
-  return createWebGLAccumulatorTarget(
-    width,
-    height,
-    Math.max(2, depth),
-    stochasticSeeds,
-  );
-}
 
 /**
  * Rasterizes Splat records, and for stochastic targets stable sampling seeds,
@@ -33,11 +17,15 @@ export class WebGLFallbackAccumulatorGenerator {
   readonly uniforms = makeGenerateUniforms();
   private readonly material = new NodeMaterial();
   private readonly quad = new QuadMesh(this.material);
+  private readonly placeholders: THREE.Texture[] = [];
 
   constructor(stochasticSeeds: boolean) {
     const targetBase = uniformBinding(this.uniforms, "targetBase", "uint");
     const targetLayer = uniformBinding(this.uniforms, "targetLayer", "uint");
-    const generate = createGenerateProgram({ uniforms: this.uniforms });
+    const generate = createGenerateProgram({
+      uniforms: this.uniforms,
+      placeholders: this.placeholders,
+    });
     const second = N.property("uvec4", "gslAccumulatorB");
     const seed = N.property("uint", "gslAccumulatorSeed");
     const first = N.Fn(() => {
@@ -71,5 +59,6 @@ export class WebGLFallbackAccumulatorGenerator {
 
   dispose() {
     this.material.dispose();
+    for (const texture of this.placeholders) texture.dispose();
   }
 }

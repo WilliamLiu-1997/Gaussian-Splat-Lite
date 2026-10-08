@@ -1,3 +1,4 @@
+import type * as THREE from "three";
 import type { Node } from "three/webgpu";
 import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines";
 import type { Uniforms } from "../uniforms";
@@ -123,11 +124,17 @@ const encodeWideSemanticOpacity = N.Fn(([opacity]: [Node<"float">]) => {
   return opacity.log().mul(E).add(1).sqrt().sub(1).mul(0.25).min(1);
 });
 
-export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
+export function createGenerateProgram({
+  uniforms,
+  placeholders,
+}: {
+  uniforms: Uniforms;
+  placeholders: THREE.Texture[];
+}) {
   const bindUniform = <Type extends UniformType>(name: string, type: Type) =>
     uniformBinding(uniforms, name, type);
   const bindTexture = (name: string, array = false) =>
-    textureBinding(uniforms, name, array);
+    textureBinding(uniforms, name, placeholders, array);
 
   const targetCount = bindUniform("targetCount", "uint");
   const stochasticSeedBase = bindUniform("stochasticSeedBase", "uint");

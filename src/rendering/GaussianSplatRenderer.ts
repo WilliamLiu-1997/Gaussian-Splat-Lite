@@ -4,6 +4,7 @@ import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
 import { SplatAccumulator } from "./SplatAccumulator";
 import { SplatGeometry } from "./SplatGeometry";
+import type { SplatRendererPlugin } from "./SplatRendererPlugin";
 import {
   type SplatBackend,
   type SplatMaterial,
@@ -24,6 +25,7 @@ const renderToViewMatrixTmp = new THREE.Matrix4();
 const renderTranslationTmp = new THREE.Matrix4();
 const headPositionTmp = new THREE.Vector3();
 const headTargetTmp = new THREE.Vector3();
+const pluginOwners = new WeakMap<SplatRendererPlugin, GaussianSplatRenderer>();
 type UpdateRequest = {
   scene: THREE.Scene;
   camera: THREE.Camera;
@@ -281,7 +283,9 @@ export class GaussianSplatRenderer extends THREE.Mesh<
   onDirty?: () => void;
   dirty: boolean;
 
-  private readonly backend: SplatBackend;
+  /** @internal Rendering resources available to registered plugins. */
+  readonly backend: SplatBackend;
+  private readonly registeredPlugins: SplatRendererPlugin[] = [];
   private orderingBuffer: Uint32Array = new Uint32Array(0);
   // A CPU ordering matching the displayed accumulator; unsorted stochastic
   // updates display without one.
@@ -348,7 +352,7 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       options.autoAdvanceStochasticSample ?? true;
     this._stochasticSort = options.stochasticSort ?? true;
     this.stochasticFrame = stochastic;
-    this.applyMaterialState(this.stochasticFrame);
+    this.selectMaterial();
     // Disable frustum culling because we want to always draw them all
     // and cull Gsplats individually in the shader
     this.frustumCulled = false;
@@ -397,6 +401,49 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]) {}
 
+  updateMatrixWorld(force?: boolean) {
+    super.updateMatrixWorld(force);
+    for (const plugin of this.registeredPlugins) plugin.sync?.();
+  }
+
+  get plugins(): readonly SplatRendererPlugin[] {
+    return this.registeredPlugins;
+  }
+
+  get isDisposed() {
+    return this.disposed;
+  }
+
+  registerPlugin(plugin: SplatRendererPlugin) {
+    if (this.disposed) throw new Error("Gaussian Splat renderer is disposed");
+    if (pluginOwners.has(plugin))
+      throw new Error("A plugin instance can only be registered once");
+    if (this.getPluginByName(plugin.name))
+      throw new Error(`Plugin ${plugin.name} is already registered`);
+    plugin.init(this);
+    pluginOwners.set(plugin, this);
+    this.registeredPlugins.push(plugin);
+    this.selectMaterial();
+    this.setDirty();
+  }
+
+  unregisterPlugin(plugin: SplatRendererPlugin | string) {
+    const instance =
+      typeof plugin === "string" ? this.getPluginByName(plugin) : plugin;
+    const index = instance ? this.registeredPlugins.indexOf(instance) : -1;
+    if (index === -1 || !instance) return false;
+    this.registeredPlugins.splice(index, 1);
+    pluginOwners.delete(instance);
+    this.selectMaterial();
+    instance.dispose();
+    this.setDirty();
+    return true;
+  }
+
+  getPluginByName(name: string) {
+    return this.registeredPlugins.find((plugin) => plugin.name === name);
+  }
+
   static makeUniforms() {
     return makeSplatUniforms();
   }
@@ -410,6 +457,11 @@ export class GaussianSplatRenderer extends THREE.Mesh<
 
     super.dispose();
 
+    for (const plugin of this.registeredPlugins) {
+      pluginOwners.delete(plugin);
+      plugin.dispose();
+    }
+    this.registeredPlugins.length = 0;
     this.backend.dispose();
     this.uniforms.stochasticNoise.value.dispose();
 
@@ -491,9 +543,32 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         : this.display.hasStochasticSeeds;
     if (active === this.stochasticFrame) return;
     this.stochasticFrame = active;
-    this.material = this.backend.selectMaterial(active);
-    this.applyMaterialState(active);
+    this.selectMaterial();
     this.setDirty();
+  }
+
+  /** @internal Draw with the material of the current mode and plugins. */
+  selectMaterial() {
+    const previous = this.material;
+    let material: SplatMaterial | null = null;
+    for (const plugin of this.registeredPlugins) {
+      material = plugin.selectMaterial?.(this.stochasticFrame) ?? null;
+      if (material) break;
+    }
+    material ??= this.backend.selectMaterial(this.stochasticFrame);
+    // Stencil masks belong to the draw, across its material variants.
+    if (material !== previous) {
+      material.stencilWrite = previous.stencilWrite;
+      material.stencilWriteMask = previous.stencilWriteMask;
+      material.stencilFunc = previous.stencilFunc;
+      material.stencilRef = previous.stencilRef;
+      material.stencilFuncMask = previous.stencilFuncMask;
+      material.stencilFail = previous.stencilFail;
+      material.stencilZFail = previous.stencilZFail;
+      material.stencilZPass = previous.stencilZPass;
+    }
+    this.material = material;
+    this.applyMaterialState(this.stochasticFrame);
   }
 
   private applyMaterialState(stochasticActive: boolean) {
@@ -567,7 +642,9 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       return;
     }
     const frame = getRenderFrame(renderer);
-    const isNewFrame = frame !== this.lastFrame;
+    let isNewFrame = frame !== this.lastFrame;
+    for (const plugin of this.registeredPlugins)
+      isNewFrame = plugin.startsFrame?.(isNewFrame) ?? isNewFrame;
     this.lastFrame = frame;
     if (isNewFrame) {
       if (this.autoAdvanceStochasticSample && this.stochasticFrame) {
@@ -720,6 +797,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
     }
 
     this.dirty = false;
+    for (const plugin of this.registeredPlugins)
+      plugin.prepareDraw?.(scene, camera, display);
   }
 
   clearSplats() {

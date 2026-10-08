@@ -20,6 +20,8 @@ Captures do not disturb what is on screen. Your render loop can keep running whi
 
 [SDF edits](SplatEdit.md) apply to captures as they do on screen, whether they are attached to the scene or to a model.
 
+Registered plugins with capture support follow the display renderer. The optional [SplatLightingPlugin](Lighting.md) carries its enabled state and model settings into captures while keeping its rendering resources separate.
+
 Coming from 1.1.8? These were methods and options of `GaussianSplatRenderer`. They keep the same names on `SplatCapture`, except the cube captures' `update` option, which is gone: every capture shows the current scene and reuses earlier work while nothing has changed.
 
 ## Render to a target

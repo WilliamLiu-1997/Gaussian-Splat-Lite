@@ -17,6 +17,7 @@ import { N, type UniformType, uniformBinding } from "../tsl/shaderUtils";
 import { splatViewportUniforms } from "../tsl/viewUniforms";
 import { type Uniforms, makeGenerateUniforms } from "../uniforms";
 import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache";
+import type { ProjectionCacheExtension } from "./ProjectionCacheExtension";
 import {
   INVALID_SORT_KEY,
   RADIX_SORT_MODE_IDS,
@@ -28,8 +29,12 @@ const WORKGROUP_SIZE = 256;
 const PROJECT_SLOTS = 8;
 
 type BufferRef = { value: StorageBufferAttribute; name: string };
-type ComputeSlot = { uniforms: Uniforms; node: ComputeNode };
-type SlotSet = { slots: ComputeSlot[]; compiled: number };
+type ComputeSlot = {
+  uniforms: Uniforms;
+  node: ComputeNode;
+  placeholders: THREE.Texture[];
+};
+type SlotSet = { slots: ComputeSlot[]; compiled: number; active: boolean };
 type DeviceLimits = {
   maxStorageBufferBindingSize: number;
   maxBufferSize: number;
@@ -90,7 +95,7 @@ export class ProjectedSplats {
     1,
   );
   /** Common kernels, the full sorter and the first slot are ready; remaining slots warm automatically. */
-  readonly ready: Promise<void>;
+  ready: Promise<void>;
   error: unknown = null;
   /**
    * Called when kernels for a new WebXR eye count can draw, or when a slot
@@ -100,7 +105,8 @@ export class ProjectedSplats {
   onKernelsReady?: () => void;
 
   private readonly limits: DeviceLimits;
-  private readonly cache = new ProjectionCache();
+  readonly cache = new ProjectionCache();
+  private extension: ProjectionCacheExtension | null = null;
   private readonly visibleCount = new StorageBufferAttribute(
     new Uint32Array(1),
     1,
@@ -111,8 +117,8 @@ export class ProjectedSplats {
   // Slots for each eye count. One eye compiles at startup; WebXR eye counts
   // compile as a session starts or on first use, so other draws pay nothing.
   private readonly slotSets = new Map<number, SlotSet>();
-  private readonly compilations: Promise<void>[] = [];
-  private readonly onSessionStart = () => void this.getSlots(2);
+  private readonly compilations = new Set<Promise<void>>();
+  private readonly onSessionStart = () => void this.getSlotSet(2);
   private shrinkViews = false;
   private readonly onSessionEnd = () => {
     this.shrinkViews = true;
@@ -197,14 +203,46 @@ export class ProjectedSplats {
         mono.slots[0].node,
       ])
       .then(() => {
-        mono.compiled = 1;
+        if (mono.active && !this.disposed) mono.compiled = 1;
       })
       .catch((error: unknown) => {
-        this.error = error;
+        if (mono.active && !this.disposed) this.error = error;
       });
-    this.compilations.push(this.ready.then(() => this.compileSlots(mono)));
+    this.trackCompilation(this.ready.then(() => this.compileSlots(mono)));
     renderer.xr.addEventListener("sessionstart", this.onSessionStart);
     renderer.xr.addEventListener("sessionend", this.onSessionEnd);
+  }
+
+  /** Changes the optional record graph, keeping projected storage and sorting resources. */
+  setExtension(extension: ProjectionCacheExtension | null) {
+    if (extension === this.extension) return this.ready;
+    const retired = [...this.slotSets.values()];
+    for (const set of retired) set.active = false;
+    const retirement = this.trackCompilation(
+      this.whenIdle().then(() => this.disposeSlots(retired)),
+    );
+    this.slotSets.clear();
+    this.extension = extension;
+    this.projectedInputs = [];
+    this.error = null;
+    const mono = this.createSlotSet(1);
+    this.ready = this.ready.then(() => this.compileSlots(mono, 1));
+    this.trackCompilation(this.ready.then(() => this.compileSlots(mono)));
+    return Promise.all([this.ready, retirement]).then(() => {});
+  }
+
+  /** Waits for the currently scheduled compilation and retired graph cleanup. */
+  async whenIdle() {
+    await Promise.all(this.compilations);
+  }
+
+  private trackCompilation(promise: Promise<void>) {
+    this.compilations.add(promise);
+    const complete = () => {
+      this.compilations.delete(promise);
+    };
+    void promise.then(complete, complete);
+    return promise;
   }
 
   private createSlot(eyeCount = 1): ComputeSlot {
@@ -212,23 +250,33 @@ export class ProjectedSplats {
     const uniforms = {
       ...this.state,
       ...makeGenerateUniforms(),
+      ...this.extension?.slotUniforms(),
     };
     const u = <Type extends UniformType>(name: string, type: Type) =>
       uniformBinding(uniforms, name, type);
-    const generate = createGenerateProgram({ uniforms });
+    const placeholders: THREE.Texture[] = [];
+    const generate = createGenerateProgram({
+      uniforms,
+      placeholders,
+    });
+    const kernel = this.extension?.kernel(u);
     // Eye 0 reads the unsuffixed uniforms; later eyes append their index.
     const eyes = Array.from({ length: eyeCount }, (_, eye) =>
       eye ? `${eye}` : "",
     ).map((suffix) => ({
-      project: createProjectionProgram(uniforms, {
-        projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
-        renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
-        renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
-        renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
-        near: u(`near${suffix}`, "float"),
-        far: u(`far${suffix}`, "float"),
-        renderSize: u(`renderSize${suffix}`, "vec2"),
-      }),
+      project: createProjectionProgram(
+        uniforms,
+        {
+          projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
+          renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
+          renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
+          renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
+          near: u(`near${suffix}`, "float"),
+          far: u(`far${suffix}`, "float"),
+          renderSize: u(`renderSize${suffix}`, "vec2"),
+        },
+        kernel?.projection,
+      ),
       pixelScale: u(`renderSize${suffix}`, "vec2")
         .mul(u("focalAdjustment", "float"))
         .mul(0.5),
@@ -251,6 +299,7 @@ export class ProjectedSplats {
       .setName("gslVisibleCount")
       .toAtomic();
     const node = N.Fn(() => {
+      kernel?.begin();
       const index = N.uint(N.instanceIndex);
       // Sorted draws key each Splat at its mapping index, not its atomic slot.
       // The first radix pass compacts keys in mapping order, so equal keys
@@ -290,6 +339,7 @@ export class ProjectedSplats {
               eyes[eye].pixelScale,
               centerRange,
             );
+            kernel?.write(cacheIndex, projection.extra);
           };
           if (eyeCount > 1) {
             N.If(eyeVisible, write).Else(() => {
@@ -358,7 +408,7 @@ export class ProjectedSplats {
           ? `Splat generate project compact ${eyeCount} eyes`
           : "Splat generate project compact",
       );
-    return { uniforms, node };
+    return { uniforms, node, placeholders };
   }
 
   /** Projection uniforms of each eye after the first, created on demand. */
@@ -383,6 +433,7 @@ export class ProjectedSplats {
         this.createSlot(eyeCount),
       ),
       compiled: 0,
+      active: true,
     };
     this.slotSets.set(eyeCount, set);
     return set;
@@ -392,37 +443,48 @@ export class ProjectedSplats {
    * Compiled slots that project this many eyes. One eye uses the startup
    * slots; WebXR eye counts build theirs on first request.
    */
-  private getSlots(eyeCount: number) {
+  private getSlotSet(eyeCount: number) {
     let set = this.slotSets.get(eyeCount);
     if (!set) {
       set = this.createSlotSet(eyeCount);
-      this.compilations.push(this.compileSlots(set));
+      this.trackCompilation(this.compileSlots(set));
     }
-    return set.slots.slice(0, set.compiled);
+    return set;
   }
 
-  private async compileSlots(set: SlotSet) {
+  private async compileSlots(set: SlotSet, count = set.slots.length) {
     try {
       // A drawable set yields first, so readiness callbacks run before the
       // slots that only batch more meshes.
       if (set.compiled > 0)
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      while (!this.disposed && !this.error && set.compiled < set.slots.length) {
+      while (
+        set.active &&
+        !this.disposed &&
+        !this.error &&
+        set.compiled < count
+      ) {
         await (this.renderer as ComputeRenderer).compileComputeAsync([
           set.slots[set.compiled].node,
         ]);
+        if (!set.active || this.disposed) return;
         set.compiled++;
         // The first slot is enough to draw; later ones only batch more meshes.
         if (set.compiled === 1 && !this.disposed) this.onKernelsReady?.();
       }
     } catch (error) {
+      if (!set.active || this.disposed) return;
       this.error = error;
       // The next draw throws the compilation error.
       if (!this.disposed) this.onKernelsReady?.();
     }
   }
 
-  vertexData(camera: THREE.Camera, stochastic: boolean): ProjectedVertexData {
+  vertexData(
+    camera: THREE.Camera,
+    stochastic: boolean,
+    shaded: boolean,
+  ): ProjectedVertexData {
     const multiView = getViews(camera)[0] !== camera;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
@@ -441,6 +503,8 @@ export class ProjectedSplats {
     const stochasticSeed = stochastic ? N.uint(0).toVar() : undefined;
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
+    const extension = this.extension;
+    const record = shaded && extension ? N.uvec4(0).toVar() : undefined;
     const view = splatViewportUniforms(this.uniforms, camera);
     const centerRange = uniformBinding(this.uniforms, "clipXY", "float")
       .abs()
@@ -489,6 +553,8 @@ export class ProjectedSplats {
       splatUv.assign(projected.splatUv);
       supportRadiusSquared.assign(projected.supportRadiusSquared);
       kernelPower.assign(projected.kernelPower);
+      if (record && extension)
+        record.assign(extension.read(base.add(cacheIndex)));
     });
     return {
       clipPosition,
@@ -498,6 +564,7 @@ export class ProjectedSplats {
       supportRadiusSquared,
       kernelPower,
       viewportOrigin: view.viewportOrigin,
+      record,
     };
   }
 
@@ -561,14 +628,15 @@ export class ProjectedSplats {
     const multiView = cameras[0] !== camera;
     // WebXR eyes share one generated, culled, compacted and sorted set, like
     // one head; each eye still gets its exact projection.
-    const slots = this.disposed ? [] : this.getSlots(cameras.length);
-    if (slots.length === 0) {
+    const slots = this.disposed ? null : this.getSlotSet(cameras.length);
+    if (!slots || slots.compiled === 0) {
       // Draw nothing until the kernels for this eye count compile.
       geometry.setIndirect(null);
       geometry.instanceCount = 0;
       return false;
     }
     this.resize(accumulator.numSplats, cameras.length, shrink);
+    this.extension?.fit();
     const { uniforms } = this;
     const stochastic = uniforms.stochastic.value;
     // Only stochastic draws read seeds; sorted rendering keeps one entry.
@@ -616,6 +684,7 @@ export class ProjectedSplats {
       uniforms.clipXY.value,
       uniforms.focalAdjustment.value,
     ];
+    this.extension?.appendInputs(inputs, accumulator.mapping);
     for (const { node } of accumulator.mapping) inputs.push(node.layers.mask);
     for (const view of cameras) {
       inputs.push(
@@ -700,7 +769,7 @@ export class ProjectedSplats {
    * modes also visit hidden meshes, which only mark their keys absent.
    */
   private dispatch(
-    slots: ComputeSlot[],
+    { slots, compiled }: SlotSet,
     views: THREE.Camera[],
     accumulator: SplatAccumulator,
     sortMode: RadixSortMode | null,
@@ -713,13 +782,14 @@ export class ProjectedSplats {
       if (!drawn && !sortMode) continue;
       // A slot's uniforms can only be changed after its preceding batch has
       // been submitted. Keep the last batch open for draw arguments and sorting.
-      if (slotCount === slots.length) {
+      if (slotCount === compiled) {
         this.renderer.compute(pending);
         pending.length = 0;
         slotCount = 0;
       }
       const slot = slots[slotCount++];
       if (drawn) accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
+      this.extension?.setSlot(slot.uniforms, node);
       slot.uniforms.targetBase.value = base;
       // Hidden meshes read no source data; each Splat fails visibility.
       slot.uniforms.targetCount.value = drawn ? count : 0;
@@ -738,12 +808,19 @@ export class ProjectedSplats {
     this.projectedInputs = [];
     this.renderer.xr.removeEventListener("sessionstart", this.onSessionStart);
     this.renderer.xr.removeEventListener("sessionend", this.onSessionEnd);
-    void Promise.all(this.compilations).then(() => this.disposeResources());
+    void this.whenIdle().then(() => this.disposeResources());
+  }
+
+  private disposeSlots(sets: Iterable<SlotSet>) {
+    for (const { slots } of sets)
+      for (const { node, placeholders } of slots) {
+        node.dispose();
+        for (const texture of placeholders) texture.dispose();
+      }
   }
 
   private disposeResources() {
-    for (const { slots } of this.slotSets.values())
-      for (const slot of slots) slot.node.dispose();
+    this.disposeSlots(this.slotSets.values());
     for (const node of [this.resetCount, this.finish]) node.dispose();
     this.sorter.dispose();
     this.cache.dispose();

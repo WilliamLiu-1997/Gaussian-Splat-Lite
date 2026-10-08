@@ -7,12 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added the optional experimental `SplatLightingPlugin`, imported from `gaussian-splat-lite/plugins` and installed with `splatRenderer.registerPlugin(plugin)`. It lights Splats with ambient, hemisphere, directional, point, and spot lights, and Splats and meshes cast shadows onto each other through Three.js shadow maps. Lighting and shadows live separately in `src/plugins/lighting/` and are excluded from the main package's implementation. It works on all three backends, in sorted and stochastic rendering and WebXR, and `SplatCapture` follows its settings. See [Lighting and shadows](docs/Lighting.md).
+- Added plugin model settings for `receiveLight`, `castShadow`, and `receiveShadow`, applied with `plugin.setModelOptions(modelOrGroup, options)`. Group settings also apply to streamed batches, including models loaded later.
+- Added a Lighting & shadows group to the viewer's render options: a moving spotlight that cycles through red, green, and blue. Loading the built-in example enables it; loading another model hides the controls. Files and streamed scenes can cast and receive shadows. Paused lights reuse shadow maps until casting models or shadow quality change.
+- Added support for `WebGPURenderer`'s `CSMShadowNode` cascaded shadows and transmitted shadow colors on Splats.
+
+### Fixed
+
+- Preserved Splat material stencil settings when switching between sorted and stochastic rendering, or toggling lighting.
+- Released node texture-binding placeholders when their owning materials or compute programs are disposed.
+
 ## [1.2.2] - 2026-10-07
 
 ### Added
 
 - Added a Blend buffer option to the viewer, set to Half float by default. It removes the overlapping rings that 8-bit blending leaves in faint gradients. Very bright Splats behind others can look slightly brighter than before; choose 8-bit to return to the previous image.
-- Added stencil masking to `TAAPass` and `TAANode`. Create the Three.js renderer with `stencil: true` and the scene's stencil masks apply as they do without TAA, including the stencil settings on your Splat renderer's `material`; before, they were ignored. `WebGPURenderer` on WebGPU needs Three.js r187 or later for this; on r186, leave `stencil` off there when using `TAANode`.
+- Added stencil masking to `TAAPass` and `TAANode`. Create the Three.js renderer with `stencil: true` and the scene's stencil masks apply as they do without TAA, including the stencil settings on your Splat renderer's `material`; before, they were ignored.
 
 ### Changed
 

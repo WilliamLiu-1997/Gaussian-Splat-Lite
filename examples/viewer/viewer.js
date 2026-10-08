@@ -9,6 +9,7 @@ import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
 import { createFrameGate } from "./frameGate.js";
+import { createViewerLighting } from "./lighting.js";
 import { getModelRotationX } from "./modelOrientation.js";
 import {
   detectFileType,
@@ -133,6 +134,24 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     if (state.splatRenderer.stochastic) {
       state.taa = createViewerTAA(state.renderer, scene, camera);
     }
+    state.lighting = createViewerLighting(
+      state.renderer,
+      scene,
+      state.splatRenderer,
+    );
+    if (previous) {
+      Object.assign(state.lighting.settings, previous.lighting.settings);
+      state.lighting.plugin.enabled = previous.lighting.plugin.enabled;
+      if (activeSplat)
+        state.lighting.plugin.setModelOptions(activeSplat, {
+          castShadow: true,
+          receiveShadow: true,
+        });
+      const frame = previous.lighting.frame;
+      if (frame) state.lighting.setFrame(frame.position, frame.radius);
+      // The previous renderer draws until this one is mounted.
+      state.lighting.group.visible = false;
+    }
     state.controls = new CameraController(state.renderer, scene, camera, {
       worldUp: camera.up,
       damping: 0.1,
@@ -163,6 +182,7 @@ function disposeRendererState(state) {
   state.controls?.dispose();
   state.taa?.dispose();
   state.halfFloat?.dispose();
+  state.lighting?.dispose();
   state.splatRenderer?.removeFromParent();
   state.splatRenderer?.dispose();
   // An attached Inspector is owned and disposed by the renderer.
@@ -180,6 +200,8 @@ function mountRendererState(state, attachInspector = true) {
     ? THREE.SRGBColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  state.lighting.syncColors();
+  state.lighting.update(performance.now());
   // WebGL's output setter requires the linear working space to be set first.
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   referenceHelpers.setBackend(webGPU);
@@ -237,6 +259,8 @@ function renderFrame(time) {
   // Keep camera and LOD updates running while the GPU is busy.
   controls.update(time);
   activeStream?.update();
+  rendererState.lighting.update(time);
+  if (rendererState.lighting.needsRender) requestRender();
   drawFrame(time);
 }
 
@@ -282,6 +306,21 @@ function drawFrame(time) {
 }
 
 const renderOptionActions = {
+  lightingEnabled: (value) => {
+    rendererState.lighting.settings.enabled = value;
+  },
+  rotateLights: (value) => {
+    rendererState.lighting.settings.animate = value;
+  },
+  lightShadows: (value) => {
+    rendererState.lighting.settings.shadows = value;
+  },
+  lightAmbient: (value) => {
+    rendererState.lighting.settings.ambient = value;
+  },
+  lightIntensity: (value) => {
+    rendererState.lighting.settings.intensity = value;
+  },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
   },
@@ -334,6 +373,7 @@ function detachRendererState(state) {
   state.controls.removeEventListener("update", requestRender);
   state.controls.indicator.removeFromParent();
   state.splatRenderer.removeFromParent();
+  state.lighting.group.visible = false;
 }
 
 function activateRendererState(state, attachInspector = true) {
@@ -468,6 +508,7 @@ function retireTAA() {
 const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
 let activeSplat = null;
+let activeExample = false;
 let modelUpAxis = "auto";
 let disposeActiveSource = null;
 let cancelActiveLoad = null;
@@ -489,12 +530,17 @@ optionsPanel.setHidden("splatBudget", true);
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
 optionsPanel.reset({ skip: ["rendererBackend"] });
+optionsPanel.setGroupHidden("lightingEnabled", true);
 
 function isFileDrag(event) {
   return Array.from(event.dataTransfer?.types ?? []).includes("Files");
 }
 
 function clearActiveModel() {
+  rendererState.lighting.clear();
+  activeExample = false;
+  optionsPanel.setValue("lightingEnabled", false, { emit: true });
+  optionsPanel.setGroupHidden("lightingEnabled", true);
   taa?.reset();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -547,6 +593,10 @@ function frameSplat(splat) {
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
 
+  rendererState.lighting.setFrame(
+    frameCenter,
+    Math.min(radius, distance * 0.35),
+  );
   camera.near = Math.min(radius * 0.001, 0.1);
   camera.far = radius * 100;
   camera.updateProjectionMatrix();
@@ -594,6 +644,10 @@ async function initializeModel(
     try {
       await model.stream.initialized;
       model.splat = model.stream.group;
+      rendererState.lighting.plugin.setModelOptions(model.splat, {
+        castShadow: true,
+        receiveShadow: true,
+      });
       return;
     } catch (error) {
       model.stream.dispose();
@@ -631,11 +685,23 @@ async function initializeModel(
     });
   }
   await (model.stream ?? model.splat).initialized;
+  rendererState.lighting.plugin.setModelOptions(model.splat, {
+    castShadow: true,
+    receiveShadow: true,
+  });
 }
 
 async function loadFile(
   file,
-  { credit = "", url, button, resolveFile, manager, dispose } = {},
+  {
+    credit = "",
+    url,
+    button,
+    resolveFile,
+    manager,
+    dispose,
+    isExample = false,
+  } = {},
 ) {
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
@@ -670,6 +736,9 @@ async function loadFile(
       model.stream instanceof SogStreamScheduler,
     );
     activeSplat = model.splat;
+    activeExample = isExample;
+    optionsPanel.setValue("lightingEnabled", isExample, { emit: true });
+    optionsPanel.setGroupHidden("lightingEnabled", !isExample);
     activeStream = model.stream;
     syncStreamResolution();
     optionsPanel.setHidden("splatBudget", !activeStream);
@@ -715,6 +784,7 @@ function loadRemoteModel(model, button) {
     url: model.url.toString(),
     credit: model.credit,
     button,
+    isExample: model === EXAMPLE_MODEL,
   });
 }
 
@@ -805,6 +875,7 @@ sourceUpAxis.addEventListener("change", (event) => {
 renderOptionsReset.addEventListener("click", () => {
   // Apply material defaults before the asynchronous backend switch copies them.
   optionsPanel.reset({ last: ["rendererBackend"] });
+  optionsPanel.setValue("lightingEnabled", activeExample, { emit: true });
 });
 
 window.addEventListener("dragenter", (event) => {

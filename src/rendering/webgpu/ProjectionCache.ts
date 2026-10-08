@@ -10,6 +10,9 @@ type TextureLimits = {
   maxTextureArrayLayers: number;
 };
 
+// Plugins can store additional records alongside the projection cache.
+export { cacheTexCoord, makeTexture, store };
+
 function makeTexture() {
   const texture = new StorageArrayTexture(1, 1, 1);
   texture.format = THREE.RGBAIntegerFormat;
@@ -77,7 +80,7 @@ export class ProjectionCache {
   // bits.
   readonly textures = [makeTexture(), makeTexture()];
   readonly size = new THREE.Vector4(1, 1, 1, 0);
-  private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
+  readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
     () => this.size,
   );
 
@@ -90,7 +93,7 @@ export class ProjectionCache {
   // Call after visibility and deferred color evaluation, inside the same guard.
   write(
     index: Node<"uint">,
-    projection: SplatProjection,
+    projection: SplatProjection<unknown>,
     ndc: Node<"vec2">,
     pixelScale: Node<"vec2">,
     centerRange: Node<"float">,

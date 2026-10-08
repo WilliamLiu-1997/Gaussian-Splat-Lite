@@ -18,6 +18,7 @@ import {
   streamPendingLimit,
   streamRetryAt,
   streamSettings,
+  syncStreamBatch,
 } from "../streamOptions";
 import { SogStreamBatch } from "./SogStreamBatch";
 import {
@@ -285,7 +286,7 @@ export class SogStreamScheduler {
     if (!this.manifest) return false;
     for (const chunk of this.activeChunks) {
       this.pruneChunk(chunk);
-      if (chunk.batch) chunk.batch.layers.mask = this.group.layers.mask;
+      if (chunk.batch) syncStreamBatch(chunk.batch, this.group);
     }
     const view = captureSogView(cameras, this.group);
     // Three can register the XR rig before it supplies the first eye poses.
@@ -491,6 +492,8 @@ export class SogStreamScheduler {
         );
         batch.name =
           range.file < 0 ? "sog-environment" : `sog-chunk-${range.file}`;
+        // A batch joins the scene before the next update.
+        syncStreamBatch(batch, this.group);
         chunk.batch = batch;
         this.activeChunks.add(chunk);
       }

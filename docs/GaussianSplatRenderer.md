@@ -72,6 +72,8 @@ See [Stochastic rendering](StochasticRendering.md) for setup.
 | `shrinkResources({ scene, camera })` | Update, then release memory that is no longer needed, for example after removing large models; returns a promise |
 | `clearSplats()` | Clear the Splats from the display without removing models from the scene |
 | `dispose()` | Release this renderer's resources |
+| `registerPlugin(plugin)` | Attach an optional renderer plugin and initialize it for this renderer |
+| `unregisterPlugin(plugin)` | Remove a registered plugin and release its resources |
 | `stochasticActive` | Read-only. Whether stochastic rendering is currently being drawn; it changes shortly after you set `stochastic` |
 | `stochasticSample` | Noise pattern index, `0` by default. Set `autoAdvanceStochasticSample = false` to control it yourself |
 | `synchronousSort` | Read-only. `true` when Splats are always sorted before they are drawn, as on native WebGPU |
@@ -98,7 +100,7 @@ Model colors are converted for you. Control the final image with your Three.js r
 
 Set `encodeLinear` to choose the conversion yourself. For example, to blend Splats in sRGB next to a linear scene, render them into their own target with `encodeLinear: false`, then unpremultiply that layer, convert it to linear, and premultiply it again before compositing.
 
-For temporal anti-aliasing and effects such as Bloom, see [TAAPass and TAANode](TAAPass.md). To render offscreen, read pixels back, or build cube and environment maps, use [SplatCapture](SplatCapture.md).
+For temporal anti-aliasing and effects such as Bloom, see [TAAPass and TAANode](TAAPass.md). To render offscreen, read pixels back, or build cube and environment maps, use [SplatCapture](SplatCapture.md). For lighting and shadows, import the optional [SplatLightingPlugin](Lighting.md) from `gaussian-splat-lite/plugins`.
 
 ## On-demand rendering
 

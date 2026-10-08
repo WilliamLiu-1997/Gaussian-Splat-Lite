@@ -18,6 +18,16 @@
         "types": "./dist/types/index.d.cts",
         "default": "./dist/gaussian-splat-lite.cjs"
       }
+    },
+    "./plugins": {
+      "import": {
+        "types": "./dist/types/plugins/index.d.mts",
+        "default": "./dist/gaussian-splat-lite-plugins.module.js"
+      },
+      "require": {
+        "types": "./dist/types/plugins/index.d.cts",
+        "default": "./dist/gaussian-splat-lite-plugins.cjs"
+      }
     }
   },
   "scripts": {

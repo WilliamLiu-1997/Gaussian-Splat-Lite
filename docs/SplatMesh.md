@@ -66,6 +66,8 @@ Choose at most one of `url`, `file`, `fileBytes`, or `splats`; combining them th
 
 Changes to the transform, `recolor`, `opacity`, `maxSh`, and edits are picked up automatically. If the mesh's `Splats` is loaded again, `initialized` and `isInitialized` follow the new load, and `onLoad` runs again when it finishes.
 
+Lighting and shadows are provided by the optional [SplatLightingPlugin](Lighting.md). Configure a model through `lighting.setModelOptions(mesh, options)`; `castShadow` and `receiveShadow` also remain ordinary inherited Three.js properties.
+
 ## Methods
 
 ```ts

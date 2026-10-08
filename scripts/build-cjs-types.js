@@ -43,9 +43,11 @@ for (const declarationFile of declarationFiles) {
 }
 
 // ESM declarations can safely re-export a CommonJS declaration surface when
-// the package has no default export. This keeps both entry points identical
-// while leaving Vite's generated index.d.ts intact for repeatable builds.
-await writeFile(
-  path.join(typesDirectory, "index.d.mts"),
-  'export * from "./index.cjs";\n',
-);
+// the package has no default export. Keep each entry's ESM and CommonJS types
+// identical while leaving Vite's declarations intact for repeatable builds.
+for (const entry of ["index", "plugins/index"]) {
+  await writeFile(
+    path.join(typesDirectory, `${entry}.d.mts`),
+    'export * from "./index.cjs";\n',
+  );
+}

@@ -67,6 +67,8 @@ renderer.setAnimationLoop(() => {
 
 ## Options
 
+For optional lighting and shadows, configure the group's [SplatLightingPlugin](Lighting.md) settings with `lighting.setModelOptions(stream.group, options)`. These settings also apply to batches loaded later.
+
 | Option | Default | Description |
 | --- | --- | --- |
 | `url` / `file` / `fileBytes` | Exactly one required | URL, `Blob`/`File`, or complete `Uint8Array`/`ArrayBuffer` |

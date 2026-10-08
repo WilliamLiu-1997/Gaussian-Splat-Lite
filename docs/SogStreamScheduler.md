@@ -44,6 +44,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 
 ## Options
 
+For optional lighting and shadows, configure the group's [SplatLightingPlugin](Lighting.md) settings with `lighting.setModelOptions(stream.group, options)`. These settings also apply to batches loaded later.
+
 | Option | Default | Description |
 | --- | --- | --- |
 | `url` | Required | URL of the scene's `lod-meta.json` |

@@ -129,7 +129,7 @@ export function createTAAState<
       ColorManagement.getLuminanceCoefficients(
         uniforms.luminanceCoefficients.value,
       );
-      // Three r186 reverses AlwaysDepth/NeverDepth on both GPU backends.
+      // Three reverses AlwaysDepth/NeverDepth on both node backends.
       return uniforms.reversed.value ? NeverDepth : AlwaysDepth;
     },
     advance(camera: TAACamera) {
