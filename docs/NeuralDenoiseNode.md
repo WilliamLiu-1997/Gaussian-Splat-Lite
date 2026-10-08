@@ -11,7 +11,7 @@
 | Moving objects | May leave a faint trail and grainy edges | No trail. Detail stays sharper while it moves slowly enough to follow, and looks softer when it moves faster |
 | While the camera moves | Some grain returns | Stays smooth |
 | Still image | Smooth | Smooth, with a little more fine detail |
-| Cost | Lower | More GPU time, and four to five times the memory |
+| Cost | Lower | More GPU time, and two and a half to five times the memory |
 | Renderer | WebGPU and its WebGL2 fallback | Native WebGPU only |
 
 ## Choose a quality level
@@ -20,11 +20,11 @@ The third constructor argument picks one of three levels. Each step up takes mor
 
 | Level | What you get | Added per frame over `TAANode`, 1280×800 / 2560×1600 |
 | --- | --- | --- |
-| `"performance"` | No trail behind moving objects. Whatever moves looks soft until it stops | 0.7 ms / 2.9 ms |
-| `"balanced"` (default) | Also follows content that moves, such as a model that turns or deforms: its detail stays sharper and its noise settles while it moves | 0.9 ms / 3.2 ms |
-| `"quality"` | Balanced with a larger network. Slightly cleaner around moving objects; the difference is small | 1.1 ms / 4.3 ms |
+| `"performance"` | No trail behind moving objects. Whatever moves looks soft until it stops, and fine detail is a little softer while the camera moves | 0.2 ms / 0.9 ms |
+| `"balanced"` (default) | Also follows content that moves, such as a model that turns or deforms: its detail stays sharper and its noise settles while it moves | 0.7 ms / 3.0 ms |
+| `"quality"` | Balanced with a larger network and a learned filter for each frame. A little cleaner, most of all while the camera moves; the difference is small | 1.2 ms / 4.7 ms |
 
-Times are from an Apple M5 Pro.
+Times are from an Apple M5 Pro. `"performance"` uses about two and a half times the memory of `TAANode`, the other two about five times.
 
 Following needs no setup: the node measures motion from the image itself, with no velocity buffer and no per-object data. It has limits. Content that moves by more than a few pixels per frame is not followed, and neither are places where layers at different depths move in different directions behind each other. Both look as they do at `"performance"`. Right beside something that moves, still detail can look a little softer for a moment.
 

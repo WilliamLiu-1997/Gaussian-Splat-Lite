@@ -73,7 +73,7 @@ export const renderOptionGroups = [
         property: "denoiserQuality",
         label: "Neural denoiser quality",
         description:
-          "Balanced and Quality follow content that moves, which keeps its detail sharp. Each step up takes more GPU time.",
+          "Balanced and Quality follow content that moves, which keeps its detail sharp; Quality is a little cleaner. Performance takes less than half the GPU time of Balanced.",
         defaultValue: "balanced",
         choices: [
           ["performance", "Performance"],

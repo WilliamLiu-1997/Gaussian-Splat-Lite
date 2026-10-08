@@ -27,6 +27,7 @@ import { usesNativeWebGPU } from "../rendering/rendererUtils";
 import { N } from "../rendering/tsl/tslCompat";
 import {
   NEURAL_DENOISE_UNIFORM_FLOATS,
+  neuralDenoiseLeanShaders,
   neuralDenoiseShaders,
 } from "./neuralDenoiseShaders";
 import {
@@ -107,54 +108,26 @@ type External = {
   encode: boolean;
 };
 
+type Step = [Pass, object, GpuView[]];
+
 /**
- * The denoiser's passes on Three's GPUDevice: pipelines built once, textures
- * per size. Three renders the scene and samples the finished image; what lies
- * between runs here, outside the node system.
+ * What the denoiser's two pipelines share on Three's GPUDevice: pipelines
+ * built once, textures per size. Three renders the scene and samples the
+ * finished image; what lies between runs here, outside the node system.
  */
-class DenoisePasses {
+abstract class Passes {
   readonly uniforms = new Float32Array(NEURAL_DENOISE_UNIFORM_FLOATS);
   /** Half a unit in the last place where the GPU truncates half-float writes, else 0. */
   halfBias = 0;
-  private readonly lowLevel: number;
   private readonly uniformBuffer: GpuBuffer;
   private readonly sampler: object;
-  private readonly passes: Record<
-    | "depth"
-    | "encode"
-    | "downsample"
-    | "reproject"
-    | "features"
-    | "stage"
-    | "predict"
-    | "update"
-    | "stabilize",
-    Pass
-  >;
-  /** The network's extra residual blocks, one pass each. */
-  private readonly blocks: Pass[];
-  /** Motion measured from the images, for a model that follows it. */
-  private readonly follow: {
-    motion: Pass;
-    pool: Pass;
-    solve: Pass;
-    pools: number;
-  } | null;
-  /** The network's hidden channels, in groups of four: render targets per layer. */
-  private readonly groups: number;
   private textures: GpuTexture[] = [];
   private width = 0;
   private height = 0;
   private external: External | null = null;
   private frames: ((encoder: GpuCommandEncoder) => void)[] = [];
 
-  constructor(
-    private readonly device: GpuDevice,
-    model: NeuralDenoiseModel,
-  ) {
-    const code = neuralDenoiseShaders(model);
-    this.lowLevel = code.lowLevel;
-    this.groups = code.groups;
+  constructor(protected readonly device: GpuDevice) {
     this.uniformBuffer = device.createBuffer({
       size: this.uniforms.byteLength,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -165,72 +138,21 @@ class DenoisePasses {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
-    const F = FILTERABLE;
-    const U = UNFILTERABLE;
-    const full = [HALF, HALF, HALF, HALF];
-    // One render target, and one input texture, per group of hidden channels.
-    const sampled = Array<string>(code.groups).fill(F);
-    const written = Array<string>(code.groups).fill(HALF);
-    // A model that follows motion: every pass that reprojects also takes the
-    // shift, and the pass that decides whether to follow the motion estimate.
-    const shift = code.follow ? [F] : [];
-    const estimate = code.follow ? [F, F] : [];
-    this.passes = {
-      depth: this.pass("depth", code.depth, ["depth"], ["r32float"]),
-      encode: this.pass("encode", code.encode, [F], [HALF], false),
-      downsample: this.pass("downsample", code.downsample, [F], [HALF], false),
-      reproject: this.pass(
-        "reproject",
-        code.reproject,
-        [U, F, F, F, F, F, ...shift],
-        full,
-      ),
-      features: this.pass(
-        "features",
-        code.features,
-        [U, U, F, F, F, F, F, F, F, ...shift],
-        written,
-      ),
-      stage: this.pass("stage", code.stage, sampled, written),
-      predict: this.pass(
-        "predict",
-        code.predict,
-        [...sampled, F, U, F, F, F, ...estimate],
-        // Trust, filter strength, evidence, and the motion estimate if any.
-        [HALF, "r16float", HALF, ...(code.follow ? [HALF] : [])],
-      ),
-      update: this.pass("update", code.update, [F, F, F, F, F, F, F], full),
-      stabilize: this.pass(
-        "stabilize",
-        code.stabilize,
-        [U, F, F, F, F, ...shift],
-        [HALF],
-      ),
-    };
-    this.follow = code.follow && {
-      motion: this.pass(
-        "motion",
-        code.follow.motion,
-        [U, F, F, F, F],
-        [HALF, HALF],
-      ),
-      pool: this.pass("pool", code.follow.pool, [F, F], [HALF, HALF], false),
-      solve: this.pass(
-        "solve",
-        code.follow.solve,
-        [U, F, F, F, F],
-        [HALF, HALF],
-      ),
-      pools: code.follow.pools,
-    };
-    this.blocks = code.blocks.map((block, i) =>
-      this.pass(`block${i}`, block, sampled, written),
-    );
-    this.measureRounding(code.rounding);
   }
 
+  /**
+   * Allocates for this size and these scene and history textures, and gives
+   * the steps of a frame that reads the `previous` side of every state pair
+   * and writes the other.
+   */
+  protected abstract layout(
+    width: number,
+    height: number,
+    external: External,
+  ): (previous: number) => Step[];
+
   /** A full-screen pass: the uniform block, a linear sampler, then its textures. */
-  private pass(
+  protected pass(
     name: string,
     code: string,
     inputs: string[],
@@ -271,7 +193,7 @@ class DenoisePasses {
   }
 
   /** Draws a value between two halves and reads back which one the GPU stored. */
-  private measureRounding(code: string) {
+  protected measureRounding(code: string) {
     const { device } = this;
     const module = device.createShaderModule({ code });
     const pipeline = device.createRenderPipeline({
@@ -335,7 +257,7 @@ class DenoisePasses {
     );
   }
 
-  private texture(format: string, width: number, height: number) {
+  protected texture(format: string, width: number, height: number) {
     const texture = this.device.createTexture({
       size: [width, height],
       format,
@@ -349,7 +271,7 @@ class DenoisePasses {
     return texture.createView();
   }
 
-  private bind(pass: Pass, views: GpuView[]) {
+  protected bind(pass: Pass, views: GpuView[]) {
     const resources = [this.sampler, ...views];
     if (pass.uniforms) resources.unshift({ buffer: this.uniformBuffer });
     return this.device.createBindGroup({
@@ -358,18 +280,210 @@ class DenoisePasses {
     });
   }
 
-  /**
-   * Allocates for this size and these scene and history textures, and
-   * prepares the two frames that alternate: each reads one side of every
-   * state pair and writes the other.
-   */
   private prepare(width: number, height: number, external: External) {
     for (const texture of this.textures) texture.destroy();
     this.textures = [];
     this.width = width;
     this.height = height;
     this.external = external;
-    const { passes, blocks, groups, lowLevel, follow } = this;
+    const steps = this.layout(width, height, external);
+    // The two frames that alternate.
+    this.frames = [0, 1].map((previous) => {
+      const frame = steps(previous);
+      return (encoder: GpuCommandEncoder) => {
+        for (const [pass, group, views] of frame) {
+          const draw = encoder.beginRenderPass({
+            colorAttachments: views.map((view) => ({
+              view,
+              loadOp: "clear",
+              storeOp: "store",
+            })),
+          });
+          draw.setPipeline(pass.pipeline);
+          draw.setBindGroup(0, group);
+          draw.draw(3);
+          draw.end();
+        }
+      };
+    });
+  }
+
+  /**
+   * Denoises the scene texture into `history[1 - previous]`, reading the
+   * state the frame before left on the `previous` side.
+   */
+  render(width: number, height: number, external: External, previous: number) {
+    const current = this.external;
+    if (
+      current === null ||
+      width !== this.width ||
+      height !== this.height ||
+      current.color !== external.color ||
+      current.depth !== external.depth ||
+      current.history[0] !== external.history[0] ||
+      current.history[1] !== external.history[1] ||
+      current.encode !== external.encode
+    )
+      this.prepare(width, height, external);
+    const { device } = this;
+    device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
+    const encoder = device.createCommandEncoder();
+    this.frames[previous](encoder);
+    device.queue.submit([encoder.finish()]);
+  }
+
+  dispose() {
+    for (const texture of this.textures) texture.destroy();
+    this.textures = [];
+    this.frames = [];
+    this.external = null;
+    this.uniformBuffer.destroy();
+  }
+}
+
+/**
+ * The full pipeline: view depth per pixel, a pass that reprojects and one that
+ * updates, the network on 2x2 blocks, and motion following where the model
+ * has it.
+ */
+class FullPasses extends Passes {
+  private readonly lowLevel: number;
+  private readonly passes: Record<
+    | "depth"
+    | "encode"
+    | "downsample"
+    | "reproject"
+    | "features"
+    | "stage"
+    | "predict"
+    | "update"
+    | "stabilize",
+    Pass
+  >;
+  /** The network's extra residual blocks, one pass each. */
+  private readonly blocks: Pass[];
+  /** Motion measured from the images, for a model that follows it. */
+  private readonly follow: {
+    motion: Pass;
+    pool: Pass;
+    solve: Pass;
+    pools: number;
+  } | null;
+  /**
+   * A learned spatial filter, for a model that has one: two passes per level
+   * of the frame's image pyramid, then one at full resolution.
+   */
+  private readonly filter: {
+    encode: Pass[];
+    kernel: Pass[];
+    top: Pass;
+    groups: number;
+  } | null;
+  /** The network's hidden channels, in groups of four: render targets per layer. */
+  private readonly groups: number;
+
+  constructor(device: GpuDevice, model: NeuralDenoiseModel) {
+    super(device);
+    const code = neuralDenoiseShaders(model);
+    this.lowLevel = code.lowLevel;
+    this.groups = code.groups;
+    const F = FILTERABLE;
+    const U = UNFILTERABLE;
+    const full = [HALF, HALF, HALF, HALF];
+    // One render target, and one input texture, per group of hidden channels.
+    const sampled = Array<string>(code.groups).fill(F);
+    const written = Array<string>(code.groups).fill(HALF);
+    // A model that follows motion: every pass that reprojects also takes the
+    // shift, and the pass that decides whether to follow the motion estimate.
+    const shift = code.follow ? [F] : [];
+    const estimate = code.follow ? [F, F] : [];
+    this.passes = {
+      depth: this.pass("depth", code.depth, ["depth"], ["r32float"]),
+      encode: this.pass("encode", code.encode, [F], [HALF], false),
+      downsample: this.pass("downsample", code.downsample, [F], [HALF], false),
+      // The filtered frame is the learned filter's to write where there is one.
+      reproject: this.pass(
+        "reproject",
+        code.reproject,
+        [U, ...(code.filter ? [] : [F, F]), F, F, F, ...shift],
+        code.filter ? [HALF, HALF, HALF] : full,
+      ),
+      features: this.pass(
+        "features",
+        code.features,
+        [U, U, F, F, F, F, F, F, F, ...shift],
+        written,
+      ),
+      stage: this.pass("stage", code.stage, sampled, written),
+      predict: this.pass(
+        "predict",
+        code.predict,
+        [...sampled, F, U, F, F, F, ...estimate],
+        // Trust, filter strength, evidence, and the motion estimate if any.
+        [HALF, "r16float", HALF, ...(code.follow ? [HALF] : [])],
+      ),
+      update: this.pass("update", code.update, [F, F, F, F, F, F, F], full),
+      stabilize: this.pass(
+        "stabilize",
+        code.stabilize,
+        [U, F, F, F, F, ...shift],
+        [HALF],
+      ),
+    };
+    this.follow = code.follow && {
+      motion: this.pass(
+        "motion",
+        code.follow.motion,
+        [U, F, F, F, F],
+        [HALF, HALF],
+      ),
+      pool: this.pass("pool", code.follow.pool, [F, F], [HALF, HALF], false),
+      solve: this.pass(
+        "solve",
+        code.follow.solve,
+        [U, F, F, F, F],
+        [HALF, HALF],
+      ),
+      pools: code.follow.pools,
+    };
+    this.blocks = code.blocks.map((block, i) =>
+      this.pass(`block${i}`, block, sampled, written),
+    );
+    const filter = code.filter;
+    if (filter) {
+      const read = Array<string>(filter.groups).fill(F);
+      const wrote = Array<string>(filter.groups).fill(HALF);
+      const last = filter.encode.length - 1;
+      this.filter = {
+        // The level, the finer one, and from the level below its result and
+        // hidden channels.
+        encode: filter.encode.map((shader, i) =>
+          this.pass(
+            `filterEncode${i}`,
+            shader,
+            i === last ? [F, F] : [F, F, F, ...read],
+            wrote,
+            false,
+          ),
+        ),
+        kernel: filter.kernel.map((shader, i) =>
+          this.pass(
+            `filterKernel${i}`,
+            shader,
+            [...read, F, ...(i === last ? [] : [F])],
+            [...wrote, HALF],
+            false,
+          ),
+        ),
+        top: this.pass("filterTop", filter.top, [F, ...read, F], [HALF]),
+        groups: filter.groups,
+      };
+    } else this.filter = null;
+    this.measureRounding(code.rounding);
+  }
+
+  protected layout(width: number, height: number, external: External) {
+    const { passes, blocks, groups, lowLevel, follow, filter } = this;
     const full = (format = HALF) => this.texture(format, width, height);
     const pair = (format = HALF): Pair => [full(format), full(format)];
     // The trust networks run on 2x2 blocks.
@@ -398,10 +512,25 @@ class DenoisePasses {
     // Scratch of one frame.
     const color = external.encode ? full() : sceneColor;
     const levels = [color];
-    for (let w = width, h = height, i = 1; i <= lowLevel + 1; i++) {
+    // A learned filter's scratch per level: the first layer's output, the
+    // hidden channels and the filtered level.
+    const filterLevels: {
+      encoded: GpuView[];
+      hidden: GpuView[];
+      result: GpuView;
+    }[] = [];
+    const levelCount = filter ? filter.encode.length : lowLevel + 1;
+    for (let w = width, h = height, i = 1; i <= levelCount; i++) {
       w = Math.max(1, Math.floor(w / 2));
       h = Math.max(1, Math.floor(h / 2));
-      levels.push(this.texture(HALF, w, h));
+      const level = () => this.texture(HALF, w, h);
+      levels.push(level());
+      if (filter)
+        filterLevels.push({
+          encoded: Array.from({ length: filter.groups }, level),
+          hidden: Array.from({ length: filter.groups }, level),
+          result: level(),
+        });
     }
     const reprojected = { accumulated: full(), denoised: full(), aux: full() };
     const filtered = full();
@@ -427,9 +556,9 @@ class DenoisePasses {
     const strength = half("r16float");
     const composite = full();
 
-    this.frames = [0, 1].map((previous) => {
+    return (previous: number) => {
       const next = 1 - previous;
-      const steps: [Pass, object, GpuView[]][] = [
+      const steps: Step[] = [
         [passes.depth, this.bind(passes.depth, [sceneDepth]), [depth[next]]],
       ];
       if (external.encode)
@@ -444,6 +573,41 @@ class DenoisePasses {
           this.bind(passes.downsample, [levels[i - 1]]),
           [levels[i]],
         ]);
+      if (filter) {
+        for (let i = filterLevels.length - 1; i >= 0; i--) {
+          const { encoded, hidden, result } = filterLevels[i];
+          const below = filterLevels[i + 1];
+          steps.push(
+            [
+              filter.encode[i],
+              this.bind(filter.encode[i], [
+                levels[i + 1],
+                levels[i],
+                ...(below ? [below.result, ...below.hidden] : []),
+              ]),
+              encoded,
+            ],
+            [
+              filter.kernel[i],
+              this.bind(filter.kernel[i], [
+                ...encoded,
+                levels[i + 1],
+                ...(below ? [below.result] : []),
+              ]),
+              [...hidden, result],
+            ],
+          );
+        }
+        steps.push([
+          filter.top,
+          this.bind(filter.top, [
+            color,
+            ...filterLevels[0].hidden,
+            filterLevels[0].result,
+          ]),
+          [filtered],
+        ]);
+      }
       const followed = shift ? [shift] : [];
       const estimated = estimate && shift ? [estimate, shift] : [];
       if (follow && flow && estimate && shift) {
@@ -489,8 +653,7 @@ class DenoisePasses {
           passes.reproject,
           this.bind(passes.reproject, [
             depth[next],
-            levels[lowLevel],
-            levels[lowLevel + 1],
+            ...(filter ? [] : [levels[lowLevel], levels[lowLevel + 1]]),
             accumulated[previous],
             denoised[previous],
             aux[previous],
@@ -500,7 +663,7 @@ class DenoisePasses {
             reprojected.accumulated,
             reprojected.denoised,
             reprojected.aux,
-            filtered,
+            ...(filter ? [] : [filtered]),
           ],
         ],
         [
@@ -569,54 +732,172 @@ class DenoisePasses {
           [output[next]],
         ],
       );
-      return (encoder: GpuCommandEncoder) => {
-        for (const [pass, group, views] of steps) {
-          const draw = encoder.beginRenderPass({
-            colorAttachments: views.map((view) => ({
-              view,
-              loadOp: "clear",
-              storeOp: "store",
-            })),
-          });
-          draw.setPipeline(pass.pipeline);
-          draw.setBindGroup(0, group);
-          draw.draw(3);
-          draw.end();
-        }
-      };
-    });
+      return steps;
+    };
+  }
+}
+
+/**
+ * The lean pipeline of the fastest quality level: view depth per 2x2 block,
+ * the network on 4x4 blocks reading the previous state directly, and one pass
+ * per pixel that reprojects, filters, updates, mixes and stabilizes.
+ */
+class LeanPasses extends Passes {
+  private readonly lowLevel: number;
+  private readonly passes: Record<
+    | "depth"
+    | "encode"
+    | "downsample"
+    | "features"
+    | "stage"
+    | "predict"
+    | "resolve",
+    Pass
+  >;
+  /** The network's hidden channels, in groups of four: render targets per layer. */
+  private readonly groups: number;
+
+  constructor(device: GpuDevice, model: NeuralDenoiseModel) {
+    super(device);
+    const code = neuralDenoiseLeanShaders(model);
+    this.lowLevel = code.lowLevel;
+    this.groups = code.groups;
+    const F = FILTERABLE;
+    const U = UNFILTERABLE;
+    // One render target, and one input texture, per group of hidden channels.
+    const sampled = Array<string>(code.groups).fill(F);
+    const written = Array<string>(code.groups).fill(HALF);
+    this.passes = {
+      depth: this.pass("depth", code.depth, ["depth"], ["r32float"]),
+      encode: this.pass("encode", code.encode, [F], [HALF], false),
+      downsample: this.pass("downsample", code.downsample, [F], [HALF], false),
+      features: this.pass(
+        "features",
+        code.features,
+        [U, U, F, F, F, F, F, F, F, F, F, F],
+        // The first layer, and the evidence with this frame in it.
+        [...written, HALF],
+      ),
+      stage: this.pass("stage", code.stage, sampled, written),
+      predict: this.pass(
+        "predict",
+        code.predict,
+        [...sampled, U],
+        // Trust and filter strength.
+        [HALF, "r16float"],
+      ),
+      resolve: this.pass(
+        "resolve",
+        code.resolve,
+        [U, F, F, F, F, F, F, F, F, F],
+        // Both history paths, their statistics, and the image shown.
+        [HALF, HALF, HALF, HALF],
+      ),
+    };
+    this.measureRounding(code.rounding);
   }
 
-  /**
-   * Denoises the scene texture into `history[1 - previous]`, reading the
-   * state the frame before left on the `previous` side.
-   */
-  render(width: number, height: number, external: External, previous: number) {
-    const current = this.external;
-    if (
-      current === null ||
-      width !== this.width ||
-      height !== this.height ||
-      current.color !== external.color ||
-      current.depth !== external.depth ||
-      current.history[0] !== external.history[0] ||
-      current.history[1] !== external.history[1] ||
-      current.encode !== external.encode
-    )
-      this.prepare(width, height, external);
-    const { device } = this;
-    device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
-    const encoder = device.createCommandEncoder();
-    this.frames[previous](encoder);
-    device.queue.submit([encoder.finish()]);
-  }
+  protected layout(width: number, height: number, external: External) {
+    const { passes, groups, lowLevel } = this;
+    const full = (format = HALF) => this.texture(format, width, height);
+    const pair = (format = HALF): Pair => [full(format), full(format)];
+    const scaled = (divisor: number, format = HALF) =>
+      this.texture(
+        format,
+        Math.max(1, Math.floor(width / divisor)),
+        Math.max(1, Math.floor(height / divisor)),
+      );
+    const block = (format = HALF) => scaled(4, format);
 
-  dispose() {
-    for (const texture of this.textures) texture.destroy();
-    this.textures = [];
-    this.frames = [];
-    this.external = null;
-    this.uniformBuffer.destroy();
+    const sceneColor = external.color.createView();
+    const sceneDepth = external.depth.createView({ aspect: "depth-only" });
+    const output: Pair = [
+      external.history[0].createView(),
+      external.history[1].createView(),
+    ];
+    // State kept from frame to frame. The view depth is per 2x2 block.
+    const depth: Pair = [scaled(2, "r32float"), scaled(2, "r32float")];
+    const accumulated = pair();
+    const denoised = pair();
+    // Second moment of luma, the two history lengths, slow low-pass luma.
+    const aux = pair();
+    // The network runs on 4x4 blocks.
+    const trust: Pair = [block(), block()];
+    // Signed evidence, over a few frames, that a block's history lags.
+    const evidence: Pair = [block(), block()];
+    // Scratch of one frame. The network takes a block's colour from the
+    // second level of the image pyramid.
+    const color = external.encode ? full() : sceneColor;
+    const levels = [color];
+    for (let i = 1; i <= Math.max(lowLevel + 1, 2); i++)
+      levels.push(scaled(2 ** i));
+    // The network's layers write one of two sets of targets and read the other.
+    const layers = [0, 1].map(() =>
+      Array.from({ length: groups }, () => block()),
+    );
+    const strength = block("r16float");
+
+    return (previous: number) => {
+      const next = 1 - previous;
+      const steps: Step[] = [
+        [passes.depth, this.bind(passes.depth, [sceneDepth]), [depth[next]]],
+      ];
+      if (external.encode)
+        steps.push([
+          passes.encode,
+          this.bind(passes.encode, [sceneColor]),
+          [color],
+        ]);
+      for (let i = 1; i < levels.length; i++)
+        steps.push([
+          passes.downsample,
+          this.bind(passes.downsample, [levels[i - 1]]),
+          [levels[i]],
+        ]);
+      steps.push(
+        [
+          passes.features,
+          this.bind(passes.features, [
+            depth[next],
+            depth[previous],
+            color,
+            levels[1],
+            levels[2],
+            levels[lowLevel],
+            levels[lowLevel + 1],
+            accumulated[previous],
+            denoised[previous],
+            aux[previous],
+            trust[previous],
+            evidence[previous],
+          ]),
+          [...layers[0], evidence[next]],
+        ],
+        [passes.stage, this.bind(passes.stage, layers[0]), layers[1]],
+        [
+          passes.predict,
+          this.bind(passes.predict, [...layers[1], depth[next]]),
+          [trust[next], strength],
+        ],
+        [
+          passes.resolve,
+          this.bind(passes.resolve, [
+            depth[next],
+            levels[lowLevel],
+            levels[lowLevel + 1],
+            color,
+            accumulated[previous],
+            denoised[previous],
+            aux[previous],
+            trust[next],
+            strength,
+            output[previous],
+          ]),
+          [accumulated[next], denoised[next], aux[next], output[next]],
+        ],
+      );
+      return steps;
+    };
   }
 }
 
@@ -642,7 +923,7 @@ export class NeuralDenoiseNode extends Node<"vec4"> {
     depthTexture: new DepthTexture(1, 1, FloatType),
     samples: 0,
   }) as RenderTarget & { depthTexture: DepthTexture };
-  // The displayed image, which is also the stabilization pass's history.
+  // The displayed image, which is also what stabilization blends with.
   private readonly history = [0, 1].map(
     () =>
       new RenderTarget(1, 1, {
@@ -678,7 +959,7 @@ export class NeuralDenoiseNode extends Node<"vec4"> {
     { value: Vector3 },
     { value: Matrix4 }
   >(<T>(value: T) => ({ value }), [this.source, ...this.history], true);
-  private passes: DenoisePasses | null = null;
+  private passes: Passes | null = null;
   private readonly previousWorld = new Matrix4();
   private readonly previousProjection = new Matrix4();
   private readonly relative = new Matrix4();
@@ -743,11 +1024,12 @@ export class NeuralDenoiseNode extends Node<"vec4"> {
       this.reset();
     }
     const backend = renderer.backend as unknown as GpuBackend;
-    if (this.passes === null)
-      this.passes = new DenoisePasses(
-        backend.device,
-        neuralDenoiseModels[this.quality],
-      );
+    if (this.passes === null) {
+      const model = neuralDenoiseModels[this.quality];
+      this.passes = model.lean
+        ? new LeanPasses(backend.device, model)
+        : new FullPasses(backend.device, model);
+    }
     const { camera, state, passes } = this;
     const rendererState = RendererUtils.saveRendererState(renderer);
     const xrEnabled = renderer.xr.enabled;
