@@ -77,9 +77,7 @@ export class ProjectionCache {
   // bits.
   readonly textures = [makeTexture(), makeTexture()];
   readonly size = new THREE.Vector4(1, 1, 1, 0);
-  private readonly dimensions = N.uniform(this.size, "uvec4").onObjectUpdate(
-    () => this.size,
-  );
+  private readonly dimensions = N.uniform(this.size, "uvec4");
 
   resize(size: ReturnType<typeof getProjectionCacheSize>) {
     for (const texture of this.textures)

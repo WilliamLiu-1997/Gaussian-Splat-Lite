@@ -54,11 +54,10 @@ export async function readPixels(
     return;
   }
 
-  // Native WebGPU pads rows to 256 bytes and reads from the top left.
+  // Native WebGPU returns packed rows from the top left.
   const rowBytes = width * 4;
-  const rowStride = Math.ceil(rowBytes / 256) * 256;
   for (let y = 0; y < height; y++) {
-    const start = (height - y - 1) * rowStride;
+    const start = (height - y - 1) * rowBytes;
     pixels.set(source.subarray(start, start + rowBytes), y * rowBytes);
   }
 }

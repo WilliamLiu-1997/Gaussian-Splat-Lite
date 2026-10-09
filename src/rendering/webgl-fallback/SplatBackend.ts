@@ -1,21 +1,10 @@
-import type * as THREE from "three";
 import type { TextureNode, WebGPURenderer } from "three/webgpu";
 import type { CPUOrderingUpdate, SplatMaterialOptions } from "../backend";
+import { getRendererBackend } from "../rendererUtils";
 import { NodeSplatBackend } from "../tsl/SplatBackend";
 import { uintTexture } from "../tsl/tslCompat";
 import { type Uniforms, emptyOrdering } from "../uniforms";
 import { OrderingTexture } from "../webgl/OrderingTexture";
-
-type TextureUploadBackend = {
-  updateTexture(
-    texture: THREE.DataTexture,
-    options: {
-      width: number;
-      height: number;
-      image: THREE.DataTexture["image"];
-    },
-  ): void;
-};
 
 /** TSL drawing with CPU-sorted indices stored in an integer texture. */
 export class WebGLFallbackSplatBackend extends NodeSplatBackend {
@@ -46,10 +35,9 @@ export class WebGLFallbackSplatBackend extends NodeSplatBackend {
     this.orderingNode.value = this.ordering.update(update, (texture, rows) => {
       // Finish any pending allocation before uploading only active rows.
       this.renderer.initTexture(texture);
-      // The r186 fallback's copyTextureToTexture allocates a GPU source;
-      // update the destination directly to avoid that staging texture.
-      const backend = this.renderer.backend as unknown as TextureUploadBackend;
-      backend.updateTexture(texture, {
+      // Update the destination directly to avoid copyTextureToTexture's
+      // GPU staging texture.
+      getRendererBackend(this.renderer).updateTexture(texture, {
         width: texture.image.width,
         height: rows,
         image: texture.image,

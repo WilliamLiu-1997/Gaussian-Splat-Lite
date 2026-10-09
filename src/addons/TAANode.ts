@@ -8,8 +8,6 @@ import {
   type OrthographicCamera,
   type PerspectiveCamera,
   type Scene,
-  type Texture,
-  UnsignedInt248Type,
   Vector2,
   type Vector3,
   WebGLCoordinateSystem,
@@ -23,12 +21,11 @@ import {
   QuadMesh,
   RenderTarget,
   RendererUtils,
-  type TextureNode,
   type UniformNode,
   type WebGPURenderer,
 } from "three/webgpu";
-import { usesNativeWebGPU } from "../rendering/rendererUtils";
-import { N } from "../rendering/tsl/tslCompat";
+import { applyThreeR186Patch } from "../patches/threeR186";
+import { N, renderPipelineState } from "../rendering/tsl/tslCompat";
 import { createTAAState } from "./taaShared";
 
 /** Camera/depth TAA for WebGPURenderer, including its WebGL2 fallback. */
@@ -55,9 +52,7 @@ export class TAANode extends Node<"vec4"> {
     this.history[0].depthTexture,
     N.screenUV,
   );
-  private readonly textureNode = (
-    N.passTexture as unknown as (pass: TAANode, texture: Texture) => TextureNode
-  )(this, this.history[0].texture);
+  private readonly textureNode = N.passTexture(this, this.history[0].texture);
   private readonly material = new NodeMaterial();
   private readonly quad = new QuadMesh(this.material);
   private readonly state = createTAAState<
@@ -140,17 +135,7 @@ export class TAANode extends Node<"vec4"> {
       renderer.getDrawingBufferSize(this.drawingSize);
       this.setSize(this.drawingSize.x, this.drawingSize.y);
     }
-    // Float depth with stencil is an optional WebGPU feature.
-    state.setStencil(
-      renderer.stencil,
-      renderer.stencil &&
-        !(
-          usesNativeWebGPU(renderer) &&
-          renderer.hasFeature("depth32float-stencil8")
-        )
-        ? UnsignedInt248Type
-        : FloatType,
-    );
+    state.setStencil(renderer.stencil);
     try {
       renderer.xr.enabled = false;
       renderer.setMRT(null);
@@ -200,8 +185,8 @@ export class TAANode extends Node<"vec4"> {
   }
 
   override setup(builder: NodeBuilder) {
-    const pipelineState = (builder.context as { renderPipelineState?: object })
-      .renderPipelineState;
+    applyThreeR186Patch(builder.renderer as WebGPURenderer);
+    const pipelineState = renderPipelineState(builder);
     if (pipelineState && !this.pipelineStates.has(pipelineState)) {
       this.pipelineStates.add(pipelineState);
       const begin = () => {

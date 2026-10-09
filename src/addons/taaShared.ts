@@ -10,7 +10,6 @@ import {
   type OrthographicCamera,
   type PerspectiveCamera,
   type RenderTarget,
-  type TextureDataType,
   Vector2,
   Vector3,
 } from "three";
@@ -83,15 +82,13 @@ export function createTAAState<
       this.reset();
     },
     // Only the capture target takes stencil; history stores plain depth.
-    setStencil(stencil: boolean, depthType: TextureDataType) {
+    setStencil(stencil: boolean) {
       const source = targets[0];
       const depthTexture = source.depthTexture as DepthTexture;
-      if (source.stencilBuffer === stencil && depthTexture.type === depthType)
-        return;
+      if (source.stencilBuffer === stencil) return;
       source.dispose();
       source.stencilBuffer = stencil;
       depthTexture.format = stencil ? DepthStencilFormat : DepthFormat;
-      depthTexture.type = depthType;
     },
     beginCapture(camera: TAACamera) {
       jitterProjection(
@@ -129,7 +126,7 @@ export function createTAAState<
       ColorManagement.getLuminanceCoefficients(
         uniforms.luminanceCoefficients.value,
       );
-      // Three r186 reverses AlwaysDepth/NeverDepth on both GPU backends.
+      // Three reverses AlwaysDepth/NeverDepth on both node backends.
       return uniforms.reversed.value ? NeverDepth : AlwaysDepth;
     },
     advance(camera: TAACamera) {

@@ -1,4 +1,9 @@
 import * as THREE from "three";
+import type {
+  PatchedBackend,
+  PatchedRenderTarget,
+  PatchedWebGPUBackend,
+} from "../patches/threeTypes";
 
 type WebGPURenderer = import("three/webgpu").WebGPURenderer;
 
@@ -19,6 +24,16 @@ export function usesNativeWebGPU(
     isWebGPURenderer(renderer) &&
     renderer.coordinateSystem === THREE.WebGPUCoordinateSystem
   );
+}
+
+/** Backend declarations omit the flags and texture upload used here. */
+export function getRendererBackend(renderer: WebGPURenderer): PatchedBackend {
+  return renderer.backend as PatchedBackend;
+}
+
+/** Only call for a renderer using the native WebGPU backend. */
+export function getWebGPUDeviceLimits(renderer: WebGPURenderer) {
+  return (renderer.backend as PatchedWebGPUBackend).device.limits;
 }
 
 /**
@@ -62,12 +77,12 @@ export function getRenderFrame(renderer: GaussianSplatCompatibleRenderer) {
     : renderer.info.render.frame;
 }
 
-type XRRenderTarget = THREE.RenderTarget & { isXRRenderTarget?: boolean };
-
 export function isXRRenderTarget(
   renderTarget: THREE.RenderTarget | null,
 ): boolean {
-  return (renderTarget as XRRenderTarget | null)?.isXRRenderTarget === true;
+  return (
+    (renderTarget as PatchedRenderTarget | null)?.isXRRenderTarget === true
+  );
 }
 
 export function assertSupportedRenderer(
@@ -79,10 +94,7 @@ export function assertSupportedRenderer(
       "Initialize WebGPURenderer with await renderer.init() before using Gaussian Splat Lite",
     );
   }
-  const backend = renderer.backend as {
-    isWebGPUBackend?: boolean;
-    isWebGLBackend?: boolean;
-  };
+  const backend = getRendererBackend(renderer);
   if (backend.isWebGPUBackend !== true && backend.isWebGLBackend !== true) {
     throw new Error("Gaussian Splat Lite requires a WebGPU or WebGL backend");
   }

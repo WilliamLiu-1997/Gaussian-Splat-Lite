@@ -6,10 +6,15 @@ import {
   type WebGPURenderer,
 } from "three/webgpu";
 import { getTAAProjection } from "../../addons/taaShared";
+import type { WebGPUDeviceLimits } from "../../patches/threeTypes";
 
 import type { SplatAccumulator } from "../SplatAccumulator";
 import { SPLATS_PER_INSTANCE, type SplatGeometry } from "../SplatGeometry";
-import { getMeanViewPose, getViews } from "../rendererUtils";
+import {
+  getMeanViewPose,
+  getViews,
+  getWebGPUDeviceLimits,
+} from "../rendererUtils";
 import { createGenerateProgram } from "../tsl/GenerateProgram";
 import { createProjectionProgram } from "../tsl/ProjectionProgram";
 import type { ProjectedVertexData } from "../tsl/SplatMaterial";
@@ -30,18 +35,6 @@ const PROJECT_SLOTS = 8;
 type BufferRef = { value: StorageBufferAttribute; name: string };
 type ComputeSlot = { uniforms: Uniforms; node: ComputeNode };
 type SlotSet = { slots: ComputeSlot[]; compiled: number };
-type DeviceLimits = {
-  maxStorageBufferBindingSize: number;
-  maxBufferSize: number;
-  maxTextureArrayLayers: number;
-  maxTextureDimension2D: number;
-  maxComputeWorkgroupsPerDimension: number;
-};
-type ComputeRenderer = WebGPURenderer & {
-  compileComputeAsync(nodes: ComputeNode[]): Promise<void>;
-  backend: { device: { limits: DeviceLimits } };
-};
-
 function buffer(name: string): BufferRef {
   return { value: new StorageBufferAttribute(new Uint32Array(1), 1), name };
 }
@@ -99,7 +92,7 @@ export class ProjectedSplats {
    */
   onKernelsReady?: () => void;
 
-  private readonly limits: DeviceLimits;
+  private readonly limits: WebGPUDeviceLimits;
   private readonly cache = new ProjectionCache();
   private readonly visibleCount = new StorageBufferAttribute(
     new Uint32Array(1),
@@ -134,8 +127,7 @@ export class ProjectedSplats {
     private readonly renderer: WebGPURenderer,
     private readonly uniforms: Uniforms,
   ) {
-    const computeRenderer = renderer as ComputeRenderer;
-    this.limits = computeRenderer.backend.device.limits;
+    this.limits = getWebGPUDeviceLimits(renderer);
     this.state = {
       ...uniforms,
       projectionMatrix: { value: new THREE.Matrix4() },
@@ -189,7 +181,7 @@ export class ProjectedSplats {
       .compute(1, [1])
       .setName("Splat visible draw arguments");
     const mono = this.createSlotSet(1);
-    this.ready = computeRenderer
+    this.ready = renderer
       .compileComputeAsync([
         this.resetCount,
         this.finish,
@@ -216,23 +208,25 @@ export class ProjectedSplats {
     const u = <Type extends UniformType>(name: string, type: Type) =>
       uniformBinding(uniforms, name, type);
     const generate = createGenerateProgram({ uniforms });
+    const focalAdjustment = u("focalAdjustment", "float");
     // Eye 0 reads the unsuffixed uniforms; later eyes append their index.
     const eyes = Array.from({ length: eyeCount }, (_, eye) =>
       eye ? `${eye}` : "",
-    ).map((suffix) => ({
-      project: createProjectionProgram(uniforms, {
-        projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
-        renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
-        renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
-        renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
-        near: u(`near${suffix}`, "float"),
-        far: u(`far${suffix}`, "float"),
-        renderSize: u(`renderSize${suffix}`, "vec2"),
-      }),
-      pixelScale: u(`renderSize${suffix}`, "vec2")
-        .mul(u("focalAdjustment", "float"))
-        .mul(0.5),
-    }));
+    ).map((suffix) => {
+      const renderSize = u(`renderSize${suffix}`, "vec2");
+      return {
+        project: createProjectionProgram(uniforms, {
+          projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
+          renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
+          renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
+          renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
+          near: u(`near${suffix}`, "float"),
+          far: u(`far${suffix}`, "float"),
+          renderSize,
+        }),
+        pixelScale: renderSize.mul(focalAdjustment).mul(0.5),
+      };
+    });
     const viewStride = u("viewStride", "uint");
     const direction = u("sortDirection", "vec3");
     const sortOffset = u("sortOffset", "vec3");
@@ -408,9 +402,7 @@ export class ProjectedSplats {
       if (set.compiled > 0)
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       while (!this.disposed && !this.error && set.compiled < set.slots.length) {
-        await (this.renderer as ComputeRenderer).compileComputeAsync([
-          set.slots[set.compiled].node,
-        ]);
+        await this.renderer.compileComputeAsync([set.slots[set.compiled].node]);
         set.compiled++;
         // The first slot is enough to draw; later ones only batch more meshes.
         if (set.compiled === 1 && !this.disposed) this.onKernelsReady?.();

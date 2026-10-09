@@ -1,5 +1,4 @@
-import * as THREE from "three";
-import * as TSL from "three/tsl";
+import type * as THREE from "three";
 import {
   type Node,
   NodeUpdateType,
@@ -12,8 +11,8 @@ import {
 } from "../../data/defines";
 import type { Uniforms } from "../uniforms";
 
-import { N, uintTexture } from "./tslCompat";
-export { N } from "./tslCompat";
+import { N, type UniformType, uintTexture } from "./tslCompat";
+export { N, type UniformType } from "./tslCompat";
 
 const SPLAT_TEX_LAYER_BITS = SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
 
@@ -23,52 +22,21 @@ const SPLAT_TEX_HEIGHT_MASK = (1 << SPLAT_TEX_HEIGHT_BITS) - 1;
 
 export const E = Math.E;
 
-export type UniformType =
-  | "bool"
-  | "float"
-  | "int"
-  | "uint"
-  | "vec2"
-  | "vec3"
-  | "vec4"
-  | "mat3"
-  | "mat4";
-
 export function uniformBinding<Type extends UniformType>(
   uniforms: Uniforms,
   name: string,
   type: Type,
 ): UniformNode<Type, unknown> {
-  const uniform = TSL.uniform as <T extends UniformType>(
-    value: unknown,
-    type: T,
-  ) => UniformNode<T, unknown>;
-  return uniform(uniforms[name].value, type).onObjectUpdate(
+  return N.uniform(uniforms[name].value, type).onObjectUpdate(
     () => uniforms[name].value,
   );
 }
 
-export function textureBinding(
-  uniforms: Uniforms,
-  name: string,
-  array = false,
-) {
-  const data = new Uint32Array(4);
-  const placeholder = array
-    ? new THREE.DataArrayTexture(data, 1, 1, 1)
-    : new THREE.DataTexture(data, 1, 1);
-  placeholder.format = THREE.RGBAIntegerFormat;
-  placeholder.type = THREE.UnsignedIntType;
-  placeholder.magFilter = THREE.NearestFilter;
-  placeholder.minFilter = THREE.NearestFilter;
-  placeholder.generateMipmaps = false;
-  placeholder.needsUpdate = true;
-
+export function textureBinding(uniforms: Uniforms, name: string) {
   const getTexture = () => uniforms[name].value as THREE.Texture;
-  const binding = uintTexture(placeholder).onObjectUpdate(getTexture);
-  // Dynamic bindings can temporarily share an empty texture before diverging.
-  // Keep them distinct when a pipeline rebuilds the material shader.
-  binding.getUniformHash = () => binding.uuid;
+  const binding = uintTexture(getTexture()).onObjectUpdate(getTexture);
+  // Dynamic bindings stay distinct even while they share a texture.
+  binding.mergeable = false;
   return binding;
 }
 
@@ -92,11 +60,9 @@ function updateTextureLoad<T extends TextureNode<unknown>>(
   binding: T,
   texel: T,
 ) {
-  texel.getUniformHash = (builder) => binding.getUniformHash(builder);
   texel.updateBeforeType = NodeUpdateType.OBJECT;
   texel.updateBefore = (frame) => {
-    // Bind the real texture before r186's texture update or r187's shared
-    // uniforms derive the GL render-target Y flip.
+    // Bind the real texture before shared uniforms derive the GL target Y flip.
     frame.updateNode(binding);
     return undefined;
   };

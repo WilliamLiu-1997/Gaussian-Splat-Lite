@@ -180,11 +180,9 @@ export function createSplatNodeMaterial({
   const accumulator = vertexData
     ? null
     : {
-        splats: textureBinding(uniforms, "splats", true),
-        splats2: textureBinding(uniforms, "splats2", true),
-        seeds: stochastic
-          ? textureBinding(uniforms, "stochasticSeeds", true)
-          : null,
+        splats: textureBinding(uniforms, "splats"),
+        splats2: textureBinding(uniforms, "splats2"),
+        seeds: stochastic ? textureBinding(uniforms, "stochasticSeeds") : null,
       };
   const { vSplat, vSplatUv, vStochasticOffset, fragmentNode } =
     createSplatFragment(

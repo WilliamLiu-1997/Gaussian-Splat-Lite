@@ -296,10 +296,7 @@ export class TAAPass extends Pass {
       this.reset();
     }
     // The attributes are null while the WebGL context is lost.
-    state.setStencil(
-      renderer.getContextAttributes()?.stencil === true,
-      FloatType,
-    );
+    state.setStencil(renderer.getContextAttributes()?.stencil === true);
     const previousTarget = renderer.getRenderTarget();
     const autoClear = renderer.autoClear;
     const xrEnabled = renderer.xr.enabled;

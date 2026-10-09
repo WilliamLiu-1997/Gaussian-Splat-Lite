@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Update Three.js integrations for array render targets, texture bindings, depth formats, and packed WebGPU readback.
+
+### Fixed
+
+- Preserve stencil settings when switching between sorted and stochastic rendering.
+
 ## [1.2.2] - 2026-10-07
 
 ### Added

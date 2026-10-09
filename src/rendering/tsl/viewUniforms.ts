@@ -8,7 +8,7 @@ import { N, uniformBinding } from "./shaderUtils";
 /** Eye of the current WebXR draw; multiview draws both eyes at once. */
 export function viewIndex(camera: THREE.Camera): Node<"uint"> {
   if (getViews(camera)[0] === camera) return N.uint(0);
-  return (camera as { isMultiViewCamera?: boolean }).isMultiViewCamera
+  return (camera as THREE.ArrayCamera).isMultiViewCamera
     ? N.builtin("gl_ViewID_OVR")
     : N.cameraIndex;
 }

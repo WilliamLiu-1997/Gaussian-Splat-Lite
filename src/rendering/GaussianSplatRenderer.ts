@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { applyThreeR186Patch } from "../patches/threeR186";
 import { SplatWorker } from "../runtime/SplatWorker";
 import { resolveTimer } from "../utils/three";
 import { SortCenterCache } from "./SortCenterCache";
@@ -16,6 +17,7 @@ import {
   getMeanViewPose,
   getRenderFrame,
   getViews,
+  isWebGPURenderer,
 } from "./rendererUtils";
 import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms";
 
@@ -319,6 +321,8 @@ export class GaussianSplatRenderer extends THREE.Mesh<
       throw new Error("renderer is required in GaussianSplatRenderer options");
     }
     assertSupportedRenderer(options.renderer);
+    if (isWebGPURenderer(options.renderer))
+      applyThreeR186Patch(options.renderer);
 
     const uniforms = GaussianSplatRenderer.makeUniforms();
 
@@ -491,7 +495,20 @@ export class GaussianSplatRenderer extends THREE.Mesh<
         : this.display.hasStochasticSeeds;
     if (active === this.stochasticFrame) return;
     this.stochasticFrame = active;
-    this.material = this.backend.selectMaterial(active);
+    const previous = this.material;
+    const material = this.backend.selectMaterial(active);
+    // Stencil masking follows the draw across material variants.
+    if (material !== previous) {
+      material.stencilWrite = previous.stencilWrite;
+      material.stencilWriteMask = previous.stencilWriteMask;
+      material.stencilFunc = previous.stencilFunc;
+      material.stencilRef = previous.stencilRef;
+      material.stencilFuncMask = previous.stencilFuncMask;
+      material.stencilFail = previous.stencilFail;
+      material.stencilZFail = previous.stencilZFail;
+      material.stencilZPass = previous.stencilZPass;
+    }
+    this.material = material;
     this.applyMaterialState(active);
     this.setDirty();
   }

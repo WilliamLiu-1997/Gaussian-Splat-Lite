@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { NodeMaterial, QuadMesh, type WebGPURenderer } from "three/webgpu";
-import { usesNativeWebGPU } from "../rendering/rendererUtils";
 import { N } from "../rendering/tsl/tslCompat";
 
 /** Blend in working space, then convert to texture storage. */
@@ -32,22 +31,15 @@ export class WebGPUCapture {
     const face = renderer.getActiveCubeFace();
     const mip = renderer.getActiveMipmapLevel();
     const workingColorSpace = THREE.ColorManagement.workingColorSpace;
-    const native = usesNativeWebGPU(renderer);
     const depthFormat = output.stencilBuffer
       ? THREE.DepthStencilFormat
       : THREE.DepthFormat;
-    // r186's WebGL fallback allocates MSAA depth renderbuffers as DEPTH_COMPONENT24.
-    let depthType: THREE.TextureDataType =
-      !native && output.samples > 0 ? THREE.UnsignedIntType : THREE.FloatType;
+    let depthType: THREE.TextureDataType = THREE.FloatType;
     if (output.stencilBuffer) {
       const float = output.depthTexture
         ? output.depthTexture.type === THREE.FloatType
         : renderer.reversedDepthBuffer;
-      // Float depth with stencil is an optional WebGPU feature.
-      depthType =
-        native && float && renderer.hasFeature("depth32float-stencil8")
-          ? THREE.FloatType
-          : THREE.UnsignedInt248Type;
+      depthType = float ? THREE.FloatType : THREE.UnsignedInt248Type;
     }
     // Keep float outputs unclamped; otherwise match the display's
     // intermediate precision when it needs an output pass.

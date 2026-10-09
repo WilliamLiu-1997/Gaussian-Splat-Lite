@@ -12,10 +12,7 @@ import {
   isWebGPURenderer,
   usesNativeWebGPU,
 } from "./rendererUtils";
-import {
-  WebGLFallbackAccumulatorGenerator,
-  createWebGLFallbackAccumulatorTarget,
-} from "./webgl-fallback/AccumulatorGenerator";
+import { WebGLFallbackAccumulatorGenerator } from "./webgl-fallback/AccumulatorGenerator";
 import {
   createWebGLAccumulatorTarget,
   generateWebGLAccumulator,
@@ -171,14 +168,12 @@ export class SplatAccumulator {
     this.disposeStorage();
 
     this.maxSplats = capacity;
-    this.target = fallback
-      ? createWebGLFallbackAccumulatorTarget(
-          width,
-          height,
-          depth,
-          stochasticSeeds,
-        )
-      : createWebGLAccumulatorTarget(width, height, depth, stochasticSeeds);
+    this.target = createWebGLAccumulatorTarget(
+      width,
+      height,
+      depth,
+      stochasticSeeds,
+    );
     if (fallback)
       this.fallbackGenerator = new WebGLFallbackAccumulatorGenerator(
         stochasticSeeds,

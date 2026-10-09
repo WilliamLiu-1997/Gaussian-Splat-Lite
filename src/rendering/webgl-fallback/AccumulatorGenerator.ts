@@ -6,24 +6,8 @@ import { N, uniformBinding } from "../tsl/shaderUtils";
 import { makeGenerateUniforms } from "../uniforms";
 import {
   type AccumulatorRenderOptions,
-  createWebGLAccumulatorTarget,
   renderAccumulatorLayers,
 } from "../webgl/AccumulatorGenerator";
-
-export function createWebGLFallbackAccumulatorTarget(
-  width: number,
-  height: number,
-  depth: number,
-  stochasticSeeds: boolean,
-) {
-  // The r186 fallback backend recognizes array attachments only at depth > 1.
-  return createWebGLAccumulatorTarget(
-    width,
-    height,
-    Math.max(2, depth),
-    stochasticSeeds,
-  );
-}
 
 /**
  * Rasterizes Splat records, and for stochastic targets stable sampling seeds,

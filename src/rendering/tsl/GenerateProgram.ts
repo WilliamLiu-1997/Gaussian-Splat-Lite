@@ -126,25 +126,24 @@ const encodeWideSemanticOpacity = N.Fn(([opacity]: [Node<"float">]) => {
 export function createGenerateProgram({ uniforms }: { uniforms: Uniforms }) {
   const bindUniform = <Type extends UniformType>(name: string, type: Type) =>
     uniformBinding(uniforms, name, type);
-  const bindTexture = (name: string, array = false) =>
-    textureBinding(uniforms, name, array);
+  const bindTexture = (name: string) => textureBinding(uniforms, name);
 
   const targetCount = bindUniform("targetCount", "uint");
   const stochasticSeedBase = bindUniform("stochasticSeedBase", "uint");
-  const sourceSplats = bindTexture("sourceSplats", true);
-  const sourceSplats2 = bindTexture("sourceSplats2", true);
+  const sourceSplats = bindTexture("sourceSplats");
+  const sourceSplats2 = bindTexture("sourceSplats2");
   const sourceLayerBits = bindUniform("sourceLayerBits", "uint");
   const sourceLayerMask = bindUniform("sourceLayerMask", "uint");
   const sourceBlockBits = bindUniform("sourceBlockBits", "uint");
-  const sourceBlocks = bindTexture("sourceBlocks", true);
-  const sourceOpacities = bindTexture("sourceOpacities", true);
+  const sourceBlocks = bindTexture("sourceBlocks");
+  const sourceOpacities = bindTexture("sourceOpacities");
   const sourceIndexed = bindUniform("sourceIndexed", "bool");
-  const sourceIndices = bindTexture("sourceIndices", true);
+  const sourceIndices = bindTexture("sourceIndices");
   const numSh = bindUniform("numSh", "int");
-  const sh1Texture = bindTexture("sh1Texture", true);
-  const sh2Texture = bindTexture("sh2Texture", true);
-  const sh3TextureA = bindTexture("sh3TextureA", true);
-  const sh3TextureB = bindTexture("sh3TextureB", true);
+  const sh1Texture = bindTexture("sh1Texture");
+  const sh2Texture = bindTexture("sh2Texture");
+  const sh3TextureA = bindTexture("sh3TextureA");
+  const sh3TextureB = bindTexture("sh3TextureB");
   const objectBasis = bindUniform("objectBasis", "mat3");
   const objectOffset = bindUniform("objectOffset", "vec3");
   const objectLnScale = bindUniform("objectLnScale", "vec3");
