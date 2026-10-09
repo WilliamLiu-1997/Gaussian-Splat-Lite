@@ -12,15 +12,16 @@ export declare class ProjectedSplats {
   private readonly renderer;
   private readonly uniforms;
   readonly indirect: IndirectStorageBufferAttribute;
-  /** Common kernels, the full sorter and the first slot are ready; remaining slots warm automatically. */
+  /** Common and sorting kernels plus the first mono and stereo slots are ready to draw. */
   readonly ready: Promise<void>;
   error: unknown;
   /**
-   * Called when kernels for a new WebXR eye count can draw, or when a slot
-   * fails to compile. Draws hide Splats until then, so on-demand hosts must
-   * redraw.
+   * Compact storage and refresh existing bindings without compiling or
+   * stopping draws. Reads the Splat count once startup slots have compiled.
    */
-  onKernelsReady?: () => void;
+  shrinkResources(getCount: () => number): Promise<void>;
+  /** Requests a redraw when an XR session ends and eye storage can shrink. */
+  onViewsReleased?: () => void;
   private readonly limits;
   private readonly cache;
   private readonly visibleCount;
@@ -28,8 +29,8 @@ export declare class ProjectedSplats {
   private readonly seeds;
   private readonly sorter;
   private readonly slotSets;
-  private readonly compilations;
-  private readonly onSessionStart;
+  private readonly nodes;
+  private kernelWork;
   private shrinkViews;
   private readonly onSessionEnd;
   private readonly resetCount;
@@ -45,15 +46,14 @@ export declare class ProjectedSplats {
   private projectedInputs;
   constructor(renderer: WebGPURenderer, uniforms: Uniforms);
   private createSlot;
-  /** Projection uniforms of each eye after the first, created on demand. */
+  /** Projection uniforms of the precompiled eyes after the first. */
   private ensureEyeUniforms;
   private createSlotSet;
-  /**
-   * Compiled slots that project this many eyes. One eye uses the startup
-   * slots; WebXR eye counts build theirs on first request.
-   */
-  private getSlots;
+  /** Warm the remaining slots at startup, yielding between each compilation. */
   private compileSlots;
+  /** The selected, precompiled mode for mono or WebXR stereo. */
+  private getSlots;
+  private compact;
   vertexData(camera: THREE.Camera, stochastic: boolean): ProjectedVertexData;
   private resizeBuffer;
   private resize;
@@ -63,7 +63,6 @@ export declare class ProjectedSplats {
     geometry: SplatGeometry,
     radial: boolean,
     fastSort: boolean,
-    shrink?: boolean,
   ): boolean;
   /** Projection uniforms for one eye; eye 0 also serves mono draws. */
   private setEye;

@@ -9,12 +9,6 @@ export class WebGPUSplatBackend extends NodeSplatBackend {
     );
     this.kind = "webgpu";
     this.projection = projection;
-    this.precompile = projection.ready.finally(() => {
-      this.precompile = null;
-    });
-  }
-  get sortError() {
-    return this.projection.error;
   }
   getOrderingCapacity(count) {
     return Math.max(1, count);

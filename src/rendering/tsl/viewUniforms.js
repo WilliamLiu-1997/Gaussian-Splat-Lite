@@ -6,6 +6,19 @@ export function viewIndex(camera) {
   if (getViews(camera)[0] === camera) return N.uint(0);
   return camera.isMultiViewCamera ? N.builtin("gl_ViewID_OVR") : N.cameraIndex;
 }
+/** A per-layout projection array also supports changing WebXR eye counts. */
+export function splatProjectionMatrix(camera) {
+  const eyes = getViews(camera);
+  if (eyes[0] === camera) return N.cameraProjectionMatrix;
+  const matrices = eyes.map((eye) => eye.projectionMatrix);
+  return N.uniformArray(matrices, "mat4")
+    .onObjectUpdate(({ camera }) => {
+      getViews(camera).forEach((eye, i) => {
+        matrices[i] = eye.projectionMatrix;
+      });
+    })
+    .element(viewIndex(camera));
+}
 /** Viewport data for drawing splats that have already been projected. */
 export function splatViewportUniforms(uniforms, camera) {
   const eyes = getViews(camera);
@@ -38,6 +51,7 @@ export function splatViewUniforms(uniforms, camera) {
   const eyes = getViews(camera);
   if (eyes[0] === camera) {
     return {
+      projectionMatrix: splatProjectionMatrix(camera),
       renderSize: uniformBinding(uniforms, "renderSize", "vec2"),
       viewportOrigin: uniformBinding(uniforms, "viewportOrigin", "vec2"),
       renderToViewQuat: uniformBinding(uniforms, "renderToViewQuat", "vec4"),
@@ -56,15 +70,17 @@ export function splatViewUniforms(uniforms, camera) {
     new THREE.Vector4(),
   ]);
   const matrix = new THREE.Matrix4();
+  const translation = new THREE.Matrix4();
   const position = new THREE.Vector3();
   const rotation = new THREE.Quaternion();
   const scale = new THREE.Vector3();
   const viewData = N.uniformArray(views, "vec4").onObjectUpdate(
     ({ camera }) => {
+      translation.makeTranslation(uniforms.renderOrigin.value);
       getViews(camera).forEach((eye, i) => {
         // Subtract the world origin in CPU double precision before GPU upload.
-        matrix.makeTranslation(uniforms.renderOrigin.value);
-        matrix.premultiply(eye.matrixWorldInverse);
+        // Camera.matrixWorldInverse strips the XR rig's scale in Three.js.
+        matrix.copy(eye.matrixWorld).invert().multiply(translation);
         matrix.decompose(position, rotation, scale);
         views[i * 4].set(rotation.x, rotation.y, rotation.z, rotation.w);
         views[i * 4 + 1].set(
@@ -89,6 +105,7 @@ export function splatViewUniforms(uniforms, camera) {
   const positionScale = viewData.element(offset.add(1));
   const viewportClip = viewData.element(offset.add(2));
   return {
+    projectionMatrix: splatProjectionMatrix(camera),
     renderSize: viewportClip.xy,
     viewportOrigin: viewData.element(offset.add(3)).xy,
     renderToViewQuat: viewData.element(offset),

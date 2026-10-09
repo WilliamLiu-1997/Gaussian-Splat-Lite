@@ -7,13 +7,11 @@ import type { ProjectedSplats } from "./ProjectedSplats.js";
 export declare class WebGPUSplatBackend extends NodeSplatBackend {
   readonly kind = "webgpu";
   readonly projection: ProjectedSplats;
-  precompile: Promise<void> | null;
   constructor(
     renderer: WebGPURenderer,
     uniforms: Uniforms,
     options: SplatMaterialOptions,
   );
-  get sortError(): unknown;
   getOrderingCapacity(count: number): number;
   dispose(): void;
 }

@@ -38,6 +38,8 @@ export declare class ProjectionCache {
     centerRange: Node<"float">,
     /** NDC translation from the cached projection to the drawn one. */
     jitter: Node<"vec2">,
+    /** Projection of the drawn eye. */
+    projectionMatrix: Node<"mat4">,
   ): {
     clipPosition: import("three/webgpu").VarNode<
       "vec4",

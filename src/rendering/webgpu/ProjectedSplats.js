@@ -9,7 +9,10 @@ import { getMeanViewPose, getViews } from "../rendererUtils.js";
 import { createGenerateProgram } from "../tsl/GenerateProgram.js";
 import { createProjectionProgram } from "../tsl/ProjectionProgram.js";
 import { N, uniformBinding } from "../tsl/shaderUtils.js";
-import { splatViewportUniforms } from "../tsl/viewUniforms.js";
+import {
+  splatProjectionMatrix,
+  splatViewportUniforms,
+} from "../tsl/viewUniforms.js";
 import { makeGenerateUniforms } from "../uniforms.js";
 import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache.js";
 import {
@@ -67,15 +70,12 @@ export class ProjectedSplats {
     this.visibleCount = new StorageBufferAttribute(new Uint32Array(1), 1);
     this.keys = buffer("gslProjectionKeys");
     this.seeds = buffer("gslProjectionSeeds");
-    // Slots for each eye count. One eye compiles at startup; WebXR eye counts
-    // compile as a session starts or on first use, so other draws pay nothing.
+    // Mono and WebXR stereo stay compiled for our lifetime.
     this.slotSets = new Map();
-    this.compilations = [];
-    this.onSessionStart = () => void this.getSlots(2);
     this.shrinkViews = false;
     this.onSessionEnd = () => {
       this.shrinkViews = true;
-      this.onKernelsReady?.();
+      this.onViewsReleased?.();
     };
     this.matrix = new THREE.Matrix4();
     this.translation = new THREE.Matrix4();
@@ -138,28 +138,34 @@ export class ProjectedSplats {
     })()
       .compute(1, [1])
       .setName("Splat visible draw arguments");
-    const mono = this.createSlotSet(1);
-    // Resolves after common kernels, the full sorter and the first slot compile.
-    // Remaining slots warm automatically.
+    for (const eyes of [1, 2]) this.createSlotSet(eyes);
+    const commonNodes = [this.resetCount, this.finish, ...this.sorter.nodes];
+    this.nodes = [
+      ...commonNodes,
+      ...Array.from(this.slotSets.values()).flatMap((set) =>
+        set.slots.map((slot) => slot.node),
+      ),
+    ];
     this.ready = renderer
       .compileComputeAsync([
-        this.resetCount,
-        this.finish,
-        ...this.sorter.nodes,
-        mono.slots[0].node,
+        ...commonNodes,
+        ...Array.from(this.slotSets.values(), (set) => set.slots[0].node),
       ])
       .then(() => {
-        mono.compiled = 1;
+        for (const set of this.slotSets.values()) set.compiled = 1;
       })
       .catch((error) => {
         this.error = error;
       });
-    this.compilations.push(this.ready.then(() => this.compileSlots(mono)));
-    renderer.xr.addEventListener("sessionstart", this.onSessionStart);
+    // Kernel preparation runs in order: startup slots, then each shrink.
+    this.kernelWork = this.ready
+      .then(() => this.compileSlots())
+      .catch((error) => {
+        this.error = error;
+      });
     renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }
-  createSlot(eyeCount = 1) {
-    this.ensureEyeUniforms(eyeCount);
+  createSlot(eyeCount) {
     const uniforms = {
       ...this.state,
       ...makeGenerateUniforms(),
@@ -312,7 +318,7 @@ export class ProjectedSplats {
       );
     return { uniforms, node };
   }
-  /** Projection uniforms of each eye after the first, created on demand. */
+  /** Projection uniforms of the precompiled eyes after the first. */
   ensureEyeUniforms(eyeCount) {
     for (let eye = 1; eye < eyeCount; eye++) {
       if (this.state[`projectionMatrix${eye}`]) continue;
@@ -328,46 +334,71 @@ export class ProjectedSplats {
     }
   }
   createSlotSet(eyeCount) {
-    const set = {
+    this.ensureEyeUniforms(eyeCount);
+    this.slotSets.set(eyeCount, {
+      compiled: 0,
       slots: Array.from({ length: PROJECT_SLOTS }, () =>
         this.createSlot(eyeCount),
       ),
-      compiled: 0,
-    };
-    this.slotSets.set(eyeCount, set);
-    return set;
+    });
   }
-  /**
-   * Compiled slots that project this many eyes. One eye uses the startup
-   * slots; WebXR eye counts build theirs on first request.
-   */
+  /** Warm the remaining slots at startup, yielding between each compilation. */
+  async compileSlots() {
+    for (let index = 1; index < PROJECT_SLOTS; index++) {
+      for (const set of this.slotSets.values()) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (this.disposed || this.error) return;
+        await this.renderer.compileComputeAsync([set.slots[index].node]);
+        set.compiled++;
+      }
+    }
+  }
+  /** The selected, precompiled mode for mono or WebXR stereo. */
   getSlots(eyeCount) {
-    let set = this.slotSets.get(eyeCount);
+    const set = this.slotSets.get(eyeCount);
     if (!set) {
-      set = this.createSlotSet(eyeCount);
-      this.compilations.push(this.compileSlots(set));
+      throw new RangeError("WebGPU Splat projection supports one or two views");
     }
     return set.slots.slice(0, set.compiled);
   }
-  async compileSlots(set) {
-    // New eye counts hide Splats until drawable; notify on-demand hosts to redraw
-    // when kernels become ready or compilation fails.
-    try {
-      // A drawable set yields first, so readiness callbacks run before the
-      // slots that only batch more meshes.
-      if (set.compiled > 0)
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      while (!this.disposed && !this.error && set.compiled < set.slots.length) {
-        await this.renderer.compileComputeAsync([set.slots[set.compiled].node]);
-        set.compiled++;
-        // The first slot is enough to draw; later ones only batch more meshes.
-        if (set.compiled === 1 && !this.disposed) this.onKernelsReady?.();
+  /** Compact storage and refresh existing bindings without compiling or stopping draws. */
+  shrinkResources(getCount) {
+    const shrink = this.kernelWork.then(() => this.compact(getCount));
+    this.kernelWork = shrink.catch(() => {});
+    return shrink;
+  }
+  async compact(getCount) {
+    if (this.error) throw this.error;
+    if (this.disposed) return;
+    // Read both now: models can load and an XR session can start while
+    // startup slots compile.
+    const { xr } = this.renderer;
+    const views = xr.isPresenting ? getViews(xr.getCamera()).length : 1;
+    const resized = this.resize(getCount(), views, true);
+    const seedsResized = this.resizeBuffer(
+      this.seeds,
+      this.uniforms.stochastic.value ? this.capacity : 1,
+    );
+    const refresh = new Set(resized || seedsResized ? this.nodes : []);
+    // Idle slots must release source textures of removed models. The next
+    // dispatch fills active slots again; compiled shader graphs stay intact.
+    const textures = Object.entries(makeGenerateUniforms()).filter(
+      ([, uniform]) => uniform.value?.isTexture,
+    );
+    for (const { slots } of this.slotSets.values()) {
+      for (const { uniforms, node } of slots) {
+        for (const [name, { value }] of textures) {
+          if (uniforms[name].value !== value) {
+            uniforms[name].value = value;
+            refresh.add(node);
+          }
+        }
       }
-    } catch (error) {
-      this.error = error;
-      // The next draw throws the compilation error.
-      if (!this.disposed) this.onKernelsReady?.();
     }
+    if (resized || seedsResized) this.projectedInputs = [];
+    // Preparing a compiled node again only refreshes its uniforms and bind
+    // groups. Dispose follows this in the queue.
+    for (const node of refresh) await this.renderer.compileComputeAsync(node);
   }
   vertexData(camera, stochastic) {
     const multiView = getViews(camera)[0] !== camera;
@@ -389,6 +420,7 @@ export class ProjectedSplats {
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
+    const projectionMatrix = splatProjectionMatrix(camera);
     const centerRange = uniformBinding(this.uniforms, "clipXY", "float")
       .abs()
       .max(1)
@@ -429,6 +461,7 @@ export class ProjectedSplats {
         pixelScale,
         centerRange,
         uniformBinding(this.state, "projectionJitter", "vec2"),
+        projectionMatrix,
       );
       clipPosition.assign(projected.clipPosition);
       rgba.assign(projected.rgba);
@@ -447,10 +480,11 @@ export class ProjectedSplats {
     };
   }
   resizeBuffer(ref, count) {
-    if (ref.value.count === count) return;
+    if (ref.value.count === count) return false;
     const old = ref.value;
     ref.value = new StorageBufferAttribute(new Uint32Array(count), 1);
     old.dispose();
+    return true;
   }
   resize(count, views, shrink = false) {
     const required = Math.max(1, count);
@@ -482,7 +516,7 @@ export class ProjectedSplats {
       shrink || this.shrinkViews ? views : Math.max(views, this.viewCapacity);
     this.shrinkViews = false;
     if (capacity === this.capacity && viewCapacity === this.viewCapacity)
-      return;
+      return false;
     const size = getProjectionCacheSize(capacity * viewCapacity, this.limits);
     this.resizeBuffer(this.keys, capacity);
     this.sorter.resize(capacity, shrink);
@@ -490,8 +524,9 @@ export class ProjectedSplats {
     this.capacity = capacity;
     this.viewCapacity = viewCapacity;
     this.state.viewStride.value = capacity;
+    return true;
   }
-  render(accumulator, camera, geometry, radial, fastSort, shrink = false) {
+  render(accumulator, camera, geometry, radial, fastSort) {
     if (this.error) throw this.error;
     const cameras = getViews(camera);
     const multiView = cameras[0] !== camera;
@@ -499,12 +534,12 @@ export class ProjectedSplats {
     // one head; each eye still gets its exact projection.
     const slots = this.disposed ? [] : this.getSlots(cameras.length);
     if (slots.length === 0) {
-      // Draw nothing until the kernels for this eye count compile.
+      // Draw nothing only during the initial precompile.
       geometry.setIndirect(null);
       geometry.instanceCount = 0;
       return false;
     }
-    this.resize(accumulator.numSplats, cameras.length, shrink);
+    this.resize(accumulator.numSplats, cameras.length);
     const { uniforms } = this;
     const stochastic = uniforms.stochastic.value;
     // Only stochastic draws read seeds; sorted rendering keeps one entry.
@@ -565,7 +600,6 @@ export class ProjectedSplats {
       );
     }
     if (
-      !shrink &&
       inputs.length === this.projectedInputs.length &&
       inputs.every((value, index) => value === this.projectedInputs[index])
     )
@@ -651,14 +685,16 @@ export class ProjectedSplats {
     if (this.disposed) return;
     this.disposed = true;
     this.projectedInputs = [];
-    this.renderer.xr.removeEventListener("sessionstart", this.onSessionStart);
     this.renderer.xr.removeEventListener("sessionend", this.onSessionEnd);
-    void Promise.all(this.compilations).then(() => this.disposeResources());
+    void this.kernelWork.then(() => this.disposeResources());
   }
   disposeResources() {
     for (const { slots } of this.slotSets.values())
-      for (const slot of slots) slot.node.dispose();
-    for (const node of [this.resetCount, this.finish]) node.dispose();
+      for (const { node } of slots) node.dispose();
+    this.resetCount.dispose();
+    this.finish.dispose();
+    this.slotSets.clear();
+    this.nodes.length = 0;
     this.sorter.dispose();
     this.cache.dispose();
     this.visibleCount.dispose();

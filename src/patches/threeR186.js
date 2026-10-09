@@ -49,6 +49,35 @@ function patchAttributeDisposal(attributes) {
     return remove.call(this, attribute);
   };
 }
+function patchStorageReferences(bindings) {
+  // Temporary r186 fix: https://github.com/mrdoob/three.js/pull/34939.
+  // NodeStorageBuffer's public getters are dynamic. Its base fields
+  // must follow them too, rather than retaining construction-time arrays.
+  const references = {
+    _attribute: {
+      configurable: true,
+      get() {
+        return this.attribute;
+      },
+    },
+    _buffer: {
+      configurable: true,
+      get() {
+        return this.buffer;
+      },
+    },
+  };
+  const createBindings = bindings._createBindings;
+  bindings._createBindings = function (groups) {
+    for (const group of groups) {
+      for (const binding of group.bindings) {
+        if (!binding.isStorageBuffer || !binding.nodeUniform) continue;
+        Object.defineProperties(binding, references);
+      }
+    }
+    return createBindings.call(this, groups);
+  };
+}
 function patchDepthViews(backend) {
   const utils = backend.bindingUtils;
   const createBindGroup = utils.createBindGroup;
@@ -295,6 +324,7 @@ export function applyThreeR186Patch(renderer) {
   }
   patchTextureNodes();
   patchAttributeDisposal(renderer._attributes);
+  patchStorageReferences(renderer._bindings);
   patchDefaultDepth(renderer, renderer._textures);
   if (renderer.backend.isWebGLBackend) {
     patchWebGL(renderer, renderer.backend);

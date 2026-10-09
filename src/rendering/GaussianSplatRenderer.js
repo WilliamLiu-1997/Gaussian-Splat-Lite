@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { applyThreeR186Patch } from "../patches/threeR186.js";
 import { SplatWorker } from "../runtime/SplatWorker.js";
 import { resolveTimer } from "../utils/three.js";
+import { MaterialState } from "./MaterialState.js";
 import { SortCenterCache } from "./SortCenterCache.js";
 import { SplatAccumulator } from "./SplatAccumulator.js";
 import { SplatGeometry } from "./SplatGeometry.js";
@@ -69,6 +70,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const geometry = new SplatGeometry();
     const material = backend.selectMaterial(stochastic);
     super(geometry, material);
+    this.materialState = new MaterialState(material);
     /** @internal False for a second renderer on the same scene, so each `onFrame` runs once per frame. */
     this.frameCallbacks = true;
     this.renderSize = new THREE.Vector2();
@@ -101,7 +103,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.updatePromise = Promise.resolve();
     this.queuedUpdate = null;
     this.disposed = false;
-    this.pendingProjectionShrink = false;
     this.unsupportedCameraReported = false;
     this.reportedRenderError = "";
     this.viewportSize = new THREE.Vector4();
@@ -149,12 +150,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.accumulators.push(new SplatAccumulator());
     }
     if (backend.kind === "webgpu") {
-      backend.precompile?.then(() => {
+      backend.projection.ready.then(() => {
         if (!this.disposed) this.setDirty();
       });
-      // WebXR eye kernels compile on first use or session start; draws hide
-      // Splats until they are ready, so request a redraw.
-      backend.projection.onKernelsReady = () => {
+      // XR session end can reclaim the second eye's work storage.
+      backend.projection.onViewsReleased = () => {
         if (!this.disposed) this.setDirty();
       };
     }
@@ -170,6 +170,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     clearTimeout(this.updateTimeoutId);
     this.updateTimeoutId = -1;
     super.dispose();
+    this.resetSortWorker();
+    this.orderingBuffer = new Uint32Array(0);
+    this.orderingReady = false;
+    this.maxSplats = 0;
+    this.activeSplats = 0;
     this.backend.dispose();
     this.uniforms.stochasticNoise.value.dispose();
     const accumulators = new Set();
@@ -182,11 +187,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       accumulator.dispose();
     }
     this.accumulators.length = 0;
-    this.resetSortWorker();
-    this.orderingBuffer = new Uint32Array(0);
-    this.orderingReady = false;
-    this.maxSplats = 0;
-    this.activeSplats = 0;
     this.geometry.dispose();
   }
   /** Native WebGPU sorts on the GPU before drawing; WebGL sorts in a worker. */
@@ -240,25 +240,16 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         : this.display.hasStochasticSeeds;
     if (active === this.stochasticFrame) return;
     this.stochasticFrame = active;
-    const previous = this.material;
-    const material = this.backend.selectMaterial(active);
-    // Stencil masking follows the draw across material variants.
-    if (material !== previous) {
-      material.stencilWrite = previous.stencilWrite;
-      material.stencilWriteMask = previous.stencilWriteMask;
-      material.stencilFunc = previous.stencilFunc;
-      material.stencilRef = previous.stencilRef;
-      material.stencilFuncMask = previous.stencilFuncMask;
-      material.stencilFail = previous.stencilFail;
-      material.stencilZFail = previous.stencilZFail;
-      material.stencilZPass = previous.stencilZPass;
-    }
-    this.material = material;
-    this.applyMaterialState(active);
+    this.selectMaterial();
     this.setDirty();
   }
-  applyMaterialState(stochasticActive) {
-    const { material } = this;
+  selectMaterial() {
+    const material = this.backend.selectMaterial(this.stochasticFrame);
+    this.applyMaterialState(this.stochasticFrame, material);
+    this.material = material;
+  }
+  applyMaterialState(stochasticActive, material = this.material) {
+    this.materialState.sync(material, this.material);
     const wasOpaque = isOpaqueMaterial(material);
     material.transparent = stochasticActive ? false : this._transparent;
     material.blending = stochasticActive
@@ -273,6 +264,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       material.premultipliedAlpha = this._premultipliedAlpha;
       material.needsUpdate = true;
     }
+    this.materialState.record(material);
   }
   runAutomaticUpdate(request, insideDraw = false) {
     try {
@@ -433,20 +425,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this._encodeLinear,
     );
     if (this.backend.kind === "webgpu") {
-      if (this.backend.sortError) throw this.backend.sortError;
-      if (this.backend.precompile) {
-        geometry.instanceCount = 0;
-      } else {
-        const projected = this.backend.projection.render(
-          display,
-          camera,
-          geometry,
-          this.sortRadial,
-          this.fastSort,
-          this.pendingProjectionShrink,
-        );
-        if (projected) this.pendingProjectionShrink = false;
-      }
+      this.backend.projection.render(
+        display,
+        camera,
+        geometry,
+        this.sortRadial,
+        this.fastSort,
+      );
     } else {
       const splatTextures = display.getTextures();
       this.uniforms.splats.value = splatTextures[0];
@@ -466,8 +451,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     assertSupportedCamera(camera, this.renderer);
     this.reportedRenderError = "";
     if (this.backend.kind === "webgpu") {
-      await this.backend.precompile;
-      if (this.backend.sortError) throw this.backend.sortError;
+      await this.backend.projection.ready;
+      if (this.backend.projection.error) throw this.backend.projection.error;
     }
     await this.updateInternal({
       scene,
@@ -476,7 +461,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       excludedObjects,
     });
   }
-  /** Updates the current scene and shrinks renderer work resources to their current allocation tiers. */
+  /** Updates the scene and compacts work and edit storage while retaining compiled kernels. */
   async shrinkResources({ scene, camera }) {
     assertSupportedCamera(camera, this.renderer);
     this.reportedRenderError = "";
@@ -485,6 +470,14 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       camera,
       shrinkResources: true,
     });
+    if (this.backend.kind === "webgpu") {
+      // An update can replace the accumulator while startup slots compile.
+      await this.backend.projection.shrinkResources(
+        () => this.current.numSplats,
+      );
+    }
+    if (this.disposed) return;
+    this.setDirty();
   }
   updateInternal(request, insideDraw = false) {
     if (this.disposed) return Promise.resolve();
@@ -496,7 +489,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         request.camera.updateWorldMatrix(true, false);
       const camera = this.getGenerationCamera(request.camera);
       if (this.ownsTimer) this.timer.update();
-      if (shrinkResources) this.pendingProjectionShrink = true;
       const previousVersion = this.current.version;
       const viewChanged =
         !this.current.viewOrigin.equals(
@@ -516,6 +508,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         layerCamera: request.camera,
         previous: this.current,
         frameCallbacks: this.frameCallbacks,
+        shrinkResources,
         excludedObjects: request.excludedObjects,
       });
       // The accumulator only carries source mappings and the camera-relative
@@ -615,6 +608,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         layerCamera: updateCamera,
         previous: this.current,
         frameCallbacks: this.frameCallbacks,
+        shrinkResources,
         excludedObjects,
       });
     } catch (error) {

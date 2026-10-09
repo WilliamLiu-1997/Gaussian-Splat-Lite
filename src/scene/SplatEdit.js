@@ -58,6 +58,9 @@ const SDF_RGBA_MASK_SHIFT = 16;
 const MIN_CAPACITY = 16;
 const scratchFloat = new Float32Array(1);
 const scratchUint = new Uint32Array(scratchFloat.buffer);
+const scratchSizes = new THREE.Vector4();
+const scratchScale = new THREE.Vector3();
+const scratchMatrix = new THREE.Matrix4();
 /** Encodes SDF geometry/RGBA and edit operations as regular integer textures. */
 export class SplatEdits {
   constructor({ maxSdfs = 0, maxEdits = 0 } = {}) {
@@ -74,20 +77,20 @@ export class SplatEdits {
     this.sdfTexture.dispose();
     this.editTexture.dispose();
   }
-  update(groups, coordinateOrigin) {
+  update(groups, coordinateOrigin, shrinkResources = false) {
     const sdfCount = groups.reduce(
       (total, group) => total + group.sdfs.length,
       0,
     );
-    let updated = this.ensureCapacity(sdfCount, groups.length);
+    let updated = this.ensureCapacity(sdfCount, groups.length, shrinkResources);
     if (this.numSdfs !== sdfCount || this.numEdits !== groups.length) {
       this.numSdfs = sdfCount;
       this.numEdits = groups.length;
       updated = true;
     }
-    const sizes = new THREE.Vector4();
-    const inverseOwnScale = new THREE.Vector3();
-    const worldToSdf = new THREE.Matrix4();
+    const sizes = scratchSizes;
+    const inverseOwnScale = scratchScale;
+    const worldToSdf = scratchMatrix;
     let sdfIndex = 0;
     let sdfUpdated = false;
     let editUpdated = false;
@@ -143,17 +146,19 @@ export class SplatEdits {
     }
     return { updated: updated || sdfUpdated || editUpdated };
   }
-  ensureCapacity(sdfs, edits) {
+  ensureCapacity(sdfs, edits, shrinkResources) {
     let updated = false;
-    if (sdfs > this.maxSdfs) {
-      this.maxSdfs = Math.max(sdfs, this.maxSdfs * 2);
+    const maxSdfs = getEditCapacity(sdfs, this.maxSdfs, shrinkResources);
+    const maxEdits = getEditCapacity(edits, this.maxEdits, shrinkResources);
+    if (maxSdfs !== this.maxSdfs) {
+      this.maxSdfs = maxSdfs;
       this.sdfTexture.dispose();
       this.sdfData = new Uint32Array(this.maxSdfs * SDF_TEXELS * 4);
       this.sdfTexture = makeUintTexture(this.sdfData, SDF_TEXELS, this.maxSdfs);
       updated = true;
     }
-    if (edits > this.maxEdits) {
-      this.maxEdits = Math.max(edits, this.maxEdits * 2);
+    if (maxEdits !== this.maxEdits) {
+      this.maxEdits = maxEdits;
       this.editTexture.dispose();
       this.editData = new Uint32Array(this.maxEdits * 4);
       this.editTexture = makeUintTexture(this.editData, 1, this.maxEdits);
@@ -227,6 +232,10 @@ export class SplatEdits {
     return this.setEditUint(offset, scratchUint[0]);
   }
   static emptyTexture = emptyUintTexture;
+}
+function getEditCapacity(count, capacity, shrinkResources) {
+  if (shrinkResources) return Math.max(MIN_CAPACITY, count);
+  return count > capacity ? Math.max(count, capacity * 2) : capacity;
 }
 function rgbaBlendModeToNumber(mode) {
   switch (mode) {

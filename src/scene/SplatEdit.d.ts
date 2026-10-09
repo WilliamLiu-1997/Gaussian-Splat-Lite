@@ -82,6 +82,7 @@ export declare class SplatEdits {
   update(
     groups: SplatEditGroup[],
     coordinateOrigin?: THREE.Vector3,
+    shrinkResources?: boolean,
   ): {
     updated: boolean;
   };

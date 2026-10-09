@@ -124,7 +124,10 @@ export class SplatMesh extends THREE.Object3D {
       this.splats?.getBoundingBox(centersOnly, target) ?? target.makeEmpty()
     );
   }
-  frameUpdate({ time, deltaTime, globalEdits }, callbacks = true) {
+  frameUpdate(
+    { time, deltaTime, globalEdits, shrinkResources = false },
+    callbacks = true,
+  ) {
     if (callbacks) this.onFrame?.({ mesh: this, time, deltaTime });
     const source = this.splats;
     if (!source) {
@@ -174,7 +177,11 @@ export class SplatMesh extends THREE.Object3D {
       updated = true;
     }
     const groups = this.collectEditGroups(globalEdits);
-    if (groups.length > 0 && !this.sdfEdits) {
+    if (shrinkResources && groups.length === 0 && this.sdfEdits) {
+      this.sdfEdits.dispose();
+      this.sdfEdits = null;
+      updated = true;
+    } else if (groups.length > 0 && !this.sdfEdits) {
       this.sdfEdits = new SplatEdits({
         maxEdits: groups.length,
         maxSdfs: groups.reduce((total, group) => total + group.sdfs.length, 0),
@@ -184,7 +191,10 @@ export class SplatMesh extends THREE.Object3D {
     const sdfCoordinateOrigin = this.sdfCoordinateOrigin.setFromMatrixPosition(
       this.matrixWorld,
     );
-    if (this.sdfEdits?.update(groups, sdfCoordinateOrigin).updated) {
+    if (
+      this.sdfEdits?.update(groups, sdfCoordinateOrigin, shrinkResources)
+        .updated
+    ) {
       // RGBA-only SDF changes preserve centers and their existing sort order.
       updated = true;
     }

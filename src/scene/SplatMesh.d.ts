@@ -32,6 +32,8 @@ export type SplatMeshFrameContext = {
   time: number;
   deltaTime: number;
   globalEdits: SplatEdit[];
+  /** Compact SDF edit storage during an explicit renderer shrink. */
+  shrinkResources?: boolean;
 };
 export type SplatIntersection = THREE.Intersection<SplatMesh> & {
   /** Current readable index in this mesh's Splats. */
@@ -84,7 +86,7 @@ export declare class SplatMesh extends THREE.Object3D {
   /** Copy cached local bounds; false includes scale/rotation and shape at source alpha 0.01. */
   getBoundingBox(centersOnly?: boolean, target?: THREE.Box3): THREE.Box3;
   frameUpdate(
-    { time, deltaTime, globalEdits }: SplatMeshFrameContext,
+    { time, deltaTime, globalEdits, shrinkResources }: SplatMeshFrameContext,
     callbacks?: boolean,
   ): void;
   /** Edits applying to this mesh, in order, each with its SDF shapes. */

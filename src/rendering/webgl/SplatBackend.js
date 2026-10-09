@@ -9,20 +9,15 @@ export class WebGLSplatBackend {
     this.uniforms = uniforms;
     this.kind = "webgl";
     this.ordering = new OrderingTexture();
-    this.material = createWebGLSplatMaterial(uniforms, options);
+    this.sortedMaterial = createWebGLSplatMaterial(uniforms, options, false);
+    this.stochasticMaterial = createWebGLSplatMaterial(uniforms, options, true);
     const extension = renderer
       .getContext()
       .getExtension("WEBGL_provoking_vertex");
     extension?.provokingVertexWEBGL(extension.FIRST_VERTEX_CONVENTION_WEBGL);
   }
   selectMaterial(stochastic) {
-    const { material } = this;
-    const value = Number(stochastic);
-    if (material.defines.GSL_STOCHASTIC !== value) {
-      material.defines.GSL_STOCHASTIC = value;
-      material.needsUpdate = true;
-    }
-    return material;
+    return stochastic ? this.stochasticMaterial : this.sortedMaterial;
   }
   getOrderingCapacity(count) {
     return this.ordering.getCapacity(count);
@@ -51,6 +46,7 @@ export class WebGLSplatBackend {
   }
   dispose() {
     this.ordering.dispose();
-    this.material.dispose();
+    this.sortedMaterial.dispose();
+    this.stochasticMaterial.dispose();
   }
 }

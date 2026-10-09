@@ -144,13 +144,14 @@ export class ProjectionCache {
     centerRange,
     /** NDC translation from the cached projection to the drawn one. */
     jitter,
+    /** Projection of the drawn eye. */
+    matrix,
   ) {
     const coord = cacheTexCoord(index, this.dimensions).toVar();
     const first = loadArray(uintTexture(this.textures[0]), coord).toVar();
     const second = loadArray(uintTexture(this.textures[1]), coord).toVar();
     const ndc = N.unpackSnorm2x16(first.x).mul(centerRange).add(jitter);
     const viewZ = N.uintBitsToFloat(first.y).negate();
-    const matrix = N.cameraProjectionMatrix;
     const col0 = matrix.element(0);
     const col1 = matrix.element(1);
     const col2 = matrix.element(2);

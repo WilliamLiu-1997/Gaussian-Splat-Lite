@@ -48,6 +48,7 @@ export class SplatAccumulator {
       time: 0,
       deltaTime: 0,
       globalEdits: this.sceneNodes.edits,
+      shrinkResources: false,
     };
     if (threeRevision < 186) {
       throw new Error("Gaussian Splat Lite requires Three.js r186 or above");
@@ -231,6 +232,7 @@ export class SplatAccumulator {
     layerCamera = camera,
     previous,
     frameCallbacks = true,
+    shrinkResources = false,
     excludedObjects,
   }) {
     // Preserve the previous metadata before replacing this accumulator's
@@ -266,6 +268,7 @@ export class SplatAccumulator {
     const frameContext = this.frameContext;
     frameContext.time = this.time;
     frameContext.deltaTime = this.deltaTime;
+    frameContext.shrinkResources = shrinkResources;
     let sceneMayChange = false;
     for (let index = 0; index < meshCount; index++) {
       const mesh = meshes[index];

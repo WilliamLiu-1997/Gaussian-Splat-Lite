@@ -78,6 +78,7 @@ export declare class SplatAccumulator {
     layerCamera,
     previous,
     frameCallbacks,
+    shrinkResources,
     excludedObjects,
   }: {
     renderer: GaussianSplatCompatibleRenderer;
@@ -87,6 +88,7 @@ export declare class SplatAccumulator {
     layerCamera?: THREE.Camera;
     previous: SplatAccumulator;
     frameCallbacks?: boolean;
+    shrinkResources?: boolean;
     excludedObjects?: ReadonlySet<THREE.Object3D>;
   }): {
     version: number;

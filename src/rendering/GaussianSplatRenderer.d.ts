@@ -200,6 +200,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
   onDirty?: () => void;
   dirty: boolean;
   private readonly backend;
+  private readonly materialState;
   private orderingBuffer;
   private orderingReady;
   private readonly headCamera;
@@ -224,7 +225,6 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
   private updatePromise;
   private queuedUpdate;
   private disposed;
-  private pendingProjectionShrink;
   private unsupportedCameraReported;
   constructor(options: GaussianSplatRendererOptions);
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]): void;
@@ -333,6 +333,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
    * the update boundary too, keeping mode changes outside an active draw.
    */
   private syncStochasticFrame;
+  private selectMaterial;
   private applyMaterialState;
   private reportedRenderError;
   private runAutomaticUpdate;
@@ -355,7 +356,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
     /** @internal Models excluded during capture preparation, including descendants. */
     excludedObjects?: ReadonlySet<THREE.Object3D>;
   }): Promise<void>;
-  /** Updates the current scene and shrinks renderer work resources to their current allocation tiers. */
+  /** Updates the scene and compacts work and edit storage while retaining compiled kernels. */
   shrinkResources({
     scene,
     camera,

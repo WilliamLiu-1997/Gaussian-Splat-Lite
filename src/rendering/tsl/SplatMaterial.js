@@ -178,10 +178,7 @@ export function createSplatNodeMaterial({
       throw new Error("Accumulator splat drawing requires an ordering texture");
     }
     const view = splatViewUniforms(uniforms, camera);
-    const project = createProjectionProgram(uniforms, {
-      ...view,
-      projectionMatrix: N.cameraProjectionMatrix,
-    });
+    const project = createProjectionProgram(uniforms, view);
     const index = N.uint(N.instanceIndex)
       .mul(SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z))

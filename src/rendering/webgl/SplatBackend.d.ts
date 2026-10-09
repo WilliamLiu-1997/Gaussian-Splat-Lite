@@ -6,7 +6,8 @@ export declare class WebGLSplatBackend {
   readonly renderer: THREE.WebGLRenderer;
   private readonly uniforms;
   readonly kind = "webgl";
-  readonly material: THREE.ShaderMaterial;
+  readonly sortedMaterial: THREE.ShaderMaterial;
+  readonly stochasticMaterial: THREE.ShaderMaterial;
   private readonly ordering;
   constructor(
     renderer: THREE.WebGLRenderer,
