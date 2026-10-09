@@ -30,3 +30,4 @@ export declare function tryEncodeQuatOctXy1010R12(
   qz: number,
   qw: number,
 ): number | undefined;
+export {};

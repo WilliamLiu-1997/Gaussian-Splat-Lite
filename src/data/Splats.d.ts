@@ -105,3 +105,4 @@ export declare class Splats {
   private ensureShTexture;
   static emptyTexture: THREE.DataArrayTexture;
 }
+export {};

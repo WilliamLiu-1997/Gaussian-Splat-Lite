@@ -257,3 +257,4 @@ export declare function buildOutputs(
   builder: ProgramBuilder,
   patch: SplatPostDecodePatch,
 ): SplatPostDecodeOutputs;
+export {};

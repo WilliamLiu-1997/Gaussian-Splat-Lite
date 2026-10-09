@@ -1,67 +1,71 @@
 /** @internal */
-export declare enum Opcode {
-  Constant = 1,
-  InputField = 2,
-  InputAttribute = 3,
-  Negate = 10,
-  Abs = 11,
-  Sqrt = 12,
-  Log = 13,
-  Exp = 14,
-  Floor = 15,
-  Ceil = 16,
-  Round = 17,
-  Normalize = 18,
-  Length = 19,
-  IsFinite = 20,
-  Not = 22,
-  Sin = 23,
-  Cos = 24,
-  Acos = 25,
-  Tan = 26,
-  Asin = 27,
-  Atan = 28,
-  Add = 30,
-  Subtract = 31,
-  Multiply = 32,
-  Divide = 33,
-  Min = 34,
-  Max = 35,
-  Pow = 36,
-  Dot = 37,
-  Cross = 38,
-  Equal = 39,
-  NotEqual = 40,
-  Less = 41,
-  LessEqual = 42,
-  Greater = 43,
-  GreaterEqual = 44,
-  And = 45,
-  Or = 46,
-  QuaternionMultiply = 47,
-  RotateVector = 48,
-  Atan2 = 49,
-  Select = 60,
-  Clamp = 61,
-  Mix = 62,
-  MultiplyAdd = 63,
-  AddMultiply = 64,
-  Vec2 = 70,
-  Vec3 = 71,
-  Vec4 = 72,
-  Component = 74,
-  MaxComponentIndex = 75,
-}
+export declare const Opcode: {
+  readonly Constant: 1;
+  readonly InputField: 2;
+  readonly InputAttribute: 3;
+  readonly Negate: 10;
+  readonly Abs: 11;
+  readonly Sqrt: 12;
+  readonly Log: 13;
+  readonly Exp: 14;
+  readonly Floor: 15;
+  readonly Ceil: 16;
+  readonly Round: 17;
+  readonly Normalize: 18;
+  readonly Length: 19;
+  readonly IsFinite: 20;
+  readonly Not: 22;
+  readonly Sin: 23;
+  readonly Cos: 24;
+  readonly Acos: 25;
+  readonly Tan: 26;
+  readonly Asin: 27;
+  readonly Atan: 28;
+  readonly Add: 30;
+  readonly Subtract: 31;
+  readonly Multiply: 32;
+  readonly Divide: 33;
+  readonly Min: 34;
+  readonly Max: 35;
+  readonly Pow: 36;
+  readonly Dot: 37;
+  readonly Cross: 38;
+  readonly Equal: 39;
+  readonly NotEqual: 40;
+  readonly Less: 41;
+  readonly LessEqual: 42;
+  readonly Greater: 43;
+  readonly GreaterEqual: 44;
+  readonly And: 45;
+  readonly Or: 46;
+  readonly QuaternionMultiply: 47;
+  readonly RotateVector: 48;
+  readonly Atan2: 49;
+  readonly Select: 60;
+  readonly Clamp: 61;
+  readonly Mix: 62;
+  readonly MultiplyAdd: 63;
+  readonly AddMultiply: 64;
+  readonly Vec2: 70;
+  readonly Vec3: 71;
+  readonly Vec4: 72;
+  readonly Component: 74;
+  readonly MaxComponentIndex: 75;
+};
 /** @internal */
-export declare enum InputField {
-  Position = 1,
-  Scale = 2,
-  Quaternion = 3,
-  Opacity = 4,
-  Alpha = 5,
-  Color = 6,
-  Sh0 = 7,
-}
+export type Opcode = (typeof Opcode)[keyof typeof Opcode];
+/** @internal */
+export declare const InputField: {
+  readonly Position: 1;
+  readonly Scale: 2;
+  readonly Quaternion: 3;
+  readonly Opacity: 4;
+  readonly Alpha: 5;
+  readonly Color: 6;
+  readonly Sh0: 7;
+};
+/** @internal */
+export type InputField = (typeof InputField)[keyof typeof InputField];
 /** @internal */
 export declare const SH_COEFFICIENT_COUNT = 15;
 /** @internal */

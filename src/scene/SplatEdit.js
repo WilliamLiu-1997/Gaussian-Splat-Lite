@@ -30,9 +30,7 @@ export class SplatEditSdf extends THREE.Object3D {
 }
 /** An ordered RGBA operation evaluated over one or more SDF shapes. */
 export class SplatEdit extends THREE.Object3D {
-  static {
-    SplatEdit.nextOrdering = 1;
-  }
+  static nextOrdering = 1;
   constructor(options = {}) {
     super();
     this.rgbaBlendMode = options.rgbaBlendMode ?? "multiply_rgba";
@@ -228,9 +226,7 @@ export class SplatEdits {
     scratchFloat[0] = value;
     return this.setEditUint(offset, scratchUint[0]);
   }
-  static {
-    SplatEdits.emptyTexture = emptyUintTexture;
-  }
+  static emptyTexture = emptyUintTexture;
 }
 function rgbaBlendModeToNumber(mode) {
   switch (mode) {

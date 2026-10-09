@@ -5,6 +5,7 @@ import { OrderingTexture } from "../webgl/OrderingTexture.js";
 /** TSL drawing with CPU-sorted indices stored in an integer texture. */
 export class WebGLFallbackSplatBackend extends NodeSplatBackend {
   constructor(renderer, uniforms, options) {
+    // Shared by the sorted and stochastic materials.
     const orderingNode = uintTexture(emptyOrdering);
     super(renderer, uniforms, options, orderingNode);
     this.kind = "webgl-fallback";

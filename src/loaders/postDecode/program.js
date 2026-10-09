@@ -1,4 +1,3 @@
-let _a;
 import { ProgramBuilder, buildOutputs } from "./builder.js";
 import {
   compileProgram,
@@ -7,11 +6,9 @@ import {
 } from "./compiler.js";
 const SPLAT_POST_DECODE_PROGRAM = Symbol("SplatPostDecodeProgram");
 class SplatPostDecodeProgramImpl {
-  static {
-    _a = SPLAT_POST_DECODE_PROGRAM;
-  }
+  [SPLAT_POST_DECODE_PROGRAM] = true;
+
   constructor(builder, outputs) {
-    this[_a] = true;
     this.compiled = compileProgram(builder, outputs);
   }
   static serialize(program) {

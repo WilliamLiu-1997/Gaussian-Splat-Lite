@@ -20,3 +20,4 @@ declare class SplatWorkerPool {
   freeWorker(worker: SplatWorker): void;
 }
 export declare const workerPool: SplatWorkerPool;
+export {};

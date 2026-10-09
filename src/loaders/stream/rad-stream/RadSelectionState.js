@@ -11,6 +11,7 @@ export class RadSelectionState {
     const previous = previousId ? this.cuts.get(previousId) : EMPTY_INDICES;
     if (!previous || (readyId && !this.cuts.has(readyId)))
       throw new Error("RAD: selection baseline is unavailable");
+    // Pin both cuts: a waiting cut may become displayed while the RPC runs.
     for (const id of this.cuts.keys()) {
       if (id !== previousId && id !== readyId) this.cuts.delete(id);
     }

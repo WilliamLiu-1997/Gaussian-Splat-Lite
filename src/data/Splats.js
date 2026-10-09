@@ -358,9 +358,7 @@ export class Splats {
     }
     return newUintArrayTexture(padded, width, height, depth);
   }
-  static {
-    Splats.emptyTexture = newUintArrayTexture(new Uint32Array(4), 1, 1, 1);
-  }
+  static emptyTexture = newUintArrayTexture(new Uint32Array(4), 1, 1, 1);
 }
 function newUintArrayTexture(data, width, height, depth) {
   const texture = new THREE.DataArrayTexture(data, width, height, depth);

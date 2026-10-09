@@ -14,3 +14,4 @@ export declare function readZip(source: Source): Promise<{
   read: (entry: Entry) => Promise<Uint8Array<ArrayBufferLike>[]>;
   entry(name: string): Entry | undefined;
 }>;
+export {};

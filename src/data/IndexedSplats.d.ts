@@ -83,3 +83,4 @@ export declare abstract class IndexedSplats extends Splats {
   setTextureUniforms(uniforms: Record<string, THREE.IUniform>): void;
   dispose(): void;
 }
+export {};

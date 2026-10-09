@@ -49,3 +49,4 @@ declare function sortCenters32({
   ordering: Uint32Array<ArrayBufferLike>;
   activeSplats: number;
 };
+export {};

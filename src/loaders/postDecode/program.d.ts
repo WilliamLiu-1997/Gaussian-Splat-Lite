@@ -17,3 +17,4 @@ declare function defineSplatPostDecode(
 export declare const postDecode: {
   define: typeof defineSplatPostDecode;
 };
+export {};

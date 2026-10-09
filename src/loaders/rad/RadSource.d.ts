@@ -90,3 +90,4 @@ export declare class RadSource {
   private progress;
   dispose(): void;
 }
+export {};

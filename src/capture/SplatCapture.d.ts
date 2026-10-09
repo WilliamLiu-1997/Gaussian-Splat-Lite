@@ -64,3 +64,4 @@ export declare class SplatCapture {
   recurseSetEnvMap(root: THREE.Object3D, envMap: THREE.Texture): void;
   dispose(): void;
 }
+export {};

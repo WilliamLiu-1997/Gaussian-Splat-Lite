@@ -465,6 +465,7 @@ export class RadStreamScheduler {
       for (const page of this.pages.values())
         if (page.storage?.allocation) pages.add(page.index);
       preparation = {
+        // Same order as the worker's pool snapshots and results.
         pools: Array.from(rangesByPool.keys()),
         pages,
         cancelled: false,
@@ -619,6 +620,7 @@ export class RadStreamScheduler {
       const load = {
         controller: new AbortController(),
         phase: "decoding",
+        // Kept until tree registration settles, including after cancellation.
         reservedBytes: this.maxPagePendingBytes,
       };
       page.load = load;
@@ -637,6 +639,7 @@ export class RadStreamScheduler {
         this.pump();
       });
       if (!active()) return;
+      // Decoded buffers stay owned here until written to the reserved slot.
       page.storage = { phase: "decoded", data };
       page.failures = 0;
       if (page.index === 0) this.setInitialBounds(data);
@@ -664,6 +667,7 @@ export class RadStreamScheduler {
     const bounds = data.centerOnlyBoundingBox;
     this.bounds.min.fromArray(bounds);
     this.bounds.max.fromArray(bounds, 3);
+    // The root-page radius covers initial bounds that collapse to one point.
     if (this.bounds.min.equals(this.bounds.max))
       this.bounds.expandByScalar(Math.max(0.001, data.rootRadius ?? 1));
   }
@@ -687,6 +691,7 @@ export class RadStreamScheduler {
     batch.layers.mask = this.group.layers.mask;
     const pool = {
       batch,
+      // The scheduler owns slot allocation and retirement.
       slots: Array(count).fill(undefined),
     };
     this.pools.push(pool);

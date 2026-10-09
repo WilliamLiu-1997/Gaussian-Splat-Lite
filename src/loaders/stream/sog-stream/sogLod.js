@@ -4,6 +4,8 @@ const DISTANCE_BAND_MULTIPLIER = 1.5;
 /** Flatten the tree and ranges into transferable typed arrays. */
 export function packSogLodIndex(manifest) {
   const { leaves, files, environment } = manifest;
+  // Float64 preserves source bounds and safe-integer counts in the worker index.
+  // Preorder nodes: min XYZ, max XYZ, subtree end, leaf ID (-1 for interiors).
   const nodes = new Float64Array((leaves.length * 2 - 1) * 8);
   let nextNode = 0;
   const writeNode = (node) => {
@@ -35,6 +37,7 @@ export function packSogLodIndex(manifest) {
     nodes,
     leafOffsets,
     lods,
+    // Best reachable distance-error reduction per added splat, in leaf/LOD order.
     upgradeRatios: Float32Array.from(manifest.upgradeRatios),
     urls: files.map((file) => file.url),
     counts: Float64Array.from(files, (file) => file.count),

@@ -100,6 +100,7 @@ export class StreamWorkerPool {
         let released = false;
         return {
           worker,
+          // The retained cache handle releases this reference once on disposal.
           retain: () => {
             owner.references++;
             return () => {

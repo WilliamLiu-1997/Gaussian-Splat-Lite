@@ -70,3 +70,4 @@ export declare function createTAAState<
   advance(camera: TAACamera): void;
 };
 export declare const getTAAProjection: (camera: Camera) => Matrix4 | undefined;
+export {};

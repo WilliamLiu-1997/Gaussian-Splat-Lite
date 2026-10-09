@@ -79,3 +79,4 @@ export declare class RadPagedSplats extends IndexedSplats {
   getByteLength(): number;
   dispose(): void;
 }
+export {};

@@ -36,6 +36,7 @@ export class SogStreamScheduler {
     this.chunks = [];
     /** Chunks with a batch, cached source or in-flight load. */
     this.activeChunks = new Set();
+    // Each leaf keeps at most one previous LOD until its fade-out finishes.
     this.leaves = new Map();
     this.wanted = new Set();
     this.fades = new Map();
@@ -145,6 +146,7 @@ export class SogStreamScheduler {
       files.push({ url: this.manifest.environment, count: -1, ranges: [] });
     this.chunks = files.map((file) => ({
       file,
+      // Stable slots keep a chunk together regardless of region arrival order.
       batchSlots: new Map(),
       batchCapacity: 0,
       failures: 0,

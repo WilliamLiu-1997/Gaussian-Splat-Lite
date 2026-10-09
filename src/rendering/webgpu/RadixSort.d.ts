@@ -66,3 +66,4 @@ export declare class WebGPURadixSort {
   prepare(elementCount: number, mode: RadixSortMode): ComputeNode[];
   dispose(): void;
 }
+export {};

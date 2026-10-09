@@ -41,3 +41,4 @@ export declare function createProjectionProgram(
   uniforms: Uniforms,
   view: ProjectionView,
 ): (source: ProjectionInput, includeColor?: boolean) => SplatProjection;
+export {};

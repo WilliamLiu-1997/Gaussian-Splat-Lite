@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Restored private declaration boundaries after the JavaScript migration and added checks comparing module value exports with their declarations.
 - Preserved the Splat material's stencil comparison and write settings when switching between sorted and stochastic rendering.
 - Fixed depth-stencil texture sampling in `TAANode` on native WebGPU with Three.js r186.
 - Fixed float depth and depth-stencil attachments on the r186 WebGL2 fallback, including multisampled capture targets, and kept default render-target depth in float format when using reversed depth.

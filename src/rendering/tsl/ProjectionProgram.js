@@ -300,12 +300,14 @@ export function createProjectionProgram(uniforms, view) {
                 projectedViewDepth.assign(viewCenter.z.negate());
                 const scale1 = fullScale1.mul(supportScale);
                 const scale2 = fullScale2.mul(supportScale);
+                // NDC offsets for each +/-1 quad corner.
                 projectedAxis1.assign(
                   eigenVector1.mul(scale1).mul(2).div(scaledRenderSize),
                 );
                 projectedAxis2.assign(
                   eigenVector2.mul(scale2).mul(2).div(scaledRenderSize),
                 );
+                // Keep source RGB here; the draw stage applies encodeLinear.
                 projectedRgba.assign(
                   N.vec4(
                     includeColor

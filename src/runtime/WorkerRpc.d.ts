@@ -32,3 +32,4 @@ export declare class WorkerRpc<
   ): Promise<Awaited<ReturnType<Handlers[Name]>>>;
   dispose(reason?: unknown): void;
 }
+export {};

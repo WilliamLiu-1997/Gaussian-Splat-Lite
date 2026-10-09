@@ -17,6 +17,8 @@ export const INVALID_SORT_KEY = 0xffffffff;
 const RADIX_BITS = 8;
 const RADIX_BUCKETS = 1 << RADIX_BITS;
 const RADIX_PASSES = 32 / RADIX_BITS;
+// Full 32-bit/fast 24-bit keys sort back-to-front;
+// 16-bit keys sort stochastic draws front-to-back.
 const MODE_PASSES = {
   full: RADIX_PASSES,
   fast: 24 / RADIX_BITS,
@@ -375,6 +377,7 @@ export class WebGPURadixSort {
       return nodes;
     });
     this.nodes = [inputSetup, compactSetup, ...prefixNodes[PREFIX_LEVELS - 1]];
+    // Per mode, the dispatch list for each prefix depth.
     this.dispatchNodes = {
       full: prefixNodes.map(() => [inputSetup]),
       fast: prefixNodes.map(() => [inputSetup]),

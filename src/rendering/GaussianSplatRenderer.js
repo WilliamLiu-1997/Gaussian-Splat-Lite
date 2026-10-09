@@ -577,6 +577,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.timer.update();
     }
     // Read the mode when the update runs; queued requests may predate a switch.
+    // Back-to-front for blending, front-to-back for stochastic overdraw, or
+    // source order for unsorted stochastic draws.
     const mode = !this._stochastic
       ? "back"
       : this.stochasticSort

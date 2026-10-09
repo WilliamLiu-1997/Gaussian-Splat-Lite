@@ -148,7 +148,8 @@ export function createSplatNodeMaterial({
     vStochasticOffset?.assign(N.uint(0));
     const assignVertexData = (data) => {
       const rgba = data.rgba.toVar();
-      // RGB is constant across the quad; decode its color space once
+      // Projection supplies source RGB; this material applies encodeLinear.
+      // RGB is constant across the quad, so decode its color space once
       // per vertex rather than for every covered fragment.
       N.If(encodeLinear, () => {
         rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));

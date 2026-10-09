@@ -36,3 +36,4 @@ export declare function loadSplatData(
   }: SplatDataLoadOptions,
   context?: SplatLoadContext,
 ): Promise<ReorderedSplatResult>;
+export {};

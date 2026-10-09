@@ -29,3 +29,4 @@ export declare class SplatLoader extends Loader {
     ...options
   }: SplatLoadOptions): Promise<Splats>;
 }
+export {};

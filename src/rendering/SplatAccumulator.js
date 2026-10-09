@@ -320,6 +320,7 @@ export class SplatAccumulator {
         if (last.version !== node.version) splatsUpdated = true;
         if (last.sortVersion !== node.sortVersion) sortUpdated = true;
       }
+      // Reuse pose snapshots when native WebGPU rebuilds this mapping in place.
       mapping[mapped] ??= { matrixWorld: new THREE.Matrix4() };
       const entry = mapping[mapped];
       entry.node = node;
@@ -361,15 +362,11 @@ export class SplatAccumulator {
       },
     };
   }
-  static {
-    SplatAccumulator.emptyTexture = emptySplatTexture;
-  }
-  static {
-    SplatAccumulator.emptyTextures = [
-      SplatAccumulator.emptyTexture,
-      SplatAccumulator.emptyTexture,
-    ];
-  }
+  static emptyTexture = emptySplatTexture;
+  static emptyTextures = [
+    SplatAccumulator.emptyTexture,
+    SplatAccumulator.emptyTexture,
+  ];
 }
 /**
  * Collects, in scene order: Splat meshes on the layers, those of them whose

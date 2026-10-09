@@ -9,9 +9,7 @@ export class WorkerTerminatedError extends Error {
 }
 /** Typed main-thread transport shared by ordinary and streaming workers. */
 export class WorkerRpc {
-  static {
-    WorkerRpc.currentId = 0;
-  }
+  static currentId = 0;
   constructor(worker, onDispose) {
     this.worker = worker;
     this.onDispose = onDispose;

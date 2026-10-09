@@ -26,3 +26,4 @@ export declare function snapshotAttributes(
   data: Uint8Array<ArrayBuffer>;
   attributes: SerializedSplatPostDecodeAttribute[];
 };
+export {};

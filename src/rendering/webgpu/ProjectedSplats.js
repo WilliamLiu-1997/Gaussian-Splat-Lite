@@ -139,6 +139,8 @@ export class ProjectedSplats {
       .compute(1, [1])
       .setName("Splat visible draw arguments");
     const mono = this.createSlotSet(1);
+    // Resolves after common kernels, the full sorter and the first slot compile.
+    // Remaining slots warm automatically.
     this.ready = renderer
       .compileComputeAsync([
         this.resetCount,
@@ -348,6 +350,8 @@ export class ProjectedSplats {
     return set.slots.slice(0, set.compiled);
   }
   async compileSlots(set) {
+    // New eye counts hide Splats until drawable; notify on-demand hosts to redraw
+    // when kernels become ready or compilation fails.
     try {
       // A drawable set yields first, so readiness callbacks run before the
       // slots that only batch more meshes.

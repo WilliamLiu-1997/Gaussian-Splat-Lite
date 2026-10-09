@@ -30,6 +30,18 @@
       "recommended": true
     }
   },
+  "overrides": [
+    {
+      "include": ["**/*.d.ts"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noUselessEmptyExport": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double"

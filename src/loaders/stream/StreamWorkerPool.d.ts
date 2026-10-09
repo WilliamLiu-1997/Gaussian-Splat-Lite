@@ -44,3 +44,4 @@ export declare class StreamWorkerPool<W extends StreamWorker> {
   private wake;
   dispose(reason?: unknown): void;
 }
+export {};

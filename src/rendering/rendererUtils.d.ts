@@ -33,3 +33,4 @@ export declare function isXRRenderTarget(
 export declare function assertSupportedRenderer(
   renderer: GaussianSplatCompatibleRenderer,
 ): void;
+export {};

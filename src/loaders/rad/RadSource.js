@@ -184,6 +184,7 @@ export class RadSource {
       remote.validatorHeader = state.validatorHeader;
     }
   }
+  /** Small response snapshot shared across a dataset's download workers. */
   resourceState(remote) {
     const { responseUrl, total, validator, validatorHeader } = remote;
     return { responseUrl, total, validator, validatorHeader };
@@ -197,6 +198,7 @@ export class RadSource {
     return remote;
   }
   async resolveRemote(remote, signal) {
+    // resolveAsset bridges LoadingManager URL modifiers into a decode worker.
     remote.resolved ??= new URL(
       this.options.resolveAsset
         ? await abortable(this.options.resolveAsset(remote.url), signal)
@@ -330,6 +332,7 @@ export class RadSource {
         offset === 0 &&
         length === 8
       ) {
+        // Validate ordinary metadata as soon as the full-response header arrives.
         const { chunks, size } = await readResponse(
           response,
           Number.POSITIVE_INFINITY,

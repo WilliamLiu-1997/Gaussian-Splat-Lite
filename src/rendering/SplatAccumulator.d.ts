@@ -97,3 +97,4 @@ export declare class SplatAccumulator {
   static emptyTexture: THREE.DataArrayTexture;
   static emptyTextures: SplatDataTextures;
 }
+export {};

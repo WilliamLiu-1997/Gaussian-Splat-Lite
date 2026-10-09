@@ -53,3 +53,4 @@ export declare class ProjectionCache {
   };
   dispose(): void;
 }
+export {};
