@@ -4,7 +4,7 @@
 
 This guide is for contributors. It describes internal module boundaries, backend differences, and resource lifetimes. To use the library, start from the [README](../README.md#quick-start) and the API pages it lists; those pages describe behavior, and this one explains how it is implemented.
 
-[`src/index.ts`](../src/index.ts) defines the public exports. Applications use `SplatMesh` for models and one `GaussianSplatRenderer` for the scene.
+[`src/index.js`](../src/index.js) defines the runtime exports, and [`src/index.d.ts`](../src/index.d.ts) defines the public type exports. Implementations use JavaScript with adjacent `.d.ts` files; modules containing only types need no JavaScript file. Applications use `SplatMesh` for models and one `GaussianSplatRenderer` for the scene.
 
 ## Source layout
 
@@ -23,7 +23,7 @@ This guide is for contributors. It describes internal module boundaries, backend
 | `rust/gaussian-splat-rs/src/` | WASM bridges, typed-array output, LOD selection, sorting, and raycasting |
 | `src/runtime/` | Worker RPC, pooling, transferables, and WASM initialization |
 | `src/utils/` | Numeric conversion, spatial transforms, and Three.js helpers |
-| `src/patches/` | Three.js runtime fixes and separate type declaration corrections |
+| `src/patches/` | Three.js runtime compatibility fixes |
 | `src/rendering/` | Shared updates, sorting handoffs, backend selection, and stochastic blue noise |
 | `src/rendering/tsl/` | Shared TSL generation, projection, drawing, and view uniforms |
 | `src/rendering/webgpu/` | Compute projection, projected caches, GPU sorting, and indirect drawing |
@@ -32,7 +32,7 @@ This guide is for contributors. It describes internal module boundaries, backend
 | `src/capture/` | Optional offscreen targets, readback, cube captures, and PMREM filtering |
 | `src/addons/` | Temporal anti-aliasing: `TAAPass` for WebGLRenderer, `TAANode` for WebGPURenderer, and their shared state |
 
-`patches/threeTypes.ts` owns Node declaration extensions and the `PatchedTSL` type; `rendering/tsl/tslCompat.ts` consumes that type for `N` and provides the runtime shader helpers.
+`rendering/tsl/shaderUtils.js` provides shared shader and texture-load helpers. Modules use the Three.js TSL namespace directly, and declarations use Three.js types.
 
 ## Rendering boundaries
 
@@ -50,9 +50,9 @@ The renderer combines visible models using Three.js transforms, visibility, and 
 
 For sorted rendering, native WebGPU keeps ordering and visible counts on the GPU and sorts before drawing; its accumulator carries mappings and edit metadata without generating combined textures. Both WebGL backends use asynchronous Worker/WASM sorting and retain the previous display until a matching order is ready.
 
-In `webgpu/`, `ProjectedSplats.ts` coordinates projection and sorting, `ProjectionCache.ts` owns projected storage, and `RadixSort.ts` owns sort passes. WebXR uses the eyes' mean pose for generation and sorting, with separate projections for each eye. Both WebGL backends share `webgl/OrderingTexture.ts` for allocation and disposal, while keeping their own upload and binding paths.
+In `webgpu/`, `ProjectedSplats.js` coordinates projection and sorting, `ProjectionCache.js` owns projected storage, and `RadixSort.js` owns sort passes. WebXR uses the eyes' mean pose for generation and sorting, with separate projections for each eye. Both WebGL backends share `webgl/OrderingTexture.js` for allocation and disposal, while keeping their own upload and binding paths.
 
-`backend.ts` selects the backend from the renderer type and its public `coordinateSystem`, which distinguishes native WebGPU from WebGL fallback. It chooses the blend space for each output: the working color space by default, `renderer.outputColorSpace` when WebGLRenderer draws to the canvas, and the target texture's color space when it draws to an XR-style target.
+`backend.js` selects the backend from the renderer type and its public `coordinateSystem`, which distinguishes native WebGPU from WebGL fallback. It chooses the blend space for each output: the working color space by default, `renderer.outputColorSpace` when WebGLRenderer draws to the canvas, and the target texture's color space when it draws to an XR-style target.
 
 Projected Splat support is capped at the viewport's short side, in projection space scaled by `focalAdjustment`, in both the TSL projection program and the GLSL vertex shader. The quad and its UV extent shrink by the same ratio, preserving the Gaussian profile.
 
@@ -72,7 +72,7 @@ Resource rules:
 
 Sorted and stochastic draws compile separate shaders without mode branches. A mode change takes effect at the next update boundary, after the current draw; both WebGL backends also wait for the matching accumulator and sort, and `stochasticActive` reports the mode being drawn. Stochastic draws use the opaque list with depth testing and writing.
 
-Coverage uses a tileable 32-frame spatiotemporal blue-noise atlas (`blueNoise.ts`, generated by `scripts/generate-blue-noise.js`) on all backends. Each Splat keeps its own spatial offset and temporal phase, so consecutive samples follow the atlas's time axis instead of choosing unrelated offsets. The temporal sequence is optimized for exponential history accumulation and wraps after 32 samples. `stochasticSample` advances once per scene render, and every view in that render shares it.
+Coverage uses a tileable 32-frame spatiotemporal blue-noise atlas (`blueNoise.js`, generated by `scripts/generate-blue-noise.js`) on all backends. Each Splat keeps its own spatial offset and temporal phase, so consecutive samples follow the atlas's time axis instead of choosing unrelated offsets. The temporal sequence is optimized for exponential history accumulation and wraps after 32 samples. `stochasticSample` advances once per scene render, and every view in that render shares it.
 
 Seeds exist only for stochastic draws: WebGL accumulators omit the seed layer in sorted rendering, and native WebGPU allocates its seed buffer on demand. Front-to-back stochastic ordering uses 16-bit keys. With unsorted stochastic rendering, `shrinkResources()` releases the sort worker and ordering.
 
@@ -83,18 +83,18 @@ Seeds exist only for stochastic draws: WebGL accumulators omit the seed layer in
 - **Independent Splat state.** The helper owns an internal `GaussianSplatRenderer` with `autoUpdate` and stochastic rendering off, sharing the display renderer's timer, loaded Splat data, and model-owned SDF edit textures. Its accumulators, sorting, and projection resources are separate, so display ordering and camera state are untouched. Global and model-local edits apply to captures and follow their latest values. `frameCallbacks` is off, leaving `onFrame` to the display renderer.
 - **Stencil captures.** 2D and cube targets follow the Three.js renderer's stencil setting, with no separate capture option; a 2D target without a depth buffer gets no stencil, since Three.js attaches stencil only with depth. The intermediate target uses a depth-stencil attachment when stencil is enabled. With stencil, intermediate depth is 32-bit float for a float output depth texture or a default attachment with reversed depth; otherwise it is 24-bit. The scene's stencil masking applies before copying its color and depth to the output.
 - **Options.** Quality, sorting, and material options are copied from the supplied renderer at the start of each capture. The active Splat material's stencil comparison and write settings are copied as well. Cube captures force radial sorting. The internal renderer takes the capture camera's layer mask.
-- **Two phases.** Preparation awaits `update()` on a filtered scene view (`sceneView.ts`), which excludes hidden models from traversal without changing visibility and collects edits with the original scene's visibility. If the display updates shared models during a pending sort, preparation runs again; appearance-only changes reuse the ordering. The draw is synchronous: other Splat renderers' layer masks are cleared, `hideObjects` are hidden, and the internal renderer joins the scene. `withCaptureState()` saves and restores the render target, cube face, mip level, XR setting, automatic clearing, and MRT. Nothing stays changed across an `await`, and everything is restored when drawing throws.
+- **Two phases.** Preparation awaits `update()` on the original scene with an explicit set of excluded objects. Collection skips models under those objects without changing visibility, while global edits follow the original scene's visibility. If the display updates shared models during a pending sort, preparation runs again with the same exclusions; appearance-only changes reuse the ordering. The draw is synchronous: other Splat renderers' layer masks are cleared, `hideObjects` are hidden, and the internal renderer joins the scene. `withCaptureState()` saves and restores the render target, cube face, mip level, XR setting, automatic clearing, and MRT. Nothing stays changed across an `await`, and everything is restored when drawing throws.
 - **Ordering.** Captures on one helper are queued and run in call order. The camera or `worldCenter` is copied when the call is made. `renderReadTarget()` and `renderEnvMap()` read or filter inside the same queued task, before a later capture can redraw the target.
 - **Cube captures.** Splat data is prepared at `worldCenter` with a 90° camera, then six faces render with automatic updates off. Both WebGL backends share one radial CPU sort across the faces; native WebGPU projects, compacts, and sorts for each face while drawing. Every capture runs `update()`, whose version checks reuse valid data and ordering, so 1.1.8's `update` option is not offered. Mipmaps are generated after the sixth face. Filtered and unfiltered cubes use separate targets, reallocated when size, clipping planes, or the renderer's stencil setting change.
 - **Color.** `WebGLCapture` renders into an intermediate flagged as an XR-style target, 8-bit unless the output is float, so materials convert to the output color space before blending as on the canvas; a full-screen pass then converts to the target's storage space and copies depth. `WebGPUCapture` renders in the working color space, then applies the renderer's output transform and converts to storage space. On both, float outputs keep their type so values stay unclamped, and the intermediate takes the output's sample count, so multisampling applies to the scene and not to the final pass.
-- **Readback.** `pixels.ts` returns packed RGBA8 with the bottom row first on every backend, flipping native WebGPU's top-left origin. Three.js returns tightly packed rows. Supersampled targets are box-filtered on the CPU. Cube faces are normalized to the WebGL cube render target layout: native WebGPU stores +X and −X swapped and reads each face rotated 180°.
+- **Readback.** `pixels.js` returns packed RGBA8 with the bottom row first on every backend, flipping native WebGPU's top-left origin. Three.js returns tightly packed rows. Supersampled targets are box-filtered on the CPU. Cube faces are normalized to the WebGL cube render target layout: native WebGPU stores +X and −X swapped and reads each face rotated 180°.
 - **Ownership.** `dispose()` releases the internal renderer, 2D and cube targets, readback buffers, and the PMREM generator. Each texture from `renderEnvMap()` belongs to the caller; disposing it also releases its PMREM render target.
 
 ## Temporal anti-aliasing boundaries
 
 [TAAPass and TAANode](TAAPass.md) are derived from Three.js TRAA, without a velocity attachment: reprojection uses scene depth and camera motion only, so object motion is not tracked.
 
-- `taaShared.ts` owns the state both share: a 32-entry Halton(2, 3) jitter sequence, jittered and unjittered projections, previous-frame matrices, the history index, sizing, and reset. It supports custom projections, scaled rigs, reversed depth, and logarithmic depth.
+- `taaShared.js` owns the state both share: a 32-entry Halton(2, 3) jitter sequence, jittered and unjittered projections, previous-frame matrices, the history index, sizing, and reset. It supports custom projections, scaled rigs, reversed depth, and logarithmic depth.
 - Each implementation captures the scene itself into a half-float target with a depth texture and resolves between two history targets, with no history copies. The resolve applies depth rejection away from edges, neighborhood clipping, and luminance-aware blending.
 - The capture target takes a stencil buffer when the Three.js renderer has one; the history targets never do, since the resolve writes only color and depth. Depth stays 32-bit float on every backend.
 - The camera's projection is jittered only during capture. Native Splat projection reads the unjittered matrix through `getTAAProjection()`, so projection and sorting results are reused while only the jitter changes.
@@ -109,9 +109,9 @@ PLY, SPZ, SOG, and RAD decode in `gaussian-splat-lib` and publish through `Splat
 - SOG decodes property-image groups into bounded batches. Metadata, ZIP validation, images, and SH palettes belong to the core decoder; `SogDecodeSession` bridges that API to JavaScript.
 - RAD retains dataset codebooks between page requests and returns packed records with separate tree metadata.
 
-[`loadSplatData`](../src/loaders/loadSplatData.ts) coordinates decoding, resolvers, cancellation, progress, and loading-manager callbacks, returning packed `SplatResult` data without importing scene classes. `Splats` uses it for initialization; `SplatLoader` adapts it to the Three.js loader API. Completion callbacks run before the loading manager ends the item.
+[`loadSplatData`](../src/loaders/loadSplatData.js) coordinates decoding, resolvers, cancellation, progress, and loading-manager callbacks, returning packed `SplatResult` data without importing scene classes. `Splats` uses it for initialization; `SplatLoader` adapts it to the Three.js loader API. Completion callbacks run before the loading manager ends the item.
 
-`RadSource` and `SogSource` share reads, request settings, and cancellation through `loaders/source.ts`. Companion-file resolvers run on the calling thread, and caller-owned buffers are copied before transfer. See [SplatLoader](SplatLoader.md) for the public loading API.
+`RadSource` and `SogSource` share reads, request settings, and cancellation through `loaders/source.js`. Companion-file resolvers run on the calling thread, and caller-owned buffers are copied before transfer. See [SplatLoader](SplatLoader.md) for the public loading API.
 
 ## Post-decode boundaries
 
@@ -119,12 +119,12 @@ The [postDecode](PostDecode.md) API builds expressions on the calling thread and
 
 | Module | Responsibility |
 | --- | --- |
-| `program.ts` / `builder.ts` | Public API, program identity, typed expressions, and patch validation |
-| `protocol.ts` | Opcodes, packed layouts, and shared types without builder or runtime dependencies |
-| `optimizer.ts` | Fusion of single-use arithmetic intermediates before compilation |
-| `compiler.ts` | Conditional flow, dependencies, packed instructions, and attribute snapshots |
-| `registers.ts` | Runtime register allocation and values carried between condition stages |
-| `operations.ts` / `runtime.ts` | Packed input reads, block execution, conditions, and output writes |
+| `program.js` / `builder.js` | Public API, program identity, typed expressions, and patch validation |
+| `protocol.js` | Opcodes, packed layouts, and shared types without builder or runtime dependencies |
+| `optimizer.js` | Fusion of single-use arithmetic intermediates before compilation |
+| `compiler.js` | Conditional flow, dependencies, packed instructions, and attribute snapshots |
+| `registers.js` | Runtime register allocation and values carried between condition stages |
+| `operations.js` / `runtime.js` | Packed input reads, block execution, conditions, and output writes |
 
 Decode workers import runtime and protocol modules directly, keeping expression construction and compilation outside their dependency graph.
 
@@ -134,8 +134,8 @@ Loaders own transport and parsing; schedulers own selection, fades, publication,
 
 - `StreamWorkerPool.run()` queues worker leases, assigns task IDs, links cancellation, counts downloads, and balances loading-manager notifications. Each loader has its own pool; format-specific callbacks retain SOG caches or release RAD decoder slots.
 - `IndexedSplats` shares texture storage and selected-index reads between `RadPagedSplats` and `SogRegionSplats`. Slot assignment and scene attachment remain with the format-specific scheduler and batch classes.
-- `StreamCameras.ts` owns the registered cameras and their resolutions, and expands a WebXR `ArrayCamera` into its eye views once they have a projection and viewport.
-- `streamOptions.ts` owns shared defaults, validation, retry classification, and statistics. `StreamByteBudget` bounds pending copies separately from active loads; ready data has no per-update byte allowance.
+- `StreamCameras.js` owns the registered cameras and their resolutions, and expands a WebXR `ArrayCamera` into its eye views once they have a projection and viewport.
+- `streamOptions.js` owns shared defaults, validation, retry classification, and statistics. `StreamByteBudget` bounds pending copies separately from active loads; ready data has no per-update byte allowance.
 
 `splatBudget` controls selected detail, not total memory. Resident-byte estimates exclude pending copies and WASM memory, which are reported separately; resident storage has no byte cap. Pending copies allow 8 MiB per concurrent load (32 MiB by default), enlarged for an indivisible RAD page; one oversized item can proceed alone. This bounds the waiting queue, not the bytes published or uploaded per frame.
 
@@ -145,7 +145,7 @@ Applications must keep calling `update()` while waiting for `firstRenderable` an
 
 [SogStreamScheduler](SogStreamScheduler.md) loads `lod-meta.json` scenes. Ordinary `.sog` files and `meta.json` use the regular model loader.
 
-- `sogLod.ts` parses manifests and selects LOD targets using `splatBudget`. `SogVisibility` keeps the spatial tree and distance-based priorities in the LOD worker.
+- `sogLod.js` parses manifests and selects LOD targets using `splatBudget`. `SogVisibility` keeps the spatial tree and distance-based priorities in the LOD worker.
 - `SogStreamLoader` owns the LOD worker, decoding pool, and cached chunk sources.
 - `SogStreamBatch` owns occupied slots and mesh attachment; `SogRegionSplats` owns indexed region data.
 - `SogStreamScheduler` owns per-region targets, pending extractions, current/outgoing regions, fades, and retirement. It reuses cached detail and refines large gaps gradually. Each region finishes its current crossfade before admitting another LOD.
@@ -170,8 +170,8 @@ Pending extractions keep their chunk cache referenced, even if the target change
 
 - `RadSource` owns bounded reads, HTTP Range consistency, companion-page resolution, and cancellation.
 - `RadStreamLoader` owns a dedicated LOD worker and a bounded decoding pool. Packed geometry transfers to the calling thread; tree arrays transfer to the LOD worker. Decoder slots release after decoding, while pending-byte reservations remain until tree registration and publication can complete.
-- `rad_lod.rs` selects a camera-dependent tree cut using file-global node indices. Children replace parents only as complete groups. `radFade.ts` compares selections and prepares transitions in the LOD worker.
-- The LOD worker retains each chunk's inverse Morton order and block bounds until chunk release. `prepareRadSelection.ts` builds render indices and merges current/post-fade bounds together; publication and fade completion switch indices and bounds together on the calling thread.
+- `rad_lod.rs` selects a camera-dependent tree cut using file-global node indices. Children replace parents only as complete groups. `radFade.js` compares selections and prepares transitions in the LOD worker.
+- The LOD worker retains each chunk's inverse Morton order and block bounds until chunk release. `prepareRadSelection.js` builds render indices and merges current/post-fade bounds together; publication and fade completion switch indices and bounds together on the calling thread.
 - `RadStreamScheduler` owns page requests, slot occupancy, publication, fades, retries, and retirement. `RadPagedSplats` and `RadStreamBatch` own page storage and selected-index data. Shared nodes render once, and at most two selections overlap during a fade.
 
 The scheduler retains resources through these stages:
@@ -197,7 +197,7 @@ Both schedulers defer expired-cache retirement while a new LOD decision is pendi
 ## Imports and extensions
 
 - Applications import from `gaussian-splat-lite`, including `utils` and `defines`; source paths are internal.
-- Internal modules import helpers from their owner. `utils/index.ts` is the public entry point.
+- Internal modules import helpers from their owner. `utils/index.js` is the public entry point.
 - Keep scene updates and sorting handoffs in shared rendering code, with backend-specific storage and output handling in each backend.
 - Keep options and types beside their owner. Shared uniform defaults must not import backends; native projected-cache layouts belong in `webgpu/`, separately from packed source layouts in `data/`.
 - Keep numeric codecs separate from Three.js object unpacking so decode workers avoid scene dependencies.

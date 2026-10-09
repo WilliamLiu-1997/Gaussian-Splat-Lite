@@ -1,0 +1,379 @@
+import * as THREE from "three";
+import { SplatOpacityTable } from "./SplatOpacityTable.js";
+import { Splats } from "./Splats.js";
+import { SPLAT_BOUNDS_BLOCK_SIZE, SPLAT_TEX_WIDTH } from "./defines.js";
+import { decodeShRgbToArray } from "./splatCodec.js";
+import { SH_ARRAY_COUNTS, SH_KEYS } from "./splatData.js";
+import { getTextureSize } from "./textureLayout.js";
+import { decodeSplat } from "./unpack.js";
+function makeTexture(data, width, height, depth) {
+  const texture = new THREE.DataArrayTexture(data, width, height, depth);
+  texture.format = THREE.RGBAIntegerFormat;
+  texture.type = THREE.UnsignedIntType;
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  return texture;
+}
+/** Fixed packed storage with one visible-index contract for rendering and CPU reads.
+ * Fades affect display only: records returned to picking retain their source opacity. */
+export class IndexedSplats extends Splats {
+  constructor({ capacity, layerSize, numSh, blockBits }) {
+    // RAD and SOG layout helpers supply aligned power-of-two layers.
+    if (capacity > 0x1_0000_0000)
+      throw new Error("Indexed Splat capacity exceeds 32-bit addressing");
+    super();
+    this.sourceIndices = new Uint32Array(0);
+    this.indexTexture = Splats.emptyTexture;
+    this.disposed = false;
+    this.spatialChunks = new Map();
+    this.spatialBoundsBytes = 0;
+    this.maxSplats = capacity;
+    this.layerSize = layerSize;
+    this.numSh = numSh;
+    this.blockBits = blockBits;
+    this.opacities = new SplatOpacityTable(capacity, layerSize, blockBits);
+    this.sourceArrays = Array.from(
+      { length: 2 + SH_ARRAY_COUNTS[numSh] },
+      () => new Uint32Array(capacity * 4),
+    );
+    this.sourceCenters = new Float32Array(this.sourceArrays[0].buffer);
+    this.sourceIds = new Uint32Array(capacity);
+    this.visibleIndices = new Uint32Array(capacity);
+    this.sourceTextures = this.sourceArrays.map((array) =>
+      makeTexture(
+        array,
+        SPLAT_TEX_WIDTH,
+        layerSize / SPLAT_TEX_WIDTH,
+        capacity / layerSize,
+      ),
+    );
+  }
+  assertLive() {
+    if (this.disposed) throw new Error("Streaming Splat source is disposed");
+  }
+  initialize(options = {}) {
+    // Splats calls initialize once during super(); fixed storage is installed next.
+    if (this.sourceArrays !== undefined)
+      throw new Error("Streaming sources cannot be reinitialized");
+    return super.initialize(options);
+  }
+  /** Range-based sources can materialize their visible map lazily. */
+  ensureIndices() {}
+  /** Each source updates its bounds independently of the visible-index map. */
+  commitIndices(indices) {
+    const target = this.prepareIndices(indices.length);
+    for (let index = 0; index < indices.length; index++) {
+      const source = indices[index];
+      target[index] = source;
+      this.visibleIndices[source] = index;
+    }
+  }
+  /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
+  prepareIndices(count) {
+    this.assertLive();
+    if (
+      count > this.sourceIndices.length ||
+      count < this.sourceIndices.length / 4
+    ) {
+      const layout = getTextureSize(Math.max(1, Math.ceil(count / 4)), 1);
+      const capacity = layout.maxSplats * 4;
+      if (capacity !== this.sourceIndices.length) {
+        if (this.indexTexture !== Splats.emptyTexture)
+          this.indexTexture.dispose();
+        this.sourceIndices = new Uint32Array(capacity);
+        this.indexTexture = makeTexture(
+          this.sourceIndices,
+          layout.width,
+          layout.height,
+          layout.depth,
+        );
+      }
+    }
+    this.numSplats = count;
+    if (this.indexTexture !== Splats.emptyTexture)
+      this.indexTexture.needsUpdate = true;
+    this.needsUpdate = true;
+    return this.sourceIndices;
+  }
+  /** Copies packed records. Input buffers remain caller-owned for both formats. */
+  writeRecords(start, data, allocation) {
+    this.assertLive();
+    const count = data.numSplats;
+    if (
+      !Number.isSafeInteger(start) ||
+      start < 0 ||
+      !Number.isSafeInteger(count) ||
+      count < 0 ||
+      !Number.isSafeInteger(allocation) ||
+      allocation < count ||
+      start + allocation > this.maxSplats
+    )
+      throw new Error("Invalid streaming Splat write range");
+    const arrays = [
+      ...data.splatArrays,
+      ...SH_KEYS.slice(0, SH_ARRAY_COUNTS[this.numSh]).map(
+        (key) => data.extra[key],
+      ),
+    ];
+    if (
+      arrays.length !== this.sourceArrays.length ||
+      data.sourceIds.length < count ||
+      arrays.some(
+        (array) =>
+          count > 0 &&
+          (!(array instanceof Uint32Array) || array.length < count * 4),
+      )
+    )
+      throw new Error("Incomplete packed Splat or SH records");
+    if (
+      data.spatialBounds?.length !==
+      Math.ceil(count / SPLAT_BOUNDS_BLOCK_SIZE) * 6
+    )
+      throw new Error("Incorrect spatial bounds block length");
+    this.releaseSpatialBounds(start);
+    // Packed data remains caller-owned, as do its spatial bounds.
+    const bounds = data.spatialBounds.slice();
+    this.spatialChunks.set(start, { count, bounds });
+    this.spatialBoundsBytes += bounds.byteLength;
+    this.sourceIds.set(data.sourceIds.subarray(0, count), start);
+    this.sourceIds.fill(0, start + count, start + allocation);
+    const firstLayer = Math.floor(start / this.layerSize);
+    const lastLayer = Math.ceil((start + allocation) / this.layerSize);
+    for (let index = 0; index < this.sourceArrays.length; index++) {
+      const target = this.sourceArrays[index];
+      const source = arrays[index];
+      if (source) target.set(source.subarray(0, count * 4), start * 4);
+      target.fill(0, (start + count) * 4, (start + allocation) * 4);
+      for (let layer = firstLayer; layer < lastLayer; layer++)
+        this.sourceTextures[index].addLayerUpdate(layer);
+      this.sourceTextures[index].needsUpdate = true;
+    }
+    this.needsUpdate = true;
+  }
+  getStorageIndex(index) {
+    this.assertLive();
+    this.ensureIndices();
+    this.checkVisibleRange(index, 1);
+    return this.sourceIndices[index];
+  }
+  getSourceIndex(index) {
+    return this.sourceIds[this.getStorageIndex(index)];
+  }
+  checkVisibleRange(start, count) {
+    if (
+      !Number.isSafeInteger(start) ||
+      start < 0 ||
+      !Number.isSafeInteger(count) ||
+      count < 0 ||
+      start + count > this.numSplats
+    )
+      throw new Error("Invalid visible Splat range");
+  }
+  getNumSh() {
+    return this.numSh;
+  }
+  get textureByteLength() {
+    return (
+      this.sourceArrays.reduce((bytes, array) => bytes + array.byteLength, 0) +
+      this.sourceIndices.byteLength +
+      this.opacities.byteLength
+    );
+  }
+  getByteLength() {
+    return (
+      this.textureByteLength +
+      this.sourceIds.byteLength +
+      this.centerOnlyBounds.byteLength +
+      this.bounds.byteLength +
+      this.spatialBoundsBytes +
+      this.visibleIndices.byteLength
+    );
+  }
+  get residentBytes() {
+    return this.getByteLength() + this.textureByteLength;
+  }
+  center(source, axis) {
+    const second = this.sourceArrays[1];
+    const base = source * 4;
+    return second[base + 1] >>> 16 === 0xfc00 && second[base + 2] === 0xfc00fc00
+      ? Number.NaN
+      : this.sourceCenters[base + axis];
+  }
+  copySortCenters(target, targetStart, count) {
+    this.assertLive();
+    this.ensureIndices();
+    this.checkVisibleRange(0, count);
+    if (
+      !Number.isSafeInteger(targetStart) ||
+      targetStart < 0 ||
+      targetStart + count * 3 > target.length
+    )
+      throw new Error("Invalid sort center target range");
+    for (let index = 0; index < count; index++)
+      for (let axis = 0; axis < 3; axis++)
+        target[targetStart + index * 3 + axis] = this.center(
+          this.sourceIndices[index],
+          axis,
+        );
+  }
+  releaseSpatialBounds(start) {
+    const chunk = this.spatialChunks.get(start);
+    if (chunk) {
+      this.spatialBoundsBytes -= chunk.bounds.byteLength;
+      this.spatialChunks.delete(start);
+    }
+  }
+  forEachRaycastRange(query, callback) {
+    this.assertLive();
+    this.ensureIndices();
+    let rangeStart = -1;
+    let rangeEnd = -1;
+    for (const [start, { count, bounds }] of this.spatialChunks) {
+      query.forEachRange(bounds, count, (base, length) => {
+        for (
+          let source = start + base;
+          source < start + base + length;
+          source++
+        ) {
+          const index = this.visibleIndices[source];
+          // Validate against the current cut so hidden slots need no clearing.
+          if (index >= this.numSplats || this.sourceIndices[index] !== source)
+            continue;
+          if (index !== rangeEnd) {
+            if (rangeStart >= 0) callback(rangeStart, rangeEnd - rangeStart);
+            rangeStart = index;
+          }
+          rangeEnd = index + 1;
+        }
+      });
+    }
+    if (rangeStart >= 0) callback(rangeStart, rangeEnd - rangeStart);
+  }
+  copySplatRecords(firstTarget, secondTarget, sourceStart, count) {
+    this.assertLive();
+    this.ensureIndices();
+    this.checkVisibleRange(sourceStart, count);
+    if (firstTarget.length < count * 4 || secondTarget.length < count * 4)
+      throw new Error("Splat record target is too small");
+    for (let index = 0; index < count; index++) {
+      const source = this.sourceIndices[sourceStart + index] * 4;
+      for (let word = 0; word < 4; word++) {
+        firstTarget[index * 4 + word] = this.sourceArrays[0][source + word];
+        secondTarget[index * 4 + word] = this.sourceArrays[1][source + word];
+      }
+    }
+  }
+  getSplat(index, includeSh = true) {
+    const source = this.getStorageIndex(index);
+    const splat = decodeSplat(
+      [this.sourceArrays[0], this.sourceArrays[1]],
+      source,
+    );
+    if (!includeSh) return splat;
+    const rgb = [0, 0, 0];
+    const sh = Array.from(
+      { length: [0, 3, 8, 15][this.numSh] },
+      (_, coefficient) => {
+        const word =
+          this.sourceArrays[2 + (coefficient >> 2)][
+            source * 4 + (coefficient & 3)
+          ];
+        decodeShRgbToArray(word, rgb);
+        return new THREE.Color(rgb[0], rgb[1], rgb[2]);
+      },
+    );
+    return { ...splat, sh };
+  }
+  forEachCenter(callback) {
+    this.assertLive();
+    this.ensureIndices();
+    for (let index = 0; index < this.numSplats; index++) {
+      const source = this.sourceIndices[index];
+      callback(
+        index,
+        this.center(source, 0),
+        this.center(source, 1),
+        this.center(source, 2),
+      );
+    }
+  }
+  forEachSplat(callback) {
+    this.assertLive();
+    this.ensureIndices();
+    let splat;
+    const records = [this.sourceArrays[0], this.sourceArrays[1]];
+    for (let index = 0; index < this.numSplats; index++) {
+      splat = decodeSplat(records, this.sourceIndices[index], splat);
+      callback(
+        index,
+        splat.center,
+        splat.scales,
+        splat.quaternion,
+        splat.opacity,
+        splat.color,
+      );
+    }
+  }
+  takeData() {
+    this.assertLive();
+    this.ensureIndices();
+    const count = this.numSplats;
+    const sourceIds = new Uint32Array(count);
+    for (let i = 0; i < count; i++)
+      sourceIds[i] = this.sourceIds[this.sourceIndices[i]];
+    const arrays = this.sourceArrays.map((source) => {
+      const target = new Uint32Array(count * 4);
+      for (let index = 0; index < count; index++) {
+        const offset = this.sourceIndices[index] * 4;
+        for (let word = 0; word < 4; word++)
+          target[index * 4 + word] = source[offset + word];
+      }
+      return target;
+    });
+    const data = {
+      numSplats: count,
+      splatArrays: [arrays[0], arrays[1]],
+      sourceIds,
+      extra: Object.fromEntries(
+        arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
+      ),
+    };
+    this.dispose();
+    return data;
+  }
+  setTextureUniforms(uniforms) {
+    this.assertLive();
+    this.ensureIndices();
+    uniforms.sourceSplats.value = this.sourceTextures[0];
+    uniforms.sourceSplats2.value = this.sourceTextures[1];
+    uniforms.sh1Texture.value = this.sourceTextures[2] ?? Splats.emptyTexture;
+    uniforms.sh2Texture.value = this.sourceTextures[3] ?? Splats.emptyTexture;
+    uniforms.sh3TextureA.value = this.sourceTextures[4] ?? Splats.emptyTexture;
+    uniforms.sh3TextureB.value = this.sourceTextures[5] ?? Splats.emptyTexture;
+    uniforms.sourceLayerBits.value = Math.log2(this.layerSize);
+    uniforms.sourceLayerMask.value = this.layerSize - 1;
+    uniforms.sourceBlockBits.value = this.blockBits;
+    uniforms.sourceBlocks.value = this.opacities.texture;
+    uniforms.sourceOpacities.value = this.opacities.opacityTexture;
+    uniforms.sourceIndexed.value = true;
+    uniforms.sourceIndices.value = this.indexTexture;
+    this.needsUpdate = false;
+  }
+  dispose() {
+    if (this.disposed) return;
+    super.dispose();
+    for (const texture of this.sourceTextures) texture.dispose();
+    if (this.indexTexture !== Splats.emptyTexture) this.indexTexture.dispose();
+    this.opacities.dispose();
+    this.sourceArrays = [];
+    this.sourceTextures = [];
+    this.sourceCenters = new Float32Array(0);
+    this.sourceIndices = new Uint32Array(0);
+    this.visibleIndices = new Uint32Array(0);
+    this.indexTexture = Splats.emptyTexture;
+    this.spatialChunks.clear();
+    this.spatialBoundsBytes = 0;
+    this.disposed = true;
+  }
+}

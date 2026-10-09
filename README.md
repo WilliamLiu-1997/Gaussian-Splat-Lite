@@ -189,7 +189,7 @@ npm run dev
 
 Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
 
-See [Contributing](CONTRIBUTING.md#validation) for validation commands, and [Architecture](docs/Architecture.md) for how the library is built internally. `npm run build` emits ESM, CommonJS, TypeScript declarations, and source maps in `dist/`.
+See [Contributing](CONTRIBUTING.md#validation) for validation commands, and [Architecture](docs/Architecture.md) for how the library is built internally. `npm run build` emits ESM, CommonJS, declarations, and source maps in `dist/`.
 
 ## Acknowledgements
 

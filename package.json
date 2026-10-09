@@ -21,16 +21,16 @@
     }
   },
   "scripts": {
-    "build": "npm run build:production && npm run build:dev && npm run build:types:cjs",
-    "build:dev": "vite build --mode dev-es && vite build --mode dev-cjs",
-    "build:production": "vite build --mode production-es && vite build --mode production-cjs",
-    "build:site": "vite build --config vite.site.config.ts",
-    "build:types:cjs": "node scripts/build-cjs-types.js",
+    "build": "vite build --mode production-es && vite build --mode production-cjs && vite build --mode dev-es && vite build --mode dev-cjs && npm run build:types",
+    "build:dev": "vite build --mode dev-es && vite build --mode dev-cjs && npm run build:types",
+    "build:production": "vite build --mode production-es && vite build --mode production-cjs && npm run build:types",
+    "build:site": "vite build --config vite.site.config.js",
+    "build:types": "node scripts/build-types.js && node scripts/check-types.js --package",
     "build:wasm": "node rust/build_wasm.js",
-    "check": "tsc --noEmit",
+    "check": "node scripts/check-js.js && tsc --noEmit && node scripts/check-types.js",
     "check:rust": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check",
     "clean": "rm -rf dist/ node_modules/ rust/target/ rust/gaussian-splat-rs/pkg/",
-    "dev": "vite --config vite.site.config.ts --host",
+    "dev": "vite --config vite.site.config.js --host",
     "format": "biome format .",
     "format:fix": "biome format . --fix",
     "lint": "biome check .",
@@ -40,7 +40,7 @@
     "release:check": "npm run build:wasm && npm run build:site && npm run pack:check",
     "start": "npm run dev",
     "test": "npm run test:js && npm run test:rust",
-    "test:js": "node --no-warnings --loader ts-node/esm --test test/*.test.ts",
+    "test:js": "node --test test/*.test.js",
     "test:rust": "cargo test --manifest-path rust/Cargo.toml --workspace --locked"
   },
   "files": [
@@ -75,11 +75,9 @@
     "gaussian-splat-rs": "file:rust/gaussian-splat-rs/pkg",
     "publint": "0.3.24",
     "three": "0.186.0",
-    "ts-node": "10.9.2",
     "typescript": "^5.7.3",
     "vite": "^6.0.11",
     "vite-plugin-arraybuffer": "^0.1.4",
-    "vite-plugin-dts": "^4.5.4",
     "vite-plugin-glsl": "^1.3.1"
   },
   "peerDependencies": {

@@ -2,7 +2,7 @@ use js_sys::{Array, Float32Array, Function, Uint32Array};
 
 use crate::bounds::SplatBounds;
 
-// Keep in sync with SPLAT_BOUNDS_BLOCK_SIZE in data/defines.ts.
+// Keep in sync with SPLAT_BOUNDS_BLOCK_SIZE in data/defines.js.
 const BOUNDS_BLOCK_SIZE: usize = 256;
 use wasm_bindgen::prelude::*;
 

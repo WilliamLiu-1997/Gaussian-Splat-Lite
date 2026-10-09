@@ -14,6 +14,8 @@ Check WebGPU, WebGL2, and WebGPU · WebGL2 in the viewer. For rendering changes,
 
 See [Architecture](docs/Architecture.md) for module responsibilities, backend boundaries, and resource ownership.
 
+Implementations and build scripts use JavaScript. Keep TypeScript declarations in adjacent `.d.ts` files and update them whenever the corresponding API changes. `src/index.js` and `src/index.d.ts` define the package's runtime and type exports.
+
 ## Validation
 
 Before opening a pull request:
@@ -22,7 +24,9 @@ Before opening a pull request:
 npm run release:check
 ```
 
-Builds WASM, the viewer, and the package; runs type checks, lint, tests, and npm package validation.
+Builds WASM, the viewer, and the package; checks JavaScript syntax, declarations, lint, tests, and npm package validation. Declaration checks use strict TypeScript consumers with Bundler and NodeNext resolution, including ESM and CommonJS package imports.
+
+For focused validation, run `npm run check`, `npm run test:js`, and `npm run lint`. `npm run build:types` copies the checked-in declarations into `dist/types`, prepares the ESM and CommonJS declaration entry points, and checks the package's type exports. Both `build:production` and `build:dev` include this step.
 
 Review new or changed dependency install scripts and update `allowScripts` with `npm approve-scripts`.
 
