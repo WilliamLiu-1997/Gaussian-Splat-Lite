@@ -48,7 +48,7 @@ renderer.setAnimationLoop(() => {
 
 ### WebGPU with moving objects: NeuralDenoiseNode
 
-`NeuralDenoiseNode` takes `TAANode`'s place in the setup above. It leaves no trail behind moving objects and stays smooth while the camera moves; fast motion looks softer, and it takes more GPU time and memory. A third constructor argument picks one of three quality levels. It needs native WebGPU, so keep `TAANode` for the WebGL2 fallback:
+`NeuralDenoiseNode` takes `TAANode`'s place in the setup above. It leaves no trail behind moving objects and stays smooth while the camera moves; fast motion looks softer, and it takes more GPU time and memory. A third constructor argument picks one of two quality levels. It needs native WebGPU, so keep `TAANode` for the WebGL2 fallback:
 
 ```js
 import { NeuralDenoiseNode, TAANode } from "gaussian-splat-lite";

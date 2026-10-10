@@ -41,6 +41,8 @@ export function createTAAState<
   // Logarithmic depth is log2(distance + 1) / log2(far + 1) on WebGLRenderer
   // and log2(distance / near) / log2(far / near) on the node renderers.
   nodeLogDepth = false,
+  // How many pixels wider and taller than the image the capture target is.
+  margin = 0,
 ) {
   const uniforms = {
     renderSize: makeUniform(new Vector2(1, 1)),
@@ -77,8 +79,10 @@ export function createTAAState<
     setSize(width: number, height: number) {
       const w = Math.max(1, Math.floor(width));
       const h = Math.max(1, Math.floor(height));
-      if (targets[0].width === w && targets[0].height === h) return;
-      for (const target of targets) target.setSize(w, h);
+      const [source, ...others] = targets;
+      if (source.width === w + margin && source.height === h + margin) return;
+      source.setSize(w + margin, h + margin);
+      for (const target of others) target.setSize(w, h);
       uniforms.renderSize.value.set(w, h);
       this.reset();
     },

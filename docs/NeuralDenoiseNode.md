@@ -2,29 +2,28 @@
 
 [Back to documentation](../README.md#documentation)
 
-`NeuralDenoiseNode` smooths the noise of [stochastic rendering](StochasticRendering.md) with a small neural network. It takes the place of [`TAANode`](TAAPass.md#taanode-webgpurenderer) on `WebGPURenderer` with native WebGPU, and suits scenes whose objects move: it leaves no trail behind them.
+`NeuralDenoiseNode` smooths the noise of [stochastic rendering](StochasticRendering.md) with a small neural network. It takes the place of [`TAANode`](TAAPass.md#taanode-webgpurenderer) on `WebGPURenderer` with native WebGPU, and suits scenes whose objects move: it reduces trails behind them.
 
 ## Choose between the two
 
 | | `TAANode` | `NeuralDenoiseNode` |
 | --- | --- | --- |
-| Moving objects | May leave a faint trail and grainy edges | No trail. Detail stays sharper while it moves slowly enough to follow, and looks softer when it moves faster |
-| While the camera moves | Some grain returns | Stays smooth |
-| Still image | Smooth | Smooth, with a little more fine detail |
-| Cost | Lower | More GPU time, and two and a half to five times the memory |
+| Moving objects | May leave a faint trail and grainy edges | Less trailing. Detail stays sharper while it moves slowly enough to follow, and looks softer when it moves faster |
+| While the camera moves | Some grain returns | Stays smooth. A fast turn looks softer while it lasts |
+| Still image | Smooth | Cleaner, with more fine detail |
+| Cost | Lower | More GPU time, and two and a half to three and a half times the memory |
 | Renderer | WebGPU and its WebGL2 fallback | Native WebGPU only |
 
 ## Choose a quality level
 
-The third constructor argument picks one of three levels. Each step up takes more GPU time.
+The third constructor argument picks one of two levels.
 
 | Level | What you get | Added per frame over `TAANode`, 1280×800 / 2560×1600 |
 | --- | --- | --- |
-| `"performance"` | No trail behind moving objects. Whatever moves looks soft until it stops, and fine detail is a little softer while the camera moves | 0.2 ms / 0.9 ms |
-| `"balanced"` (default) | Also follows content that moves, such as a model that turns or deforms: its detail stays sharper and its noise settles while it moves | 0.7 ms / 3.0 ms |
-| `"quality"` | Balanced with a larger network and a learned filter for each frame. A little cleaner, most of all while the camera moves; the difference is small | 1.2 ms / 4.7 ms |
+| `"performance"` | Reduces trails behind moving objects. Whatever moves looks a little soft and grainy until it stops | 0.6 ms / 1.9 ms |
+| `"balanced"` (default) | Also follows content that moves, such as a model that turns or deforms: its detail stays sharper and its noise settles while it moves. A learned filter cleans each frame, so a settled image flickers less and a fast camera move keeps more detail | 0.9 ms / 3.2 ms |
 
-Times are from an Apple M5 Pro. `"performance"` uses about two and a half times the memory of `TAANode`, the other two about five times.
+Times are from an Apple M5 Pro with Three.js's default linear working color space, on the example model in this repository. `"performance"` uses about two and a half times the memory of `TAANode` and `"balanced"` about three and a half times. What the levels add depends mostly on the size of the image, not on the scene.
 
 Following needs no setup: the node measures motion from the image itself, with no velocity buffer and no per-object data. It has limits. Content that moves by more than a few pixels per frame is not followed, and neither are places where layers at different depths move in different directions behind each other. Both look as they do at `"performance"`. Right beside something that moves, still detail can look a little softer for a moment.
 
@@ -36,7 +35,7 @@ The level is fixed when the node is created. To change it, dispose the node and 
 - **One camera.** A `PerspectiveCamera` or `OrthographicCamera`, including custom projections, scaled camera rigs, reversed depth, and logarithmic depth. WebXR is not supported.
 - **Stencil follows your renderer.** Create the Three.js renderer with `stencil: true` and stencil masks work as they do without the node.
 - **Reset after a jump.** Call `denoise.reset()` after a camera cut or after replacing the scene. Resizing resets automatically. Objects that move need no call.
-- **Keep rendering while the image settles.** With on-demand rendering, render about a hundred more frames after each change. The viewer renders 96.
+- **Keep rendering while the image settles.** A still image keeps getting cleaner for about 130 frames. With on-demand rendering, render that many more after each change. The viewer renders 128.
 
 ## Set it up
 
@@ -85,12 +84,12 @@ Partly transparent Splats look the same whatever Three.js's working color space 
 | --- | --- | --- |
 | `scene` | Constructor scene | Scene to render; call `reset()` when replacing it |
 | `camera` | Constructor camera | Camera to render with; call `reset()` when replacing it |
-| `quality` | `"balanced"` | Read-only. The level given to the constructor: `"performance"`, `"balanced"`, or `"quality"` |
+| `quality` | `"balanced"` | Read-only. The level given to the constructor: `"performance"` or `"balanced"` |
 | `depthTexture` | Read-only | Scene depth of the current frame |
 | `projectionMatrix` | Read-only | Projection that matches `depthTexture` |
-| `stabilize` | `true` | Blends each image with the one before it wherever that leaves no trail. `false` leaves a little more flicker while the image settles |
+| `stabilize` | `true` | Blends each image with the one before it wherever the network trusts its history. `false` leaves a little more flicker while the image settles |
 
-`depthTexture` is not smoothed, and it is rendered with a small per-frame camera offset. Convert it with `projectionMatrix`, not `camera.projectionMatrix`. Treat both as read-only.
+`depthTexture` is not smoothed, and it is rendered with a small per-frame camera offset, as with `TAANode`. Convert it with `projectionMatrix`, not `camera.projectionMatrix`. Read `depthTexture` once when you build the pipeline: it holds the depth of every frame rendered after that. Treat both as read-only.
 
 ## Methods
 
@@ -103,4 +102,4 @@ Partly transparent Splats look the same whatever Three.js's working color space 
 
 ## Background
 
-The method follows Hu et al., [Ultra-fast Neural Inference for Stochastic Gaussian Splatting Denoising](https://arxiv.org/abs/2609.25604), adapted to scenes with moving objects and trained on this library's stochastic rendering. The networks for all three levels are built in; there is nothing to download.
+The method follows Hu et al., [Ultra-fast Neural Inference for Stochastic Gaussian Splatting Denoising](https://arxiv.org/abs/2609.25604), adapted to scenes with moving objects and trained on this library's stochastic rendering. The networks for both levels are built in; there is nothing to download.

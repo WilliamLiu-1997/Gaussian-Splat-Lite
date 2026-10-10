@@ -5,8 +5,8 @@ import { RenderPipeline } from "three/webgpu";
 
 // Frames to render after invalidation for temporal reprojection.
 const TAA_SETTLE_FRAMES = 32;
-// The neural denoiser accumulates a still view for longer.
-const NEURAL_SETTLE_FRAMES = 96;
+// The neural denoiser accumulates a still view over 128 frames.
+const NEURAL_SETTLE_FRAMES = 128;
 
 /**
  * Viewer-only smoothing of stochastic rendering: temporal anti-aliasing, or

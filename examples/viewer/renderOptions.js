@@ -62,7 +62,7 @@ export const renderOptionGroups = [
         property: "denoiser",
         label: "Stochastic denoiser",
         description:
-          "Neural leaves no trail behind moving objects and stays clean while the camera moves. Fast motion looks softer, and it takes more GPU time and memory.",
+          "Neural reduces trails behind moving objects and stays clean while the camera moves. Fast motion looks softer, and it takes more GPU time and memory.",
         defaultValue: "taa",
         choices: [
           ["taa", "TAA"],
@@ -73,12 +73,11 @@ export const renderOptionGroups = [
         property: "denoiserQuality",
         label: "Neural denoiser quality",
         description:
-          "Balanced and Quality follow content that moves, which keeps its detail sharp; Quality is a little cleaner. Performance takes less than half the GPU time of Balanced.",
+          "Performance takes less GPU time. Balanced also follows moving content and cleans each frame with a learned filter.",
         defaultValue: "balanced",
         choices: [
           ["performance", "Performance"],
           ["balanced", "Balanced"],
-          ["quality", "Quality"],
         ],
       },
       {
