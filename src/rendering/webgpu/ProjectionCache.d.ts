@@ -1,6 +1,5 @@
 import type * as THREE from "three";
-import type { Node } from "three/webgpu";
-import type { StorageArrayTexture } from "three/webgpu";
+import type { Node, StorageArrayTexture } from "three/webgpu";
 import type { SplatProjection } from "../tsl/ProjectionProgram.js";
 type TextureLimits = {
   maxTextureDimension2D: number;
@@ -41,14 +40,8 @@ export declare class ProjectionCache {
     /** Projection of the drawn eye. */
     projectionMatrix: Node<"mat4">,
   ): {
-    clipPosition: import("three/webgpu").VarNode<
-      "vec4",
-      import("three/webgpu").JoinNode<"vec4">
-    >;
-    rgba: import("three/webgpu").VarNode<
-      "vec4",
-      import("three/webgpu").JoinNode<"vec4">
-    >;
+    clipPosition: Node<"vec4">;
+    rgba: Node<"vec4">;
     splatUv: Node<"vec2">;
     supportRadiusSquared: Node<"float">;
     kernelPower: Node<"float">;

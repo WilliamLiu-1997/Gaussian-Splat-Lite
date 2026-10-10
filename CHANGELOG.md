@@ -11,6 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Improved memory reclamation with `shrinkResources()`, including SDF edits.
 - Migrated the library, tests, and Vite configuration from TypeScript to JavaScript, with adjacent TypeScript declarations preserving the public API types.
+- Simplified shader type declarations and reorganized native WebGPU rendering code for easier maintenance.
 - Reworked declaration builds for ESM and CommonJS and added JavaScript syntax checks. Builds no longer depend on `ts-node` or `vite-plugin-dts`.
 - Applied Three.js r186 compatibility fixes automatically when using `GaussianSplatRenderer` or `TAANode`. The fixes run once per initialized renderer and require no changes to the installed Three.js source.
 
