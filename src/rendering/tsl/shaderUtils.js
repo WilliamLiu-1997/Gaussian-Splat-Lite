@@ -90,23 +90,25 @@ export const decodeRgba = N.Fn(([data, alpha]) => {
 export const decodeLnScales = N.Fn(([data]) => {
   return N.vec3(N.unpackHalf2x16(data.y).y, N.unpackHalf2x16(data.z));
 });
+/** Unit vector of octahedral coordinates in [-1, 1]. Call inside a TSL Fn. */
+export function decodeOctahedral(folded) {
+  const vector = N.vec3(
+    folded,
+    N.float(1).sub(folded.x.abs()).sub(folded.y.abs()),
+  ).toVar();
+  const t = vector.z.negate().max(0);
+  vector.x.addAssign(N.select(vector.x.greaterThanEqual(0), t.negate(), t));
+  vector.y.addAssign(N.select(vector.y.greaterThanEqual(0), t.negate(), t));
+  return vector.normalize();
+}
 export const decodeQuaternion = N.Fn(([encodedValue]) => {
   const encoded = N.uint(encodedValue);
   const quantU = encoded.bitAnd(0x3ff);
   const quantV = encoded.shiftRight(10).bitAnd(0x3ff);
   const angleInt = encoded.shiftRight(20);
-  const folded = N.vec2(N.float(quantU), N.float(quantV))
-    .div(1023)
-    .mul(2)
-    .sub(1);
-  const axis = N.vec3(
-    folded,
-    N.float(1).sub(folded.x.abs()).sub(folded.y.abs()),
-  ).toVar();
-  const t = axis.z.negate().max(0);
-  axis.x.addAssign(N.select(axis.x.greaterThanEqual(0), t.negate(), t));
-  axis.y.addAssign(N.select(axis.y.greaterThanEqual(0), t.negate(), t));
-  axis.assign(axis.normalize());
+  const axis = decodeOctahedral(
+    N.vec2(N.float(quantU), N.float(quantV)).div(1023).mul(2).sub(1),
+  );
   const halfTheta = N.float(angleInt)
     .div(4095)
     .mul(Math.PI * 0.5);

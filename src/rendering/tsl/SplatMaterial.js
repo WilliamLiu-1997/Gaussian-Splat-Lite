@@ -108,7 +108,9 @@ function packSplatVarying(rgba, supportRadiusSquared, kernelPower) {
 }
 /**
  * Sorted and stochastic variants compile separate graphs, so sorted drawing
- * carries no coverage varyings, seed loads or mode branches.
+ * carries no coverage varyings, seed loads or mode branches. `shading` may
+ * recolor each Splat in the vertex stage, from what its projection extension
+ * derived of the Gaussian.
  */
 export function createSplatNodeMaterial({
   uniforms,
@@ -119,6 +121,7 @@ export function createSplatNodeMaterial({
   depthTest,
   depthWrite,
   stochastic,
+  shading,
 }) {
   const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
   const edgeFade = uniformBinding(uniforms, "edgeFade", "vec2");
@@ -154,6 +157,9 @@ export function createSplatNodeMaterial({
       N.If(encodeLinear, () => {
         rgba.rgb.assign(N.sRGBTransferEOTF(rgba.rgb));
       });
+      if (shading) {
+        rgba.rgb.assign(shading.shade(camera, data.surface, rgba.rgb));
+      }
       clipPosition.assign(data.clipPosition);
       vSplat.assign(
         packSplatVarying(rgba, data.supportRadiusSquared, data.kernelPower),
@@ -171,14 +177,18 @@ export function createSplatNodeMaterial({
       }
     };
     if (vertexData) {
-      assignVertexData(vertexData(camera, stochastic));
+      assignVertexData(vertexData(camera, stochastic, Boolean(shading)));
       return clipPosition;
     }
     if (!accumulator || !orderingNode) {
       throw new Error("Accumulator splat drawing requires an ordering texture");
     }
     const view = splatViewUniforms(uniforms, camera);
-    const project = createProjectionProgram(uniforms, view);
+    const project = createProjectionProgram(
+      uniforms,
+      view,
+      shading?.projection,
+    );
     const index = N.uint(N.instanceIndex)
       .mul(SPLATS_PER_INSTANCE)
       .add(N.uint(N.positionGeometry.z))
@@ -228,6 +238,7 @@ export function createSplatNodeMaterial({
           supportRadiusSquared: projected.supportRadiusSquared,
           kernelPower: projected.kernelPower,
           viewportOrigin: view.viewportOrigin,
+          surface: projected.extra,
         });
       });
     });

@@ -74,6 +74,8 @@ export declare const decodeLnScales: import("three/src/nodes/TSL.js").FnNode<
     import("three/webgpu").JoinNode<"vec3">
   >
 >;
+/** Unit vector of octahedral coordinates in [-1, 1]. Call inside a TSL Fn. */
+export declare function decodeOctahedral(folded: Node<"vec2">): Node<"vec3">;
 export declare const decodeQuaternion: import("three/src/nodes/TSL.js").FnNode<
   [Node<"uint">],
   import("three/webgpu").VarNode<

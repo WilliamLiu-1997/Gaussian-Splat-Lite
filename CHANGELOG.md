@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added optional diffuse scene lighting with `GaussianSplatRenderer.lighting`, disabled by default, on WebGPU, WebGL2, and WebGPU's WebGL2 fallback in sorted and stochastic rendering. Ambient, hemisphere, directional, point, and spot lights illuminate each Splat at its center in the vertex shader, using estimated normals from the Gaussian covariance ellipsoid. Spherical Splats naturally face the camera. Splats do not cast or receive shadows. The number of lights is not fixed, and `shrinkResources()` releases unused light storage.
+- Splat captures follow the display renderer's lighting state.
+- Added three animated RGB point lights to the viewer's built-in Example, with rotation, ambient brightness, and intensity controls.
+
 ### Changed
 
 - Improved memory reclamation with `shrinkResources()`, including SDF edits.

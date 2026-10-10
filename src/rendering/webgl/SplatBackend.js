@@ -1,3 +1,4 @@
+import { MaterialVariants } from "../MaterialVariants.js";
 import { emptyOrdering } from "../uniforms.js";
 import { OrderingTexture } from "./OrderingTexture.js";
 import { createWebGLSplatMaterial } from "./SplatMaterial.js";
@@ -9,15 +10,17 @@ export class WebGLSplatBackend {
     this.uniforms = uniforms;
     this.kind = "webgl";
     this.ordering = new OrderingTexture();
-    this.sortedMaterial = createWebGLSplatMaterial(uniforms, options, false);
-    this.stochasticMaterial = createWebGLSplatMaterial(uniforms, options, true);
+    this.materials = new MaterialVariants((stochastic, shading) =>
+      createWebGLSplatMaterial(uniforms, options, stochastic, shading),
+    );
     const extension = renderer
       .getContext()
       .getExtension("WEBGL_provoking_vertex");
     extension?.provokingVertexWEBGL(extension.FIRST_VERTEX_CONVENTION_WEBGL);
   }
-  selectMaterial(stochastic) {
-    return stochastic ? this.stochasticMaterial : this.sortedMaterial;
+  /** `shading`, when given, selects the variant that recolors its Splats. */
+  selectMaterial(stochastic, shading) {
+    return this.materials.select(stochastic, shading);
   }
   getOrderingCapacity(count) {
     return this.ordering.getCapacity(count);
@@ -46,7 +49,6 @@ export class WebGLSplatBackend {
   }
   dispose() {
     this.ordering.dispose();
-    this.sortedMaterial.dispose();
-    this.stochasticMaterial.dispose();
+    this.materials.dispose();
   }
 }

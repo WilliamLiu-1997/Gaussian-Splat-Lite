@@ -7,12 +7,17 @@ import {
 import { WebGLFallbackSplatBackend } from "./webgl-fallback/SplatBackend.js";
 import { WebGLSplatBackend } from "./webgl/SplatBackend.js";
 import { WebGPUSplatBackend } from "./webgpu/SplatBackend.js";
-export function createSplatBackend(renderer, uniforms, options) {
+export function createSplatBackend(
+  renderer,
+  uniforms,
+  options,
+  createSurfaces,
+) {
   if (!isWebGPURenderer(renderer)) {
     return new WebGLSplatBackend(renderer, uniforms, options);
   }
   return usesNativeWebGPU(renderer)
-    ? new WebGPUSplatBackend(renderer, uniforms, options)
+    ? new WebGPUSplatBackend(renderer, uniforms, options, createSurfaces)
     : new WebGLFallbackSplatBackend(renderer, uniforms, options);
 }
 export function configureSplatOutput(renderer, target, uniforms, encodeLinear) {

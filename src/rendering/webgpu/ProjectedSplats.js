@@ -57,7 +57,7 @@ function bindBuffer(ref) {
 }
 /** Fixed compute graph. Source mappings and storage may change without rebuilding shaders. */
 export class ProjectedSplats {
-  constructor(renderer, uniforms) {
+  constructor(renderer, uniforms, createSurfaces) {
     this.renderer = renderer;
     this.uniforms = uniforms;
     // Only the instance count changes; the other indirect draw arguments are fixed.
@@ -67,10 +67,14 @@ export class ProjectedSplats {
     );
     this.error = null;
     this.cache = new ProjectionCache();
+    // What shaded kernels cache of each Splat for shaded draws. They are
+    // precompiled, with a tiny, stable texture until first selected.
+    this.surfaces = createSurfaces(this.cache);
+    this.shaded = false;
     this.visibleCount = new StorageBufferAttribute(new Uint32Array(1), 1);
     this.keys = buffer("gslProjectionKeys");
     this.seeds = buffer("gslProjectionSeeds");
-    // Mono and WebXR stereo stay compiled for our lifetime.
+    // Mono and WebXR stereo, plain and shaded, stay compiled for our lifetime.
     this.slotSets = new Map();
     this.shrinkViews = false;
     this.onSessionEnd = () => {
@@ -138,7 +142,9 @@ export class ProjectedSplats {
     })()
       .compute(1, [1])
       .setName("Splat visible draw arguments");
-    for (const eyes of [1, 2]) this.createSlotSet(eyes);
+    for (const eyes of [1, 2]) {
+      for (const shaded of [false, true]) this.createSlotSet(eyes, shaded);
+    }
     const commonNodes = [this.resetCount, this.finish, ...this.sorter.nodes];
     this.nodes = [
       ...commonNodes,
@@ -165,13 +171,14 @@ export class ProjectedSplats {
       });
     renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }
-  createSlot(eyeCount) {
+  createSlot(eyeCount, shaded) {
     const uniforms = {
       ...this.state,
       ...makeGenerateUniforms(),
     };
     const u = (name, type) => uniformBinding(uniforms, name, type);
     const generate = createGenerateProgram({ uniforms });
+    const surface = shaded ? this.surfaces.kernel() : null;
     const focalAdjustment = u("focalAdjustment", "float");
     // Eye 0 reads the unsuffixed uniforms; later eyes append their index.
     const eyes = Array.from({ length: eyeCount }, (_, eye) =>
@@ -179,15 +186,19 @@ export class ProjectedSplats {
     ).map((suffix) => {
       const renderSize = u(`renderSize${suffix}`, "vec2");
       return {
-        project: createProjectionProgram(uniforms, {
-          projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
-          renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
-          renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
-          renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
-          near: u(`near${suffix}`, "float"),
-          far: u(`far${suffix}`, "float"),
-          renderSize,
-        }),
+        project: createProjectionProgram(
+          uniforms,
+          {
+            projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
+            renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
+            renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
+            renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
+            near: u(`near${suffix}`, "float"),
+            far: u(`far${suffix}`, "float"),
+            renderSize,
+          },
+          surface?.projection,
+        ),
         pixelScale: renderSize.mul(focalAdjustment).mul(0.5),
       };
     });
@@ -248,10 +259,12 @@ export class ProjectedSplats {
               eyes[eye].pixelScale,
               centerRange,
             );
+            surface?.write(cacheIndex, projection.extra);
           };
           if (eyeCount > 1) {
             N.If(eyeVisible, write).Else(() => {
               this.cache.writeHidden(cacheIndex);
+              surface?.writeHidden(cacheIndex);
             });
           } else {
             write();
@@ -333,12 +346,12 @@ export class ProjectedSplats {
       });
     }
   }
-  createSlotSet(eyeCount) {
+  createSlotSet(eyeCount, shaded) {
     this.ensureEyeUniforms(eyeCount);
-    this.slotSets.set(eyeCount, {
+    this.slotSets.set(`${eyeCount}:${Number(shaded)}`, {
       compiled: 0,
       slots: Array.from({ length: PROJECT_SLOTS }, () =>
-        this.createSlot(eyeCount),
+        this.createSlot(eyeCount, shaded),
       ),
     });
   }
@@ -353,9 +366,14 @@ export class ProjectedSplats {
       }
     }
   }
+  /** Selects the plain or shaded kernels; shaded ones fill the surface cache. */
+  setShaded(shaded) {
+    this.shaded = shaded;
+    this.surfaces.setActive(shaded);
+  }
   /** The selected, precompiled mode for mono or WebXR stereo. */
   getSlots(eyeCount) {
-    const set = this.slotSets.get(eyeCount);
+    const set = this.slotSets.get(`${eyeCount}:${Number(this.shaded)}`);
     if (!set) {
       throw new RangeError("WebGPU Splat projection supports one or two views");
     }
@@ -379,7 +397,11 @@ export class ProjectedSplats {
       this.seeds,
       this.uniforms.stochastic.value ? this.capacity : 1,
     );
-    const refresh = new Set(resized || seedsResized ? this.nodes : []);
+    // Unshaded rendering keeps one texel of the surface channel.
+    const channelsShrunk = this.cache.fitChannels(true);
+    const refresh = new Set(
+      resized || seedsResized || channelsShrunk ? this.nodes : [],
+    );
     // Idle slots must release source textures of removed models. The next
     // dispatch fills active slots again; compiled shader graphs stay intact.
     const textures = Object.entries(makeGenerateUniforms()).filter(
@@ -400,7 +422,7 @@ export class ProjectedSplats {
     // groups. Dispose follows this in the queue.
     for (const node of refresh) await this.renderer.compileComputeAsync(node);
   }
-  vertexData(camera, stochastic) {
+  vertexData(camera, stochastic, shaded = false) {
     const multiView = getViews(camera)[0] !== camera;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
@@ -421,6 +443,7 @@ export class ProjectedSplats {
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
     const projectionMatrix = splatProjectionMatrix(camera);
+    const surface = shaded ? this.surfaces.reader(projectionMatrix) : undefined;
     const centerRange = uniformBinding(this.uniforms, "clipXY", "float")
       .abs()
       .max(1)
@@ -468,6 +491,7 @@ export class ProjectedSplats {
       splatUv.assign(projected.splatUv);
       supportRadiusSquared.assign(projected.supportRadiusSquared);
       kernelPower.assign(projected.kernelPower);
+      surface?.load(base.add(cacheIndex), projected);
     });
     return {
       clipPosition,
@@ -477,6 +501,7 @@ export class ProjectedSplats {
       supportRadiusSquared,
       kernelPower,
       viewportOrigin: view.viewportOrigin,
+      surface,
     };
   }
   resizeBuffer(ref, count) {
@@ -586,6 +611,7 @@ export class ProjectedSplats {
       uniforms.blurAmount.value,
       uniforms.clipXY.value,
       uniforms.focalAdjustment.value,
+      this.shaded,
     ];
     for (const { node } of accumulator.mapping) inputs.push(node.layers.mask);
     for (const view of cameras) {

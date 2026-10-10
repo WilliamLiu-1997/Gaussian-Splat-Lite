@@ -2,6 +2,7 @@ import type * as THREE from "three";
 import type { Node } from "three/webgpu";
 import type { NodeMaterial, TextureNode } from "three/webgpu";
 import type { Uniforms } from "../uniforms.js";
+import type { ProjectionExtension } from "./ProjectionProgram.js";
 export type ProjectedVertexData = {
   clipPosition: Node<"vec4">;
   /** Source color space; this material applies encodeLinear. */
@@ -13,13 +14,34 @@ export type ProjectedVertexData = {
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
+  /** Shaded variants only. */
+  surface?: SplatSurface;
+};
+/** What shading reads of a Splat, in view space. */
+export type SplatSurface = {
+  viewCenter: Node<"vec3">;
+  /** Estimated, facing the viewer. */
+  normal: Node<"vec3">;
+};
+/** Recolors each Splat in the vertex stage, where its color is constant. */
+export type SplatShading = {
+  /** Derives each Splat's surface while it is projected. */
+  projection: ProjectionExtension<SplatSurface>;
+  /** Returns the shaded color, in the space the draw blends in. */
+  shade(
+    camera: THREE.Camera,
+    surface: SplatSurface,
+    rgb: Node<"vec3">,
+  ): Node<"vec3">;
 };
 export type SplatNodeMaterial = NodeMaterial & {
   uniforms: Uniforms;
 };
 /**
  * Sorted and stochastic variants compile separate graphs, so sorted drawing
- * carries no coverage varyings, seed loads or mode branches.
+ * carries no coverage varyings, seed loads or mode branches. `shading` may
+ * recolor each Splat in the vertex stage, from what its projection extension
+ * derived of the Gaussian.
  */
 export declare function createSplatNodeMaterial({
   uniforms,
@@ -30,6 +52,7 @@ export declare function createSplatNodeMaterial({
   depthTest,
   depthWrite,
   stochastic,
+  shading,
 }: {
   uniforms: Uniforms;
   /** CPU ordering for drawing from accumulator textures. */
@@ -38,10 +61,12 @@ export declare function createSplatNodeMaterial({
   vertexData?: (
     camera: THREE.Camera,
     stochastic: boolean,
+    shaded: boolean,
   ) => ProjectedVertexData;
   premultipliedAlpha: boolean;
   transparent: boolean;
   depthTest: boolean;
   depthWrite: boolean;
   stochastic: boolean;
+  shading?: SplatShading;
 }): SplatNodeMaterial;

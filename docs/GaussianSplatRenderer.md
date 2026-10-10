@@ -25,6 +25,7 @@ Every option except `renderer` and `timer` is also a property, so you can change
 | `preUpdate` | `boolean` | `true` | On WebGL, update before drawing so changes show in the same frame. In WebXR, updates run after drawing. Not used on native WebGPU |
 | `timer` | `THREE.Timer` | New internal timer | Share your own timer with [`onFrame`](SplatMesh.md#scene-integration) animations; update it yourself when supplied |
 | `premultipliedAlpha` | `boolean` | `true` | Blend with premultiplied alpha |
+| `lighting` | `boolean` | `false` | Apply diffuse scene lighting at each Splat center; see [Lighting](Lighting.md) |
 
 ## Quality options
 
@@ -69,14 +70,14 @@ See [Stochastic rendering](StochasticRendering.md) for setup.
 | API | Description |
 | --- | --- |
 | `update({ scene, camera })` | Bring the Splats up to date with the scene and camera; returns a promise. Only needed with `autoUpdate = false` |
-| `shrinkResources({ scene, camera })` | Update, then release memory that is no longer needed, for example after removing models or SDF edits; returns a promise |
+| `shrinkResources({ scene, camera })` | Update, then release memory that is no longer needed, for example after removing models, SDF edits, or lights; returns a promise |
 | `clearSplats()` | Clear the Splats from the display without removing models from the scene |
 | `dispose()` | Release this renderer's resources |
 | `stochasticActive` | Read-only. Whether stochastic rendering is currently being drawn; it changes shortly after you set `stochastic` |
 | `stochasticSample` | Noise pattern index, `0` by default. Set `autoAdvanceStochasticSample = false` to control it yourself |
 | `synchronousSort` | Read-only. `true` when Splats are always sorted before they are drawn, as on native WebGPU |
 
-Custom settings on `splatRenderer.material` are preserved when switching between sorted and stochastic rendering.
+Custom settings on `splatRenderer.material` are preserved when switching between sorted and stochastic rendering or toggling lighting.
 
 To update manually after the scene or camera changes:
 

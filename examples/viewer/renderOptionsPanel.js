@@ -123,6 +123,9 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   return {
     getValue,
     setHidden,
+    setGroupHidden(property, hidden) {
+      entries.get(property).row.closest(".option-group").hidden = hidden;
+    },
     // Programmatic synchronization is silent unless emit is requested.
     setValue,
     setDisabled(property, disabled) {

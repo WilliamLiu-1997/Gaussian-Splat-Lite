@@ -7,6 +7,7 @@ import { SortCenterCache } from "./SortCenterCache.js";
 import { SplatAccumulator } from "./SplatAccumulator.js";
 import { SplatGeometry } from "./SplatGeometry.js";
 import { configureSplatOutput, createSplatBackend } from "./backend.js";
+import { SplatLighting } from "./lighting/SplatLighting.js";
 import {
   assertSupportedRenderer,
   getMeanViewPose,
@@ -61,12 +62,17 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const uniforms = GaussianSplatRenderer.makeUniforms();
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
     const stochastic = options.stochastic ?? false;
-    const backend = createSplatBackend(options.renderer, uniforms, {
-      premultipliedAlpha,
-      transparent: options.transparent ?? true,
-      depthTest: options.depthTest ?? true,
-      depthWrite: options.depthWrite ?? false,
-    });
+    const backend = createSplatBackend(
+      options.renderer,
+      uniforms,
+      {
+        premultipliedAlpha,
+        transparent: options.transparent ?? true,
+        depthTest: options.depthTest ?? true,
+        depthWrite: options.depthWrite ?? false,
+      },
+      SplatLighting.createSurfaces,
+    );
     const geometry = new SplatGeometry();
     const material = backend.selectMaterial(stochastic);
     super(geometry, material);
@@ -108,6 +114,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.viewportSize = new THREE.Vector4();
     this.renderer = options.renderer;
     this.backend = backend;
+    this.lightingState = null;
     this.uniforms = uniforms;
     this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
@@ -158,8 +165,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         if (!this.disposed) this.setDirty();
       };
     }
+    this.lighting = options.lighting ?? false;
   }
   raycast(_raycaster, _intersects) {}
+  get lighting() {
+    return this.lightingState?.enabled ?? false;
+  }
+  set lighting(value) {
+    const enabled = Boolean(value);
+    if (enabled === this.lighting) return;
+    // Created with the first use; unlit rendering carries no lighting state.
+    this.lightingState ??= new SplatLighting(this, this.backend);
+    this.lightingState.enabled = enabled;
+    this.selectMaterial();
+    this.setDirty();
+  }
   static makeUniforms() {
     return makeSplatUniforms();
   }
@@ -175,6 +195,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.orderingReady = false;
     this.maxSplats = 0;
     this.activeSplats = 0;
+    this.lightingState?.dispose();
+    this.lightingState = null;
     this.backend.dispose();
     this.uniforms.stochasticNoise.value.dispose();
     const accumulators = new Set();
@@ -244,7 +266,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.setDirty();
   }
   selectMaterial() {
-    const material = this.backend.selectMaterial(this.stochasticFrame);
+    const material = this.backend.selectMaterial(
+      this.stochasticFrame,
+      this.lightingState?.shading,
+    );
     this.applyMaterialState(this.stochasticFrame, material);
     this.material = material;
   }
@@ -439,6 +464,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.uniforms.stochasticSeeds.value = display.getStochasticSeeds();
     }
     this.dirty = false;
+    this.lightingState?.prepareDraw(scene, camera);
   }
   clearSplats() {
     this.activeSplats = 0;
@@ -461,7 +487,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       excludedObjects,
     });
   }
-  /** Updates the scene and compacts work and edit storage while retaining compiled kernels. */
+  /** Updates the scene and compacts work, edit and light storage while retaining compiled kernels. */
   async shrinkResources({ scene, camera }) {
     assertSupportedCamera(camera, this.renderer);
     this.reportedRenderError = "";
@@ -477,6 +503,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       );
     }
     if (this.disposed) return;
+    this.lightingState?.shrinkResources(scene, camera);
     this.setDirty();
   }
   updateInternal(request, insideDraw = false) {

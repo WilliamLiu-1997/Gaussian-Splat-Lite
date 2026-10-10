@@ -71,8 +71,11 @@ const wideEdgeFade = N.Fn(([alpha, power, radiusSquared, minimumAlpha]) => {
     .max(0)
     .div(N.float(1).sub(edgeKernel).max(0.001));
 });
-/** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
-export function createProjectionProgram(uniforms, view) {
+/**
+ * Shared projection for vertex and compute paths. Call inside a TSL Fn.
+ * `extension` may derive further outputs from each visible Gaussian.
+ */
+export function createProjectionProgram(uniforms, view, extension) {
   const {
     projectionMatrix,
     renderToViewQuat,
@@ -93,6 +96,7 @@ export function createProjectionProgram(uniforms, view) {
     // This is a JS-time choice, not a shader branch. WebGL still reads its
     // packed accumulator; native compute consumes transformed float32 values.
     const packed = "first" in source;
+    const extra = extension?.declare();
     const valid = N.bool(false).toVar();
     const projectedClipCenter = N.vec4(0, 0, 2, 1).toVar();
     const projectedViewDepth = N.float(0).toVar();
@@ -308,6 +312,12 @@ export function createProjectionProgram(uniforms, view) {
                   eigenVector2.mul(scale2).mul(2).div(scaledRenderSize),
                 );
                 // Keep source RGB here; the draw stage applies encodeLinear.
+                extension?.assign(extra, {
+                  isOrthographic,
+                  viewCenter,
+                  scales,
+                  viewQuaternion,
+                });
                 projectedRgba.assign(
                   N.vec4(
                     includeColor
@@ -339,6 +349,7 @@ export function createProjectionProgram(uniforms, view) {
       supportRadius: projectedSupportRadius,
       supportRadiusSquared: projectedSupportRadiusSquared,
       kernelPower: projectedKernelPower,
+      extra,
     };
   };
 }

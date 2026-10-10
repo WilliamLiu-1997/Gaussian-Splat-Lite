@@ -1,20 +1,50 @@
 import type * as THREE from "three";
 import type {
   IndirectStorageBufferAttribute,
+  Node,
   WebGPURenderer,
 } from "three/webgpu";
 import type { SplatAccumulator } from "../SplatAccumulator.js";
 import type { SplatGeometry } from "../SplatGeometry.js";
-import type { ProjectedVertexData } from "../tsl/SplatMaterial.js";
+import type { ProjectionExtension } from "../tsl/ProjectionProgram.js";
+import type {
+  ProjectedVertexData,
+  SplatSurface,
+} from "../tsl/SplatMaterial.js";
 import type { Uniforms } from "../uniforms.js";
+import type { ProjectionCache } from "./ProjectionCache.js";
+/**
+ * Carries what shading reads of each Splat from the kernels to the draw,
+ * beside the projection cache.
+ */
+export type ProjectedSurfaces<Extra = unknown> = {
+  /** Kernel side: the projection extension of one slot and its cache writes. */
+  kernel(): {
+    projection: ProjectionExtension<Extra>;
+    write(index: Node<"uint">, extra: Extra): void;
+    writeHidden(index: Node<"uint">): void;
+  };
+  /** Draw side: `load` belongs inside the visible guard. */
+  reader(projectionMatrix: Node<"mat4">): SplatSurface & {
+    load(index: Node<"uint">, projected: { ndcAndViewZ: Node<"vec3"> }): void;
+  };
+  /** Shaded kernels and draws need the surface of every cached record. */
+  setActive(active: boolean): void;
+};
 /** Fixed compute graph. Source mappings and storage may change without rebuilding shaders. */
 export declare class ProjectedSplats {
   private readonly renderer;
   private readonly uniforms;
   readonly indirect: IndirectStorageBufferAttribute;
-  /** Common and sorting kernels plus the first mono and stereo slots are ready to draw. */
+  /** Common and sorting kernels plus the first slot of every projection mode are ready to draw. */
   readonly ready: Promise<void>;
   error: unknown;
+  readonly cache: ProjectionCache;
+  /** The stable surface cache shared by all precompiled shaded kernels. */
+  readonly surfaces: ProjectedSurfaces;
+  readonly shaded: boolean;
+  /** Selects the plain or shaded kernels; shaded ones fill the surface cache. */
+  setShaded(shaded: boolean): void;
   /**
    * Compact storage and refresh existing bindings without compiling or
    * stopping draws. Reads the Splat count once startup slots have compiled.
@@ -23,7 +53,6 @@ export declare class ProjectedSplats {
   /** Requests a redraw when an XR session ends and eye storage can shrink. */
   onViewsReleased?: () => void;
   private readonly limits;
-  private readonly cache;
   private readonly visibleCount;
   private readonly keys;
   private readonly seeds;
@@ -44,7 +73,11 @@ export declare class ProjectedSplats {
   private viewCapacity;
   private disposed;
   private projectedInputs;
-  constructor(renderer: WebGPURenderer, uniforms: Uniforms);
+  constructor(
+    renderer: WebGPURenderer,
+    uniforms: Uniforms,
+    createSurfaces: (cache: ProjectionCache) => ProjectedSurfaces,
+  );
   private createSlot;
   /** Projection uniforms of the precompiled eyes after the first. */
   private ensureEyeUniforms;
@@ -54,7 +87,11 @@ export declare class ProjectedSplats {
   /** The selected, precompiled mode for mono or WebXR stereo. */
   private getSlots;
   private compact;
-  vertexData(camera: THREE.Camera, stochastic: boolean): ProjectedVertexData;
+  vertexData(
+    camera: THREE.Camera,
+    stochastic: boolean,
+    shaded?: boolean,
+  ): ProjectedVertexData;
   private resizeBuffer;
   private resize;
   render(

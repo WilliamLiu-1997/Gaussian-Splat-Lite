@@ -38,6 +38,9 @@ uniform vec2 viewportOrigin;
 uniform usampler2DArray stochasticSeeds;
 #endif
 
+// Declarations of a material's shading; see createWebGLSplatMaterial.
+#include <splatShadingPars>
+
 // Required by logdepthbuf_pars_vertex (normally defined in three.js #include <common>)
 bool isPerspectiveMatrix( mat4 m ) {
     return m[ 2 ][ 3 ] == -1.0;
@@ -286,6 +289,9 @@ void main() {
     if (encodeLinear) {
         rgba.rgb = srgbToLinear(rgba.rgb);
     }
+    // A material's shading may recolor the Splat here.
+    #include <splatShading>
+
     // Match the TSL varying layout: half RGB/kernel power, float32 alpha/radius.
     vec3 rgb = min(rgba.rgb, vec3(65504.0));
     vSplat = uvec4(

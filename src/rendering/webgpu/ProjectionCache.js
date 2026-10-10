@@ -47,6 +47,34 @@ const cacheTexCoord = N.Fn(([index, size]) => {
     layer,
   );
 });
+/** Returns whether the texture's storage changed. */
+function setTextureSize(texture, width, height, depth) {
+  const { image } = texture;
+  if (image.width === width && image.height === height && image.depth === depth)
+    return false;
+  texture.setSize(width, height, depth);
+  return true;
+}
+/**
+ * View X/Y of a point from its NDC and view Z under any projection: the 2x2
+ * system that remains once clip W is eliminated.
+ */
+export function unprojectXY(ndc, viewZ, matrix) {
+  const col0 = matrix.element(0);
+  const col1 = matrix.element(1);
+  const col2 = matrix.element(2);
+  const col3 = matrix.element(3);
+  const a = col0.xy.sub(ndc.mul(col0.w));
+  const b = col1.xy.sub(ndc.mul(col1.w));
+  const rhs = ndc
+    .mul(col2.w.mul(viewZ).add(col3.w))
+    .sub(col2.xy.mul(viewZ).add(col3.xy));
+  const determinant = a.x.mul(b.y).sub(b.x.mul(a.y));
+  return N.vec2(
+    rhs.x.mul(b.y).sub(b.x.mul(rhs.y)),
+    a.x.mul(rhs.y).sub(rhs.x.mul(a.y)),
+  ).div(determinant);
+}
 function store(texture, coord, value) {
   N.storageTexture(texture, coord.xy, value)
     .depth(coord.z)
@@ -60,6 +88,8 @@ export class ProjectionCache {
     // squared support radius, kernel power and view depth retain their float32
     // bits.
     this.textures = [makeTexture(), makeTexture()];
+    // Optional uint32 channels beside them; see addChannel.
+    this.channels = [];
     this.size = new THREE.Vector4(1, 1, 1, 0);
     this.dimensions = N.uniform(this.size, "uvec4");
   }
@@ -67,6 +97,47 @@ export class ProjectionCache {
     for (const texture of this.textures)
       texture.setSize(size.width, size.height, size.depth);
     this.size.set(size.width, size.height, size.depth, Math.log2(size.width));
+    this.fitChannels();
+  }
+  /**
+   * One more uint32 per record, for data that only some kernels write and
+   * some draws read. The cache sizes it: every record while active, and one
+   * texel until first activated. Its texture object never changes.
+   */
+  addChannel() {
+    const texture = makeTexture();
+    texture.format = THREE.RedIntegerFormat;
+    const channel = { texture, active: false };
+    this.channels.push(channel);
+    return {
+      write: (index, value) =>
+        store(
+          texture,
+          cacheTexCoord(index, this.dimensions),
+          N.uvec4(value, 0, 0, 0),
+        ),
+      read: (index) =>
+        loadArray(uintTexture(texture), cacheTexCoord(index, this.dimensions))
+          .r,
+      setActive: (active) => {
+        channel.active = active;
+        this.fitChannels();
+      },
+    };
+  }
+  /**
+   * Active channels take the cache's size. Inactive ones keep their storage
+   * for the next activation, or with `shrink` release it down to one texel.
+   * Returns whether any storage changed.
+   */
+  fitChannels(shrink = false) {
+    const { x, y, z } = this.size;
+    let changed = false;
+    for (const { texture, active } of this.channels) {
+      if (active) changed = setTextureSize(texture, x, y, z) || changed;
+      else if (shrink) changed = setTextureSize(texture, 1, 1, 1) || changed;
+    }
+    return changed;
   }
   // Call after visibility and deferred color evaluation, inside the same guard.
   write(index, projection, ndc, pixelScale, centerRange) {
@@ -163,16 +234,7 @@ export class ProjectionCache {
     N.If(
       N.any(col0.zw.notEqual(N.vec2(0))).or(N.any(col1.zw.notEqual(N.vec2(0)))),
       () => {
-        const a = col0.xy.sub(ndc.mul(col0.w));
-        const b = col1.xy.sub(ndc.mul(col1.w));
-        const rhs = ndc.mul(clipW).sub(col2.xy.mul(viewZ).add(col3.xy));
-        const determinant = a.x.mul(b.y).sub(b.x.mul(a.y));
-        const xy = N.vec2(
-          rhs.x.mul(b.y).sub(b.x.mul(rhs.y)),
-          a.x.mul(rhs.y).sub(rhs.x.mul(a.y)),
-        )
-          .div(determinant)
-          .toVar();
+        const xy = unprojectXY(ndc, viewZ, matrix).toVar();
         clipW.addAssign(col0.w.mul(xy.x).add(col1.w.mul(xy.y)));
         clipZ.addAssign(col0.z.mul(xy.x).add(col1.z.mul(xy.y)));
       },
@@ -198,6 +260,8 @@ export class ProjectionCache {
     // kernel's low half carries its edge fade.
     const supportRadiusSquared = N.uintBitsToFloat(second.z);
     return {
+      // For draws that need the center back in view space.
+      ndcAndViewZ: N.vec3(ndc, viewZ),
       clipPosition: N.vec4(ndc.add(offset).mul(clipW), clipZ, clipW),
       rgba: N.vec4(ratioRed.y, greenBlue, N.uintBitsToFloat(second.y)),
       splatUv: N.positionGeometry.xy.mul(supportRadiusSquared.sqrt()),
@@ -207,5 +271,6 @@ export class ProjectionCache {
   }
   dispose() {
     for (const texture of this.textures) texture.dispose();
+    for (const { texture } of this.channels) texture.dispose();
   }
 }

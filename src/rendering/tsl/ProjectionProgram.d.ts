@@ -22,7 +22,7 @@ type ProjectionInput =
       rgba: Node<"vec4">;
       shapeAmount: Node<"float">;
     };
-export type SplatProjection = {
+export type SplatProjection<Extra = undefined> = {
   valid: Node<"bool">;
   clipCenter: Node<"vec4">;
   viewDepth: Node<"float">;
@@ -35,10 +35,32 @@ export type SplatProjection = {
   /** A wide kernel's low 16 bits hold its edge fade as a half. */
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
+  /** Outputs of the projection's extension. */
+  extra: Extra;
 };
-/** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
-export declare function createProjectionProgram(
+/** A visible Gaussian in view space, as an extension sees it. */
+export type ProjectedGaussian = {
+  isOrthographic: Node<"bool">;
+  viewCenter: Node<"vec3">;
+  scales: Node<"vec3">;
+  viewQuaternion: Node<"vec4">;
+};
+/**
+ * Derives further outputs from each visible Gaussian: `declare` creates their
+ * variables beside the projection's own, and `assign` runs where the Gaussian
+ * is in scope.
+ */
+export type ProjectionExtension<Extra> = {
+  declare(): Extra;
+  assign(outputs: Extra, gaussian: ProjectedGaussian): void;
+};
+/**
+ * Shared projection for vertex and compute paths. Call inside a TSL Fn.
+ * `extension` may derive further outputs from each visible Gaussian.
+ */
+export declare function createProjectionProgram<Extra = undefined>(
   uniforms: Uniforms,
   view: ProjectionView,
-): (source: ProjectionInput, includeColor?: boolean) => SplatProjection;
+  extension?: ProjectionExtension<Extra>,
+): (source: ProjectionInput, includeColor?: boolean) => SplatProjection<Extra>;
 export {};

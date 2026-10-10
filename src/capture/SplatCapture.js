@@ -119,6 +119,7 @@ export class SplatCapture {
       depthWrite: source.depthWrite,
       encodeLinear: source.encodeLinear,
       sortRadial: radial || source.sortRadial,
+      lighting: source.lighting,
     });
     // Stencil masking is set on the Splat material, not on the renderer.
     const sourceMaterial = source.material;

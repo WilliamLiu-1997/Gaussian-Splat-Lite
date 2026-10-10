@@ -1,5 +1,47 @@
 export const renderOptionGroups = [
   {
+    title: "Lighting",
+    description: "Three red, green and blue point lights orbit the model.",
+    options: [
+      {
+        property: "lightingEnabled",
+        label: "Colored lights",
+        description: "Illuminate the model with three colored spheres.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
+        property: "rotateLights",
+        label: "Rotate lights",
+        description: "Move the three lights around the model.",
+        defaultValue: true,
+        falseLabel: "Paused",
+        trueLabel: "Moving",
+      },
+      {
+        property: "lightAmbient",
+        label: "Ambient brightness",
+        description: "Brightness retained in areas away from the lights.",
+        min: 0,
+        max: 1,
+        step: 0.01,
+        defaultValue: 0.35,
+        format: (value) => value.toFixed(2),
+      },
+      {
+        property: "lightIntensity",
+        label: "Light intensity",
+        description: "Strength of each colored light.",
+        min: 0,
+        max: 5,
+        step: 0.05,
+        defaultValue: 2,
+        format: (value) => value.toFixed(2),
+      },
+    ],
+  },
+  {
     title: "Performance & diagnostics",
     description: "Frame scheduling and live metrics.",
     options: [

@@ -13,6 +13,8 @@ export interface GaussianSplatRendererOptions {
    * improve Gaussian Splatting and significantly reduces performance.
    */
   renderer: GaussianSplatCompatibleRenderer;
+  /** Light Splat centers with the scene's diffuse lights. @default false */
+  lighting?: boolean;
   /**
    * Callback function to be called when GaussianSplatRenderer needs to re-render,
    * for example when a splat sort completes.
@@ -201,6 +203,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
   dirty: boolean;
   private readonly backend;
   private readonly materialState;
+  private lightingState;
   private orderingBuffer;
   private orderingReady;
   private readonly headCamera;
@@ -228,6 +231,8 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
   private unsupportedCameraReported;
   constructor(options: GaussianSplatRendererOptions);
   raycast(_raycaster: THREE.Raycaster, _intersects: THREE.Intersection[]): void;
+  get lighting(): boolean;
+  set lighting(value: boolean);
   static makeUniforms(): {
     renderSize: {
       value: THREE.Vector2;
@@ -356,7 +361,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
     /** @internal Models excluded during capture preparation, including descendants. */
     excludedObjects?: ReadonlySet<THREE.Object3D>;
   }): Promise<void>;
-  /** Updates the scene and compacts work and edit storage while retaining compiled kernels. */
+  /** Updates the scene and compacts work, edit and light storage while retaining compiled kernels. */
   shrinkResources({
     scene,
     camera,

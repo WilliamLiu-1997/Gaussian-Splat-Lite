@@ -1,24 +1,25 @@
+import { MaterialVariants } from "../MaterialVariants.js";
 import { createSplatNodeMaterial } from "./SplatMaterial.js";
 /** Drawing shared by both WebGPURenderer backends. */
 export class NodeSplatBackend {
   constructor(renderer, uniforms, options, orderingNode, vertexData) {
     this.renderer = renderer;
-    const create = (stochastic) =>
+    this.materials = new MaterialVariants((stochastic, shading) =>
       createSplatNodeMaterial({
         uniforms,
         ...options,
         orderingNode,
         vertexData,
         stochastic,
-      });
-    this.sortedMaterial = create(false);
-    this.stochasticMaterial = create(true);
+        shading,
+      }),
+    );
   }
-  selectMaterial(stochastic) {
-    return stochastic ? this.stochasticMaterial : this.sortedMaterial;
+  /** `shading`, when given, selects the variant that recolors its Splats. */
+  selectMaterial(stochastic, shading) {
+    return this.materials.select(stochastic, shading);
   }
   dispose() {
-    this.sortedMaterial.dispose();
-    this.stochasticMaterial.dispose();
+    this.materials.dispose();
   }
 }
