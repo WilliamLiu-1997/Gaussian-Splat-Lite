@@ -79,6 +79,7 @@ export class ProjectedSplats {
     this.viewCapacity = 0;
     this.disposed = false;
     this.projectedInputs = [];
+    this.pendingInputs = [];
     this.limits = renderer.backend.device.limits;
     this.state = {
       ...uniforms,
@@ -227,7 +228,9 @@ export class ProjectedSplats {
     if (!set) {
       throw new RangeError("WebGPU Splat projection supports one or two views");
     }
-    return set.slots.slice(0, set.compiled);
+    return set.compiled === set.slots.length
+      ? set.slots
+      : set.slots.slice(0, set.compiled);
   }
   /** Compact storage and refresh existing bindings without compiling or stopping draws. */
   shrinkResources(getCount) {
@@ -263,7 +266,7 @@ export class ProjectedSplats {
         }
       }
     }
-    if (resized || seedsResized) this.projectedInputs = [];
+    if (resized || seedsResized) this.projectedInputs.length = 0;
     // Preparing a compiled node again only refreshes its uniforms and bind
     // groups. Dispose follows this in the queue.
     for (const node of refresh) await this.renderer.compileComputeAsync(node);
@@ -438,47 +441,52 @@ export class ProjectedSplats {
     geometry.setSplatCount(Math.max(1, accumulator.numSplats));
     // The accumulator version covers source, mapping, transform, animation and
     // edit changes. Output color settings are draw-only.
-    const inputs = [
-      accumulator,
-      accumulator.version,
-      ...accumulator.viewOrigin.toArray(),
-      cameras.length,
-      stochastic,
-      // Each mode keys only the sort options it reads.
-      !stochastic && radial,
-      sortMode,
-      uniforms.maxStdDev.value,
-      uniforms.minPixelRadius.value,
-      uniforms.minAlpha.value,
-      uniforms.preBlurAmount.value,
-      uniforms.blurAmount.value,
-      uniforms.clipXY.value,
-      uniforms.focalAdjustment.value,
-    ];
-    for (const { node } of accumulator.mapping) inputs.push(node.layers.mask);
+    // Reuse the scratch snapshot; publish it only after a successful dispatch.
+    const inputs = this.pendingInputs;
+    let length = 0;
+    inputs[length++] = accumulator;
+    inputs[length++] = accumulator.version;
+    inputs[length++] = accumulator.viewOrigin.x;
+    inputs[length++] = accumulator.viewOrigin.y;
+    inputs[length++] = accumulator.viewOrigin.z;
+    inputs[length++] = cameras.length;
+    inputs[length++] = stochastic;
+    // Each mode keys only the sort options it reads.
+    inputs[length++] = !stochastic && radial;
+    inputs[length++] = sortMode;
+    inputs[length++] = uniforms.maxStdDev.value;
+    inputs[length++] = uniforms.minPixelRadius.value;
+    inputs[length++] = uniforms.minAlpha.value;
+    inputs[length++] = uniforms.preBlurAmount.value;
+    inputs[length++] = uniforms.blurAmount.value;
+    inputs[length++] = uniforms.clipXY.value;
+    inputs[length++] = uniforms.focalAdjustment.value;
+    for (const { node } of accumulator.mapping)
+      inputs[length++] = node.layers.mask;
     for (const view of cameras) {
-      inputs.push(
-        ...view.matrixWorld.elements,
-        ...(monoProjection ?? view.projectionMatrix).elements,
-        view.near,
-        view.far,
-        view.layers.mask,
-        view.viewport?.z ?? uniforms.renderSize.value.x,
-        view.viewport?.w ?? uniforms.renderSize.value.y,
-      );
+      for (const value of view.matrixWorld.elements) inputs[length++] = value;
+      for (const value of (monoProjection ?? view.projectionMatrix).elements)
+        inputs[length++] = value;
+      inputs[length++] = view.near;
+      inputs[length++] = view.far;
+      inputs[length++] = view.layers.mask;
+      inputs[length++] = view.viewport?.z ?? uniforms.renderSize.value.x;
+      inputs[length++] = view.viewport?.w ?? uniforms.renderSize.value.y;
     }
+    inputs.length = length;
     if (
       inputs.length === this.projectedInputs.length &&
       inputs.every((value, index) => value === this.projectedInputs[index])
     )
       return true;
     // A failed or partially submitted update must not reuse the old snapshot.
-    this.projectedInputs = [];
+    this.projectedInputs.length = 0;
     cameras.forEach((view, eye) => {
       this.setEye(eye, view, monoProjection, accumulator);
     });
     this.setSortPose(cameras, accumulator);
     this.dispatch(slots, cameras, accumulator, sortMode);
+    this.pendingInputs = this.projectedInputs;
     this.projectedInputs = inputs;
     return true;
   }
@@ -552,7 +560,8 @@ export class ProjectedSplats {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    this.projectedInputs = [];
+    this.projectedInputs.length = 0;
+    this.pendingInputs.length = 0;
     this.renderer.xr.removeEventListener("sessionend", this.onSessionEnd);
     void this.kernelWork.then(() => this.disposeResources());
   }

@@ -44,6 +44,7 @@ export declare class ProjectedSplats {
   private viewCapacity;
   private disposed;
   private projectedInputs;
+  private pendingInputs;
   constructor(renderer: WebGPURenderer, uniforms: Uniforms);
   private createSlot;
   /** Projection uniforms of the precompiled eyes after the first. */
