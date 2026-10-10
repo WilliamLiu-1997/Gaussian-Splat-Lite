@@ -6,24 +6,11 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "moduleResolution": "bundler",
-    "declaration": true,
-    "emitDeclarationOnly": true,
-    "sourceMap": true,
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "types": [
-      "vite/client",
-      "vite-plugin-glsl/ext",
-      "vite-plugin-arraybuffer/types"
-    ]
+    "noEmit": true,
+    "types": []
   },
-  "ts-node": {
-    "experimentalSpecifierResolution": "node",
-    "transpileOnly": true,
-    "esm": true
-  },
-  "include": ["src/**/*"],
+  "include": ["src/**/*.d.ts"],
   "exclude": ["node_modules", "dist", "examples"]
 }

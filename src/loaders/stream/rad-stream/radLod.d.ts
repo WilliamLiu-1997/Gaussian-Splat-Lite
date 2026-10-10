@@ -1,0 +1,37 @@
+import type { RadMeta } from "../../rad/radFormat.js";
+/** CPU-only data retained in the dataset worker, never GPU source storage. */
+export type RadLodChunk = {
+  centers: Float32Array;
+  radii: Float32Array;
+  childStart: Uint32Array;
+  childCount: Uint16Array;
+  /** Original page index to Morton storage; tree arrays keep file order. */
+  sourceToStorage: Uint32Array;
+  /** Center and scale/rotation bounds per Morton storage block. */
+  boundsBlocks: Float32Array;
+};
+export type RadLodView = {
+  /** Object-to-camera transform; doubles preserve large scene translations. */
+  viewFromObject: number[];
+  /** Camera projection's X/Y rows (8 values), including zoom and view offsets. */
+  projectionRows: number[];
+  /** Pixels per camera-space unit at depth 1, including projection zoom. */
+  pixelScale: number;
+  orthographic: boolean;
+};
+export type RadLodRequest = {
+  views: RadLodView[];
+  splatBudget: number;
+  pixelThreshold: number;
+  residentChunks: number[];
+  hysteresis?: number;
+};
+export type RadLodSelection = {
+  /** Stable file indices. The scheduler maps these to occupied GPU slots. */
+  indices: Uint32Array;
+  wantedChunks: Uint32Array;
+  /** Ancestor and selected pages required by this cut. */
+  touchedChunks: Uint32Array;
+};
+/** Resolve validated LOD indices without assuming that chunks are 64K records. */
+export declare function radChunkIndex(meta: RadMeta, index: number): number;

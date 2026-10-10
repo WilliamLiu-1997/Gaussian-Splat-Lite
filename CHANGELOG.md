@@ -12,6 +12,25 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Added `NeuralDenoiseNode`, a neural denoiser for stochastic rendering on `WebGPURenderer` with native WebGPU, used in place of `TAANode`. It reduces trails behind moving objects, keeps the detail of content that moves slowly enough to follow, and stays smooth while the camera moves. Faster motion looks softer. It has two quality levels and takes more GPU time and two and a half to three and a half times the memory of `TAANode`. See [NeuralDenoiseNode](docs/NeuralDenoiseNode.md).
 - Added a Stochastic denoiser option to the viewer, to choose between TAA and the neural denoiser on WebGPU, and a Neural denoiser quality option for its two levels. TAA remains the default.
 
+### Changed
+
+- Improved memory reclamation with `shrinkResources()`, including SDF edits.
+- Migrated the library, tests, and Vite configuration from TypeScript to JavaScript, with adjacent TypeScript declarations preserving the public API types.
+- Simplified shader type declarations and reorganized native WebGPU rendering code for easier maintenance.
+- Reworked declaration builds for ESM and CommonJS and added JavaScript syntax checks. Builds no longer depend on `ts-node` or `vite-plugin-dts`.
+- Applied Three.js r186 compatibility fixes automatically when using `GaussianSplatRenderer`, `TAANode`, or `NeuralDenoiseNode`. The fixes run once per initialized renderer and require no changes to the installed Three.js source.
+
+### Fixed
+
+- Restored private declaration boundaries after the JavaScript migration and added checks comparing module value exports with their declarations.
+- Preserved custom material settings when switching between sorted and stochastic rendering.
+- Fixed depth-stencil texture sampling in `TAANode` on native WebGPU with Three.js r186.
+- Fixed float depth and depth-stencil attachments on the r186 WebGL2 fallback, including multisampled capture targets, and kept default render-target depth in float format when using reversed depth.
+- Fixed dynamic TSL texture bindings that temporarily share an empty texture, so Splat data, indices, and spherical harmonics keep separate bindings as models load or shaders rebuild.
+- Fixed single-layer array render-target attachments on the r186 WebGL2 fallback, removing the need to allocate an extra accumulator layer. Also fixed draw-buffer state handling for offscreen and XR framebuffers.
+- Released GPU buffers when their buffer attributes are disposed on Three.js r186, including buffers replaced during resizing.
+- Updated native WebGPU capture readback to consume tightly packed rows. The r186 compatibility fix removes GPU row padding before returning pixels and releases the temporary readback buffer even when reading fails.
+
 ## [1.2.2] - 2026-10-07
 
 ### Added

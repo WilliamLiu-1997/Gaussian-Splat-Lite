@@ -69,12 +69,14 @@ See [Stochastic rendering](StochasticRendering.md) for setup.
 | API | Description |
 | --- | --- |
 | `update({ scene, camera })` | Bring the Splats up to date with the scene and camera; returns a promise. Only needed with `autoUpdate = false` |
-| `shrinkResources({ scene, camera })` | Update, then release memory that is no longer needed, for example after removing large models; returns a promise |
+| `shrinkResources({ scene, camera })` | Update, then release memory that is no longer needed, for example after removing models or SDF edits; returns a promise |
 | `clearSplats()` | Clear the Splats from the display without removing models from the scene |
 | `dispose()` | Release this renderer's resources |
 | `stochasticActive` | Read-only. Whether stochastic rendering is currently being drawn; it changes shortly after you set `stochastic` |
 | `stochasticSample` | Noise pattern index, `0` by default. Set `autoAdvanceStochasticSample = false` to control it yourself |
 | `synchronousSort` | Read-only. `true` when Splats are always sorted before they are drawn, as on native WebGPU |
+
+Custom settings on `splatRenderer.material` are preserved when switching between sorted and stochastic rendering.
 
 To update manually after the scene or camera changes:
 
