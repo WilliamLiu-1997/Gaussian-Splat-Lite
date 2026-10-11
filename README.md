@@ -108,7 +108,7 @@ Sorted alpha blending is the default. To enable stochastic rendering:
 splatRenderer.stochastic = true;
 ```
 
-This mode produces visible noise. Smooth it with the library's [temporal anti-aliasing](docs/TAAPass.md): `TAAPass` for `WebGLRenderer`, and `TAANode` for `WebGPURenderer` (including its WebGL2 fallback). On native WebGPU, [`NeuralDenoiseNode`](docs/NeuralDenoiseNode.md) is an alternative for scenes with moving objects. See [Stochastic rendering](docs/StochasticRendering.md) for the setup.
+This mode produces visible noise. Smooth it with [temporal anti-aliasing](docs/TAAPass.md), or use the [neural denoiser](docs/NeuralDenoiseNode.md) to help reduce trails behind moving objects. Both support WebGPU and WebGL2. See [Stochastic rendering](docs/StochasticRendering.md) for setup and requirements.
 
 ## Streaming large scenes
 
@@ -161,7 +161,7 @@ const streaming = new SogStreamScheduler({
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, sorting, and on-demand rendering.
 - [Stochastic rendering](docs/StochasticRendering.md) — The optional transparency mode and how to smooth its noise.
 - [TAAPass and TAANode](docs/TAAPass.md) — Temporal anti-aliasing for WebGLRenderer and WebGPURenderer.
-- [NeuralDenoiseNode](docs/NeuralDenoiseNode.md) — A neural denoiser for stochastic rendering on WebGPU, for scenes with moving objects.
+- [NeuralDenoiseNode and NeuralDenoisePass](docs/NeuralDenoiseNode.md) — Neural denoising on WebGPU and WebGL2, for scenes with moving objects.
 - [SplatCapture](docs/SplatCapture.md) — Offscreen images, pixel readback, cube maps, and environment maps.
 
 **Models**

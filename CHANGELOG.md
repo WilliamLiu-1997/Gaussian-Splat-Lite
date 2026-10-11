@@ -9,20 +9,20 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added `NeuralDenoiseNode`, a neural denoiser for stochastic rendering on `WebGPURenderer` with native WebGPU, used in place of `TAANode`. It reduces trails behind moving objects and smooths noise while the camera moves. Faster motion looks softer. Its `"profile1"` and `"profile2"` (default) trade detail, noise and flicker differently. It takes more GPU time and about 2.6–4.4 times the memory of `TAANode`, depending on profile and coverage sampling. See [NeuralDenoiseNode](docs/NeuralDenoiseNode.md).
-- Added optional four-sample coverage to both neural denoiser profiles. Set the fourth constructor argument to `4` to reduce input noise while still rendering the scene once per frame, with higher GPU time and texture memory use. The default remains one coverage sample.
-- Added a Stochastic denoiser option to the viewer, to choose between TAA and the neural denoiser on WebGPU, with separate Neural denoiser profile and Neural coverage quality options. TAA remains the default.
+- Added `NeuralDenoiseNode` for `WebGPURenderer` and `NeuralDenoisePass` for `WebGLRenderer`. They smooth stochastic rendering and help reduce trails behind moving objects, using more GPU time and memory than TAA. See [Neural denoising](docs/NeuralDenoiseNode.md) for setup and requirements.
+- Added two neural denoiser profiles and optional four-sample coverage for less noise during motion, at higher GPU and memory cost.
+- Added neural denoiser, profile and coverage quality controls to the viewer. TAA remains the default.
 
 ### Changed
 
 - Improved memory reclamation with `shrinkResources()`, including SDF edits.
 - Migrated the library, tests, and Vite configuration from TypeScript to JavaScript, with adjacent TypeScript declarations preserving the public API types.
-- Simplified shader type declarations and reorganized native WebGPU rendering code for easier maintenance.
 - Reworked declaration builds for ESM and CommonJS and added JavaScript syntax checks. Builds no longer depend on `ts-node` or `vite-plugin-dts`.
-- Applied Three.js r186 compatibility fixes automatically when using `GaussianSplatRenderer`, `TAANode`, or `NeuralDenoiseNode`. The fixes run once per initialized renderer and require no changes to the installed Three.js source.
+- Applied Three.js r186 compatibility fixes automatically when using `GaussianSplatRenderer`, `TAANode`, or `NeuralDenoiseNode`, with no changes needed to the installed Three.js source.
 
 ### Fixed
 
+- Fixed partly transparent Splats appearing too bright with four-sample neural denoising on `WebGLRenderer`.
 - Restored private declaration boundaries after the JavaScript migration and added checks comparing module value exports with their declarations.
 - Preserved custom material settings when switching between sorted and stochastic rendering.
 - Fixed depth-stencil texture sampling in `TAANode` on native WebGPU with Three.js r186.

@@ -50,9 +50,18 @@ void main() {
     ivec2 coord = ivec2((uvec2(gl_FragCoord.xy) + offset) & uvec2(31u));
     coord.y += int(vStochasticOffset >> 10u) * 32;
     float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 32768.0;
+    #ifdef GSL_COVERAGE_SAMPLES
+    int mask = 0;
+    for (int sampleIndex = 0; sampleIndex < 4; sampleIndex++) {
+        if (fract(randomValue + float(sampleIndex) * 0.25) < alpha) mask |= 1 << sampleIndex;
+    }
+    if (mask == 0) discard;
+    gl_SampleMask[0] = mask;
+    #else
     if (randomValue >= alpha) {
         discard;
     }
+    #endif
     #endif
 
     // Decode color only after the fragment survives coverage tests.

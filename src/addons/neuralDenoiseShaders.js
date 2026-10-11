@@ -34,19 +34,19 @@ ${pointwise("PIXEL_ENCODE", correction.hidden)}
 ${pointwise("PIXEL_HEAD", correction.out)}
 fn correctedPixels(color: vec4f, d: vec4f, sr: vec4f, dr: vec4f,
     aux: vec4f, trust: vec4f, strength: f32) -> vec4f {
-  let ys = luma(sr.rgb);
-  let yd = luma(d.rgb);
-  let deviation = sqrt(max(aux.x - ys * ys, 0.0) + 1e-8);
-  let scale = deviation + 0.02;
-  let stats = vec4f(
+  let ys: f32 = luma(sr.rgb);
+  let yd: f32 = luma(d.rgb);
+  let deviation: f32 = sqrt(max(aux.x - ys * ys, 0.0) + 1e-8);
+  let scale: f32 = deviation + 0.02;
+  let stats: vec4f = vec4f(
     min(abs(luma(color.rgb) - ys) / scale, 4.0),
     min(abs(yd - luma(dr.rgb)) / scale, 4.0),
     min(abs(aux.w - yd) / scale, 4.0), min(deviation, 1.0));
-  let colors = min(abs(vec4f(chroma(color.rgb) - chroma(sr.rgb),
+  let colors: vec4f = min(abs(vec4f(chroma(color.rgb) - chroma(sr.rgb),
     chroma(d.rgb) - chroma(dr.rgb))) / scale, vec4f(4.0));
-  let probabilities = vec4f(trust.xy, trust.w, strength);
-  let hidden = silu(${mixed("PIXEL_ENCODE", 0, ["stats", "colors", "probabilities"])});
-  let ratio = exp(${mixed("PIXEL_HEAD", 0, ["hidden"])});
+  let probabilities: vec4f = vec4f(trust.xy, trust.w, strength);
+  let hidden: vec4f = silu(${mixed("PIXEL_ENCODE", 0, ["stats", "colors", "probabilities"])});
+  let ratio: vec4f = exp(${mixed("PIXEL_HEAD", 0, ["hidden"])});
   return probabilities * ratio / (vec4f(1.0) - probabilities + probabilities * ratio);
 }`;
 }
@@ -94,15 +94,15 @@ const widened = ({ w, b }, at, count) => {
  * layer's image.
  */
 const depthwiseTaps = (name, groups, bounded) => /* wgsl */ `
-${groups.map((g) => `  var a${g} = ${name}_b${g};`).join("\n")}
-  for (var j = 0; j < 9; j++) {
-    let q = ${bounded}(p + TAPS[j]);
+${groups.map((g) => `  var a${g}: vec4f = ${name}_b${g};`).join("\n")}
+  for (var j: i32 = 0; j < 9; j++) {
+    let q: vec2i = ${bounded}(p + TAPS[j]);
 ${groups.map((g) => `    a${g} += ${name}_${g}[j] * textureLoad(input${g}, q, 0);`).join("\n")}
   }
 ${groups.map((g) => `  a${g} = silu(a${g});`).join("\n")}`;
 const VERTEX = /* wgsl */ `
 @vertex fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
-  let xy = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+  let xy: vec2f = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
   return vec4f(xy * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const MATH = /* wgsl */ `
@@ -148,7 +148,7 @@ fn drawn(p: vec2i) -> vec2i { return bounded(p) + vec2i(P.offset); }
 // measured bias (half a unit where the GPU truncates, nothing where it
 // rounds) makes every write round to nearest.
 fn roundedHalf(v: vec4f) -> vec4f {
-  let magnitude = max(abs(v), vec4f(6.1035156e-5));
+  let magnitude: vec4f = max(abs(v), vec4f(6.1035156e-5));
   return v + sign(v) * P.halfBias * exp2(floor(log2(magnitude)) - 10.0);
 }
 
@@ -162,17 +162,17 @@ struct History {
 // Where the surface seen at this pixel was in the previous frame, from the
 // camera alone. Moving objects are not followed.
 fn reproject(pixel: vec2f, z: f32) -> History {
-  let uv = pixel * P.invSize;
-  let zv = -z;
-  let cw = P.unprojectB.z * zv + P.unprojectB.w;
-  let x = ((2.0 * uv.x - 1.0) * cw - P.unprojectA.z * zv - P.unprojectB.x) / P.unprojectA.x;
-  let y = ((1.0 - 2.0 * uv.y) * cw - P.unprojectA.w * zv - P.unprojectB.y) / P.unprojectA.y;
-  let position = vec4f(x, y, zv, 1.0);
-  let previous = P.toPrevClip * position;
-  let current = P.toClip * position;
-  var w = previous.w;
+  let uv: vec2f = pixel * P.invSize;
+  let zv: f32 = -z;
+  let cw: f32 = P.unprojectB.z * zv + P.unprojectB.w;
+  let x: f32 = ((2.0 * uv.x - 1.0) * cw - P.unprojectA.z * zv - P.unprojectB.x) / P.unprojectA.x;
+  let y: f32 = ((1.0 - 2.0 * uv.y) * cw - P.unprojectA.w * zv - P.unprojectB.y) / P.unprojectA.y;
+  let position: vec4f = vec4f(x, y, zv, 1.0);
+  let previous: vec4f = P.toPrevClip * position;
+  let current: vec4f = P.toClip * position;
+  var w: f32 = previous.w;
   if (abs(w) < 1e-8) { w = 1e-8; }
-  let motion = current.xy / current.w - previous.xy / w;
+  let motion: vec2f = current.xy / current.w - previous.xy / w;
   var h: History;
   h.uv = uv + vec2f(-0.5, 0.5) * motion;
   h.valid = f32(previous.w > 0.0 && all(h.uv >= vec2f(0.0)) && all(h.uv <= vec2f(1.0)));
@@ -189,23 +189,23 @@ struct Resampled {
   span: vec4f,
 };
 fn catmullRomSpan(image: texture_2d<f32>, uv: vec2f) -> Resampled {
-  let position = uv * P.size;
-  let center = floor(position - 0.5) + 0.5;
-  let t = position - center;
-  let w0 = t * (-0.5 + t * (1.0 - 0.5 * t));
-  let w1 = 1.0 + t * t * (-2.5 + 1.5 * t);
-  let w2 = t * (0.5 + t * (2.0 - 1.5 * t));
-  let w3 = t * t * (-0.5 + 0.5 * t);
-  let w12 = w1 + w2;
-  let p0 = (center - 1.0) * P.invSize;
-  let p12 = (center + w2 / w12) * P.invSize;
-  let p3 = (center + 2.0) * P.invSize;
-  let middle = textureSampleLevel(image, linearSampler, vec2f(p12.x, p12.y), 0.0);
-  let left = textureSampleLevel(image, linearSampler, vec2f(p0.x, p12.y), 0.0);
-  let right = textureSampleLevel(image, linearSampler, vec2f(p3.x, p12.y), 0.0);
-  let above = textureSampleLevel(image, linearSampler, vec2f(p12.x, p0.y), 0.0);
-  let below = textureSampleLevel(image, linearSampler, vec2f(p12.x, p3.y), 0.0);
-  var result = middle * (w12.x * w12.y);
+  let position: vec2f = uv * P.size;
+  let center: vec2f = floor(position - 0.5) + 0.5;
+  let t: vec2f = position - center;
+  let w0: vec2f = t * (-0.5 + t * (1.0 - 0.5 * t));
+  let w1: vec2f = 1.0 + t * t * (-2.5 + 1.5 * t);
+  let w2: vec2f = t * (0.5 + t * (2.0 - 1.5 * t));
+  let w3: vec2f = t * t * (-0.5 + 0.5 * t);
+  let w12: vec2f = w1 + w2;
+  let p0: vec2f = (center - 1.0) * P.invSize;
+  let p12: vec2f = (center + w2 / w12) * P.invSize;
+  let p3: vec2f = (center + 2.0) * P.invSize;
+  let middle: vec4f = textureSampleLevel(image, linearSampler, vec2f(p12.x, p12.y), 0.0);
+  let left: vec4f = textureSampleLevel(image, linearSampler, vec2f(p0.x, p12.y), 0.0);
+  let right: vec4f = textureSampleLevel(image, linearSampler, vec2f(p3.x, p12.y), 0.0);
+  let above: vec4f = textureSampleLevel(image, linearSampler, vec2f(p12.x, p0.y), 0.0);
+  let below: vec4f = textureSampleLevel(image, linearSampler, vec2f(p12.x, p3.y), 0.0);
+  var result: vec4f = middle * (w12.x * w12.y);
   result += left * (w0.x * w12.y);
   result += right * (w3.x * w12.y);
   result += above * (w12.x * w0.y);
@@ -228,7 +228,7 @@ fn catmullRom(image: texture_2d<f32>, uv: vec2f) -> vec4f {
 // four pixels around the position span. At a pixel's centre it returns the
 // pixel.
 fn lanczosWeight(t: f32) -> f32 {
-  let x = 3.14159265 * t;
+  let x: f32 = 3.14159265 * t;
   if (abs(x) < 1e-5) { return 1.0; }
   return 3.0 * sin(x) * sin(x / 3.0) / (x * x);
 }
@@ -240,11 +240,11 @@ struct LanczosKernel {
   wy: array<f32, 6>,
 }
 fn lanczosKernel(uv: vec2f) -> LanczosKernel {
-  let position = uv * P.size - 0.5;
+  let position: vec2f = uv * P.size - 0.5;
   var k: LanczosKernel;
   k.base = floor(position);
-  let t = position - k.base;
-  for (var i = 0; i < 6; i++) {
+  let t: vec2f = position - k.base;
+  for (var i: i32 = 0; i < 6; i++) {
     k.wx[i] = lanczosWeight(t.x - f32(i - 2));
     k.wy[i] = lanczosWeight(t.y - f32(i - 2));
   }
@@ -253,20 +253,20 @@ fn lanczosKernel(uv: vec2f) -> LanczosKernel {
   return k;
 }
 fn lanczosCross(image: texture_2d<f32>, k: LanczosKernel) -> vec4f {
-  var sum = textureSampleLevel(image, linearSampler, k.centre, 0.0) * (k.middle.x * k.middle.y);
-  var total = k.middle.x * k.middle.y;
-  for (var i = 0; i < 6; i++) {
+  var sum: vec4f = textureSampleLevel(image, linearSampler, k.centre, 0.0) * (k.middle.x * k.middle.y);
+  var total: f32 = k.middle.x * k.middle.y;
+  for (var i: i32 = 0; i < 6; i++) {
     if (i == 2 || i == 3) { continue; }
-    let along = (k.base + f32(i) - 1.5) * P.invSize;
+    let along: vec2f = (k.base + f32(i) - 1.5) * P.invSize;
     sum += textureSampleLevel(image, linearSampler, vec2f(along.x, k.centre.y), 0.0) * (k.wx[i] * k.middle.y);
     sum += textureSampleLevel(image, linearSampler, vec2f(k.centre.x, along.y), 0.0) * (k.middle.x * k.wy[i]);
     total += k.wx[i] * k.middle.y + k.middle.x * k.wy[i];
   }
-  let p = vec2i(k.base);
-  let a = textureLoad(image, bounded(p), 0);
-  let b = textureLoad(image, bounded(p + vec2i(1, 0)), 0);
-  let c = textureLoad(image, bounded(p + vec2i(0, 1)), 0);
-  let d = textureLoad(image, bounded(p + vec2i(1, 1)), 0);
+  let p: vec2i = vec2i(k.base);
+  let a: vec4f = textureLoad(image, bounded(p), 0);
+  let b: vec4f = textureLoad(image, bounded(p + vec2i(1, 0)), 0);
+  let c: vec4f = textureLoad(image, bounded(p + vec2i(0, 1)), 0);
+  let d: vec4f = textureLoad(image, bounded(p + vec2i(1, 1)), 0);
   return clamp(sum / total, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
 }
 `;
@@ -282,9 +282,9 @@ fn sceneDepth(p: vec2i) -> f32 {
   ${
     multisampled
       ? `// Nearest covered sample, including reversed depth. Clear samples stay far.
-  var d = textureLoad(depthTexture, p, 0);
-  for (var sample = 1; sample < 4; sample++) {
-    let next = textureLoad(depthTexture, p, sample);
+  var d: f32 = textureLoad(depthTexture, p, 0);
+  for (var sample: i32 = 1; sample < 4; sample++) {
+    let next: f32 = textureLoad(depthTexture, p, sample);
     d = select(min(d, next), max(d, next), P.clearDepth == 0.0);
   }
   return d;`
@@ -303,13 +303,13 @@ fn viewDepth(d: f32) -> f32 {
 // took 1 ms at 2560x1600 on an Apple M5 Pro where it takes 0.1 ms without.
 const cells = (multisampled) => /* wgsl */ `${PARAMS}${sceneDepth(multisampled)}
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let corner = vec2i(position.xy) * 8;
-  var sums = vec3f(0.0);
-  for (var y = 0; y < 8; y++) {
-    for (var x = 0; x < 8; x++) {
-      let d = sceneDepth(drawn(corner + vec2i(x, y)));
+  let corner: vec2i = vec2i(position.xy) * 8;
+  var sums: vec3f = vec3f(0.0);
+  for (var y: i32 = 0; y < 8; y++) {
+    for (var x: i32 = 0; x < 8; x++) {
+      let d: f32 = sceneDepth(drawn(corner + vec2i(x, y)));
       // One over viewDepth(d).
-      let disparity = select(
+      let disparity: f32 = select(
         (d * P.depth.y - P.depth.x) / (d * P.depth.w - P.depth.z),
         exp2(-d * P.logFar) / P.logNear,
         P.logDepth > 0.5);
@@ -323,11 +323,11 @@ const cells = (multisampled) => /* wgsl */ `${PARAMS}${sceneDepth(multisampled)}
 const WIDER = /* wgsl */ `${VERTEX}
 @group(0) @binding(1) var cells: texture_2d<f32>;
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let corner = vec2i(position.xy) * 4;
-  let last = vec2i(textureDimensions(cells)) - 1;
-  var sums = vec3f(0.0);
-  for (var y = 0; y < 4; y++) {
-    for (var x = 0; x < 4; x++) {
+  let corner: vec2i = vec2i(position.xy) * 4;
+  let last: vec2i = vec2i(textureDimensions(cells)) - 1;
+  var sums: vec3f = vec3f(0.0);
+  for (var y: i32 = 0; y < 4; y++) {
+    for (var x: i32 = 0; x < 4; x++) {
       sums += textureLoad(cells, min(corner + vec2i(x, y), last), 0).rgb;
     }
   }
@@ -349,9 +349,9 @@ const depth = (
 // mean of two depths, a thin pole before distant trees read its history
 // beside itself.
 fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
-  let sums = textureLoad(cells, min(p / width, vec2i(textureDimensions(cells)) - 1), 0).rgb;
+  let sums: vec3f = textureLoad(cells, min(p / width, vec2i(textureDimensions(cells)) - 1), 0).rgb;
   if (sums.y < ${float(weights.lendLeast)}) { return vec2f(P.far, 0.0); }
-  let agree = sums.z * sums.y - sums.x * sums.x < ${float(weights.lendSpread * weights.lendSpread)} * sums.x * sums.x;
+  let agree: bool = sums.z * sums.y - sums.x * sums.x < ${float(weights.lendSpread * weights.lendSpread)} * sums.x * sums.x;
   return vec2f(select(P.far, sums.y / sums.x, agree), 1.0);
 }
 // Stochastic depth is whichever layer survived at each pixel, so it jumps
@@ -367,18 +367,18 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
 // that a rim moves with its branch and the empty space beside a model with
 // the model.
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let p = vec2i(position.xy) * 2;
-  var nearest = vec3f(3.0e38);
-  for (var j = 0; j < 9; j++) {
-    let d = sceneDepth(drawn(p + TAPS[j]));
-    var z = P.far;
+  let p: vec2i = vec2i(position.xy) * 2;
+  var nearest: vec3f = vec3f(3.0e38);
+  for (var j: i32 = 0; j < 9; j++) {
+    let d: f32 = sceneDepth(drawn(p + TAPS[j]));
+    var z: f32 = P.far;
     if (d != P.clearDepth) { z = viewDepth(d); }
-    let a = max(nearest.x, z);
-    let b = max(nearest.y, a);
+    let a: f32 = max(nearest.x, z);
+    let b: f32 = max(nearest.y, a);
     nearest = vec3f(min(nearest.x, z), min(nearest.y, a), min(nearest.z, b));
   }
   if (nearest.z < P.far) { return vec4f(nearest.z, 0.0, 0.0, 1.0); }
-  var lent = lending(cells8, p, 8);
+  var lent: vec2f = lending(cells8, p, 8);
   if (lent.y == 0.0) { lent = lending(cells32, p, 32); }
   if (lent.y == 0.0) { lent = lending(cells128, p, 128); }
   if (lent.y == 0.0) { lent = lending(cells512, p, 512); }
@@ -398,13 +398,13 @@ const expose = (
 const frame = (encode) => /* wgsl */ `${PARAMS}
 @group(0) @binding(2) var image: texture_2d<f32>;
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let c = textureLoad(image, drawn(vec2i(position.xy)), 0);
+  let c: vec4f = textureLoad(image, drawn(vec2i(position.xy)), 0);
   ${
     encode
       ? `// Premultiplied: the transfer applies to the colour itself.
-  let alpha = max(c.a, 1e-6);
-  let x = max(c.rgb / alpha, vec3f(0.0));
-  let encoded = select(1.055 * pow(x, vec3f(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3f(0.0031308));
+  let alpha: f32 = max(c.a, 1e-6);
+  let x: vec3f = max(c.rgb / alpha, vec3f(0.0));
+  let encoded: vec3f = select(1.055 * pow(x, vec3f(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3f(0.0031308));
   return vec4f(encoded * alpha, c.a);`
       : "return c;"
   }
@@ -451,7 +451,7 @@ fn probe(position: vec2f) -> vec4f {
 }
 // The frame under the kernel, at a position in pixels.
 fn filteredFrame(position: vec2f) -> vec4f {
-  let offset = ${float(0.5 * blur)};
+  let offset: f32 = ${float(0.5 * blur)};
   return 0.25 * (
     probe(position + vec2f(-offset, -offset)) + probe(position + vec2f(offset, -offset)) +
     probe(position + vec2f(-offset, offset)) + probe(position + vec2f(offset, offset)));
@@ -485,20 +485,20 @@ ${head("LAST", layer, 8)}
 ${head("KEEP", layer, 9)}`;
   };
   const filtering = (image, bounded) => /* wgsl */ `
-  let k0 = ${mixed("KERNEL", 0, hidden)};
-  let k1 = ${mixed("KERNEL", 1, hidden)};
-  let k2 = ${headed("LAST", hidden)};
-  let peak = max(max(max(k0.x, k0.y), max(k0.z, k0.w)), max(max(max(k1.x, k1.y), max(k1.z, k1.w)), k2));
-  let e0 = exp(k0 - peak);
-  let e1 = exp(k1 - peak);
-  let e2 = exp(k2 - peak);
-  let taps = array<f32, 9>(e0.x, e0.y, e0.z, e0.w, e1.x, e1.y, e1.z, e1.w, e2);
-  var sum = vec4f(0.0);
-  for (var j = 0; j < 9; j++) {
+  let k0: vec4f = ${mixed("KERNEL", 0, hidden)};
+  let k1: vec4f = ${mixed("KERNEL", 1, hidden)};
+  let k2: f32 = ${headed("LAST", hidden)};
+  let peak: f32 = max(max(max(k0.x, k0.y), max(k0.z, k0.w)), max(max(max(k1.x, k1.y), max(k1.z, k1.w)), k2));
+  let e0: vec4f = exp(k0 - peak);
+  let e1: vec4f = exp(k1 - peak);
+  let e2: f32 = exp(k2 - peak);
+  let taps: array<f32, 9> = array<f32, 9>(e0.x, e0.y, e0.z, e0.w, e1.x, e1.y, e1.z, e1.w, e2);
+  var sum: vec4f = vec4f(0.0);
+  for (var j: i32 = 0; j < 9; j++) {
     sum += taps[j] * textureLoad(${image}, ${bounded}(p + TAPS[j]), 0);
   }
-  let smoothed = sum / (dot(e0 + e1, vec4f(1.0)) + e2);
-  let keep = sigmoid(${headed("KEEP", hidden)});`;
+  let smoothed: vec4f = sum / (dot(e0 + e1, vec4f(1.0)) + e2);
+  let keep: f32 = sigmoid(${headed("KEEP", hidden)});`;
   const levels = filter.levels.map((layers, n) => {
     const last = n === filter.levels.length - 1;
     const below = last ? [] : groups.map((g) => `x${2 + g}`);
@@ -518,18 +518,18 @@ struct Output {
 ${targets("encoded")}
 };
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p = vec2i(position.xy);
-  let own = textureLoad(level, p, 0).rgb;
+  let p: vec2i = vec2i(position.xy);
+  let own: vec3f = textureLoad(level, p, 0).rgb;
   // How far the four finer pixels this one stands for are from their mean:
   // the noise at this scale.
-  var noise = 0.0;
-  for (var j = 0; j < 4; j++) {
+  var noise: f32 = 0.0;
+  for (var j: i32 = 0; j < 4; j++) {
     noise += abs(luma(textureLoad(finer, p * 2 + vec2i(j & 1, j >> 1), 0).rgb) - luma(own));
   }
-  let under = ${last ? "own" : "coarse(below, position.xy, 2.0).rgb"};
-  let x0 = vec4f(own, under.r);
-  let x1 = vec4f(under.gb, 0.25 * noise, 0.0);
-${last ? "" : groups.map((g) => `  let x${2 + g} = coarse(hidden${g}, position.xy, 2.0);`).join("\n")}
+  let under: vec3f = ${last ? "own" : "coarse(below, position.xy, 2.0).rgb"};
+  let x0: vec4f = vec4f(own, under.r);
+  let x1: vec4f = vec4f(under.gb, 0.25 * noise, 0.0);
+${last ? "" : groups.map((g) => `  let x${2 + g}: vec4f = coarse(hidden${g}, position.xy, 2.0);`).join("\n")}
   var out: Output;
 ${groups.map((g) => `  out.encoded${g} = silu(${mixed("ENCODE", g, ["x0", "x1", ...below])});`).join("\n")}
   return out;
@@ -551,12 +551,12 @@ fn boundedLevel(p: vec2i) -> vec2i {
   return clamp(p, vec2i(0), vec2i(textureDimensions(level)) - 1);
 }
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p = vec2i(position.xy);
+  let p: vec2i = vec2i(position.xy);
 ${depthwiseTaps("DEPTHWISE", groups, "boundedLevel")}
 ${groups
   .map(
     (g) =>
-      `  let b${g} = silu(${mixed(
+      `  let b${g}: vec4f = silu(${mixed(
         "POINTWISE",
         g,
         groups.map((i) => `a${i}`),
@@ -564,7 +564,7 @@ ${groups
   )
   .join("\n")}
 ${filtering("level", "boundedLevel")}
-  let under = ${last ? "textureLoad(level, p, 0)" : "coarse(below, position.xy, 2.0)"};
+  let under: vec4f = ${last ? "textureLoad(level, p, 0)" : "coarse(below, position.xy, 2.0)"};
   var out: Output;
 ${groups.map((g) => `  out.hidden${g} = b${g};`).join("\n")}
   out.result = mix(under, smoothed, keep);
@@ -588,34 +588,34 @@ ${robust ? head("RATE", topLayer, 10) : ""}
 ${groups.map((g) => `@group(0) @binding(${3 + g}) var hidden${g}: texture_2d<f32>;`).join("\n")}
 @group(0) @binding(${3 + groups.length}) var below: texture_2d<f32>;
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let p = vec2i(position.xy);
-${groups.map((g) => `  let b${g} = coarse(hidden${g}, position.xy, 2.0);`).join("\n")}
+  let p: vec2i = vec2i(position.xy);
+${groups.map((g) => `  let b${g}: vec4f = coarse(hidden${g}, position.xy, 2.0);`).join("\n")}
 ${
   robust
-    ? `  let under = coarse(below, position.xy, 2.0);
-  let level = luma(under.rgb);
-  let own = luma(textureLoad(colorTexture, p, 0).rgb) - level;
-  let away = vec4f(own, abs(own), 0.0, 0.0);
-  let k0 = ${mixed("KERNEL", 0, seen)};
-  let k1 = ${mixed("KERNEL", 1, seen)};
-  let k2 = ${headed("LAST", seen)};
-  let rate = ${float(filter.robust ?? 0)} * log(1.0 + exp(${headed("RATE", seen)}));
-  var logits = array<f32, 9>(k0.x, k0.y, k0.z, k0.w, k1.x, k1.y, k1.z, k1.w, k2);
+    ? `  let under: vec4f = coarse(below, position.xy, 2.0);
+  let level: f32 = luma(under.rgb);
+  let own: f32 = luma(textureLoad(colorTexture, p, 0).rgb) - level;
+  let away: vec4f = vec4f(own, abs(own), 0.0, 0.0);
+  let k0: vec4f = ${mixed("KERNEL", 0, seen)};
+  let k1: vec4f = ${mixed("KERNEL", 1, seen)};
+  let k2: f32 = ${headed("LAST", seen)};
+  let rate: f32 = ${float(filter.robust ?? 0)} * log(1.0 + exp(${headed("RATE", seen)}));
+  var logits: array<f32, 9> = array<f32, 9>(k0.x, k0.y, k0.z, k0.w, k1.x, k1.y, k1.z, k1.w, k2);
   var texels: array<vec4f, 9>;
-  var peak = -1e30;
-  for (var j = 0; j < 9; j++) {
+  var peak: f32 = -1e30;
+  for (var j: i32 = 0; j < 9; j++) {
     texels[j] = textureLoad(colorTexture, bounded(p + TAPS[j]), 0);
     logits[j] -= rate * abs(luma(texels[j].rgb) - level);
     peak = max(peak, logits[j]);
   }
-  var sum = vec4f(0.0);
-  var total = 0.0;
-  for (var j = 0; j < 9; j++) {
-    let weight = exp(logits[j] - peak);
+  var sum: vec4f = vec4f(0.0);
+  var total: f32 = 0.0;
+  for (var j: i32 = 0; j < 9; j++) {
+    let weight: f32 = exp(logits[j] - peak);
     sum += weight * texels[j];
     total += weight;
   }
-  let keep = sigmoid(${headed("KEEP", seen)});
+  let keep: f32 = sigmoid(${headed("KEEP", seen)});
   return roundedHalf(mix(under, sum / total, keep));`
     : `${filtering("colorTexture", "bounded")}
   return roundedHalf(mix(coarse(below, position.xy, 2.0), smoothed, keep));`
@@ -702,11 +702,11 @@ fn blockSparse(pixel: vec2i) -> f32 {
     return /* wgsl */ `
 const ${name}_TAPS = array<vec2f, ${taps.length}>(${taps.join(", ")});
 fn ${name}(block: vec2i) -> vec4f {
-  let first = vec2f(block * ${4 / pitch});
-  var sum = vec4f(0.0);
-  for (var j = 0; j < ${taps.length}; j++) {
-    for (var i = 0; i < ${taps.length}; i++) {
-      let at = first + vec2f(${name}_TAPS[i].x, ${name}_TAPS[j].x);
+  let first: vec2f = vec2f(block * ${4 / pitch});
+  var sum: vec4f = vec4f(0.0);
+  for (var j: i32 = 0; j < ${taps.length}; j++) {
+    for (var i: i32 = 0; i < ${taps.length}; i++) {
+      let at: vec2f = first + vec2f(${name}_TAPS[i].x, ${name}_TAPS[j].x);
       sum += ${name}_TAPS[i].y * ${name}_TAPS[j].y *
         textureSampleLevel(${image}, linearSampler, at / vec2f(textureDimensions(${image})), 0.0);
     }
@@ -751,14 +751,14 @@ ${targets("encoded")}
 };
 // Bilinear, clamped to the edge; float depth has no filtering sampler.
 fn previousDepth(uv: vec2f) -> f32 {
-  let last = vec2i(floor(P.size * 0.5)) - 1;
-  let position = uv * P.size * 0.5 - 0.5;
-  let base = floor(position);
-  let t = position - base;
-  let p0 = clamp(vec2i(base), vec2i(0), last);
-  let p1 = clamp(vec2i(base) + 1, vec2i(0), last);
-  let top = mix(textureLoad(depthPrevious, vec2i(p0.x, p0.y), 0).r, textureLoad(depthPrevious, vec2i(p1.x, p0.y), 0).r, t.x);
-  let bottom = mix(textureLoad(depthPrevious, vec2i(p0.x, p1.y), 0).r, textureLoad(depthPrevious, vec2i(p1.x, p1.y), 0).r, t.x);
+  let last: vec2i = vec2i(floor(P.size * 0.5)) - 1;
+  let position: vec2f = uv * P.size * 0.5 - 0.5;
+  let base: vec2f = floor(position);
+  let t: vec2f = position - base;
+  let p0: vec2i = clamp(vec2i(base), vec2i(0), last);
+  let p1: vec2i = clamp(vec2i(base) + 1, vec2i(0), last);
+  let top: f32 = mix(textureLoad(depthPrevious, vec2i(p0.x, p0.y), 0).r, textureLoad(depthPrevious, vec2i(p1.x, p0.y), 0).r, t.x);
+  let bottom: f32 = mix(textureLoad(depthPrevious, vec2i(p0.x, p1.y), 0).r, textureLoad(depthPrevious, vec2i(p1.x, p1.y), 0).r, t.x);
   return mix(top, bottom, t.y);
 }
 // The mean of the previous frame's state over where a block was: a bilinear
@@ -772,37 +772,37 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
     textureSampleLevel(state, linearSampler, centre + vec2f(1.0, 1.0) * P.invSize, 0.0));
 }
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let block = vec2i(position.xy);
-  let p = block * 4;
+  let block: vec2i = vec2i(position.xy);
+  let p: vec2i = block * 4;
   // The block's colour and its filtered colour: the means of the frame and
   // of the filtered frame over its sixteen pixels. The block's colour does
   // not stand for both: the filter moves light across the block's border, so
   // beside a thin bright line the two differ for good, and a still view would
   // read as one that keeps changing.
-  let color = textureLoad(levelTwo, block, 0);
-  let filtered = blockFiltered(block);
+  let color: vec4f = textureLoad(levelTwo, block, 0);
+  let filtered: vec4f = blockFiltered(block);
   // How far a pixel is from the mean of its 2x2 neighbours, over the block's
   // first four pixels: nothing on clean content, about the noise level on
   // stochastic Splats.
-  let around = luma(textureLoad(levelOne, block * 2, 0).rgb);
-  var rough = 0.0;
-  for (var j = 0; j < 4; j++) {
-    let q = min(p + vec2i(j & 1, j >> 1), vec2i(P.size) - 1);
+  let around: f32 = luma(textureLoad(levelOne, block * 2, 0).rgb);
+  var rough: f32 = 0.0;
+  for (var j: i32 = 0; j < 4; j++) {
+    let q: vec2i = min(p + vec2i(j & 1, j >> 1), vec2i(P.size) - 1);
     rough += abs(luma(textureLoad(colorTexture, q, 0).rgb) - around);
   }
-  var sr = vec4f(0.0);
-  var dr = vec4f(0.0);
-  var aux = vec4f(0.0);
-  var motion = 0.0;
-  var trust = vec2f(0.0);
-  var valid = 0.0;
-  var relative = 0.0;
-  var kept = vec4f(0.0);
+  var sr: vec4f = vec4f(0.0);
+  var dr: vec4f = vec4f(0.0);
+  var aux: vec4f = vec4f(0.0);
+  var motion: f32 = 0.0;
+  var trust: vec2f = vec2f(0.0);
+  var valid: f32 = 0.0;
+  var relative: f32 = 0.0;
+  var kept: vec4f = vec4f(0.0);
   if (P.historyValid > 0.5) {
-    let h = reproject(vec2f(p) + 0.5, blockDepth(p));
+    let h: History = reproject(vec2f(p) + 0.5, blockDepth(p));
     valid = h.valid;
     // The block's middle, a pixel and a half from its top-left pixel's.
-    let centre = h.uv + 1.5 * P.invSize;
+    let centre: vec2f = h.uv + 1.5 * P.invSize;
     sr = blockMean(previousAccumulated, centre);
     dr = blockMean(previousDenoised, centre);
     aux = blockMean(previousAux, centre);
@@ -813,36 +813,36 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
     // The depth kept for a 2x2 block sits at the block's middle, half a
     // pixel from its top-left pixel: read there, a still view gets its own
     // block's depth back and not a mix with its neighbours'.
-    let zp = previousDepth(h.uv + 0.5 * P.invSize);
+    let zp: f32 = previousDepth(h.uv + 0.5 * P.invSize);
     relative = clamp(abs(zp - h.previousZ) / max(max(zp, h.previousZ), 1e-6), 0.0, 1.0) * valid;
   }
-  let y = luma(color.rgb);
-  let yd = luma(filtered.rgb);
-  let ys = luma(sr.rgb);
-  let ydr = luma(dr.rgb);
-  let lowpass = abs(yd - ydr);
-  let slowNow = abs(aux.w - yd) * valid;
-  let slowFast = abs(aux.w - ydr) * valid;
-  let deviation = sqrt(max(aux.x - ys * ys, 0.0) + 1e-8) * valid;
+  let y: f32 = luma(color.rgb);
+  let yd: f32 = luma(filtered.rgb);
+  let ys: f32 = luma(sr.rgb);
+  let ydr: f32 = luma(dr.rgb);
+  let lowpass: f32 = abs(yd - ydr);
+  let slowNow: f32 = abs(aux.w - yd) * valid;
+  let slowFast: f32 = abs(aux.w - ydr) * valid;
+  let deviation: f32 = sqrt(max(aux.x - ys * ys, 0.0) + 1e-8) * valid;
   // The signed difference between the block's filtered luma and its slow
   // luma, as running means over a few frames: a change that lasts, where one
   // frame would prove nothing.
-  let evidence = kept + ((yd - aux.w) * valid - kept) * ${vec4(weights.evidenceFrames.map((length) => 1 / length))};
-  let gap = abs(evidence);
-  let ratio = min(gap / (deviation + 0.02), vec4f(4.0));
-  let held = chroma(sr.rgb);
-  let now = chroma(color.rgb) - held;
-  let apart = held - chroma(dr.rgb);
-  let cd = chroma(filtered.rgb) - chroma(dr.rgb);
-  let colorHeld = sqrt(dot(apart, apart) + 1e-12) * valid;
-  let distance = sqrt((yd - ydr) * (yd - ydr) + dot(cd, cd) + 1e-12);
-  let fs0 = vec4f(abs(y - ys), trust.x, motion * motion, aux.y * valid / ${float(weights.accumulatedFrames)});
-  let fs1 = vec4f(motion, relative, relative * motion, lowpass);
-  let fs2 = vec4f(slowNow, slowFast, deviation, 0.25 * rough);
-  let fs5 = vec4f(
+  let evidence: vec4f = kept + ((yd - aux.w) * valid - kept) * ${vec4(weights.evidenceFrames.map((length) => 1 / length))};
+  let gap: vec4f = abs(evidence);
+  let ratio: vec4f = min(gap / (deviation + 0.02), vec4f(4.0));
+  let held: vec2f = chroma(sr.rgb);
+  let now: vec2f = chroma(color.rgb) - held;
+  let apart: vec2f = held - chroma(dr.rgb);
+  let cd: vec2f = chroma(filtered.rgb) - chroma(dr.rgb);
+  let colorHeld: f32 = sqrt(dot(apart, apart) + 1e-12) * valid;
+  let distance: f32 = sqrt((yd - ydr) * (yd - ydr) + dot(cd, cd) + 1e-12);
+  let fs0: vec4f = vec4f(abs(y - ys), trust.x, motion * motion, aux.y * valid / ${float(weights.accumulatedFrames)});
+  let fs1: vec4f = vec4f(motion, relative, relative * motion, lowpass);
+  let fs2: vec4f = vec4f(slowNow, slowFast, deviation, 0.25 * rough);
+  let fs5: vec4f = vec4f(
     sqrt(dot(now, now) + 1e-12) * valid, colorHeld,
     sqrt(dot(cd, cd) + 1e-12) * valid, min(colorHeld / (deviation + 0.02), 4.0));
-  let fs6 = vec4f(trust.y, aux.z * valid / ${float(weights.denoisedFrames)}, ydr, distance);
+  let fs6: vec4f = vec4f(trust.y, aux.z * valid / ${float(weights.denoisedFrames)}, ydr, distance);
   var out: Output;
 ${groups
   .map(
@@ -864,12 +864,12 @@ struct Output {
 ${targets("stage")}
 };
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p = vec2i(position.xy);
+  let p: vec2i = vec2i(position.xy);
 ${depthwiseTaps("DEPTHWISE", groups, "boundedBlock")}
 ${groups
   .map(
     (g) =>
-      `  let b${g} = silu(${mixed(
+      `  let b${g}: vec4f = silu(${mixed(
         "POINTWISE1",
         g,
         groups.map((i) => `a${i}`),
@@ -907,12 +907,12 @@ struct Output {
   @location(1) strength: vec4f,
 };
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p = vec2i(position.xy);
+  let p: vec2i = vec2i(position.xy);
 ${depthwiseTaps("DEPTHWISE", groups, "boundedBlock")}
 ${groups
   .map(
     (g) =>
-      `  let b${g} = silu(${mixed(
+      `  let b${g}: vec4f = silu(${mixed(
         "POINTWISE",
         g,
         groups.map((i) => `a${i}`),
@@ -920,7 +920,7 @@ ${groups
   )
   .join("\n")}
   // Trust is void where the block's own history is.
-  var valid = 0.0;
+  var valid: f32 = 0.0;
   if (P.historyValid > 0.5) {
     valid = reproject(vec2f(p * 4) + 0.5, blockDepth(p * 4)).valid;
   }
@@ -976,16 +976,16 @@ ${learned ? COARSE : KERNEL(weights.blur)}
 // accumulated history's length is decided by the shortest of the four, and
 // is the same wherever the four agree.
 fn previousStatistics(uv: vec2f) -> vec4f {
-  let position = uv * P.size - 0.5;
-  let base = floor(position);
-  let t = position - base;
-  let p = vec2i(base);
-  let a = textureLoad(previousAux, bounded(p), 0);
-  let b = textureLoad(previousAux, bounded(p + vec2i(1, 0)), 0);
-  let c = textureLoad(previousAux, bounded(p + vec2i(0, 1)), 0);
-  let d = textureLoad(previousAux, bounded(p + vec2i(1, 1)), 0);
-  let w = vec4f((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y);
-  let mean = a * w.x + b * w.y + c * w.z + d * w.w;
+  let position: vec2f = uv * P.size - 0.5;
+  let base: vec2f = floor(position);
+  let t: vec2f = position - base;
+  let p: vec2i = vec2i(base);
+  let a: vec4f = textureLoad(previousAux, bounded(p), 0);
+  let b: vec4f = textureLoad(previousAux, bounded(p + vec2i(1, 0)), 0);
+  let c: vec4f = textureLoad(previousAux, bounded(p + vec2i(0, 1)), 0);
+  let d: vec4f = textureLoad(previousAux, bounded(p + vec2i(1, 1)), 0);
+  let w: vec4f = vec4f((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y);
+  let mean: vec4f = a * w.x + b * w.y + c * w.z + d * w.w;
   return vec4f(mean.x, 1.0 / dot(w, 1.0 / vec4f(a.y, b.y, c.y, d.y)), mean.z, mean.w);
 }
 struct Output {
@@ -995,31 +995,31 @@ struct Output {
   @location(3) shown: vec4f,
 };
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p = vec2i(position.xy);
-  let d = ${learned ? "textureLoad(filteredTexture, p, 0)" : "filteredFrame(position.xy)"};
-  let color = textureLoad(colorTexture, p, 0);
-  var sr = vec4f(0.0);
-  var dr = vec4f(0.0);
+  let p: vec2i = vec2i(position.xy);
+  let d: vec4f = ${learned ? "textureLoad(filteredTexture, p, 0)" : "filteredFrame(position.xy)"};
+  let color: vec4f = textureLoad(colorTexture, p, 0);
+  var sr: vec4f = vec4f(0.0);
+  var dr: vec4f = vec4f(0.0);
   // Second moment of luma, the two history lengths, slow low-pass luma.
-  var aux = vec4f(0.0);
+  var aux: vec4f = vec4f(0.0);
   // The image shown last frame, and what it spans around this pixel.
   var previous: Resampled;
-  var valid = 0.0;
+  var valid: f32 = 0.0;
   // How fast the camera changes the image here, in pixels per frame.
-  var speed = 0.0;
+  var speed: f32 = 0.0;
   // 0 where the history read here belonged to another surface.
-  var same = 1.0;
-  let sparse = blockSparse(p);
-  var sparseMotion = 0.0;
+  var same: f32 = 1.0;
+  let sparse: f32 = blockSparse(p);
+  var sparseMotion: f32 = 0.0;
   if (P.historyValid > 0.5) {
-    let z = blockDepth(p);
-    let h = reproject(position.xy, z);
+    let z: f32 = blockDepth(p);
+    let h: History = reproject(position.xy, z);
     valid = h.valid;
     // The pixel's own motion, or what a turn of the camera sweeps over half
     // the view, whichever is more: at the centre of a turn the first is
     // small while every surface there shows a new face. An orthographic
     // camera sweeps in proportion to the distance.
-    let sweep = P.turn * 0.25 * P.size.y * P.unprojectA.y * select(1.0, z, P.unprojectB.z == 0.0);
+    let sweep: f32 = P.turn * 0.25 * P.size.y * P.unprojectA.y * select(1.0, z, P.unprojectB.z == 0.0);
     speed = max(h.motion, sweep);
     // The network judges depth for a 4x4 block from one of its pixels, so a
     // sliver of a block can read the history of whatever the camera's motion
@@ -1029,92 +1029,92 @@ struct Output {
     // for the 2x2 block it reads from. The test follows the camera's speed
     // and is void on a still view, where a pixel reads its own place and
     // stochastic depth merely flips between the layers seen there.
-    let seen = textureLoad(depthPrevious, clamp(vec2i(floor(h.uv * P.size * 0.5)), vec2i(0), vec2i(floor(P.size * 0.5)) - 1), 0).r;
-    let other = f32(abs(seen - h.previousZ) > ${float(weights.surfaceApart)} * max(seen, h.previousZ));
+    let seen: f32 = textureLoad(depthPrevious, clamp(vec2i(floor(h.uv * P.size * 0.5)), vec2i(0), vec2i(floor(P.size * 0.5)) - 1), 0).r;
+    let other: f32 = f32(abs(seen - h.previousZ) > ${float(weights.surfaceApart)} * max(seen, h.previousZ));
     same = 1.0 - other * speed * speed / (speed * speed + ${float(weights.surfaceKnee * weights.surfaceKnee)});
-    let interpolation = lanczosKernel(h.uv);
+    let interpolation: LanczosKernel = lanczosKernel(h.uv);
     sr = max(lanczosCross(previousAccumulated, interpolation), vec4f(0.0));
     dr = max(lanczosCross(previousDenoised, interpolation), vec4f(0.0));
-    let a = previousStatistics(h.uv);
+    let a: vec4f = previousStatistics(h.uv);
     // Where a block has no depth of its own, where to read its history is a
     // guess, so while the camera moves it keeps little of the accumulated
     // history, and what was misread fades in a few frames.
     sparseMotion = sparse * speed * speed / (speed * speed + ${float(weights.sparseKnee * weights.sparseKnee)});
-    let limit = mix(${float(weights.accumulatedFrames)}, ${float(weights.sparseFrames)}, sparseMotion);
+    let limit: f32 = mix(${float(weights.accumulatedFrames)}, ${float(weights.sparseFrames)}, sparseMotion);
     aux = vec4f(a.x, min(a.y * valid * same, limit), a.z * valid * same, a.w);
     previous = catmullRomSpan(previousOutput, h.uv);
     previous.value = lanczosCross(previousOutput, interpolation);
   }
-  ${weights.correction ? "var" : "let"} trust = coarse(trustBlocks, position.xy, 4.0) * valid * same;
-  ${weights.correction ? "var" : "let"} strength = coarse(strengthBlocks, position.xy, 4.0).r;
+  ${weights.correction ? "var" : "let"} trust: vec4f = coarse(trustBlocks, position.xy, 4.0) * valid * same;
+  ${weights.correction ? "var" : "let"} strength: f32 = coarse(strengthBlocks, position.xy, 4.0).r;
 ${
   weights.correction
-    ? `  let corrected = correctedPixels(color, d, sr, dr, aux, trust, strength);
+    ? `  let corrected: vec4f = correctedPixels(color, d, sr, dr, aux, trust, strength);
   trust = vec4f(corrected.xy, trust.z, corrected.z);
   strength = corrected.w;`
     : ""
 }
 
   // Accumulated path: raw samples. It converges to the blended image.
-  let yc = luma(color.rgb);
-  let ws = aux.y * trust.x;
-  let ds = ws + 1.0;
-  let s = (sr * ws + color) / ds;
+  let yc: f32 = luma(color.rgb);
+  let ws: f32 = aux.y * trust.x;
+  let ds: f32 = ws + 1.0;
+  let s: vec4f = (sr * ws + color) / ds;
   // Kept finite: an infinite square in a half-float mean never recovers.
-  let y2 = (aux.x * ws + min(yc * yc, 30000.0)) / ds;
-  let slow = (aux.w * ws + luma(d.rgb)) / ds;
-  let ns = min(ds, ${float(weights.accumulatedFrames)});
+  let y2: f32 = (aux.x * ws + min(yc * yc, 30000.0)) / ds;
+  let slow: f32 = (aux.w * ws + luma(d.rgb)) / ds;
+  let ns: f32 = min(ds, ${float(weights.accumulatedFrames)});
   // Denoised path: spatially filtered frames, with a short history.
-  let wh = aux.z * trust.y;
-  let dh = wh + 1.0;
+  let wh: f32 = aux.z * trust.y;
+  let dh: f32 = wh + 1.0;
   // With no history to average it with, the frame's filter has to do all
   // the averaging, and one that keeps detail leaves a single dark or bright
   // sample standing as a dot. Where the camera also changes the image too
   // fast for that detail to be seen, or the history was another surface's,
   // the path takes a wider filter's result, in which every sample is already
   // spread out.
-  let fast = speed * speed / (speed * speed + ${float(weights.motionKnee * weights.motionKnee)});
+  let fast: f32 = speed * speed / (speed * speed + ${float(weights.motionKnee * weights.motionKnee)});
   ${
     weights.sparseWide
       ? `// Where too little is drawn for a depth, a frame is single samples before
   // nothing, which the learned filter leaves standing at any camera speed.
-  let short = max(exp(-wh / ${float(weights.reach)}) * max(fast, sparse), 1.0 - same);`
-      : `let short = max(exp(-wh / ${float(weights.reach)}) * fast, 1.0 - same);`
+  let short: f32 = max(exp(-wh / ${float(weights.reach)}) * max(fast, sparse), 1.0 - same);`
+      : `let short: f32 = max(exp(-wh / ${float(weights.reach)}) * fast, 1.0 - same);`
   }
-  let wide = coarse(wideTexture, position.xy, ${learned ? "2.0" : "4.0"});
-  ${learned ? "var" : "let"} current = mix(mix(color, d, strength), wide, short);
+  let wide: vec4f = coarse(wideTexture, position.xy, ${learned ? "2.0" : "4.0"});
+  ${learned ? "var" : "let"} current: vec4f = mix(mix(color, d, strength), wide, short);
 ${
   learned
     ? `  // Strengthen only the share whose history belonged to another surface.
   // Normal fast motion keeps the learned fallback's detail.
-  let rejected = coarse(rejectedTexture, position.xy, 4.0);
+  let rejected: vec4f = coarse(rejectedTexture, position.xy, 4.0);
   current += (rejected - wide) * (1.0 - same) * ${float(weights.surfaceWide)};`
     : ""
 }
-  let dn = (dr * wh + current) / dh;
-  let nh = min(dh, ${float(weights.denoisedFrames)});
+  let dn: vec4f = (dr * wh + current) / dh;
+  let nh: f32 = min(dh, ${float(weights.denoisedFrames)});
 
   // The accumulated path's weight grows with its history and falls with the
   // standard error of its mean; the network scales it once more.
-  let ys = luma(s.rgb);
-  let error = sqrt(max(y2 - ys * ys, 0.0) / (ns + 1e-3) + 1e-10);
-  let ramp = 1.0 - exp(-ns / ${float(weights.gateFrames)});
-  let keep = ramp * (1.0 - clamp(${float(weights.gamma)} * error, 0.0, 1.0)) * trust.w;
-  let composite = mix(dn, s, keep);
+  let ys: f32 = luma(s.rgb);
+  let error: f32 = sqrt(max(y2 - ys * ys, 0.0) / (ns + 1e-3) + 1e-10);
+  let ramp: f32 = 1.0 - exp(-ns / ${float(weights.gateFrames)});
+  let keep: f32 = ramp * (1.0 - clamp(${float(weights.gamma)} * error, 0.0, 1.0)) * trust.w;
+  let composite: vec4f = mix(dn, s, keep);
   // Stabilization: a predicted blend with the previous image, which may stay
   // as far from this frame's result as half of what it spans around the
   // pixel, plus a slack. Taking that span from this frame's result instead
   // would need it in a texture first and a pass of its own; on the test
   // sets the two measured the same. The blend is void where the pixel has no
   // usable history.
-  let tolerance = 0.5 * previous.span + ${float(weights.stabilizeSlack)};
-  let clamped = clamp(previous.value, composite - tolerance, composite + tolerance);
+  let tolerance: vec4f = 0.5 * previous.span + ${float(weights.stabilizeSlack)};
+  let clamped: vec4f = clamp(previous.value, composite - tolerance, composite + tolerance);
   var out: Output;
   out.accumulated = roundedHalf(s);
   out.denoised = roundedHalf(dn);
   out.aux = roundedHalf(vec4f(y2, ns, nh, slow));
   // Borrowed depth also makes the displayed history uncertain during motion.
-  let stabilize = ${float(weights.stabilizeBlend)} * trust.z * mix(1.0, ${float(weights.sparseStabilize)}, sparseMotion);
+  let stabilize: f32 = ${float(weights.stabilizeBlend)} * trust.z * mix(1.0, ${float(weights.sparseStabilize)}, sparseMotion);
   out.shown = roundedHalf(mix(composite, clamped, stabilize * step(0.5, P.stabilize)));
   return out;
 }`;

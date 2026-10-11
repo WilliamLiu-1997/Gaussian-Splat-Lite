@@ -1,0 +1,34 @@
+import type {
+  DepthTexture,
+  Matrix4,
+  OrthographicCamera,
+  PerspectiveCamera,
+  Scene,
+  WebGLRenderTarget,
+  WebGLRenderer,
+} from "three";
+import { Pass } from "three/addons/postprocessing/Pass.js";
+import type { NeuralDenoiseProfile } from "./neuralDenoiseWeights.js";
+/** Neural denoising for WebGLRenderer. Use with EffectComposer and OutputPass. */
+export declare class NeuralDenoisePass extends Pass {
+  private readonly denoise;
+  private readonly copy;
+  private readonly quad;
+  constructor(
+    scene: Scene,
+    camera: PerspectiveCamera | OrthographicCamera,
+    profile?: NeuralDenoiseProfile,
+    samples?: 1 | 4,
+  );
+  scene: Scene;
+  camera: PerspectiveCamera | OrthographicCamera;
+  readonly profile: NeuralDenoiseProfile;
+  readonly samples: 1 | 4;
+  stabilize: boolean;
+  readonly depthTexture: DepthTexture;
+  readonly projectionMatrix: Matrix4;
+  setSize(width: number, height: number): void;
+  reset(): void;
+  render(renderer: WebGLRenderer, writeBuffer: WebGLRenderTarget): void;
+  dispose(): void;
+}

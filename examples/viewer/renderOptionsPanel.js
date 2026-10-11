@@ -25,9 +25,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   function syncDependencies() {
     const nativeWebGPU = getValue("rendererBackend") === "webgpu";
     setHidden("minSortIntervalMs", nativeWebGPU);
-    // The neural denoiser runs on native WebGPU only.
-    setHidden("denoiser", !nativeWebGPU);
-    const hideNeural = !nativeWebGPU || getValue("denoiser") !== "neural";
+    const hideNeural = getValue("denoiser") !== "neural";
     setHidden("denoiserProfile", hideNeural);
     setHidden("denoiserSamples", hideNeural);
   }

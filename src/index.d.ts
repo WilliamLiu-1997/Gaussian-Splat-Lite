@@ -5,6 +5,7 @@ export {
 export { TAAPass } from "./addons/TAAPass.js";
 export { TAANode } from "./addons/TAANode.js";
 export { NeuralDenoiseNode } from "./addons/NeuralDenoiseNode.js";
+export { NeuralDenoisePass } from "./addons/NeuralDenoisePass.js";
 export type { NeuralDenoiseProfile } from "./addons/neuralDenoiseWeights.js";
 export {
   SplatCapture,

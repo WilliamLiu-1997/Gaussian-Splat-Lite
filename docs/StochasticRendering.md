@@ -4,7 +4,7 @@
 
 Stochastic rendering is an optional way for `GaussianSplatRenderer` to draw transparency. It produces visible noise, so pair it with temporal anti-aliasing (TAA) or the neural denoiser to get a smooth image. Sorted alpha blending remains the default.
 
-It works on WebGPU, WebGL2, and `WebGPURenderer`'s WebGL2 fallback, including WebXR.
+Stochastic rendering works on WebGPU, WebGL2, and `WebGPURenderer`'s WebGL2 fallback, including WebXR. The smoothing options below do not support WebXR.
 
 ## Turn it on
 
@@ -24,7 +24,7 @@ Both can be changed at any time. While stochastic rendering is active, Splats ar
 
 ## Smooth the noise
 
-Use [`TAANode`](TAAPass.md#taanode-webgpurenderer) with `WebGPURenderer`, or [`TAAPass`](TAAPass.md#taapass-webglrenderer) with `WebGLRenderer`. On native WebGPU, [`NeuralDenoiseNode`](NeuralDenoiseNode.md) is an alternative for scenes with moving objects. The library does not turn any of them on for you. The examples assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with one camera outside WebXR.
+Use [`TAANode`](TAAPass.md#taanode-webgpurenderer) with `WebGPURenderer`, or [`TAAPass`](TAAPass.md#taapass-webglrenderer) with `WebGLRenderer`. The [neural denoiser](NeuralDenoiseNode.md) is an alternative for scenes with moving objects on all three backends. The library does not turn any of them on for you. The examples assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with one camera outside WebXR.
 
 ### WebGPURenderer: TAANode
 
@@ -46,20 +46,18 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-### WebGPU with moving objects: NeuralDenoiseNode
+### WebGPURenderer: NeuralDenoiseNode
 
-`NeuralDenoiseNode` takes `TAANode`'s place in the setup above. It reduces trails behind moving objects and stays smooth while the camera moves; fast motion looks softer, and it takes more GPU time and memory. The third constructor argument picks `"profile1"` or `"profile2"` (default), which trade detail, noise and flicker differently. The fourth independently picks 1 (default) or 4 coverage samples per pixel with either profile. Four samples still use one scene render, with higher target memory use. It needs native WebGPU, so keep `TAANode` for the WebGL2 fallback:
+To help reduce trails behind moving objects, replace `TAANode` in the setup above with `NeuralDenoiseNode`:
 
 ```js
-import { NeuralDenoiseNode, TAANode } from "gaussian-splat-lite";
+import { NeuralDenoiseNode } from "gaussian-splat-lite";
 
-const denoise = renderer.backend.isWebGPUBackend
-  ? new NeuralDenoiseNode(scene, camera)
-  : new TAANode(scene, camera);
+const denoise = new NeuralDenoiseNode(scene, camera);
 const pipeline = new RenderPipeline(renderer, denoise);
 ```
 
-See [NeuralDenoiseNode](NeuralDenoiseNode.md) for how the two compare.
+It also supports the WebGL2 fallback. See [Neural denoising](NeuralDenoiseNode.md) for profiles, coverage quality and WebGL2 requirements.
 
 ### WebGLRenderer: TAAPass
 
@@ -84,16 +82,29 @@ renderer.setAnimationLoop(() => {
 
 `TAAPass` takes the place of `RenderPass`. On resize, call `composer.setSize(width, height)` along with the renderer.
 
+### WebGLRenderer: NeuralDenoisePass
+
+Replace `TAAPass` in the composer setup above with `NeuralDenoisePass`, keeping `OutputPass` after it:
+
+```js
+import { NeuralDenoisePass } from "gaussian-splat-lite";
+
+const denoise = new NeuralDenoisePass(scene, camera);
+composer.addPass(denoise);
+```
+
+It has the same options and requirements as `NeuralDenoiseNode` on WebGL2.
+
 ### With any of these
 
 - Call `reset()` after a camera cut or a scene replacement. With TAA, also call it after an abrupt change to an object: TAA follows camera movement, not moving objects.
-- With on-demand rendering, keep rendering for several frames after the camera, a model, or streamed content changes, and after the Splat renderer's `onDirty` callback, so the noise can settle. The viewer renders 32 with TAA and 96 with the neural denoiser.
+- With on-demand rendering, keep rendering for several frames after the camera, a model, or streamed content changes, and after the Splat renderer's `onDirty` callback, so the noise can settle. The viewer renders 32 with TAA and 128 with the neural denoiser.
 
-See [TAAPass and TAANode](TAAPass.md) and [NeuralDenoiseNode](NeuralDenoiseNode.md) for effects, depth, color, and cleanup. The repository's `examples/viewer/viewerTAA.js` shows all three setups.
+See [TAAPass and TAANode](TAAPass.md) and [Neural denoising](NeuralDenoiseNode.md) for effects, depth, color, and cleanup. The repository's `examples/viewer/viewerTAA.js` supports all three backends.
 
 ## Control the noise pattern
 
-The noise pattern changes on every render, which is what lets TAA smooth it over time. To keep it fixed, or to drive it from your own TAA:
+The noise pattern changes on every render so TAA or neural denoising can smooth it over time. To keep it fixed, or to control it from your own render loop:
 
 ```js
 splatRenderer.autoAdvanceStochasticSample = false;
@@ -108,11 +119,11 @@ When you advance it yourself, increase it by one for each render of the scene. T
 splatRenderer.stochastic = false;
 ```
 
-The switch, in either direction, takes effect on a later frame rather than immediately. `stochasticActive` tells you which mode is being drawn; keep TAA running until it is `false`. With `autoUpdate = false`, update before drawing:
+The switch, in either direction, takes effect on a later frame rather than immediately. `stochasticActive` tells you which mode is being drawn; keep your TAA or neural denoiser running until it is `false`. With `autoUpdate = false`, update before drawing:
 
 ```js
 await splatRenderer.update({ scene, camera });
 renderer.render(scene, camera);
 ```
 
-If you keep TAA running with sorted rendering, set `splatRenderer.depthWrite = true` so TAA can see the Splats' depth.
+If you keep TAA or neural denoising running with sorted rendering, set `splatRenderer.depthWrite = true` so it can use the Splats' depth.

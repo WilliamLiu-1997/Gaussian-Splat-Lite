@@ -8,7 +8,8 @@ import type {
 import { Node, type NodeBuilder, type NodeFrame } from "three/webgpu";
 import type { NeuralDenoiseProfile } from "./neuralDenoiseWeights.js";
 /**
- * Temporal neural denoiser for stochastic Splat rendering on native WebGPU,
+ * Temporal neural denoiser for stochastic Splat rendering on WebGPURenderer,
+ * including its WebGL2 fallback,
  * used in place of TAANode. After Hu et al., "Ultra-fast Neural Inference for
  * Stochastic Gaussian Splatting Denoising" (arXiv 2609.25604), adapted to
  * scenes whose objects move.

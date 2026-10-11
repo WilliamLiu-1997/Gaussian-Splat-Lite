@@ -1,4 +1,9 @@
-import { NeuralDenoiseNode, TAANode, TAAPass } from "gaussian-splat-lite";
+import {
+  NeuralDenoiseNode,
+  NeuralDenoisePass,
+  TAANode,
+  TAAPass,
+} from "gaussian-splat-lite";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RenderPipeline } from "three/webgpu";
@@ -10,7 +15,7 @@ const NEURAL_SETTLE_FRAMES = 128;
 
 /**
  * Viewer-only smoothing of stochastic rendering: temporal anti-aliasing, or
- * the neural denoiser where it was asked for and native WebGPU can run it.
+ * the neural denoiser, on all three renderer backends.
  */
 export function createViewerTAA(
   renderer,
@@ -19,14 +24,14 @@ export function createViewerTAA(
   { neural = false, profile = "profile2", samples = 1 } = {},
 ) {
   const nodeRenderer = renderer.isWebGPURenderer;
-  const useNeural =
-    neural && nodeRenderer && renderer.backend.isWebGPUBackend === true;
-  const taa = useNeural
-    ? new NeuralDenoiseNode(scene, camera, profile, samples)
+  const taa = neural
+    ? nodeRenderer
+      ? new NeuralDenoiseNode(scene, camera, profile, samples)
+      : new NeuralDenoisePass(scene, camera, profile, samples)
     : nodeRenderer
       ? new TAANode(scene, camera)
       : new TAAPass(scene, camera);
-  const settleFrames = useNeural ? NEURAL_SETTLE_FRAMES : TAA_SETTLE_FRAMES;
+  const settleFrames = neural ? NEURAL_SETTLE_FRAMES : TAA_SETTLE_FRAMES;
   const pipeline = nodeRenderer
     ? new RenderPipeline(renderer, taa)
     : new EffectComposer(renderer);

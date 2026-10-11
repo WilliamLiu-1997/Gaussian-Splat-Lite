@@ -26,7 +26,7 @@ npm run release:check
 
 Builds WASM, the viewer, and the package; checks JavaScript syntax, declarations, lint, tests, and npm package validation.
 
-For focused validation, run `npm run check`, `npm run test:js`, and `npm run lint`. The declaration checks reject implicit exports of private declarations and compare every module's runtime value exports with its adjacent declarations; they do not infer implementation parameter or return types. `npm run build:types` copies the checked-in declarations into `dist/types`, and prepares the ESM and CommonJS declaration entry points. Both `build:production` and `build:dev` include this step.
+For focused validation, run `npm run check`, `npm run test:js`, and `npm run lint`. `npm run build:types` checks and packages the TypeScript declarations for ESM and CommonJS; both `build:production` and `build:dev` include this step.
 
 Review new or changed dependency install scripts and update `allowScripts` with `npm approve-scripts`.
 
