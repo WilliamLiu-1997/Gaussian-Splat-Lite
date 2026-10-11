@@ -11,6 +11,20 @@ Temporal anti-aliasing (TAA) blends each frame with the ones before it. It smoot
 
 Both render the scene themselves and need no velocity buffer or other scene setup.
 
+## MSAA
+
+The third constructor argument, `msaa`, enables 4× MSAA with `true` (default) or disables it with `false`:
+
+```js
+const taa = new TAANode(scene, camera, true);
+// With WebGLRenderer: new TAAPass(scene, camera, true).
+// Pass false to disable MSAA.
+```
+
+Four samples use the same stochastic coverage as the [neural denoiser](NeuralDenoiseNode.md): one scene render into a 4× MSAA target, followed by the usual TAA accumulation. This reduces input noise with higher GPU time and memory use. History targets remain single-sampled, and moving objects are still not tracked.
+
+On WebGL2, including the WebGL fallback, MSAA requires `OES_sample_variables`. Check `renderer.getContext().getExtension("OES_sample_variables")` before constructing TAA; pass `false` when it is unavailable. Unsupported configurations throw an error. The MSAA setting is fixed for the node or pass's lifetime; dispose it and create another to change it. The viewer's **MSAA** switch is on by default for both TAA and neural denoising.
+
 ## Before you start
 
 - **One camera.** A `PerspectiveCamera` or `OrthographicCamera`, including custom projections, scaled camera rigs, reversed depth, and logarithmic depth. WebXR is not supported.
@@ -129,6 +143,8 @@ const pipeline = new RenderPipeline(renderer, color.add(bloom(color, 0.6, 0.4, 0
 
 `TAANode` has the same `depthTexture`, `projectionMatrix`, and tuning properties as `TAAPass`.
 
+With four samples on native WebGPU, `depthTexture` is multisampled. Read it with TSL `texture(taa.depthTexture).load(pixel)` to select sample 0, as TAA does internally; filtered depth sampling is not supported. Both WebGL paths expose resolved, single-sampled depth.
+
 ## Color and tone mapping
 
 **`TAAPass`** shows Splats with the same colors as `WebGLRenderer` drawing straight to the canvas.
@@ -147,6 +163,7 @@ Both keep colors brighter than white, so effects such as Bloom work as expected.
 | --- | --- | --- |
 | `scene` | Constructor scene | Scene to render; call `reset()` when replacing it |
 | `camera` | Constructor camera | Camera to render with; call `reset()` when replacing it |
+| `msaa` | `true` | Read-only. Whether 4× MSAA is enabled, selected in the constructor |
 | `depthTexture` | Read-only | Scene depth of the current frame |
 | `projectionMatrix` | Read-only | Projection that matches `depthTexture` |
 | `depthThreshold` | `0.0005` | Depth change above which a pixel's earlier frames are discarded |

@@ -12,6 +12,7 @@ import {
   WebGLRenderTarget,
 } from "three";
 import { FullScreenQuad, Pass } from "three/addons/postprocessing/Pass.js";
+import { StochasticCoverage } from "./stochasticCoverage.js";
 import { createTAAState } from "./taaShared.js";
 const vertexShader = /* glsl */ `
 out vec2 vUv;
@@ -176,10 +177,13 @@ function makeTarget(name) {
  * output.
  */
 export class TAAPass extends Pass {
-  constructor(scene, camera) {
+  /** @param msaa Enable 4× MSAA (default true). Fixed for the pass's lifetime. */
+  constructor(scene, camera, msaa = true) {
     super();
     this.scene = scene;
     this.camera = camera;
+    this.msaa = msaa;
+    this._coverage = msaa ? new StochasticCoverage() : null;
     /** Depth difference above which non-edge history is rejected. */
     this.depthThreshold = 0.0005;
     /** Depth range within the 3x3 neighborhood that identifies an edge. */
@@ -192,6 +196,7 @@ export class TAAPass extends Pass {
     // ordinary materials and splats, matching direct canvas blending.
     this._source = Object.assign(makeTarget("TAAPass.scene"), {
       isXRRenderTarget: true,
+      samples: msaa ? 4 : 0,
     });
     this._history = [
       makeTarget("TAAPass.history0"),
@@ -292,7 +297,8 @@ export class TAAPass extends Pass {
           renderer.getClearAlpha(),
         );
         renderer.clear();
-        renderer.render(this.scene, camera);
+        if (this._coverage) this._coverage.render(renderer, this.scene, camera);
+        else renderer.render(this.scene, camera);
       } finally {
         state.endCapture(camera);
         // Three may initialize reversed depth during the first draw. Keep its
@@ -334,6 +340,7 @@ export class TAAPass extends Pass {
     }
   }
   dispose() {
+    this._coverage?.dispose();
     this._source.dispose();
     for (const target of this._history) target.dispose();
     this._resolveMaterial.dispose();

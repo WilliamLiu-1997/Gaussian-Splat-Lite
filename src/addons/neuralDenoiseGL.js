@@ -27,7 +27,7 @@ precision highp float;
 in vec3 position;
 void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }
 `;
-const parameterTypes = ["mat4", "mat4", ...Array(8).fill("vec4")];
+const parameterTypes = ["mat4", "mat4", ...Array(9).fill("vec4")];
 const parameterNames = parameterTypes.map((_, i) => `ndUniform${i}`);
 const parameters = parameterTypes.map(
   (type, i) => `${type} ${parameterNames[i]}`,
@@ -41,7 +41,8 @@ P.far = ndUniform7.x; P.clearDepth = ndUniform7.y;
 P.historyValid = ndUniform7.z; P.stabilize = ndUniform7.w;
 P.halfBias = ndUniform8.x; P.logDepth = ndUniform8.y;
 P.logNear = ndUniform8.z; P.logFar = ndUniform8.w;
-P.turn = ndUniform9.x; P.offset = ndUniform9.zw;
+P.turn = ndUniform9.x; P.cameraStill = ndUniform9.y; P.offset = ndUniform9.zw;
+P.colorOffset = ndUniform10.xy;
 `;
 
 /** Executes the shared denoiser on either Three.js WebGL2 renderer. */
@@ -59,7 +60,7 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
     this.values = [
       new Matrix4(),
       new Matrix4(),
-      ...Array.from({ length: 8 }, () => new Vector4()),
+      ...Array.from({ length: 9 }, () => new Vector4()),
     ];
     this.initialize(model, false);
     this.roundingMeasured = false;
@@ -263,7 +264,7 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
       this.prepare(width, height, external);
     this.values[0].fromArray(this.uniforms, 0);
     this.values[1].fromArray(this.uniforms, 16);
-    for (let i = 0; i < 8; i++)
+    for (let i = 0; i < 9; i++)
       this.values[i + 2].fromArray(this.uniforms, 32 + i * 4);
     const renderer = this.renderer;
     for (const [pass, inputs, outputs, , target] of this.frames[previous]) {

@@ -73,7 +73,7 @@ export const renderOptionGroups = [
         property: "denoiserProfile",
         label: "Neural denoiser profile",
         description:
-          "Profile 1 uses fixed filtering; Profile 2 uses adaptive filtering. Each trades detail, noise and flicker differently. Both support the coverage quality setting below.",
+          "Profile 1 uses fixed filtering; Profile 2 uses adaptive filtering. Each trades detail, noise and flicker differently. Both support the MSAA setting below.",
         defaultValue: "profile2",
         choices: [
           ["profile1", "Profile 1"],
@@ -81,15 +81,13 @@ export const renderOptionGroups = [
         ],
       },
       {
-        property: "denoiserSamples",
-        label: "Neural coverage quality",
+        property: "msaa",
+        label: "MSAA",
         description:
-          "Coverage samples per pixel for either profile, in one scene draw. Quality 4× reduces input noise with higher GPU time and target memory use.",
-        defaultValue: 1,
-        choices: [
-          [1, "1×"],
-          [4, "Quality 4×"],
-        ],
+          "Enables 4× MSAA for stochastic rendering with TAA or neural denoising. Reduces noise with higher GPU time and memory use.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
       },
       {
         property: "sortRadial",

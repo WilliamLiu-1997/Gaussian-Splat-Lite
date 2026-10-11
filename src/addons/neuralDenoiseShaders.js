@@ -1,5 +1,5 @@
 /** Floats in the uniform block shared by every pass; see PARAMS below. */
-export const NEURAL_DENOISE_UNIFORM_FLOATS = 64;
+export const NEURAL_DENOISE_UNIFORM_FLOATS = 68;
 const float = (value) => {
   const text = value.toPrecision(9);
   return /[.e]/.test(text) ? text : `${text}.0`;
@@ -131,7 +131,9 @@ struct Params {
   logNear: f32,
   logFar: f32,
   turn: f32,           // angle between the previous and this frame's camera orientation
+  cameraStill: f32,    // unchanged view and projection; history stays on the same pixel
   offset: vec2f,       // where in its target the scene was drawn
+  colorOffset: vec2f,  // zero after encoding, otherwise the scene's offset
 };
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var linearSampler: sampler;
@@ -141,6 +143,15 @@ fn bounded(p: vec2i) -> vec2i { return clamp(p, vec2i(0), vec2i(P.size) - 1); }
 // The scene's target has a margin, and the scene is drawn at an offset in it
 // (see the node): the texel that holds pixel p.
 fn drawn(p: vec2i) -> vec2i { return bounded(p) + vec2i(P.offset); }
+// Read the capture directly unless colour conversion made a cropped copy.
+// Filtered taps clamp to the drawn viewport, excluding the target's margin.
+fn frameLoad(image: texture_2d<f32>, p: vec2i) -> vec4f {
+  return textureLoad(image, p + vec2i(P.colorOffset), 0);
+}
+fn frameSample(image: texture_2d<f32>, p: vec2f) -> vec4f {
+  let uv: vec2f = (clamp(p, vec2f(0.5), P.size - 0.5) + P.colorOffset) / vec2f(textureDimensions(image));
+  return textureSampleLevel(image, linearSampler, uv, 0.0);
+}
 
 // Some GPUs truncate a float written to a half-float target instead of
 // rounding it. A running mean over 128 frames then loses half a unit in the
@@ -227,47 +238,66 @@ fn catmullRom(image: texture_2d<f32>, uv: vec2f) -> vec4f {
 // lobes would ring over such a history, so the result is kept inside what the
 // four pixels around the position span. At a pixel's centre it returns the
 // pixel.
-fn lanczosWeight(t: f32) -> f32 {
+struct LanczosWeights {
+  low: vec3f,
+  high: vec3f,
+};
+fn lanczosWeights(t: f32) -> LanczosWeights {
+  // Integer-shifted sinc taps share their sine. Angle addition supplies the
+  // other factor, reducing twelve sine evaluations per axis to three trig calls.
   let x: f32 = 3.14159265 * t;
-  if (abs(x) < 1e-5) { return 1.0; }
-  return 3.0 * sin(x) * sin(x / 3.0) / (x * x);
+  let s: f32 = sin(x / 3.0);
+  let c: f32 = 0.866025404 * cos(x / 3.0);
+  let scale: f32 = 0.303963551 * sin(x);
+  let terms: vec3f = scale * vec3f(c - 0.5 * s, -c - 0.5 * s, s);
+  let low: vec3f = vec3f(t + 2.0, t + 1.0, t);
+  let high: vec3f = vec3f(t - 1.0, t - 2.0, t - 3.0);
+  var w: LanczosWeights;
+  w.low = terms / max(low * low, vec3f(1e-20));
+  w.high = terms / max(high * high, vec3f(1e-20));
+  if (abs(x) < 1e-5) { w.low.z = 1.0; }
+  if (abs(3.14159265 * (t - 1.0)) < 1e-5) { w.high.x = 1.0; }
+  return w;
 }
 struct LanczosKernel {
   base: vec2f,
   centre: vec2f,
-  middle: vec2f,
-  wx: array<f32, 6>,
-  wy: array<f32, 6>,
+  middle: f32,
+  wx: vec4f,
+  wy: vec4f,
+  total: f32,
 }
 fn lanczosKernel(uv: vec2f) -> LanczosKernel {
   let position: vec2f = uv * P.size - 0.5;
   var k: LanczosKernel;
   k.base = floor(position);
   let t: vec2f = position - k.base;
-  for (var i: i32 = 0; i < 6; i++) {
-    k.wx[i] = lanczosWeight(t.x - f32(i - 2));
-    k.wy[i] = lanczosWeight(t.y - f32(i - 2));
-  }
-  k.middle = vec2f(k.wx[2] + k.wx[3], k.wy[2] + k.wy[3]);
-  k.centre = (k.base + vec2f(k.wx[3], k.wy[3]) / k.middle + 0.5) * P.invSize;
+  let x: LanczosWeights = lanczosWeights(t.x);
+  let y: LanczosWeights = lanczosWeights(t.y);
+  let middle: vec2f = vec2f(x.low.z + x.high.x, y.low.z + y.high.x);
+  k.centre = (k.base + vec2f(x.high.x, y.high.x) / middle + 0.5) * P.invSize;
+  // All three histories share these 2D tap weights and their normalization.
+  k.middle = middle.x * middle.y;
+  k.wx = vec4f(x.low.xy, x.high.yz) * middle.y;
+  k.wy = vec4f(y.low.xy, y.high.yz) * middle.x;
+  k.total = k.middle;
+  for (var i: i32 = 0; i < 4; i++) { k.total += k.wx[i] + k.wy[i]; }
   return k;
 }
 fn lanczosCross(image: texture_2d<f32>, k: LanczosKernel) -> vec4f {
-  var sum: vec4f = textureSampleLevel(image, linearSampler, k.centre, 0.0) * (k.middle.x * k.middle.y);
-  var total: f32 = k.middle.x * k.middle.y;
-  for (var i: i32 = 0; i < 6; i++) {
-    if (i == 2 || i == 3) { continue; }
-    let along: vec2f = (k.base + f32(i) - 1.5) * P.invSize;
-    sum += textureSampleLevel(image, linearSampler, vec2f(along.x, k.centre.y), 0.0) * (k.wx[i] * k.middle.y);
-    sum += textureSampleLevel(image, linearSampler, vec2f(k.centre.x, along.y), 0.0) * (k.middle.x * k.wy[i]);
-    total += k.wx[i] * k.middle.y + k.middle.x * k.wy[i];
+  var sum: vec4f = textureSampleLevel(image, linearSampler, k.centre, 0.0) * k.middle;
+  const offsets = array<f32, 4>(-1.5, -0.5, 2.5, 3.5);
+  for (var i: i32 = 0; i < 4; i++) {
+    let along: vec2f = (k.base + offsets[i]) * P.invSize;
+    sum += textureSampleLevel(image, linearSampler, vec2f(along.x, k.centre.y), 0.0) * k.wx[i];
+    sum += textureSampleLevel(image, linearSampler, vec2f(k.centre.x, along.y), 0.0) * k.wy[i];
   }
   let p: vec2i = vec2i(k.base);
   let a: vec4f = textureLoad(image, bounded(p), 0);
   let b: vec4f = textureLoad(image, bounded(p + vec2i(1, 0)), 0);
   let c: vec4f = textureLoad(image, bounded(p + vec2i(0, 1)), 0);
   let d: vec4f = textureLoad(image, bounded(p + vec2i(1, 1)), 0);
-  return clamp(sum / total, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
+  return clamp(sum / k.total, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
 }
 `;
 const TAPS = /* wgsl */ `
@@ -360,16 +390,21 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
 // the model.
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
   let p: vec2i = vec2i(position.xy) * 2;
+  // View depth is monotonic: rank the raw samples first, then unproject only
+  // the third nearest. Negating reversed depth keeps the same ordering.
+  let direction: f32 = select(1.0, -1.0, P.clearDepth == 0.0 && P.logDepth < 0.5);
   var nearest: vec3f = vec3f(3.0e38);
   for (var j: i32 = 0; j < 9; j++) {
     let d: f32 = sceneDepth(drawn(p + TAPS[j]));
-    var z: f32 = P.far;
-    if (d != P.clearDepth) { z = viewDepth(d); }
+    let z: f32 = select(d * direction, 3.0e38, d == P.clearDepth);
     let a: f32 = max(nearest.x, z);
     let b: f32 = max(nearest.y, a);
     nearest = vec3f(min(nearest.x, z), min(nearest.y, a), min(nearest.z, b));
   }
-  if (nearest.z < P.far) { return vec4f(nearest.z, 0.0, 0.0, 1.0); }
+  if (nearest.z < 3.0e38) {
+    let z: f32 = viewDepth(nearest.z * direction);
+    if (z < P.far) { return vec4f(z, 0.0, 0.0, 1.0); }
+  }
   var lent: vec2f = lending(cells8, p, 8);
   if (lent.y == 0.0) { lent = lending(cells32, p, 32); }
   if (lent.y == 0.0) { lent = lending(cells128, p, 128); }
@@ -383,23 +418,18 @@ const expose = (
 @fragment fn fragment(@builtin(position) position: vec4f) -> @builtin(frag_depth) f32 {
   return sceneDepth(drawn(vec2i(position.xy)));
 }`;
-// The frame the passes work on: the scene, from where it was drawn in its
-// target. The networks were trained on display-referred values, so with
-// `encode`, for a linear working colour space, the frame is encoded here and
-// the output node decodes the result.
-const frame = (encode) => /* wgsl */ `${PARAMS}
+// A linear working colour space needs a display-referred copy for the
+// network; the output node decodes its result. Otherwise read the scene
+// directly, including the resolved colour of a multisampled capture.
+const ENCODE = /* wgsl */ `${PARAMS}
 @group(0) @binding(2) var image: texture_2d<f32>;
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
   let c: vec4f = textureLoad(image, drawn(vec2i(position.xy)), 0);
-  ${
-    encode
-      ? `// Premultiplied: the transfer applies to the colour itself.
+  // Premultiplied: the transfer applies to the colour itself.
   let alpha: f32 = max(c.a, 1e-6);
   let x: vec3f = max(c.rgb / alpha, vec3f(0.0));
   let encoded: vec3f = select(1.055 * pow(x, vec3f(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3f(0.0031308));
-  return vec4f(encoded * alpha, c.a);`
-      : "return c;"
-  }
+  return vec4f(encoded * alpha, c.a);
 }`;
 // Halves an image: each pixel is the mean of 2x2, one bilinear tap at the
 // corner the four share. An odd last row or column is left out, so a pixel of
@@ -410,6 +440,12 @@ const DOWNSAMPLE = /* wgsl */ `${VERTEX}
 @group(0) @binding(1) var image: texture_2d<f32>;
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
   return textureSampleLevel(image, linearSampler, position.xy * 2.0 / vec2f(textureDimensions(image)), 0.0);
+}`;
+// The first level reads the viewport within the scene's capture target.
+const SOURCE_DOWNSAMPLE = /* wgsl */ `${PARAMS}
+@group(0) @binding(2) var image: texture_2d<f32>;
+@fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  return frameSample(image, position.xy * 2.0);
 }`;
 const COARSE = /* wgsl */ `
 // Bilinear lookup, at a position in pixels of the frame, in an image whose
@@ -437,7 +473,7 @@ const KERNEL = (blur) => {
   return /* wgsl */ `${COARSE}
 fn probe(position: vec2f) -> vec4f {
   return mix(
-    coarse(levelLow, position, ${float(2 ** low)}),
+    ${low === 0 ? "frameSample(levelLow, position)" : `coarse(levelLow, position, ${float(2 ** low)})`},
     coarse(levelHigh, position, ${float(2 ** (low + 1))}),
     ${float(share)});
 }
@@ -487,24 +523,23 @@ ${head("KEEP", layer, 9)}`;
   let taps: array<f32, 9> = array<f32, 9>(e0.x, e0.y, e0.z, e0.w, e1.x, e1.y, e1.z, e1.w, e2);
   var sum: vec4f = vec4f(0.0);
   for (var j: i32 = 0; j < 9; j++) {
-    sum += taps[j] * textureLoad(${image}, ${bounded}(p + TAPS[j]), 0);
+    sum += taps[j] * ${image === "colorTexture" ? `frameLoad(${image}, ${bounded}(p + TAPS[j]))` : `textureLoad(${image}, ${bounded}(p + TAPS[j]), 0)`};
   }
   let smoothed: vec4f = sum / (dot(e0 + e1, vec4f(1.0)) + e2);
   let keep: f32 = sigmoid(${headed("KEEP", hidden)});`;
   const levels = filter.levels.map((layers, n) => {
     const last = n === filter.levels.length - 1;
     const below = last ? [] : groups.map((g) => `x${2 + g}`);
-    const encode = /* wgsl */ `${VERTEX}${MATH}
+    const encode = /* wgsl */ `${PARAMS}
 ${pointwise("ENCODE", widened(layers.encode, 7, 1))}
-@group(0) @binding(0) var linearSampler: sampler;
 ${COARSE}
-@group(0) @binding(1) var level: texture_2d<f32>;
-@group(0) @binding(2) var finer: texture_2d<f32>;
+@group(0) @binding(2) var level: texture_2d<f32>;
+@group(0) @binding(3) var finer: texture_2d<f32>;
 ${
   last
     ? ""
-    : `@group(0) @binding(3) var below: texture_2d<f32>;
-${groups.map((g) => `@group(0) @binding(${4 + g}) var hidden${g}: texture_2d<f32>;`).join("\n")}`
+    : `@group(0) @binding(4) var below: texture_2d<f32>;
+${groups.map((g) => `@group(0) @binding(${5 + g}) var hidden${g}: texture_2d<f32>;`).join("\n")}`
 }
 struct Output {
 ${targets("encoded")}
@@ -516,7 +551,7 @@ ${targets("encoded")}
   // the noise at this scale.
   var noise: f32 = 0.0;
   for (var j: i32 = 0; j < 4; j++) {
-    noise += abs(luma(textureLoad(finer, p * 2 + vec2i(j & 1, j >> 1), 0).rgb) - luma(own));
+    noise += abs(luma(${n === 0 ? "frameLoad(finer, p * 2 + vec2i(j & 1, j >> 1))" : "textureLoad(finer, p * 2 + vec2i(j & 1, j >> 1), 0)"}.rgb) - luma(own));
   }
   let under: vec3f = ${last ? "own" : "coarse(below, position.xy, 2.0).rgb"};
   let x0: vec4f = vec4f(own, under.r);
@@ -586,7 +621,7 @@ ${
   robust
     ? `  let under: vec4f = coarse(below, position.xy, 2.0);
   let level: f32 = luma(under.rgb);
-  let own: f32 = luma(textureLoad(colorTexture, p, 0).rgb) - level;
+  let own: f32 = luma(frameLoad(colorTexture, p).rgb) - level;
   let away: vec4f = vec4f(own, abs(own), 0.0, 0.0);
   let k0: vec4f = ${mixed("KERNEL", 0, seen)};
   let k1: vec4f = ${mixed("KERNEL", 1, seen)};
@@ -596,7 +631,7 @@ ${
   var texels: array<vec4f, 9>;
   var peak: f32 = -1e30;
   for (var j: i32 = 0; j < 9; j++) {
-    texels[j] = textureLoad(colorTexture, bounded(p + TAPS[j]), 0);
+    texels[j] = frameLoad(colorTexture, bounded(p + TAPS[j]));
     logits[j] -= rate * abs(luma(texels[j].rgb) - level);
     peak = max(peak, logits[j]);
   }
@@ -700,7 +735,7 @@ fn ${name}(block: vec2i) -> vec4f {
     for (var i: i32 = 0; i < ${taps.length}; i++) {
       let at: vec2f = first + vec2f(${name}_TAPS[i].x, ${name}_TAPS[j].x);
       sum += ${name}_TAPS[i].y * ${name}_TAPS[j].y *
-        textureSampleLevel(${image}, linearSampler, at / vec2f(textureDimensions(${image})), 0.0);
+        ${levelIndex === 0 ? `frameSample(${image}, at)` : `textureSampleLevel(${image}, linearSampler, at / vec2f(textureDimensions(${image})), 0.0)`};
     }
   }
   return sum;
@@ -780,7 +815,7 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
   var rough: f32 = 0.0;
   for (var j: i32 = 0; j < 4; j++) {
     let q: vec2i = min(p + vec2i(j & 1, j >> 1), vec2i(P.size) - 1);
-    rough += abs(luma(textureLoad(colorTexture, q, 0).rgb) - around);
+    rough += abs(luma(frameLoad(colorTexture, q).rgb) - around);
   }
   var sr: vec4f = vec4f(0.0);
   var dr: vec4f = vec4f(0.0);
@@ -989,7 +1024,7 @@ struct Output {
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
   let p: vec2i = vec2i(position.xy);
   let d: vec4f = ${learned ? "textureLoad(filteredTexture, p, 0)" : "filteredFrame(position.xy)"};
-  let color: vec4f = textureLoad(colorTexture, p, 0);
+  let color: vec4f = frameLoad(colorTexture, p);
   var sr: vec4f = vec4f(0.0);
   var dr: vec4f = vec4f(0.0);
   // Second moment of luma, the two history lengths, slow low-pass luma.
@@ -1024,18 +1059,28 @@ struct Output {
     let seen: f32 = textureLoad(depthPrevious, clamp(vec2i(floor(h.uv * P.size * 0.5)), vec2i(0), vec2i(floor(P.size * 0.5)) - 1), 0).r;
     let other: f32 = f32(abs(seen - h.previousZ) > ${float(weights.surfaceApart)} * max(seen, h.previousZ));
     same = 1.0 - other * speed * speed / (speed * speed + ${float(weights.surfaceKnee * weights.surfaceKnee)});
-    let interpolation: LanczosKernel = lanczosKernel(h.uv);
-    sr = max(lanczosCross(previousAccumulated, interpolation), vec4f(0.0));
-    dr = max(lanczosCross(previousDenoised, interpolation), vec4f(0.0));
-    let a: vec4f = previousStatistics(h.uv);
+    previous = catmullRomSpan(previousOutput, h.uv);
+    var a: vec4f;
+    if (P.cameraStill > 0.5) {
+      // Object motion still goes through the network and history rejection.
+      // Only camera reprojection needs interpolation between history pixels.
+      sr = max(textureLoad(previousAccumulated, p, 0), vec4f(0.0));
+      dr = max(textureLoad(previousDenoised, p, 0), vec4f(0.0));
+      a = textureLoad(previousAux, p, 0);
+      previous.value = textureLoad(previousOutput, p, 0);
+    } else {
+      let interpolation: LanczosKernel = lanczosKernel(h.uv);
+      sr = max(lanczosCross(previousAccumulated, interpolation), vec4f(0.0));
+      dr = max(lanczosCross(previousDenoised, interpolation), vec4f(0.0));
+      a = previousStatistics(h.uv);
+      previous.value = lanczosCross(previousOutput, interpolation);
+    }
     // Where a block has no depth of its own, where to read its history is a
     // guess, so while the camera moves it keeps little of the accumulated
     // history, and what was misread fades in a few frames.
     sparseMotion = sparse * speed * speed / (speed * speed + ${float(weights.sparseKnee * weights.sparseKnee)});
     let limit: f32 = mix(${float(weights.accumulatedFrames)}, ${float(weights.sparseFrames)}, sparseMotion);
     aux = vec4f(a.x, min(a.y * valid * same, limit), a.z * valid * same, a.w);
-    previous = catmullRomSpan(previousOutput, h.uv);
-    previous.value = lanczosCross(previousOutput, interpolation);
   }
   ${weights.correction ? "var" : "let"} trust: vec4f = coarse(trustBlocks, position.xy, 4.0) * valid * same;
   ${weights.correction ? "var" : "let"} strength: f32 = coarse(strengthBlocks, position.xy, 4.0).r;
@@ -1115,9 +1160,9 @@ ${
     wider: WIDER,
     depth: depth(weights, multisampled),
     expose: expose(multisampled),
-    frame: frame(false),
-    encode: frame(true),
+    encode: ENCODE,
     downsample: DOWNSAMPLE,
+    sourceDownsample: SOURCE_DOWNSAMPLE,
     features,
     stage,
     predict,

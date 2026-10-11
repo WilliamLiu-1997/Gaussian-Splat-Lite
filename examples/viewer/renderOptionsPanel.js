@@ -27,7 +27,6 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     setHidden("minSortIntervalMs", nativeWebGPU);
     const hideNeural = getValue("denoiser") !== "neural";
     setHidden("denoiserProfile", hideNeural);
-    setHidden("denoiserSamples", hideNeural);
   }
 
   function createRow(option) {

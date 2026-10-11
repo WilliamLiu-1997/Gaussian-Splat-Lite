@@ -17,21 +17,26 @@ import {
   RendererUtils,
 } from "three/webgpu";
 import { applyThreeR186Patch } from "../patches/threeR186.js";
+import { StochasticCoverage } from "./stochasticCoverage.js";
 import { createTAAState } from "./taaShared.js";
 /** Camera/depth TAA for WebGPURenderer, including its WebGL2 fallback. */
 export class TAANode extends Node {
   static get type() {
     return "TAANode";
   }
-  constructor(scene, camera) {
+  /** @param msaa Enable 4× MSAA (default true). Fixed for the node's lifetime. */
+  constructor(scene, camera, msaa = true) {
     super("vec4");
     this.scene = scene;
     this.camera = camera;
+    this.msaa = msaa;
+    this.coverage = msaa ? new StochasticCoverage() : null;
     this.depthThreshold = 0.0005;
     this.edgeDepthDiff = 0.001;
     this.maxMotionLength = 128;
     this.useSubpixelCorrection = true;
     this.source = this.makeTarget("TAA.scene");
+    this.source.samples = msaa ? 4 : 0;
     this.history = [
       this.makeTarget("TAA.history0"),
       this.makeTarget("TAA.history1"),
@@ -117,7 +122,8 @@ export class TAANode extends Node {
       state.beginCapture(camera);
       try {
         renderer.setRenderTarget(this.source);
-        renderer.render(this.scene, camera);
+        if (this.coverage) this.coverage.render(renderer, this.scene, camera);
+        else renderer.render(this.scene, camera);
       } finally {
         state.endCapture(camera);
         // Three may initialize the camera's depth convention on its first draw.
@@ -178,6 +184,8 @@ export class TAANode extends Node {
     const u = this.state.uniforms;
     // Explicit screen UVs avoid identity texture matrices on every sample/load.
     const source = N.texture(this.source.texture, N.screenUV);
+    // On native WebGPU, load() reads sample 0 from multisampled depth.
+    // WebGL resolves depth before this pass. History stays single-sampled.
     const sourceDepth = N.texture(this.depthTexture, N.screenUV);
     const history = this.historyColor;
     const historyDepth = this.historyDepth;
@@ -367,6 +375,7 @@ export class TAANode extends Node {
   }
   dispose() {
     super.dispose();
+    this.coverage?.dispose();
     this.source.dispose();
     for (const target of this.history) target.dispose();
     this.material.dispose();

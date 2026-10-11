@@ -19,6 +19,8 @@ import { Pass } from "three/addons/postprocessing/Pass.js";
 export declare class TAAPass extends Pass {
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
+  readonly msaa: boolean;
+  private readonly _coverage;
   /** Depth difference above which non-edge history is rejected. */
   depthThreshold: number;
   /** Depth range within the 3x3 neighborhood that identifies an edge. */
@@ -35,7 +37,12 @@ export declare class TAAPass extends Pass {
   private readonly _resolveMaterial;
   private readonly _copyMaterial;
   private readonly _quad;
-  constructor(scene: Scene, camera: PerspectiveCamera | OrthographicCamera);
+  /** @param msaa Enable 4× MSAA (default true). Fixed for the pass's lifetime. */
+  constructor(
+    scene: Scene,
+    camera: PerspectiveCamera | OrthographicCamera,
+    msaa?: boolean,
+  );
   /** Current scene depth, before temporal accumulation. Owned by this pass. */
   get depthTexture(): DepthTexture;
   /** Jittered projection used to capture depthTexture. Treat as read-only. */

@@ -49,7 +49,7 @@ export class NeuralDenoiseNode extends Node {
   scene;
   camera;
   profile;
-  samples;
+  msaa;
   coverage;
   static get type() {
     return "NeuralDenoiseNode";
@@ -112,20 +112,18 @@ export class NeuralDenoiseNode extends Node {
   /**
    * @param profile Fixed filtering (`"profile1"`) or learned filtering
    *   (`"profile2"`, default). Fixed for the node's lifetime.
-   * @param samples Coverage samples per pixel: 1 (default) or 4, with
-   *   either profile. Fixed for the node's lifetime.
+   * @param msaa Enable 4× MSAA (default true) with either profile.
+   *   Fixed for the node's lifetime.
    */
-  constructor(scene, camera, profile = "profile2", samples = 1) {
+  constructor(scene, camera, profile = "profile2", msaa = true) {
     super("vec4");
-    if (samples !== 1 && samples !== 4)
-      throw new Error("NeuralDenoiseNode samples must be 1 or 4");
     this.scene = scene;
     this.camera = camera;
     this.profile = profile;
-    this.samples = samples;
-    this.coverage = samples > 1 ? new StochasticCoverage() : null;
+    this.msaa = msaa;
+    this.coverage = msaa ? new StochasticCoverage() : null;
     // Each coverage decision controls one of the target's four samples.
-    this.source.samples = samples > 1 ? 4 : 0;
+    this.source.samples = msaa ? 4 : 0;
     this.source.storeMultisampledColorBuffer = false;
     this.updateBeforeType = NodeUpdateType.RENDER;
     this.source.texture.name = "NeuralDenoise.scene";
@@ -283,6 +281,11 @@ export class NeuralDenoiseNode extends Node {
         ((r[0] + r[5] + r[10]) / Math.cbrt(this.relative.determinant()) - 1) /
         2;
       u[60] = Math.acos(Math.min(1, Math.max(-1, cosine)));
+      u[61] =
+        this.previousWorld.equals(camera.matrixWorld) &&
+        this.previousProjection.equals(camera.projectionMatrix)
+          ? 1
+          : 0;
       // Both node backends place viewports from the top; classic WebGL uses
       // the bottom. Shader coordinates are top-left on all three backends.
       u.set([offsetX, nodeRenderer ? offsetY : MARGIN - offsetY], 62);
@@ -291,6 +294,7 @@ export class NeuralDenoiseNode extends Node {
         ColorManagement.getTransfer(
           this.source.texture.colorSpace || this.workingColorSpace,
         ) === LinearTransfer;
+      u.set(encode ? [0, 0] : [u[62], u[63]], 64);
       this.encoded.value =
         ColorManagement.getTransfer(this.workingColorSpace) === LinearTransfer;
       const gpu = (texture) => {

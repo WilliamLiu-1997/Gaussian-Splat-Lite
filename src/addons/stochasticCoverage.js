@@ -28,7 +28,7 @@ export class StochasticCoverage {
       !renderer.getContext().getExtension("OES_sample_variables")
     )
       throw new Error(
-        "Neural denoising with 4 coverage samples requires OES_sample_variables on WebGL2; use samples = 1 on this device",
+        "Stochastic rendering with MSAA requires OES_sample_variables on WebGL2; use msaa = false on this device",
       );
     const nodeRenderer = renderer.isWebGPURenderer === true;
     const previous = nodeRenderer

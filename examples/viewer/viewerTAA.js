@@ -21,16 +21,16 @@ export function createViewerTAA(
   renderer,
   scene,
   camera,
-  { neural = false, profile = "profile2", samples = 1 } = {},
+  { neural = false, profile = "profile2", msaa = true } = {},
 ) {
   const nodeRenderer = renderer.isWebGPURenderer;
   const taa = neural
     ? nodeRenderer
-      ? new NeuralDenoiseNode(scene, camera, profile, samples)
-      : new NeuralDenoisePass(scene, camera, profile, samples)
+      ? new NeuralDenoiseNode(scene, camera, profile, msaa)
+      : new NeuralDenoisePass(scene, camera, profile, msaa)
     : nodeRenderer
-      ? new TAANode(scene, camera)
-      : new TAAPass(scene, camera);
+      ? new TAANode(scene, camera, msaa)
+      : new TAAPass(scene, camera, msaa);
   const settleFrames = neural ? NEURAL_SETTLE_FRAMES : TAA_SETTLE_FRAMES;
   const pipeline = nodeRenderer
     ? new RenderPipeline(renderer, taa)

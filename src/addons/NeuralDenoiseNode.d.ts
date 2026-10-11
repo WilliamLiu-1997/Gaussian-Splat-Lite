@@ -18,7 +18,7 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
   readonly profile: NeuralDenoiseProfile;
-  readonly samples: 1 | 4;
+  readonly msaa: boolean;
   private readonly coverage;
   static get type(): string;
   /**
@@ -49,14 +49,14 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   /**
    * @param profile Fixed filtering (`"profile1"`) or learned filtering
    *   (`"profile2"`, default). Fixed for the node's lifetime.
-   * @param samples Coverage samples per pixel: 1 (default) or 4, with
-   *   either profile. Fixed for the node's lifetime.
+   * @param msaa Enable 4× MSAA (default true) with either profile.
+   *   Fixed for the node's lifetime.
    */
   constructor(
     scene: Scene,
     camera: PerspectiveCamera | OrthographicCamera,
     profile?: NeuralDenoiseProfile,
-    samples?: 1 | 4,
+    msaa?: boolean,
   );
   /** Scene depth of the current frame, kept from the first read on. */
   get depthTexture(): DepthTexture;

@@ -10,6 +10,8 @@ import { Node, type NodeBuilder, type NodeFrame } from "three/webgpu";
 export declare class TAANode extends Node<"vec4"> {
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
+  readonly msaa: boolean;
+  private readonly coverage;
   static get type(): string;
   depthThreshold: number;
   edgeDepthDiff: number;
@@ -29,7 +31,12 @@ export declare class TAANode extends Node<"vec4"> {
   private readonly pipelineStates;
   private pipelineRendering;
   private capturePending;
-  constructor(scene: Scene, camera: PerspectiveCamera | OrthographicCamera);
+  /** @param msaa Enable 4× MSAA (default true). Fixed for the node's lifetime. */
+  constructor(
+    scene: Scene,
+    camera: PerspectiveCamera | OrthographicCamera,
+    msaa?: boolean,
+  );
   private makeTarget;
   get depthTexture(): DepthTexture;
   get projectionMatrix(): Matrix4;

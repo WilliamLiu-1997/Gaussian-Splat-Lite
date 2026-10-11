@@ -1,6 +1,6 @@
 import type { NeuralDenoiseModel } from "./neuralDenoiseWeights.js";
 /** Floats in the uniform block shared by every pass; see PARAMS below. */
-export declare const NEURAL_DENOISE_UNIFORM_FLOATS = 64;
+export declare const NEURAL_DENOISE_UNIFORM_FLOATS = 68;
 /**
  * The WGSL of every pass, with the trained weights written in as constants.
  * Each fragment shader's bindings are: the uniform block, a linear sampler,
@@ -20,9 +20,9 @@ export declare function neuralDenoiseShaders(
   wider: string;
   depth: string;
   expose: string;
-  frame: string;
   encode: string;
   downsample: string;
+  sourceDownsample: string;
   features: string;
   stage: string;
   predict: string;

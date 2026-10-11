@@ -43,8 +43,13 @@ export class NeuralDenoisePasses {
       // The depth, and whether it is the block's own.
       depth: this.pass("depth", code.depth, ["depth", U, U, U, U], [DEPTH]),
       expose: this.pass("expose", code.expose, ["depth"], [], true, true),
-      frame: this.pass("frame", code.frame, [F], [HALF]),
       encode: this.pass("encode", code.encode, [F], [HALF]),
+      sourceDownsample: this.pass(
+        "sourceDownsample",
+        code.sourceDownsample,
+        [F],
+        [HALF],
+      ),
       downsample: this.pass("downsample", code.downsample, [F], [HALF], false),
       features: this.pass(
         "features",
@@ -102,7 +107,6 @@ export class NeuralDenoisePasses {
           shader,
           i === last ? [F, F] : [F, F, F, ...read],
           wrote,
-          false,
         ),
       ),
       kernel: filter.kernel.map((shader, i) =>
@@ -184,10 +188,10 @@ export class NeuralDenoisePasses {
     // Scratch of one frame. What was drawn, in cells of 8, 32, 128 and 512
     // pixels.
     const cells = [8, 32, 128, 512].map((width) => scaled(width, CELLS));
-    // The scene without its margin, encoded for a linear working colour
-    // space. The network takes a block's colour from the second level of the
-    // image pyramid.
-    const color = full();
+    // Reuse the captured colour, including an MSAA resolve. Only a linear
+    // working colour space needs an encoded copy; frame sampling accounts
+    // for the capture's margin. The network reads the second pyramid level.
+    const color = external.encode ? full() : sceneColor;
     const levels = [color];
     const filterLevels = [];
     const levelCount = filter
@@ -232,14 +236,21 @@ export class NeuralDenoisePasses {
           [],
           exposed,
         ]);
-      const frame = external.encode ? passes.encode : passes.frame;
-      steps.push([frame, this.bind(frame, [sceneColor]), [color]]);
-      for (let i = 1; i < levels.length; i++)
+      if (external.encode)
         steps.push([
-          passes.downsample,
-          this.bind(passes.downsample, [levels[i - 1]]),
+          passes.encode,
+          this.bind(passes.encode, [sceneColor]),
+          [color],
+        ]);
+      for (let i = 1; i < levels.length; i++) {
+        const downsample =
+          i === 1 ? passes.sourceDownsample : passes.downsample;
+        steps.push([
+          downsample,
+          this.bind(downsample, [levels[i - 1]]),
           [levels[i]],
         ]);
+      }
       if (filter && filtered)
         steps.push(...this.filterSteps(filter, levels, filterLevels, filtered));
       steps.push(

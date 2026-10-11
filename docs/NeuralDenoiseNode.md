@@ -23,18 +23,18 @@ The third constructor argument selects a profile. Start with the default, then c
 | `"profile1"` | Lower GPU and memory use |
 | `"profile2"` (default) | A different balance of detail, noise and flicker, with higher GPU and memory use |
 
-The fourth constructor argument, `samples`, selects coverage quality with either profile:
+The fourth constructor argument, `msaa`, enables or disables 4× MSAA with either profile:
 
-| Samples | What you get |
+| MSAA | What you get |
 | --- | --- |
-| `1` (default) | Lower GPU and memory use |
-| `4` | Less noise during motion, with higher GPU and memory use |
+| `false` | One coverage sample, with lower GPU and memory use |
+| `true` (default) | Four coverage samples, with less noise during motion and higher GPU and memory use |
 
-For example, `new NeuralDenoiseNode(scene, camera, "profile1", 4)` uses Profile 1 with four samples. `NeuralDenoisePass` accepts the same arguments. To change either setting, dispose the node or pass and create another. The viewer has separate controls for both.
+For example, `new NeuralDenoiseNode(scene, camera, "profile1", true)` uses Profile 1 with 4× MSAA; pass `false` to disable MSAA. `NeuralDenoisePass` accepts the same arguments. To change either setting, dispose the node or pass and create another. The viewer has a profile selector and an **MSAA** switch, on by default.
 
 ## Before you start
 
-- **WebGL2 requirements.** Both WebGL2 paths require `EXT_color_buffer_float`. Four coverage samples also require `OES_sample_variables`; check `renderer.getContext().getExtension("OES_sample_variables")` before choosing `samples = 4`. If it is unavailable, choose `1`. Unsupported configurations throw an error.
+- **WebGL2 requirements.** Both WebGL2 paths require `EXT_color_buffer_float`. MSAA also requires `OES_sample_variables`; check `renderer.getContext().getExtension("OES_sample_variables")` before constructing the denoiser. If it is unavailable, pass `msaa = false`. Unsupported configurations throw an error.
 - **One camera.** Use a `PerspectiveCamera` or `OrthographicCamera`. WebXR is not supported.
 - **Stencil masks.** Create the Three.js renderer with `stencil: true` to use them.
 - **Reset after a jump.** Call `denoise.reset()` after a camera cut or scene replacement. Resizing resets automatically; normal object movement needs no reset.
@@ -114,7 +114,7 @@ With `NeuralDenoiseNode` in a linear working color space, switching to four samp
 | `scene` | Constructor scene | Scene to render; call `reset()` when replacing it |
 | `camera` | Constructor camera | Camera to render with; call `reset()` when replacing it |
 | `profile` | `"profile2"` | Read-only. The constructor profile: `"profile1"` or `"profile2"` |
-| `samples` | `1` | Read-only. Coverage samples per pixel: `1` or `4`, with either profile |
+| `msaa` | `true` | Read-only. Whether 4× MSAA is enabled, with either profile |
 | `depthTexture` | Read-only | Scene depth of the current frame |
 | `projectionMatrix` | Read-only | Projection that matches `depthTexture` |
 | `stabilize` | `true` | Reduces flicker; disabling it can make the image less steady |

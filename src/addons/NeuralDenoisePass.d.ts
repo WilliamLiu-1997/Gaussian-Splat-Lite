@@ -18,12 +18,12 @@ export declare class NeuralDenoisePass extends Pass {
     scene: Scene,
     camera: PerspectiveCamera | OrthographicCamera,
     profile?: NeuralDenoiseProfile,
-    samples?: 1 | 4,
+    msaa?: boolean,
   );
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
   readonly profile: NeuralDenoiseProfile;
-  readonly samples: 1 | 4;
+  readonly msaa: boolean;
   stabilize: boolean;
   readonly depthTexture: DepthTexture;
   readonly projectionMatrix: Matrix4;
