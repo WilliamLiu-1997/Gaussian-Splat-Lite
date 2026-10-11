@@ -48,7 +48,7 @@ const VIEW_OFFSETS = [
 export class NeuralDenoiseNode extends Node {
   scene;
   camera;
-  profile;
+  mode;
   msaa;
   coverage;
   static get type() {
@@ -56,7 +56,7 @@ export class NeuralDenoiseNode extends Node {
   }
   /**
    * Blends the result with the previous image where the network trusts it.
-   * Steadier; turn it off for the two history paths alone.
+   * Quality mode only; turn it off for the two history paths alone.
    */
   stabilize = true;
   source = new WebGLRenderTarget(1, 1, {
@@ -110,16 +110,15 @@ export class NeuralDenoiseNode extends Node {
   pipelineRendering = false;
   capturePending = true;
   /**
-   * @param profile Fixed filtering (`"profile1"`) or learned filtering
-   *   (`"profile2"`, default). Fixed for the node's lifetime.
-   * @param msaa Enable 4× MSAA (default true) with either profile.
+   * @param mode Single-pass performance or multiscale quality (default).
+   * @param msaa Enable 4× MSAA (default true).
    *   Fixed for the node's lifetime.
    */
-  constructor(scene, camera, profile = "profile2", msaa = true) {
+  constructor(scene, camera, mode = "quality", msaa = true) {
     super("vec4");
     this.scene = scene;
     this.camera = camera;
-    this.profile = profile;
+    this.mode = mode;
     this.msaa = msaa;
     this.coverage = msaa ? new StochasticCoverage() : null;
     // Each coverage decision controls one of the target's four samples.
@@ -161,7 +160,7 @@ export class NeuralDenoiseNode extends Node {
     }
     const backend = renderer.backend;
     if (this.passes === null) {
-      const model = neuralDenoiseModels[this.profile];
+      const model = neuralDenoiseModels[this.mode];
       this.passes = native
         ? new WebGPUDenoisePasses(backend.device, model, this.coverage !== null)
         : new WebGLDenoisePasses(renderer, model);

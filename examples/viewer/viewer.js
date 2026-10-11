@@ -133,7 +133,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     if (state.splatRenderer.stochastic) {
       state.taa = createViewerTAA(state.renderer, scene, camera, {
         neural: denoiser === "neural",
-        profile: denoiserProfile,
+        mode: denoiserMode,
         msaa,
       });
     }
@@ -209,8 +209,8 @@ let taa = null;
 let activeStream = null;
 let renderOnDemand = true;
 let halfFloatBlending = true;
-let denoiser = "taa";
-let denoiserProfile = "profile2";
+let denoiser = "neural";
+let denoiserMode = "performance";
 let msaa = true;
 let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
@@ -309,9 +309,9 @@ const renderOptionActions = {
     denoiser = value;
     replaceDenoiser();
   },
-  denoiserProfile: (value) => {
-    denoiserProfile = value;
-    if (denoiser === "neural") replaceDenoiser();
+  denoiserMode: (value) => {
+    denoiserMode = value;
+    replaceDenoiser();
   },
   msaa: (value) => {
     msaa = value;
@@ -325,7 +325,7 @@ function replaceDenoiser() {
   taa.dispose();
   taa = createViewerTAA(renderer, scene, camera, {
     neural: denoiser === "neural",
-    profile: denoiserProfile,
+    mode: denoiserMode,
     msaa,
   });
   rendererState.taa = taa;
@@ -482,7 +482,7 @@ function applyRenderOption(property, value) {
     if (property === "stochastic" && value && !taa) {
       taa = createViewerTAA(renderer, scene, camera, {
         neural: denoiser === "neural",
-        profile: denoiserProfile,
+        mode: denoiserMode,
         msaa,
       });
       rendererState.taa = taa;

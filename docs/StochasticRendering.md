@@ -57,7 +57,7 @@ const denoise = new NeuralDenoiseNode(scene, camera);
 const pipeline = new RenderPipeline(renderer, denoise);
 ```
 
-It also supports the WebGL2 fallback. See [Neural denoising](NeuralDenoiseNode.md) for profiles, coverage quality and WebGL2 requirements.
+It also supports the WebGL2 fallback. See [Neural denoising](NeuralDenoiseNode.md) for modes, MSAA and WebGL2 requirements.
 
 ### WebGLRenderer: TAAPass
 

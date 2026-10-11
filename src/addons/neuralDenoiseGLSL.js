@@ -7,6 +7,7 @@ const types = {
   vec2f: "vec2",
   vec3f: "vec3",
   vec4f: "vec4",
+  vec4u: "uvec4",
   vec2i: "ivec2",
   mat4x4f: "mat4",
   texture_depth_2d: "sampler2D",
@@ -64,8 +65,10 @@ export function neuralDenoiseGLSL(wgsl) {
     "var previous: Resampled = Resampled(vec4f(0.0), vec4f(0.0));",
   );
   code = code.replace(/texture_2d<f32>/g, "sampler2D");
+  code = code.replace(/bitcast<vec4u>\(/g, "floatBitsToUint(");
+  code = code.replace(/bitcast<vec4f>\(/g, "uintBitsToFloat(");
   code = code.replace(
-    /\b(?:f32|i32|u32|vec[234]f|vec2i|mat4x4f|texture_depth_2d)\b/g,
+    /\b(?:f32|i32|u32|vec[234]f|vec2i|vec4u|mat4x4f|texture_depth_2d)\b/g,
     (type) => types[type],
   );
   code = code.replace(/array<([\w]+),\s*(\d+)>/g, "$1[$2]");
@@ -124,8 +127,8 @@ export function neuralDenoiseGLSL(wgsl) {
     "if (P.logDepth > 1.5) { return exp2(d * P.logFar) - 1.0; }\n  if (P.logDepth > 0.5) { return P.logNear * exp2(d * P.logFar); }",
   );
   code = code.replace(
-    "exp2(-d * P.logFar) / P.logNear,",
-    "P.logDepth > 1.5 ? 1.0 / (exp2(d * P.logFar) - 1.0) : exp2(-d * P.logFar) / P.logNear,",
+    "exp2(-d * P.logFar) / P.logNear",
+    "(P.logDepth > 1.5 ? 1.0 / (exp2(d * P.logFar) - 1.0) : exp2(-d * P.logFar) / P.logNear)",
   );
   // WGSL permits a function to be defined after its caller; GLSL needs a prototype.
   const prototypes = Array.from(

@@ -62,22 +62,22 @@ export const renderOptionGroups = [
         property: "denoiser",
         label: "Stochastic denoiser",
         description:
-          "Neural reduces trails behind moving objects and stays clean while the camera moves. Fast motion looks softer, and it takes more GPU time and memory.",
-        defaultValue: "taa",
+          "Neural offers Performance and Quality modes for reducing stochastic noise.",
+        defaultValue: "neural",
         choices: [
           ["taa", "TAA"],
           ["neural", "Neural"],
         ],
       },
       {
-        property: "denoiserProfile",
-        label: "Neural denoiser profile",
+        property: "denoiserMode",
+        label: "Neural mode",
         description:
-          "Profile 1 uses fixed filtering; Profile 2 uses adaptive filtering. Each trades detail, noise and flicker differently. Both support the MSAA setting below.",
-        defaultValue: "profile2",
+          "Performance is faster. Quality keeps still views cleaner and reduces trails behind moving objects.",
+        defaultValue: "performance",
         choices: [
-          ["profile1", "Profile 1"],
-          ["profile2", "Profile 2"],
+          ["performance", "Performance"],
+          ["quality", "Quality"],
         ],
       },
       {

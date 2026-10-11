@@ -3,16 +3,15 @@ export type NeuralDenoiseLayer = {
   w: number[];
   b: number[];
 };
-/** Trained profiles with different tradeoffs between detail, noise and flicker. */
-export type NeuralDenoiseProfile = "profile1" | "profile2";
 /**
  * A trained model behind NeuralDenoiseNode: the trust network, the spatial
- * kernel's radius and the gate's gain, with the constants it was trained
- * under. Trained on this renderer's stochastic frames.
+ * filter and gate's gain, with the constants it was trained under.
+ * Trained on this renderer's stochastic frames.
  */
-export type NeuralDenoiseModel = {
-  /** Radius of the spatial kernel in pixels. */
-  blur: number;
+export type NeuralDenoiseQualityModel = {
+  performance?: never;
+  /** Prototype: fixed local filtering without learned multiscale passes. */
+  compact?: boolean;
   /** Gain of the variance gate between the two history paths. */
   gamma: number;
   /** Longest history of the accumulated and of the denoised path, in frames. */
@@ -29,9 +28,8 @@ export type NeuralDenoiseModel = {
   evidenceFrames: number[];
   /**
    * The frames of denoised history under which, where the camera changes the
-   * image fast, the denoised path takes a wider filter's result in place of
-   * the filtered frame: the learned filter's half-resolution result, or
-   * without one the frame's mean over 4x4 pixels.
+   * image fast, the denoised path takes the learned filter's half-resolution
+   * result in place of the filtered frame.
    */
   reach: number;
   /**
@@ -61,8 +59,7 @@ export type NeuralDenoiseModel = {
   sparseStabilize: number;
   sparseWide: boolean;
   /**
-   * Set on a model with a learned spatial filter, which takes the fixed
-   * kernel's place: a 3x3 kernel predicted for every pixel at each level of
+   * The learned spatial filter: a 3x3 kernel predicted at each level of
    * the frame's image pyramid, coarsest first, and then at full resolution.
    * `levels[0]` is the half-resolution level. A level's `encode` takes its
    * colour, the result of the level below, the noise at its scale and the
@@ -70,7 +67,7 @@ export type NeuralDenoiseModel = {
    * `head`, and `top` at full resolution, give the nine kernel weights and
    * the share of the filtered image to keep over the level below.
    */
-  filter?: {
+  filter: {
     /**
      * Set on a filter whose full-resolution kernel can leave a single sample
      * out: `top` then has two more inputs (how far the pixel is from the
@@ -114,7 +111,16 @@ export type NeuralDenoiseModel = {
     head: NeuralDenoiseLayer;
   };
 };
-export declare const neuralDenoiseModels: Record<
-  NeuralDenoiseProfile,
-  NeuralDenoiseModel
->;
+export type NeuralDenoisePerformanceModel = {
+  performance: {
+    hidden: NeuralDenoiseLayer;
+    out: NeuralDenoiseLayer;
+  };
+};
+export type NeuralDenoiseModel =
+  | NeuralDenoiseQualityModel
+  | NeuralDenoisePerformanceModel;
+export declare const neuralDenoiseModels: {
+  quality: NeuralDenoiseQualityModel;
+  performance: NeuralDenoiseQualityModel;
+};

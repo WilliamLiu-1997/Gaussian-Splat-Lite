@@ -6,7 +6,7 @@ import type {
   Scene,
 } from "three";
 import { Node, type NodeBuilder, type NodeFrame } from "three/webgpu";
-import type { NeuralDenoiseProfile } from "./neuralDenoiseWeights.js";
+export type NeuralDenoiseMode = "performance" | "quality";
 /**
  * Temporal neural denoiser for stochastic Splat rendering on WebGPURenderer,
  * including its WebGL2 fallback,
@@ -17,13 +17,13 @@ import type { NeuralDenoiseProfile } from "./neuralDenoiseWeights.js";
 export declare class NeuralDenoiseNode extends Node<"vec4"> {
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
-  readonly profile: NeuralDenoiseProfile;
+  readonly mode: NeuralDenoiseMode;
   readonly msaa: boolean;
   private readonly coverage;
   static get type(): string;
   /**
    * Blends the result with the previous image where the network trusts it.
-   * Steadier; turn it off for the two history paths alone.
+   * Quality mode only; turn it off for the two history paths alone.
    */
   stabilize: boolean;
   private readonly source;
@@ -47,15 +47,14 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   private pipelineRendering;
   private capturePending;
   /**
-   * @param profile Fixed filtering (`"profile1"`) or learned filtering
-   *   (`"profile2"`, default). Fixed for the node's lifetime.
-   * @param msaa Enable 4× MSAA (default true) with either profile.
+   * @param mode Single-pass performance or multiscale quality (default).
+   * @param msaa Enable 4× MSAA (default true).
    *   Fixed for the node's lifetime.
    */
   constructor(
     scene: Scene,
     camera: PerspectiveCamera | OrthographicCamera,
-    profile?: NeuralDenoiseProfile,
+    mode?: NeuralDenoiseMode,
     msaa?: boolean,
   );
   /** Scene depth of the current frame, kept from the first read on. */

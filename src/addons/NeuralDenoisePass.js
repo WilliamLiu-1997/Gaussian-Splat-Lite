@@ -10,10 +10,10 @@ import { NeuralDenoiseNode } from "./NeuralDenoiseNode.js";
 
 /** Neural denoising for WebGLRenderer. Use with EffectComposer and OutputPass. */
 export class NeuralDenoisePass extends Pass {
-  constructor(scene, camera, profile = "profile2", msaa = true) {
+  constructor(scene, camera, mode = "quality", msaa = true) {
     super();
     // Capture, camera reprojection and reset are the same as on node renderers.
-    this.denoise = new NeuralDenoiseNode(scene, camera, profile, msaa);
+    this.denoise = new NeuralDenoiseNode(scene, camera, mode, msaa);
     // Like TAAPass, convert before blending/resolve. The network averages
     // display-referred samples, so MSAA must use that space too.
     Object.assign(this.denoise.source, { isXRRenderTarget: true });
@@ -65,8 +65,8 @@ void main() {
   set camera(value) {
     this.denoise.camera = value;
   }
-  get profile() {
-    return this.denoise.profile;
+  get mode() {
+    return this.denoise.mode;
   }
   get msaa() {
     return this.denoise.msaa;

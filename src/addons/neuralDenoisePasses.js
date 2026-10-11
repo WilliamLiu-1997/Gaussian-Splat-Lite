@@ -10,7 +10,7 @@ const FILTERABLE = "float";
 const UNFILTERABLE = "unfilterable-float";
 
 // Shared pass order and state layout. Each backend supplies textures, bindings
-// and draws; the two profiles use the same shaders and history on every backend.
+// and draws; all backends use the same model and history.
 export class NeuralDenoisePasses {
   uniforms = new Float32Array(NEURAL_DENOISE_UNIFORM_FLOATS);
   /** Half a unit in the last place where the GPU truncates half-float writes, else 0. */
@@ -19,16 +19,31 @@ export class NeuralDenoisePasses {
   height = 0;
   external = null;
   frames = [];
-  lowLevel;
   filter;
+  performance;
+  compact;
   passes;
   /** The network's hidden channels, in groups of four: render targets per layer. */
   groups;
   multisampled;
   initialize(model, multisampled) {
+    this.compact = model.compact === true;
     this.multisampled = multisampled;
     const code = neuralDenoiseShaders(model, multisampled);
-    this.lowLevel = code.lowLevel;
+    this.performance = Boolean(code.performance);
+    if (this.performance) {
+      this.passes = {
+        resolve: this.pass(
+          "performance",
+          code.performance,
+          ["depth", "float", "float", "float"],
+          [HALF, HALF],
+        ),
+        encode: this.pass("encode", code.encode, ["float"], [HALF]),
+        expose: this.pass("expose", code.expose, ["depth"], [], true, true),
+      };
+      return code.rounding;
+    }
     this.groups = code.groups;
     const F = FILTERABLE;
     const U = UNFILTERABLE;
@@ -54,7 +69,7 @@ export class NeuralDenoisePasses {
       features: this.pass(
         "features",
         code.features,
-        [U, U, F, F, F, ...(code.filter ? [F] : [F, F]), F, F, F, F, F],
+        [U, U, F, F, F, F, F, F, F, F, F],
         // The first layer, and the evidence with this frame in it.
         [...written, HALF],
       ),
@@ -71,7 +86,7 @@ export class NeuralDenoisePasses {
         code.resolve,
         [
           U,
-          ...(code.filter ? [F] : [F, F]),
+          F,
           F,
           F,
           F,
@@ -84,13 +99,13 @@ export class NeuralDenoisePasses {
           F,
           U,
           // The existing 4x4 frame mean for rejected learned-filter history.
-          ...(code.filter ? [F] : []),
+          F,
         ],
         // Both history paths, their statistics, and the image shown.
         [HALF, HALF, HALF, HALF],
       ),
     };
-    this.filter = code.filter ? this.filterPasses(code.filter) : null;
+    this.filter = this.compact ? null : this.filterPasses(code.filter);
     return code.rounding;
   }
   filterPasses(filter) {
@@ -160,8 +175,47 @@ export class NeuralDenoisePasses {
     ]);
     return steps;
   }
+  performanceLayout(width, height, external) {
+    const { passes } = this;
+    const source = this.view(external.color);
+    const depth = this.view(external.depth, true);
+    const exposed = external.exposed && this.view(external.exposed);
+    const color = external.encode ? this.texture(HALF, width, height) : source;
+    const aux = [0, 1].map(() => this.texture(HALF, width, height));
+    const output = this.outputViews(external.history, width, height);
+    return (previous) => {
+      const next = 1 - previous;
+      const steps = [];
+      if (exposed)
+        steps.push([
+          passes.expose,
+          this.bind(passes.expose, [depth]),
+          [],
+          exposed,
+        ]);
+      if (external.encode)
+        steps.push([
+          passes.encode,
+          this.bind(passes.encode, [source]),
+          [color],
+        ]);
+      steps.push([
+        passes.resolve,
+        this.bind(passes.resolve, [
+          depth,
+          color,
+          output[previous],
+          aux[previous],
+        ]),
+        [output[next], aux[next]],
+      ]);
+      return steps;
+    };
+  }
   layout(width, height, external) {
-    const { passes, groups, lowLevel, filter } = this;
+    if (this.performance)
+      return this.performanceLayout(width, height, external);
+    const { passes, groups, filter } = this;
     const full = (format = HALF) => this.texture(format, width, height);
     const pair = (format = HALF) => [full(format), full(format)];
     const scaled = (divisor, format = HALF) =>
@@ -194,20 +248,18 @@ export class NeuralDenoisePasses {
     const color = external.encode ? full() : sceneColor;
     const levels = [color];
     const filterLevels = [];
-    const levelCount = filter
-      ? filter.encode.length
-      : Math.max(lowLevel + 1, 2);
+    const levelCount = this.compact ? 2 : filter.encode.length;
     for (let i = 1; i <= levelCount; i++) {
       const level = () => scaled(2 ** i);
       levels.push(level());
-      if (filter)
+      if (!this.compact)
         filterLevels.push({
           encoded: Array.from({ length: filter.groups }, level),
           hidden: Array.from({ length: filter.groups }, level),
           result: level(),
         });
     }
-    const filtered = filter && full();
+    const filtered = this.compact ? color : full();
     // The network's layers write one of two sets of targets and read the other.
     const layers = [0, 1].map(() =>
       Array.from({ length: groups }, () => block()),
@@ -251,7 +303,7 @@ export class NeuralDenoisePasses {
           [levels[i]],
         ]);
       }
-      if (filter && filtered)
+      if (!this.compact)
         steps.push(...this.filterSteps(filter, levels, filterLevels, filtered));
       steps.push(
         [
@@ -262,9 +314,7 @@ export class NeuralDenoisePasses {
             color,
             levels[1],
             levels[2],
-            ...(filtered
-              ? [filtered]
-              : [levels[lowLevel], levels[lowLevel + 1]]),
+            filtered,
             accumulated[previous],
             denoised[previous],
             aux[previous],
@@ -283,9 +333,7 @@ export class NeuralDenoisePasses {
           passes.resolve,
           this.bind(passes.resolve, [
             depth[next],
-            ...(filtered
-              ? [filtered]
-              : [levels[lowLevel], levels[lowLevel + 1]]),
+            filtered,
             color,
             accumulated[previous],
             denoised[previous],
@@ -293,11 +341,10 @@ export class NeuralDenoisePasses {
             trust[next],
             strength,
             output[previous],
-            // The learned filter's half-resolution result, or the frame's
-            // mean over 4x4 pixels.
-            filter ? filterLevels[0].result : levels[2],
+            // Half-resolution fallback: the current mean or learned filter.
+            this.compact ? levels[1] : filterLevels[0].result,
             depth[previous],
-            ...(filter ? [levels[2]] : []),
+            levels[2],
           ]),
           [accumulated[next], denoised[next], aux[next], output[next]],
         ],

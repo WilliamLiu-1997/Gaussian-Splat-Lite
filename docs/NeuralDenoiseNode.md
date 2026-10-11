@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-The neural denoiser smooths [stochastic rendering](StochasticRendering.md) and helps reduce trails behind moving objects. Use `NeuralDenoiseNode` with `WebGPURenderer`, including its WebGL2 fallback, or `NeuralDenoisePass` with `WebGLRenderer`. The trained models are included; no extra downloads are needed.
+The neural denoiser smooths [stochastic rendering](StochasticRendering.md). Use `NeuralDenoiseNode` with `WebGPURenderer`, including its WebGL2 fallback, or `NeuralDenoisePass` with `WebGLRenderer`. The trained models are included; no extra downloads are needed.
 
 ## Choose between TAA and neural denoising
 
@@ -10,27 +10,38 @@ The neural denoiser smooths [stochastic rendering](StochasticRendering.md) and h
 | --- | --- | --- |
 | Moving objects | May leave a faint trail | Helps reduce trails; moving detail can still look soft or grainy |
 | Camera movement | Some grain returns | Smooths noise during movement; fast turns can look softer |
-| Cost | Lower | More GPU time and memory |
+| Cost | Lower | Depends on mode; Quality uses more GPU time and memory |
 
 With neural denoising, newly exposed backgrounds need time to settle. Results vary by scene and motion.
 
-## Choose a profile
+## Choose a mode
 
-The third constructor argument selects a profile. Start with the default, then compare detail, noise and flicker in your scenes.
+The third constructor argument, `mode`, selects the balance of image quality and cost. Start with the default, then compare detail, noise and flicker in your scenes.
 
-| Profile | What you get |
+| Mode | What you get |
 | --- | --- |
-| `"profile1"` | Lower GPU and memory use |
-| `"profile2"` (default) | A different balance of detail, noise and flicker, with higher GPU and memory use |
+| `"quality"` (default) | Prioritizes noise suppression and detail retention, with higher GPU and memory use |
+| `"performance"` | Prioritizes lower GPU and memory use |
 
-The fourth constructor argument, `msaa`, enables or disables 4× MSAA with either profile:
+```js
+const denoise = new NeuralDenoiseNode(scene, camera, "performance");
+// NeuralDenoisePass accepts the same arguments.
+```
+
+To change modes, dispose the node or pass and create another. The viewer's **Neural mode** selector offers **Performance** and **Quality**.
+
+For existing code, replace `"profile2"` with `"quality"`, `profile` with `mode`, and `NeuralDenoiseProfile` with `NeuralDenoiseMode`. `"profile1"` is no longer supported.
+
+## MSAA
+
+The fourth constructor argument, `msaa`, enables or disables 4× MSAA in either mode:
 
 | MSAA | What you get |
 | --- | --- |
-| `false` | One coverage sample, with lower GPU and memory use |
-| `true` (default) | Four coverage samples, with less noise during motion and higher GPU and memory use |
+| `false` | Lower GPU and memory use |
+| `true` (default) | Less noise during motion, with higher GPU and memory use |
 
-For example, `new NeuralDenoiseNode(scene, camera, "profile1", true)` uses Profile 1 with 4× MSAA; pass `false` to disable MSAA. `NeuralDenoisePass` accepts the same arguments. To change either setting, dispose the node or pass and create another. The viewer has a profile selector and an **MSAA** switch, on by default.
+For example, `new NeuralDenoiseNode(scene, camera, "performance", false)` disables MSAA. `NeuralDenoisePass` accepts the same arguments. To change MSAA, dispose the node or pass and create another. The viewer has an **MSAA** switch, on by default.
 
 ## Before you start
 
@@ -105,7 +116,7 @@ renderer.setAnimationLoop(() => {
 
 `RenderPipeline`, or the composer's `OutputPass`, applies tone mapping and the output color space at the end.
 
-With `NeuralDenoiseNode` in a linear working color space, switching to four samples can make partly transparent Splats look brighter. This does not occur with `NeuralDenoisePass` or the viewer's sRGB working color space. Four-sample results can also differ at edges between WebGPU and WebGL2.
+With `NeuralDenoiseNode` in a linear working color space, enabling MSAA can make partly transparent Splats look brighter. This does not occur with `NeuralDenoisePass` or the viewer's sRGB working color space. MSAA results can also differ at edges between WebGPU and WebGL2.
 
 ## Properties
 
@@ -113,11 +124,11 @@ With `NeuralDenoiseNode` in a linear working color space, switching to four samp
 | --- | --- | --- |
 | `scene` | Constructor scene | Scene to render; call `reset()` when replacing it |
 | `camera` | Constructor camera | Camera to render with; call `reset()` when replacing it |
-| `profile` | `"profile2"` | Read-only. The constructor profile: `"profile1"` or `"profile2"` |
-| `msaa` | `true` | Read-only. Whether 4× MSAA is enabled, with either profile |
+| `mode` | `"quality"` | Read-only. `"performance"` or `"quality"` |
+| `msaa` | `true` | Read-only. Whether 4× MSAA is enabled |
 | `depthTexture` | Read-only | Scene depth of the current frame |
 | `projectionMatrix` | Read-only | Projection that matches `depthTexture` |
-| `stabilize` | `true` | Reduces flicker; disabling it can make the image less steady |
+| `stabilize` | `true` | Reduces flicker in both modes; disabling it can make the image less steady |
 
 Read `depthTexture` when setting up a depth-based effect; it updates each frame after that. Use the matching `projectionMatrix` for depth conversion, rather than `camera.projectionMatrix`. The depth is not smoothed.
 

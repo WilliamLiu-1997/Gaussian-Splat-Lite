@@ -21,13 +21,13 @@ export function createViewerTAA(
   renderer,
   scene,
   camera,
-  { neural = false, profile = "profile2", msaa = true } = {},
+  { neural = false, mode = "quality", msaa = true } = {},
 ) {
   const nodeRenderer = renderer.isWebGPURenderer;
   const taa = neural
     ? nodeRenderer
-      ? new NeuralDenoiseNode(scene, camera, profile, msaa)
-      : new NeuralDenoisePass(scene, camera, profile, msaa)
+      ? new NeuralDenoiseNode(scene, camera, mode, msaa)
+      : new NeuralDenoisePass(scene, camera, mode, msaa)
     : nodeRenderer
       ? new TAANode(scene, camera, msaa)
       : new TAAPass(scene, camera, msaa);

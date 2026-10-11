@@ -95,10 +95,14 @@ const widened = ({ w, b }, at, count) => {
  */
 const depthwiseTaps = (name, groups, bounded) => /* wgsl */ `
 ${groups.map((g) => `  var a${g}: vec4f = ${name}_b${g};`).join("\n")}
-  for (var j: i32 = 0; j < 9; j++) {
-    let q: vec2i = ${bounded}(p + TAPS[j]);
-${groups.map((g) => `    a${g} += ${name}_${g}[j] * textureLoad(input${g}, q, 0);`).join("\n")}
-  }
+${range(9)
+  .map(
+    (tap) => `  {
+    let q: vec2i = ${bounded}(p + TAPS[${tap}]);
+${groups.map((g) => `    a${g} += ${name}_${g}[${tap}] * textureLoad(input${g}, q, 0);`).join("\n")}
+  }`,
+  )
+  .join("\n")}
 ${groups.map((g) => `  a${g} = silu(a${g});`).join("\n")}`;
 const VERTEX = /* wgsl */ `
 @vertex fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -160,7 +164,9 @@ fn frameSample(image: texture_2d<f32>, p: vec2f) -> vec4f {
 // rounds) makes every write round to nearest.
 fn roundedHalf(v: vec4f) -> vec4f {
   let magnitude: vec4f = max(abs(v), vec4f(6.1035156e-5));
-  return v + sign(v) * P.halfBias * exp2(floor(log2(magnitude)) - 10.0);
+  // The exponent bits give 2^floor(log2(magnitude)) without transcendental math.
+  let exponent: vec4f = bitcast<vec4f>(bitcast<vec4u>(magnitude) & vec4u(0x7f800000u));
+  return v + sign(v) * P.halfBias * (exponent / 1024.0);
 }
 
 struct History {
@@ -323,20 +329,25 @@ fn viewDepth(d: f32) -> f32 {
 //
 // The loop holds no branch: with one on whether a pixel was drawn, this pass
 // took 1 ms at 2560x1600 on an Apple M5 Pro where it takes 0.1 ms without.
-const cells = (multisampled) => /* wgsl */ `${PARAMS}${sceneDepth(multisampled)}
-@fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let corner: vec2i = vec2i(position.xy) * 8;
-  var sums: vec3f = vec3f(0.0);
+const cellSums = (disparity) => /* wgsl */ `
   for (var y: i32 = 0; y < 8; y++) {
     for (var x: i32 = 0; x < 8; x++) {
       let d: f32 = sceneDepth(drawn(corner + vec2i(x, y)));
       // One over viewDepth(d).
-      let disparity: f32 = select(
-        (d * P.depth.y - P.depth.x) / (d * P.depth.w - P.depth.z),
-        exp2(-d * P.logFar) / P.logNear,
-        P.logDepth > 0.5);
+      let disparity: f32 = ${disparity};
       sums += select(vec3f(0.0), vec3f(disparity, 1.0, disparity * disparity), d != P.clearDepth);
     }
+  }
+`;
+const cells = (multisampled) => /* wgsl */ `${PARAMS}${sceneDepth(multisampled)}
+@fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  let corner: vec2i = vec2i(position.xy) * 8;
+  var sums: vec3f = vec3f(0.0);
+  // One uniform branch, outside the pixel loop, skips unused depth math.
+  if (P.logDepth > 0.5) {
+${cellSums("exp2(-d * P.logFar) / P.logNear")}
+  } else {
+${cellSums("(d * P.depth.y - P.depth.x) / (d * P.depth.w - P.depth.z)")}
   }
   return vec4f(sums, 1.0);
 }`;
@@ -458,36 +469,9 @@ fn coarse(image: texture_2d<f32>, position: vec2f, pixels: f32) -> vec4f {
 const ROUNDING = /* wgsl */ `${VERTEX}
 @group(0) @binding(0) var<uniform> value: vec4f;
 @fragment fn fragment() -> @location(0) vec4f { return value; }`;
-/** The two neighbouring levels of the frame's image pyramid a kernel's radius falls between, and the upper one's share. */
-const kernelLevel = (blur) => {
-  const level = Math.min(Math.max(Math.log2(blur), 0), 3);
-  const low = Math.min(Math.floor(level), 2);
-  return { low, share: level - low };
-};
 /**
- * The fixed spatial kernel: four trilinear probes on a square, in those two
- * levels. A pass that uses it declares levelLow and levelHigh.
- */
-const KERNEL = (blur) => {
-  const { low, share } = kernelLevel(blur);
-  return /* wgsl */ `${COARSE}
-fn probe(position: vec2f) -> vec4f {
-  return mix(
-    ${low === 0 ? "frameSample(levelLow, position)" : `coarse(levelLow, position, ${float(2 ** low)})`},
-    coarse(levelHigh, position, ${float(2 ** (low + 1))}),
-    ${float(share)});
-}
-// The frame under the kernel, at a position in pixels.
-fn filteredFrame(position: vec2f) -> vec4f {
-  let offset: f32 = ${float(0.5 * blur)};
-  return 0.25 * (
-    probe(position + vec2f(-offset, -offset)) + probe(position + vec2f(offset, -offset)) +
-    probe(position + vec2f(-offset, offset)) + probe(position + vec2f(offset, offset)));
-}`;
-};
-/**
- * The passes of a learned spatial filter, which takes the fixed kernel's
- * place: a 3x3 kernel predicted for every pixel, coarse to fine over the
+ * The passes of a learned spatial filter: a 3x3 kernel predicted for every
+ * pixel, coarse to fine over the
  * frame's image pyramid and then at full resolution. Each level filters itself
  * and decides per pixel how much of that to keep over the level below; the
  * image is only ever averaged. It reads the frame alone, no history.
@@ -655,33 +639,134 @@ ${
     groups: groups.length,
   };
 }
+const COMPACT_FILTER = /* wgsl */ `
+// Exact clamped 3x3 mean, using bilinear pairs on each axis.
+fn compactFiltered(p: vec2f) -> vec4f {
+  return (4.0 * frameSample(colorTexture, p - vec2f(0.5)) +
+    2.0 * frameSample(colorTexture, p + vec2f(1.0, -0.5)) +
+    2.0 * frameSample(colorTexture, p + vec2f(-0.5, 1.0)) +
+    frameSample(colorTexture, p + vec2f(1.0))) / 9.0;
+}
+`;
+
+// One full-resolution pass; the learned decisions share the TAA-size footprint.
+function performanceShader(network, multisampled) {
+  return /* wgsl */ `${PARAMS}${TAPS}${sceneDepth(multisampled)}
+${pointwise("FAST_ENCODE", network.hidden)}
+${pointwise("FAST_HEAD", network.out)}
+@group(0) @binding(3) var current: texture_2d<f32>;
+@group(0) @binding(4) var history: texture_2d<f32>;
+@group(0) @binding(5) var statistics: texture_2d<f32>;
+struct Output {
+  @location(0) color: vec4f,
+  @location(1) aux: vec4f,
+};
+@fragment fn fragment(@builtin(position) position: vec4f) -> Output {
+  let p: vec2i = vec2i(position.xy);
+  let color: vec4f = frameLoad(current, p);
+  var mean: vec4f = vec4f(0.0);
+  var moment: vec4f = vec4f(0.0);
+  let direction: f32 = select(1.0, -1.0, P.clearDepth == 0.0 && P.logDepth < 0.5);
+  var nearest: vec3f = vec3f(3.0e38);
+  for (var j: i32 = 0; j < 9; j++) {
+    let q: vec2i = bounded(p + TAPS[j]);
+    let c: vec4f = frameLoad(current, q);
+    mean += c;
+    moment += c * c;
+    let raw: f32 = sceneDepth(drawn(q));
+    let depth: f32 = select(raw * direction, 3.0e38, raw == P.clearDepth);
+    let a: f32 = max(nearest.x, depth);
+    let b: f32 = max(nearest.y, a);
+    nearest = vec3f(min(nearest.x, depth), min(nearest.y, a), min(nearest.z, b));
+  }
+  mean /= 9.0;
+  let variance: vec4f = max(moment / 9.0 - mean * mean, vec4f(0.0));
+  var z: f32 = P.far;
+  if (nearest.z < 3.0e38) { z = min(viewDepth(nearest.z * direction), P.far); }
+  let logz: f32 = log2(max(z, 1e-4));
+  var h: History = reproject(position.xy, z);
+  // A reset has no previous camera; match the training chain's cold start.
+  if (P.historyValid < 0.5) {
+    h.uv = position.xy * P.invSize;
+    h.motion = 0.0;
+    h.previousZ = z;
+    h.valid = 0.0;
+  }
+  var valid: f32 = h.valid * P.historyValid;
+  var previous: vec4f = vec4f(0.0);
+  var aux: vec4f = vec4f(0.0);
+  if (P.historyValid > 0.5) {
+    previous = textureSampleLevel(history, linearSampler, h.uv, 0.0);
+    aux = textureSampleLevel(statistics, linearSampler, h.uv, 0.0);
+  }
+  let difference: f32 = min(abs(aux.x - log2(max(h.previousZ, 1e-4))), 4.0);
+  if (difference > 0.3) { valid *= 1.0 - h.motion / (h.motion + 1.0); }
+  let count: f32 = aux.y * valid;
+  let ym: f32 = luma(mean.rgb);
+  let yc: f32 = luma(color.rgb);
+  let yh: f32 = luma(previous.rgb);
+  let deviation: f32 = sqrt(max(aux.z - yh * yh, 0.0) + 1e-8);
+  let scale: f32 = deviation + 0.02;
+  let innovation: f32 = yc - yh;
+  let evidence: f32 = 0.8 * aux.w * valid + 0.2 * innovation;
+  let phase: vec2f = fract((h.uv - position.xy * P.invSize) * P.size);
+  let subpixel: vec2f = max(phase, 1.0 - phase);
+  let f0: vec4f = vec4f(clamp(vec3f(innovation, abs(innovation), yc - ym) / scale,
+    vec3f(-4.0), vec3f(4.0)), min(deviation, 1.0));
+  let f1: vec4f = clamp(vec4f(chroma(color.rgb) - chroma(previous.rgb),
+    chroma(color.rgb) - chroma(mean.rgb)) / scale, vec4f(-4.0), vec4f(4.0));
+  let f2: vec4f = vec4f(count / 128.0, h.motion / (h.motion + 20.0), difference,
+    clamp(evidence / scale, -4.0, 4.0));
+  let f3: vec4f = vec4f(color.a, mean.a, previous.a, 1.0 - subpixel.x * subpixel.y);
+  let a0: vec4f = max(${mixed("FAST_ENCODE", 0, ["f0", "f1", "f2", "f3"])}, vec4f(0.0));
+  let a1: vec4f = max(${mixed("FAST_ENCODE", 1, ["f0", "f1", "f2", "f3"])}, vec4f(0.0));
+  let decisions: vec4f = vec4f(1.0) / (vec4f(1.0) + exp(-(${mixed("FAST_HEAD", 0, ["a0", "a1"])})));
+  let floorWeight: f32 = 0.008 + 0.35 * (1.0 - subpixel.x * subpixel.y) + 0.25 * h.motion / (h.motion + 20.0);
+  let weight: f32 = max(1.0 / (count + 1.0), max(floorWeight, decisions.x));
+  let keep: f32 = 1.0 / weight - 1.0;
+  let spatial: f32 = 0.8 * decisions.y / (1.0 + keep / 4.0);
+  let currentSample: vec4f = mix(color, mean, spatial);
+  let gamma: vec4f = vec4f(vec3f(0.5 + 3.5 * decisions.z), 0.5 + 3.5 * decisions.w);
+  let extent: vec4f = sqrt(variance + vec4f(1e-8)) * gamma + 0.001;
+  let delta: vec4f = previous - mean;
+  let unit: vec4f = abs(delta) / extent;
+  let ratio: f32 = max(1.0, max(max(unit.x, unit.y), max(unit.z, unit.w)));
+  let clipped: vec4f = mean + delta / ratio;
+  let kept: vec4f = clipped;
+  var out: Output;
+  out.color = roundedHalf(max(mix(kept, currentSample, weight), vec4f(0.0)));
+  out.aux = roundedHalf(vec4f(logz, min(keep + 1.0, 128.0), mix(aux.z, yc * yc, weight), evidence));
+  return out;
+}`;
+}
+
 /**
  * The WGSL of every pass, with the trained weights written in as constants.
  * Each fragment shader's bindings are: the uniform block, a linear sampler,
  * then its textures in the order they are declared.
  *
- * The view depth is kept per 2x2 block. The network runs on 4x4 blocks, and
- * takes a block's means from a few bilinear taps straight into the previous
- * frame's state, so nothing reprojected has to be stored for it. One pass
- * per pixel then reprojects, filters, updates both paths, mixes them and
- * stabilizes the result.
+ * Quality mode keeps view depth per 2x2 block. The network runs on 4x4 blocks,
+ * followed by per-pixel reprojection, filtering, blending and stabilization.
+ * Performance mode uses one full-resolution pass with one color history and
+ * one statistics history.
  */
 export function neuralDenoiseShaders(weights, multisampled = false) {
+  if (weights.performance)
+    return {
+      performance: performanceShader(weights.performance, multisampled),
+      expose: expose(multisampled),
+      encode: ENCODE,
+      rounding: ROUNDING,
+    };
+
   const net = weights.network;
-  const learned = weights.filter && learnedFilter(weights.filter);
+  const learned = learnedFilter(weights.filter);
   const groups = range(net.encode.b.length / 4);
   const inputTextures = groups
     .map((g) => `@group(0) @binding(${2 + g}) var input${g}: texture_2d<f32>;`)
     .join("\n");
   const targets = (name) =>
     groups.map((g) => `  @location(${g}) ${name}${g}: vec4f,`).join("\n");
-  const { low: lowLevel, share } = kernelLevel(weights.blur);
-  // A block's mean of the filtered frame is read from the kernel's two
-  // levels, whose pixels must not be larger than a block for that.
-  if (!learned && lowLevel > 1)
-    throw new Error(
-      "NeuralDenoiseNode: a model's kernel must be under 4 pixels.",
-    );
   const BOUNDED = /* wgsl */ `
 // The network runs on 4x4 blocks, in an image of a quarter the size.
 fn boundedBlock(p: vec2i) -> vec2i {
@@ -697,58 +782,24 @@ fn blockDepth(pixel: vec2i) -> f32 {
 fn blockSparse(pixel: vec2i) -> f32 {
   return textureLoad(depthBlocks, min(pixel / 2, vec2i(floor(P.size * 0.5)) - 1), 0).g;
 }`;
-  // The mean of the filtered frame over a 4x4 block, which the network takes
-  // as an input. The kernel is linear, so that mean is a fixed set of weights
-  // on the pixels of each of its two levels around the block, the same along
-  // both axes, and neighbouring pixels pair up into one bilinear tap. This
-  // writes the function that sums one level: nine taps of the frame, four of
-  // its half-size level, where filtering the sixteen pixels would take 128.
-  const blockLevel = (name, image, levelIndex) => {
-    const pitch = 2 ** levelIndex;
-    // Along one axis, what each of the level's pixels weighs, counted from
-    // the block's first: four pixels of the frame, two probes each.
-    const weight = new Map();
-    for (const x of range(4))
-      for (const side of [-0.5, 0.5]) {
-        const at = (x + 0.5 + side * weights.blur) / pitch - 0.5;
-        const pixel = Math.floor(at);
-        weight.set(pixel, (weight.get(pixel) ?? 0) + (1 - (at - pixel)) / 8);
-        weight.set(pixel + 1, (weight.get(pixel + 1) ?? 0) + (at - pixel) / 8);
-      }
-    // [position in the level's pixels, weight] of each tap.
-    const taps = [];
-    for (
-      let pixel = Math.min(...weight.keys());
-      pixel <= Math.max(...weight.keys());
-      pixel += 2
-    ) {
-      const a = weight.get(pixel) ?? 0;
-      const b = weight.get(pixel + 1) ?? 0;
-      taps.push(`vec2f(${float(pixel + 0.5 + b / (a + b))}, ${float(a + b)})`);
-    }
-    return /* wgsl */ `
-const ${name}_TAPS = array<vec2f, ${taps.length}>(${taps.join(", ")});
-fn ${name}(block: vec2i) -> vec4f {
-  let first: vec2f = vec2f(block * ${4 / pitch});
-  var sum: vec4f = vec4f(0.0);
-  for (var j: i32 = 0; j < ${taps.length}; j++) {
-    for (var i: i32 = 0; i < ${taps.length}; i++) {
-      let at: vec2f = first + vec2f(${name}_TAPS[i].x, ${name}_TAPS[j].x);
-      sum += ${name}_TAPS[i].y * ${name}_TAPS[j].y *
-        ${levelIndex === 0 ? `frameSample(${image}, at)` : `textureSampleLevel(${image}, linearSampler, at / vec2f(textureDimensions(${image})), 0.0)`};
-    }
-  }
-  return sum;
-}`;
-  };
-  const BLOCK_FILTERED = learned
+  const BLOCK_FILTERED = weights.compact
     ? /* wgsl */ `
 fn blockFiltered(block: vec2i) -> vec4f {
-  return blockMean(filteredTexture, vec2f(block * 4 + 2) * P.invSize);
-}`
-    : /* wgsl */ `${blockLevel("blockLow", "levelLow", lowLevel)}${blockLevel("blockHigh", "levelHigh", lowLevel + 1)}
+  let c: vec2f = vec2f(block * 4 + 2);
+  var sum: vec4f = vec4f(0.0);
+  for (var y: i32 = -1; y <= 1; y++) {
+    for (var x: i32 = -1; x <= 1; x++) {
+      let wx: f32 = select(0.25, 0.5, x == 0);
+      let wy: f32 = select(0.25, 0.5, y == 0);
+      sum += wx * wy * frameSample(colorTexture, c + vec2f(f32(x), f32(y)) * (11.0 / 6.0));
+    }
+  }
+  return mix(textureLoad(levelTwo, block, 0), sum, 0.5);
+}
+`
+    : /* wgsl */ `
 fn blockFiltered(block: vec2i) -> vec4f {
-  return mix(blockLow(block), blockHigh(block), ${float(share)});
+  return blockMean(filteredTexture, vec2f(block * 4 + 2) * P.invSize);
 }`;
   // The network's inputs and its first layer, per 4x4 block.
   const features = /* wgsl */ `${PARAMS}
@@ -758,17 +809,12 @@ ${pointwise("ENCODE", net.encode)}
 @group(0) @binding(4) var colorTexture: texture_2d<f32>;
 @group(0) @binding(5) var levelOne: texture_2d<f32>;
 @group(0) @binding(6) var levelTwo: texture_2d<f32>;
-${
-  learned
-    ? "@group(0) @binding(7) var filteredTexture: texture_2d<f32>;"
-    : `@group(0) @binding(7) var levelLow: texture_2d<f32>;
-@group(0) @binding(8) var levelHigh: texture_2d<f32>;`
-}
-@group(0) @binding(${learned ? 8 : 9}) var previousAccumulated: texture_2d<f32>;
-@group(0) @binding(${learned ? 9 : 10}) var previousDenoised: texture_2d<f32>;
-@group(0) @binding(${learned ? 10 : 11}) var previousAux: texture_2d<f32>;
-@group(0) @binding(${learned ? 11 : 12}) var previousTrust: texture_2d<f32>;
-@group(0) @binding(${learned ? 12 : 13}) var previousEvidence: texture_2d<f32>;
+@group(0) @binding(7) var filteredTexture: texture_2d<f32>;
+@group(0) @binding(8) var previousAccumulated: texture_2d<f32>;
+@group(0) @binding(9) var previousDenoised: texture_2d<f32>;
+@group(0) @binding(10) var previousAux: texture_2d<f32>;
+@group(0) @binding(11) var previousTrust: texture_2d<f32>;
+@group(0) @binding(12) var previousEvidence: texture_2d<f32>;
 ${BLOCKS}
 ${COARSE}
 ${BLOCK_FILTERED}
@@ -969,31 +1015,22 @@ ${groups
   // statistics, and the gated mix of the two.
   const resolve = /* wgsl */ `${PARAMS}${pixelCorrection(weights.correction)}
 @group(0) @binding(2) var depthBlocks: texture_2d<f32>;
-${
-  learned
-    ? "@group(0) @binding(3) var filteredTexture: texture_2d<f32>;"
-    : `@group(0) @binding(3) var levelLow: texture_2d<f32>;
-@group(0) @binding(4) var levelHigh: texture_2d<f32>;`
-}
-@group(0) @binding(${learned ? 4 : 5}) var colorTexture: texture_2d<f32>;
-@group(0) @binding(${learned ? 5 : 6}) var previousAccumulated: texture_2d<f32>;
-@group(0) @binding(${learned ? 6 : 7}) var previousDenoised: texture_2d<f32>;
-@group(0) @binding(${learned ? 7 : 8}) var previousAux: texture_2d<f32>;
-@group(0) @binding(${learned ? 8 : 9}) var trustBlocks: texture_2d<f32>;
-@group(0) @binding(${learned ? 9 : 10}) var strengthBlocks: texture_2d<f32>;
-@group(0) @binding(${learned ? 10 : 11}) var previousOutput: texture_2d<f32>;
+@group(0) @binding(3) var filteredTexture: texture_2d<f32>;
+@group(0) @binding(4) var colorTexture: texture_2d<f32>;
+@group(0) @binding(5) var previousAccumulated: texture_2d<f32>;
+@group(0) @binding(6) var previousDenoised: texture_2d<f32>;
+@group(0) @binding(7) var previousAux: texture_2d<f32>;
+@group(0) @binding(8) var trustBlocks: texture_2d<f32>;
+@group(0) @binding(9) var strengthBlocks: texture_2d<f32>;
+@group(0) @binding(10) var previousOutput: texture_2d<f32>;
 // What a pixel without history falls back on: the learned filter's
-// half-resolution result, or without one the frame's mean over 4x4 pixels.
-@group(0) @binding(${learned ? 11 : 12}) var wideTexture: texture_2d<f32>;
-@group(0) @binding(${learned ? 12 : 13}) var depthPrevious: texture_2d<f32>;
-${BLOCKS}
-${
-  learned
-    ? `// The frame's existing 4x4 mean, used only for rejected surfaces.
-@group(0) @binding(13) var rejectedTexture: texture_2d<f32>;`
-    : ""
-}
-${learned ? COARSE : KERNEL(weights.blur)}
+// half-resolution result.
+@group(0) @binding(11) var wideTexture: texture_2d<f32>;
+@group(0) @binding(12) var depthPrevious: texture_2d<f32>;
+${weights.compact ? COMPACT_FILTER : ""}${BLOCKS}
+// The frame's existing 4x4 mean, used only for rejected surfaces.
+@group(0) @binding(13) var rejectedTexture: texture_2d<f32>;
+${COARSE}
 // The previous frame's second moment of luma, history lengths and slow luma
 // at a position between its pixels. Beside a place whose history was just
 // dropped, the colours read there are a mix of a long mean and one raw sample,
@@ -1023,7 +1060,7 @@ struct Output {
 };
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
   let p: vec2i = vec2i(position.xy);
-  let d: vec4f = ${learned ? "textureLoad(filteredTexture, p, 0)" : "filteredFrame(position.xy)"};
+  let d: vec4f = ${weights.compact ? "mix(frameLoad(colorTexture, p), compactFiltered(position.xy), 0.5)" : "textureLoad(filteredTexture, p, 0)"};
   let color: vec4f = frameLoad(colorTexture, p);
   var sr: vec4f = vec4f(0.0);
   var dr: vec4f = vec4f(0.0);
@@ -1069,11 +1106,18 @@ struct Output {
       a = textureLoad(previousAux, p, 0);
       previous.value = textureLoad(previousOutput, p, 0);
     } else {
-      let interpolation: LanczosKernel = lanczosKernel(h.uv);
+${
+  weights.compact
+    ? `      sr = max(textureSampleLevel(previousAccumulated, linearSampler, h.uv, 0.0), vec4f(0.0));
+      dr = max(textureSampleLevel(previousDenoised, linearSampler, h.uv, 0.0), vec4f(0.0));
+      a = previousStatistics(h.uv);
+      // Reuse the sharp display history already read for its clamp span.`
+    : `      let interpolation: LanczosKernel = lanczosKernel(h.uv);
       sr = max(lanczosCross(previousAccumulated, interpolation), vec4f(0.0));
       dr = max(lanczosCross(previousDenoised, interpolation), vec4f(0.0));
       a = previousStatistics(h.uv);
-      previous.value = lanczosCross(previousOutput, interpolation);
+      previous.value = lanczosCross(previousOutput, interpolation);`
+}
     }
     // Where a block has no depth of its own, where to read its history is a
     // guess, so while the camera moves it keeps little of the accumulated
@@ -1118,16 +1162,12 @@ ${
   let short: f32 = max(exp(-wh / ${float(weights.reach)}) * max(fast, sparse), 1.0 - same);`
       : `let short: f32 = max(exp(-wh / ${float(weights.reach)}) * fast, 1.0 - same);`
   }
-  let wide: vec4f = coarse(wideTexture, position.xy, ${learned ? "2.0" : "4.0"});
-  ${learned ? "var" : "let"} current: vec4f = mix(mix(color, d, strength), wide, short);
-${
-  learned
-    ? `  // Strengthen only the share whose history belonged to another surface.
+  let wide: vec4f = ${weights.compact ? "mix(coarse(wideTexture, position.xy, 2.0), coarse(rejectedTexture, position.xy, 4.0), 0.5)" : "coarse(wideTexture, position.xy, 2.0)"};
+  var current: vec4f = mix(mix(color, d, strength), wide, short);
+  // Strengthen only the share whose history belonged to another surface.
   // Normal fast motion keeps the learned fallback's detail.
   let rejected: vec4f = coarse(rejectedTexture, position.xy, 4.0);
-  current += (rejected - wide) * (1.0 - same) * ${float(weights.surfaceWide)};`
-    : ""
-}
+  current += (rejected - wide) * (1.0 - same) * ${float(weights.surfaceWide)};
   let dn: vec4f = (dr * wh + current) / dh;
   let nh: f32 = min(dh, ${float(weights.denoisedFrames)});
 
@@ -1168,7 +1208,6 @@ ${
     predict,
     resolve,
     rounding: ROUNDING,
-    lowLevel,
     filter: learned,
     groups: groups.length,
   };
