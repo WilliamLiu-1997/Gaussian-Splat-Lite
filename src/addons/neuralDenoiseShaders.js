@@ -279,17 +279,9 @@ const TAPS = array<vec2i, 9>(
 const sceneDepth = (multisampled) => /* wgsl */ `
 @group(0) @binding(2) var depthTexture: ${multisampled ? "texture_depth_multisampled_2d" : "texture_depth_2d"};
 fn sceneDepth(p: vec2i) -> f32 {
-  ${
-    multisampled
-      ? `// Nearest covered sample, including reversed depth. Clear samples stay far.
-  var d: f32 = textureLoad(depthTexture, p, 0);
-  for (var sample: i32 = 1; sample < 4; sample++) {
-    let next: f32 = textureLoad(depthTexture, p, sample);
-    d = select(min(d, next), max(d, next), P.clearDepth == 0.0);
-  }
-  return d;`
-      : "return textureLoad(depthTexture, p, 0);"
-  }
+  // Sample 0 for MSAA, mip 0 otherwise. One coverage decision preserves a
+  // faint foreground's hit probability; nearest-of-four overrepresents it.
+  return textureLoad(depthTexture, p, 0);
 }
 fn viewDepth(d: f32) -> f32 {
   if (P.logDepth > 0.5) { return P.logNear * exp2(d * P.logFar); }
