@@ -12,7 +12,10 @@ export declare const NEURAL_DENOISE_UNIFORM_FLOATS = 64;
  * per pixel then reprojects, filters, updates both paths, mixes them and
  * stabilizes the result.
  */
-export declare function neuralDenoiseShaders(weights: NeuralDenoiseModel): {
+export declare function neuralDenoiseShaders(
+  weights: NeuralDenoiseModel,
+  multisampled?: boolean,
+): {
   cells: string;
   wider: string;
   depth: string;

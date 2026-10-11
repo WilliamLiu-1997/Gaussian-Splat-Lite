@@ -276,8 +276,21 @@ const TAPS = array<vec2i, 9>(
   vec2i(-1, 0), vec2i(0, 0), vec2i(1, 0),
   vec2i(-1, 1), vec2i(0, 1), vec2i(1, 1));
 `;
-const SCENE_DEPTH = /* wgsl */ `
-@group(0) @binding(2) var depthTexture: texture_depth_2d;
+const sceneDepth = (multisampled) => /* wgsl */ `
+@group(0) @binding(2) var depthTexture: ${multisampled ? "texture_depth_multisampled_2d" : "texture_depth_2d"};
+fn sceneDepth(p: vec2i) -> f32 {
+  ${
+    multisampled
+      ? `// Nearest covered sample, including reversed depth. Clear samples stay far.
+  var d = textureLoad(depthTexture, p, 0);
+  for (var sample = 1; sample < 4; sample++) {
+    let next = textureLoad(depthTexture, p, sample);
+    d = select(min(d, next), max(d, next), P.clearDepth == 0.0);
+  }
+  return d;`
+      : "return textureLoad(depthTexture, p, 0);"
+  }
+}
 fn viewDepth(d: f32) -> f32 {
   if (P.logDepth > 0.5) { return P.logNear * exp2(d * P.logFar); }
   return -(P.depth.z - d * P.depth.w) / (d * P.depth.y - P.depth.x);
@@ -288,13 +301,13 @@ fn viewDepth(d: f32) -> f32 {
 //
 // The loop holds no branch: with one on whether a pixel was drawn, this pass
 // took 1 ms at 2560x1600 on an Apple M5 Pro where it takes 0.1 ms without.
-const CELLS = /* wgsl */ `${PARAMS}${SCENE_DEPTH}
+const cells = (multisampled) => /* wgsl */ `${PARAMS}${sceneDepth(multisampled)}
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
   let corner = vec2i(position.xy) * 8;
   var sums = vec3f(0.0);
   for (var y = 0; y < 8; y++) {
     for (var x = 0; x < 8; x++) {
-      let d = textureLoad(depthTexture, drawn(corner + vec2i(x, y)), 0);
+      let d = sceneDepth(drawn(corner + vec2i(x, y)));
       // One over viewDepth(d).
       let disparity = select(
         (d * P.depth.y - P.depth.x) / (d * P.depth.w - P.depth.z),
@@ -322,7 +335,10 @@ const WIDER = /* wgsl */ `${VERTEX}
 }`;
 // The view depth reprojection uses: one value per 2x2 block, taken around the
 // block's top-left pixel, and beside it whether the block had none of its own.
-const depth = (weights) => /* wgsl */ `${PARAMS}${TAPS}${SCENE_DEPTH}
+const depth = (
+  weights,
+  multisampled,
+) => /* wgsl */ `${PARAMS}${TAPS}${sceneDepth(multisampled)}
 @group(0) @binding(3) var cells8: texture_2d<f32>;
 @group(0) @binding(4) var cells32: texture_2d<f32>;
 @group(0) @binding(5) var cells128: texture_2d<f32>;
@@ -354,7 +370,7 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
   let p = vec2i(position.xy) * 2;
   var nearest = vec3f(3.0e38);
   for (var j = 0; j < 9; j++) {
-    let d = textureLoad(depthTexture, drawn(p + TAPS[j]), 0);
+    let d = sceneDepth(drawn(p + TAPS[j]));
     var z = P.far;
     if (d != P.clearDepth) { z = viewDepth(d); }
     let a = max(nearest.x, z);
@@ -369,10 +385,11 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
   return vec4f(lent.x, 1.0, 0.0, 1.0);
 }`;
 // The scene's depth without the target's margin, for the application.
-const EXPOSE = /* wgsl */ `${PARAMS}
-@group(0) @binding(2) var depthTexture: texture_depth_2d;
+const expose = (
+  multisampled,
+) => /* wgsl */ `${PARAMS}${sceneDepth(multisampled)}
 @fragment fn fragment(@builtin(position) position: vec4f) -> @builtin(frag_depth) f32 {
-  return textureLoad(depthTexture, drawn(vec2i(position.xy)), 0);
+  return sceneDepth(drawn(vec2i(position.xy)));
 }`;
 // The frame the passes work on: the scene, from where it was drawn in its
 // target. The networks were trained on display-referred values, so with
@@ -622,7 +639,7 @@ ${
  * per pixel then reprojects, filters, updates both paths, mixes them and
  * stabilizes the result.
  */
-export function neuralDenoiseShaders(weights) {
+export function neuralDenoiseShaders(weights, multisampled = false) {
   const net = weights.network;
   const learned = weights.filter && learnedFilter(weights.filter);
   const groups = range(net.encode.b.length / 4);
@@ -1102,10 +1119,10 @@ ${
   return out;
 }`;
   return {
-    cells: CELLS,
+    cells: cells(multisampled),
     wider: WIDER,
-    depth: depth(weights),
-    expose: EXPOSE,
+    depth: depth(weights, multisampled),
+    expose: expose(multisampled),
     frame: frame(false),
     encode: frame(true),
     downsample: DOWNSAMPLE,

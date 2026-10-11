@@ -73,11 +73,22 @@ export const renderOptionGroups = [
         property: "denoiserProfile",
         label: "Neural denoiser profile",
         description:
-          "Profile 1 uses fixed filtering; Profile 2 uses adaptive filtering and finer edge decisions. Each trades detail, noise and flicker differently.",
+          "Profile 1 uses fixed filtering; Profile 2 uses adaptive filtering. Each trades detail, noise and flicker differently. Both support the coverage quality setting below.",
         defaultValue: "profile2",
         choices: [
           ["profile1", "Profile 1"],
           ["profile2", "Profile 2"],
+        ],
+      },
+      {
+        property: "denoiserSamples",
+        label: "Neural coverage quality",
+        description:
+          "Coverage samples per pixel for either profile, in one scene draw. Quality 4× reduces input noise with higher GPU time and target memory use.",
+        defaultValue: 1,
+        choices: [
+          [1, "1×"],
+          [4, "Quality 4×"],
         ],
       },
       {

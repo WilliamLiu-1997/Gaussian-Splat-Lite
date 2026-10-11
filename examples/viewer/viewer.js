@@ -134,6 +134,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
       state.taa = createViewerTAA(state.renderer, scene, camera, {
         neural: denoiser === "neural",
         profile: denoiserProfile,
+        samples: denoiserSamples,
       });
     }
     state.controls = new CameraController(state.renderer, scene, camera, {
@@ -210,6 +211,7 @@ let renderOnDemand = true;
 let halfFloatBlending = true;
 let denoiser = "taa";
 let denoiserProfile = "profile2";
+let denoiserSamples = 1;
 let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
 mountRendererState(rendererState);
@@ -311,6 +313,10 @@ const renderOptionActions = {
     denoiserProfile = value;
     if (denoiser === "neural") replaceDenoiser();
   },
+  denoiserSamples: (value) => {
+    denoiserSamples = Number(value);
+    if (denoiser === "neural") replaceDenoiser();
+  },
 };
 
 // Replaces the active filter; it starts again without history.
@@ -320,6 +326,7 @@ function replaceDenoiser() {
   taa = createViewerTAA(renderer, scene, camera, {
     neural: denoiser === "neural",
     profile: denoiserProfile,
+    samples: denoiserSamples,
   });
   rendererState.taa = taa;
 }
@@ -476,6 +483,7 @@ function applyRenderOption(property, value) {
       taa = createViewerTAA(renderer, scene, camera, {
         neural: denoiser === "neural",
         profile: denoiserProfile,
+        samples: denoiserSamples,
       });
       rendererState.taa = taa;
     }

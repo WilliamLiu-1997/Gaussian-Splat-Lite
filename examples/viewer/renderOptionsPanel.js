@@ -27,10 +27,9 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     setHidden("minSortIntervalMs", nativeWebGPU);
     // The neural denoiser runs on native WebGPU only.
     setHidden("denoiser", !nativeWebGPU);
-    setHidden(
-      "denoiserProfile",
-      !nativeWebGPU || getValue("denoiser") !== "neural",
-    );
+    const hideNeural = !nativeWebGPU || getValue("denoiser") !== "neural";
+    setHidden("denoiserProfile", hideNeural);
+    setHidden("denoiserSamples", hideNeural);
   }
 
   function createRow(option) {

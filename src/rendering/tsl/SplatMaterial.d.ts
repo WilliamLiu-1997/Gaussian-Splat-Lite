@@ -45,3 +45,8 @@ export declare function createSplatNodeMaterial({
   depthWrite: boolean;
   stochastic: boolean;
 }): SplatNodeMaterial;
+/** Shares a stochastic Splat's vertex graph and uniforms, replacing coverage. */
+export declare function createStochasticSplatVariant(
+  material: THREE.Material,
+  coverage: (alpha: Node<"float">, random: Node<"float">) => void,
+): SplatNodeMaterial | null;

@@ -21,6 +21,7 @@ import {
   neuralDenoiseShaders,
 } from "./neuralDenoiseShaders.js";
 import { neuralDenoiseModels } from "./neuralDenoiseWeights.js";
+import { StochasticCoverage } from "./stochasticCoverage.js";
 import { createTAAState } from "./taaShared.js";
 const HALF = "rgba16float";
 // A block's view depth and whether it is the block's own; sums of disparities
@@ -73,8 +74,10 @@ class Passes {
   passes;
   /** The network's hidden channels, in groups of four: render targets per layer. */
   groups;
-  constructor(device, model) {
+  multisampled;
+  constructor(device, model, multisampled) {
     this.device = device;
+    this.multisampled = multisampled;
     this.uniformBuffer = device.createBuffer({
       size: this.uniforms.byteLength,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -85,7 +88,7 @@ class Passes {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
-    const code = neuralDenoiseShaders(model);
+    const code = neuralDenoiseShaders(model, multisampled);
     this.lowLevel = code.lowLevel;
     this.groups = code.groups;
     const F = FILTERABLE;
@@ -164,7 +167,10 @@ class Passes {
       entries.push({
         binding: entries.length,
         visibility,
-        texture: { sampleType },
+        texture: {
+          sampleType,
+          multisampled: this.multisampled && sampleType === "depth",
+        },
       });
     const layout = device.createBindGroupLayout({ label, entries });
     const pipeline = device.createRenderPipeline({
@@ -568,6 +574,8 @@ export class NeuralDenoiseNode extends Node {
   scene;
   camera;
   profile;
+  samples;
+  coverage;
   static get type() {
     return "NeuralDenoiseNode";
   }
@@ -627,15 +635,23 @@ export class NeuralDenoiseNode extends Node {
   pipelineRendering = false;
   capturePending = true;
   /**
-   * @param profile  The trained model: fixed spatial filtering (`"profile1"`)
-   *   or learned filtering with pixel correction (`"profile2"`, the default).
-   *   Fixed for the node's lifetime.
+   * @param profile Fixed filtering (`"profile1"`) or learned filtering
+   *   (`"profile2"`, default). Fixed for the node's lifetime.
+   * @param samples Coverage samples per pixel: 1 (default) or 4, with
+   *   either profile. Fixed for the node's lifetime.
    */
-  constructor(scene, camera, profile = "profile2") {
+  constructor(scene, camera, profile = "profile2", samples = 1) {
     super("vec4");
+    if (samples !== 1 && samples !== 4)
+      throw new Error("NeuralDenoiseNode samples must be 1 or 4");
     this.scene = scene;
     this.camera = camera;
     this.profile = profile;
+    this.samples = samples;
+    this.coverage = samples > 1 ? new StochasticCoverage() : null;
+    // Each coverage decision controls one of the target's four samples.
+    this.source.samples = samples > 1 ? 4 : 0;
+    this.source.storeMultisampledColorBuffer = false;
     this.updateBeforeType = NodeUpdateType.RENDER;
     this.source.texture.name = "NeuralDenoise.scene";
     this.history[0].texture.name = "NeuralDenoise.history0";
@@ -676,7 +692,7 @@ export class NeuralDenoiseNode extends Node {
     const backend = renderer.backend;
     if (this.passes === null) {
       const model = neuralDenoiseModels[this.profile];
-      this.passes = new Passes(backend.device, model);
+      this.passes = new Passes(backend.device, model, this.coverage !== null);
     }
     const { camera, state, passes } = this;
     const rendererState = RendererUtils.saveRendererState(renderer);
@@ -708,7 +724,8 @@ export class NeuralDenoiseNode extends Node {
       state.beginCapture(camera);
       try {
         renderer.setRenderTarget(this.source);
-        renderer.render(this.scene, camera);
+        if (this.coverage) this.coverage.render(renderer, this.scene, camera);
+        else renderer.render(this.scene, camera);
       } finally {
         state.endCapture(camera);
         // Three may initialize the camera's depth convention on its first draw.
@@ -781,6 +798,9 @@ export class NeuralDenoiseNode extends Node {
           image.height = height;
           this.depth.needsUpdate = true;
         }
+        // A standalone DepthTexture inherits the current target's samples
+        // when allocated. The public depth output must stay single-sampled.
+        renderer.setRenderTarget(this.history[0]);
         renderer.initTexture(this.depth);
       }
       const previous = state.historyIndex;
@@ -834,6 +854,7 @@ export class NeuralDenoiseNode extends Node {
     super.dispose();
     this.passes?.dispose();
     this.passes = null;
+    this.coverage?.dispose();
     this.source.dispose();
     this.depth.dispose();
     for (const target of this.history) target.dispose();

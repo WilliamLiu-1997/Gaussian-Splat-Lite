@@ -17,6 +17,8 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
   readonly profile: NeuralDenoiseProfile;
+  readonly samples: 1 | 4;
+  private readonly coverage;
   static get type(): string;
   /**
    * Blends the result with the previous image where the network trusts it.
@@ -44,14 +46,16 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   private pipelineRendering;
   private capturePending;
   /**
-   * @param profile  The trained model: fixed spatial filtering (`"profile1"`)
-   *   or learned filtering with pixel correction (`"profile2"`, the default).
-   *   Fixed for the node's lifetime.
+   * @param profile Fixed filtering (`"profile1"`) or learned filtering
+   *   (`"profile2"`, default). Fixed for the node's lifetime.
+   * @param samples Coverage samples per pixel: 1 (default) or 4, with
+   *   either profile. Fixed for the node's lifetime.
    */
   constructor(
     scene: Scene,
     camera: PerspectiveCamera | OrthographicCamera,
     profile?: NeuralDenoiseProfile,
+    samples?: 1 | 4,
   );
   /** Scene depth of the current frame, kept from the first read on. */
   get depthTexture(): DepthTexture;
