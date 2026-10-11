@@ -28,7 +28,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     // The neural denoiser runs on native WebGPU only.
     setHidden("denoiser", !nativeWebGPU);
     setHidden(
-      "denoiserQuality",
+      "denoiserProfile",
       !nativeWebGPU || getValue("denoiser") !== "neural",
     );
   }

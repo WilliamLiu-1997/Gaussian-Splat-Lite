@@ -1,5 +1,5 @@
 /** Floats in the uniform block shared by every pass; see PARAMS below. */
-export const NEURAL_DENOISE_UNIFORM_FLOATS = 68;
+export const NEURAL_DENOISE_UNIFORM_FLOATS = 64;
 const float = (value) => {
   const text = value.toPrecision(9);
   return /[.e]/.test(text) ? text : `${text}.0`;
@@ -130,7 +130,6 @@ struct Params {
   logDepth: f32,
   logNear: f32,
   logFar: f32,
-  jitter: vec2f,       // this frame's samples relative to pixel centres, in pixels
   turn: f32,           // angle between the previous and this frame's camera orientation
   offset: vec2f,       // where in its target the scene was drawn
 };
@@ -233,29 +232,37 @@ fn lanczosWeight(t: f32) -> f32 {
   if (abs(x) < 1e-5) { return 1.0; }
   return 3.0 * sin(x) * sin(x / 3.0) / (x * x);
 }
-fn lanczosCross(image: texture_2d<f32>, uv: vec2f) -> vec4f {
+struct LanczosKernel {
+  base: vec2f,
+  centre: vec2f,
+  middle: vec2f,
+  wx: array<f32, 6>,
+  wy: array<f32, 6>,
+}
+fn lanczosKernel(uv: vec2f) -> LanczosKernel {
   let position = uv * P.size - 0.5;
-  let base = floor(position);
-  let t = position - base;
-  // Weights of the six pixels at -2 to 3 from the one before the position.
-  var wx: array<f32, 6>;
-  var wy: array<f32, 6>;
+  var k: LanczosKernel;
+  k.base = floor(position);
+  let t = position - k.base;
   for (var i = 0; i < 6; i++) {
-    wx[i] = lanczosWeight(t.x - f32(i - 2));
-    wy[i] = lanczosWeight(t.y - f32(i - 2));
+    k.wx[i] = lanczosWeight(t.x - f32(i - 2));
+    k.wy[i] = lanczosWeight(t.y - f32(i - 2));
   }
-  let middle = vec2f(wx[2] + wx[3], wy[2] + wy[3]);
-  let centre = (base + vec2f(wx[3], wy[3]) / middle + 0.5) * P.invSize;
-  var sum = textureSampleLevel(image, linearSampler, centre, 0.0) * (middle.x * middle.y);
-  var total = middle.x * middle.y;
+  k.middle = vec2f(k.wx[2] + k.wx[3], k.wy[2] + k.wy[3]);
+  k.centre = (k.base + vec2f(k.wx[3], k.wy[3]) / k.middle + 0.5) * P.invSize;
+  return k;
+}
+fn lanczosCross(image: texture_2d<f32>, k: LanczosKernel) -> vec4f {
+  var sum = textureSampleLevel(image, linearSampler, k.centre, 0.0) * (k.middle.x * k.middle.y);
+  var total = k.middle.x * k.middle.y;
   for (var i = 0; i < 6; i++) {
     if (i == 2 || i == 3) { continue; }
-    let along = (base + f32(i) - 1.5) * P.invSize;
-    sum += textureSampleLevel(image, linearSampler, vec2f(along.x, centre.y), 0.0) * (wx[i] * middle.y);
-    sum += textureSampleLevel(image, linearSampler, vec2f(centre.x, along.y), 0.0) * (middle.x * wy[i]);
-    total += wx[i] * middle.y + middle.x * wy[i];
+    let along = (k.base + f32(i) - 1.5) * P.invSize;
+    sum += textureSampleLevel(image, linearSampler, vec2f(along.x, k.centre.y), 0.0) * (k.wx[i] * k.middle.y);
+    sum += textureSampleLevel(image, linearSampler, vec2f(k.centre.x, along.y), 0.0) * (k.middle.x * k.wy[i]);
+    total += k.wx[i] * k.middle.y + k.middle.x * k.wy[i];
   }
-  let p = vec2i(base);
+  let p = vec2i(k.base);
   let a = textureLoad(image, bounded(p), 0);
   let b = textureLoad(image, bounded(p + vec2i(1, 0)), 0);
   let c = textureLoad(image, bounded(p + vec2i(0, 1)), 0);
@@ -604,155 +611,6 @@ ${
     groups: groups.length,
   };
 }
-// The image-motion fit. The depth it reads is per 2x2 block, and it also
-// predicts next frame's decision to follow.
-function motionShaders(follow) {
-  const kept = /* wgsl */ `
-// What the last frame left for this block, where the camera says it was.
-struct Kept {
-  centre: vec2f,
-  estimate: vec2f,
-  explained: f32,
-  follow: f32,
-  valid: f32,
-  depth: f32,
-};
-fn keptMotion(p: vec2i) -> Kept {
-  var k: Kept;
-  k.depth = textureLoad(depthFixed, p, 0).r;
-  let h = reproject(vec2f(p * 2) + 0.5, k.depth);
-  k.centre = h.uv + 0.5 * P.invSize;
-  k.valid = h.valid * step(0.5, P.historyValid);
-  let state = textureSampleLevel(previousFlow, linearSampler, k.centre, 0.0) * k.valid;
-  k.estimate = textureSampleLevel(smoothFlow, linearSampler, k.centre, 0.0).xy * k.valid;
-  k.explained = state.z;
-  k.follow = state.w;
-  return k;
-}`;
-  const motion = /* wgsl */ `${PARAMS}
-@group(0) @binding(2) var depthFixed: texture_2d<f32>;
-@group(0) @binding(3) var levelOne: texture_2d<f32>;
-@group(0) @binding(4) var previousOutput: texture_2d<f32>;
-@group(0) @binding(5) var previousFlow: texture_2d<f32>;
-@group(0) @binding(6) var smoothFlow: texture_2d<f32>;
-${kept}
-struct Output {
-  @location(0) squares: vec4f,
-  @location(1) products: vec4f,
-};
-// Display range: a Splat far brighter than white must not outvote the rest.
-fn tap(uv: vec2f, dx: f32, dy: f32) -> vec3f {
-  return clamp(textureSampleLevel(previousOutput, linearSampler, uv + vec2f(dx, dy) * P.invSize, 0.0).rgb, vec3f(0.0), vec3f(1.0));
-}
-@fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p = vec2i(position.xy);
-  let k = keptMotion(p);
-  let uv = k.centre + (P.jitter - k.estimate) * P.invSize;
-  let moved = tap(uv, 0.0, 0.0);
-  // Gradients per pixel, over the two-pixel spacing of the blocks.
-  let gx = (tap(uv, 2.0, 0.0) - tap(uv, -2.0, 0.0)) * 0.25;
-  let gy = (tap(uv, 0.0, 2.0) - tap(uv, 0.0, -2.0)) * 0.25;
-  let now = clamp(textureLoad(levelOne, p, 0).rgb, vec3f(0.0), vec3f(1.0));
-  let gt = now - moved;
-  // What the camera alone leaves of the difference.
-  let rest = now - tap(k.centre + P.jitter * P.invSize, 0.0, 0.0);
-  var out: Output;
-  out.squares = vec4f(dot(gx, gx), dot(gx, gy), dot(gy, gy), dot(gx, gt)) * k.valid;
-  out.products = vec4f(dot(gy, gt), dot(gt, gt), dot(rest, rest), 0.0) * k.valid;
-  return out;
-}`;
-  // The window those sums are taken over: halved a few times.
-  const pool = /* wgsl */ `${VERTEX}
-@group(0) @binding(0) var linearSampler: sampler;
-@group(0) @binding(1) var squares: texture_2d<f32>;
-@group(0) @binding(2) var products: texture_2d<f32>;
-struct Output {
-  @location(0) squares: vec4f,
-  @location(1) products: vec4f,
-};
-@fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  // The mean of 2x2, as DOWNSAMPLE takes it.
-  let uv = position.xy * 2.0 / vec2f(textureDimensions(squares));
-  var out: Output;
-  out.squares = textureSampleLevel(squares, linearSampler, uv, 0.0);
-  out.products = textureSampleLevel(products, linearSampler, uv, 0.0);
-  return out;
-}`;
-  // The least-squares step, and the running estimate it corrects. One frame's
-  // shift is noisy, a few tenths of a pixel at random on a still view, so the
-  // estimate is a running mean, and whether it is used is not decided here:
-  // the network sees it and says how far to follow next frame.
-  const solve = /* wgsl */ `${PARAMS}
-@group(0) @binding(2) var depthFixed: texture_2d<f32>;
-@group(0) @binding(3) var squares: texture_2d<f32>;
-@group(0) @binding(4) var products: texture_2d<f32>;
-@group(0) @binding(5) var previousFlow: texture_2d<f32>;
-@group(0) @binding(6) var smoothFlow: texture_2d<f32>;
-${kept}
-${pointwise("FOLLOW_HIDDEN", follow.network.hidden)}
-${head("FOLLOW_OUT", follow.network.out, 0)}
-struct Output {
-  @location(0) motion: vec4f,
-  @location(1) shift: vec4f,
-};
-@fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let k = keptMotion(vec2i(position.xy));
-  let uv = position.xy / floor(P.size * 0.5);
-  let s = textureSampleLevel(squares, linearSampler, uv, 0.0);
-  let t = textureSampleLevel(products, linearSampler, uv, 0.0);
-  let a = s.x + ${float(follow.damping)};
-  let d = s.z + ${float(follow.damping)};
-  let determinant = a * d - s.y * s.y;
-  // frame(x) = previous(x - estimate - correction): the correction that
-  // removes the difference, held towards no motion. Where the images have no
-  // detail the fit says nothing, and without that hold an estimate stays for
-  // good: the flat ground a moving object has left would keep its motion.
-  let right = vec2f(s.w, t.x) + ${float(follow.prior * follow.damping)} * k.estimate;
-  let correction = clamp(vec2f(-(d * right.x - s.y * right.y), -(a * right.y - s.y * right.x)) / determinant, vec2f(-2.0), vec2f(2.0));
-  // Still content: the estimate removes nothing of what the camera leaves.
-  // Moving content it has locked onto: a good part of it. Where the camera
-  // leaves next to nothing, there is nothing to explain.
-  let share = clamp((t.z - t.y) / max(t.z, 1e-5), 0.0, 1.0);
-  let estimate = k.estimate + ${float(follow.rate)} * correction;
-  // The network gave a probability that following is right. Half way is
-  // right nowhere, so the estimate is followed fully or not at all, with a
-  // short ramp between. Two things switch it off whatever the probability.
-  // An estimate that has not been removing a real share of the difference
-  // the camera leaves: on a still view that share stays near zero while the
-  // estimate itself wanders by a pixel or more. And a block where nothing
-  // has a depth: the estimate is taken over a window, so it reaches past the
-  // edge of whatever moves, and lines drawn over an empty background beside
-  // a turning model would be carried along with it.
-  let followed = smoothstep(${float(follow.threshold[0])}, ${float(follow.threshold[1])}, k.follow) *
-    smoothstep(${float(follow.explained[0])}, ${float(follow.explained[1])}, k.explained) *
-    step(k.depth, 0.999 * P.far);
-  var out: Output;
-  let explained = k.explained + ${float(follow.shareRate)} * (share - k.explained);
-  // Decide here at half resolution; the trust network runs on 4x4
-  // blocks and sees none of the motion measurements.
-  let seen = vec4f(0.25 * sqrt(dot(estimate, estimate) + 1e-12), explained,
-    0.5 * sqrt(dot(correction, correction) + 1e-12), k.follow);
-  let weighed = array<vec4f, 2>(silu(${mixed("FOLLOW_HIDDEN", 0, ["seen"])}), silu(${mixed("FOLLOW_HIDDEN", 1, ["seen"])}));
-  let likely = sigmoid(${headed("FOLLOW_OUT", ["weighed[0]", "weighed[1]"])}) * k.valid;
-  out.motion = roundedHalf(vec4f(estimate, explained, likely));
-  // The shift history is read at, and this frame's correction beside it.
-  out.shift = vec4f(estimate * followed, correction);
-  return out;
-}`;
-  return { motion, pool, solve, pools: follow.pools };
-}
-function followingShader(binding, enabled) {
-  return enabled
-    ? /* wgsl */ `
-@group(0) @binding(${binding}) var shiftTexture: texture_2d<f32>;
-fn followed(h: History, pixel: vec2f) -> History {
-  var moved = h;
-  moved.uv = h.uv - textureSampleLevel(shiftTexture, linearSampler, pixel * P.invSize, 0.0).xy * P.invSize;
-  moved.valid = h.valid * f32(all(moved.uv >= vec2f(0.0)) && all(moved.uv <= vec2f(1.0)));
-  return moved;
-}`
-    : "fn followed(h: History, pixel: vec2f) -> History { return h; }";
-}
 /**
  * The WGSL of every pass, with the trained weights written in as constants.
  * Each fragment shader's bindings are: the uniform block, a linear sampler,
@@ -762,14 +620,11 @@ fn followed(h: History, pixel: vec2f) -> History {
  * takes a block's means from a few bilinear taps straight into the previous
  * frame's state, so nothing reprojected has to be stored for it. One pass
  * per pixel then reprojects, filters, updates both paths, mixes them and
- * stabilizes the result. Motion following, where enabled, stays at half
- * resolution and predicts its own decision in the motion solve.
+ * stabilizes the result.
  */
 export function neuralDenoiseShaders(weights) {
   const net = weights.network;
   const learned = weights.filter && learnedFilter(weights.filter);
-  const follow = weights.follow;
-  const following = (binding) => followingShader(binding, follow !== undefined);
   const groups = range(net.encode.b.length / 4);
   const inputTextures = groups
     .map((g) => `@group(0) @binding(${2 + g}) var input${g}: texture_2d<f32>;`)
@@ -871,7 +726,6 @@ ${
 @group(0) @binding(${learned ? 11 : 12}) var previousTrust: texture_2d<f32>;
 @group(0) @binding(${learned ? 12 : 13}) var previousEvidence: texture_2d<f32>;
 ${BLOCKS}
-${following(learned ? 13 : 14)}
 ${COARSE}
 ${BLOCK_FILTERED}
 struct Output {
@@ -928,7 +782,7 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
   var relative = 0.0;
   var kept = vec4f(0.0);
   if (P.historyValid > 0.5) {
-    let h = followed(reproject(vec2f(p) + 0.5, blockDepth(p)), vec2f(p) + 0.5);
+    let h = reproject(vec2f(p) + 0.5, blockDepth(p));
     valid = h.valid;
     // The block's middle, a pixel and a half from its top-left pixel's.
     let centre = h.uv + 1.5 * P.invSize;
@@ -1031,7 +885,6 @@ ${head("DENOISED", net.head, 4)}
 ${inputTextures}
 @group(0) @binding(${2 + groups.length}) var depthBlocks: texture_2d<f32>;
 ${BLOCKS}
-${following(3 + groups.length)}
 struct Output {
   @location(0) trust: vec4f,
   @location(1) strength: vec4f,
@@ -1052,7 +905,7 @@ ${groups
   // Trust is void where the block's own history is.
   var valid = 0.0;
   if (P.historyValid > 0.5) {
-    valid = followed(reproject(vec2f(p * 4) + 0.5, blockDepth(p * 4)), vec2f(p * 4) + 0.5).valid;
+    valid = reproject(vec2f(p * 4) + 0.5, blockDepth(p * 4)).valid;
   }
   var out: Output;
   // Accumulated history, denoised history, the stabilization blend, and the
@@ -1090,7 +943,12 @@ ${
 @group(0) @binding(${learned ? 11 : 12}) var wideTexture: texture_2d<f32>;
 @group(0) @binding(${learned ? 12 : 13}) var depthPrevious: texture_2d<f32>;
 ${BLOCKS}
-${following(learned ? 13 : 14)}
+${
+  learned
+    ? `// The frame's existing 4x4 mean, used only for rejected surfaces.
+@group(0) @binding(13) var rejectedTexture: texture_2d<f32>;`
+    : ""
+}
 ${learned ? COARSE : KERNEL(weights.blur)}
 // The previous frame's second moment of luma, history lengths and slow luma
 // at a position between its pixels. Beside a place whose history was just
@@ -1135,9 +993,10 @@ struct Output {
   // 0 where the history read here belonged to another surface.
   var same = 1.0;
   let sparse = blockSparse(p);
+  var sparseMotion = 0.0;
   if (P.historyValid > 0.5) {
     let z = blockDepth(p);
-    let h = followed(reproject(position.xy, z), position.xy);
+    let h = reproject(position.xy, z);
     valid = h.valid;
     // The pixel's own motion, or what a turn of the camera sweeps over half
     // the view, whichever is more: at the centre of a turn the first is
@@ -1156,16 +1015,18 @@ struct Output {
     let seen = textureLoad(depthPrevious, clamp(vec2i(floor(h.uv * P.size * 0.5)), vec2i(0), vec2i(floor(P.size * 0.5)) - 1), 0).r;
     let other = f32(abs(seen - h.previousZ) > ${float(weights.surfaceApart)} * max(seen, h.previousZ));
     same = 1.0 - other * speed * speed / (speed * speed + ${float(weights.surfaceKnee * weights.surfaceKnee)});
-    sr = max(lanczosCross(previousAccumulated, h.uv), vec4f(0.0));
-    dr = max(catmullRom(previousDenoised, h.uv), vec4f(0.0));
+    let interpolation = lanczosKernel(h.uv);
+    sr = max(lanczosCross(previousAccumulated, interpolation), vec4f(0.0));
+    dr = max(lanczosCross(previousDenoised, interpolation), vec4f(0.0));
     let a = previousStatistics(h.uv);
     // Where a block has no depth of its own, where to read its history is a
     // guess, so while the camera moves it keeps little of the accumulated
     // history, and what was misread fades in a few frames.
-    let moving = speed * speed / (speed * speed + ${float(weights.sparseKnee * weights.sparseKnee)});
-    let limit = mix(${float(weights.accumulatedFrames)}, ${float(weights.sparseFrames)}, moving * sparse);
+    sparseMotion = sparse * speed * speed / (speed * speed + ${float(weights.sparseKnee * weights.sparseKnee)});
+    let limit = mix(${float(weights.accumulatedFrames)}, ${float(weights.sparseFrames)}, sparseMotion);
     aux = vec4f(a.x, min(a.y * valid * same, limit), a.z * valid * same, a.w);
     previous = catmullRomSpan(previousOutput, h.uv);
+    previous.value = lanczosCross(previousOutput, interpolation);
   }
   ${weights.correction ? "var" : "let"} trust = coarse(trustBlocks, position.xy, 4.0) * valid * same;
   ${weights.correction ? "var" : "let"} strength = coarse(strengthBlocks, position.xy, 4.0).r;
@@ -1203,7 +1064,17 @@ ${
   let short = max(exp(-wh / ${float(weights.reach)}) * max(fast, sparse), 1.0 - same);`
       : `let short = max(exp(-wh / ${float(weights.reach)}) * fast, 1.0 - same);`
   }
-  let dn = (dr * wh + mix(mix(color, d, strength), coarse(wideTexture, position.xy, ${learned ? "2.0" : "4.0"}), short)) / dh;
+  let wide = coarse(wideTexture, position.xy, ${learned ? "2.0" : "4.0"});
+  ${learned ? "var" : "let"} current = mix(mix(color, d, strength), wide, short);
+${
+  learned
+    ? `  // Strengthen only the share whose history belonged to another surface.
+  // Normal fast motion keeps the learned fallback's detail.
+  let rejected = coarse(rejectedTexture, position.xy, 4.0);
+  current += (rejected - wide) * (1.0 - same) * ${float(weights.surfaceWide)};`
+    : ""
+}
+  let dn = (dr * wh + current) / dh;
   let nh = min(dh, ${float(weights.denoisedFrames)});
 
   // The accumulated path's weight grows with its history and falls with the
@@ -1225,7 +1096,9 @@ ${
   out.accumulated = roundedHalf(s);
   out.denoised = roundedHalf(dn);
   out.aux = roundedHalf(vec4f(y2, ns, nh, slow));
-  out.shown = roundedHalf(mix(composite, clamped, ${float(weights.stabilizeBlend)} * trust.z * step(0.5, P.stabilize)));
+  // Borrowed depth also makes the displayed history uncertain during motion.
+  let stabilize = ${float(weights.stabilizeBlend)} * trust.z * mix(1.0, ${float(weights.sparseStabilize)}, sparseMotion);
+  out.shown = roundedHalf(mix(composite, clamped, stabilize * step(0.5, P.stabilize)));
   return out;
 }`;
   return {
@@ -1244,6 +1117,5 @@ ${
     lowLevel,
     filter: learned,
     groups: groups.length,
-    follow: follow ? motionShaders(follow) : null,
   };
 }

@@ -6,7 +6,7 @@ import type {
   Scene,
 } from "three";
 import { Node, type NodeBuilder, type NodeFrame } from "three/webgpu";
-import type { NeuralDenoiseQuality } from "./neuralDenoiseWeights.js";
+import type { NeuralDenoiseProfile } from "./neuralDenoiseWeights.js";
 /**
  * Temporal neural denoiser for stochastic Splat rendering on native WebGPU,
  * used in place of TAANode. After Hu et al., "Ultra-fast Neural Inference for
@@ -16,7 +16,7 @@ import type { NeuralDenoiseQuality } from "./neuralDenoiseWeights.js";
 export declare class NeuralDenoiseNode extends Node<"vec4"> {
   scene: Scene;
   camera: PerspectiveCamera | OrthographicCamera;
-  readonly quality: NeuralDenoiseQuality;
+  readonly profile: NeuralDenoiseProfile;
   static get type(): string;
   /**
    * Blends the result with the previous image where the network trusts it.
@@ -44,14 +44,14 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   private pipelineRendering;
   private capturePending;
   /**
-   * @param quality  Which of the two trained models runs. `"balanced"` takes
-   *   more GPU time and keeps more fine detail while the camera moves. Fixed
-   *   for the node's lifetime.
+   * @param profile  The trained model: fixed spatial filtering (`"profile1"`)
+   *   or learned filtering with pixel correction (`"profile2"`, the default).
+   *   Fixed for the node's lifetime.
    */
   constructor(
     scene: Scene,
     camera: PerspectiveCamera | OrthographicCamera,
-    quality?: NeuralDenoiseQuality,
+    profile?: NeuralDenoiseProfile,
   );
   /** Scene depth of the current frame, kept from the first read on. */
   get depthTexture(): DepthTexture;

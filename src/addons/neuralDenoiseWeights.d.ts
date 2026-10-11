@@ -3,8 +3,8 @@ export type NeuralDenoiseLayer = {
   w: number[];
   b: number[];
 };
-/** Which trained model NeuralDenoiseNode runs. */
-export type NeuralDenoiseQuality = "performance" | "balanced";
+/** Trained profiles with different tradeoffs between detail, noise and flicker. */
+export type NeuralDenoiseProfile = "profile1" | "profile2";
 /**
  * A trained model behind NeuralDenoiseNode: the trust network, the spatial
  * kernel's radius and the gate's gain, with the constants it was trained
@@ -42,6 +42,8 @@ export type NeuralDenoiseModel = {
    */
   surfaceApart: number;
   surfaceKnee: number;
+  /** Share of rejected-surface fallback taken from the fixed 4x4 mean. */
+  surfaceWide: number;
   /**
    * For a block where too little was drawn for a depth of its own: how many
    * drawn pixels a cell around it needs before it lends the block their
@@ -55,31 +57,9 @@ export type NeuralDenoiseModel = {
   lendSpread: number;
   sparseFrames: number;
   sparseKnee: number;
+  /** Remaining display-history blend at full sparse camera motion. */
+  sparseStabilize: number;
   sparseWide: boolean;
-  /**
-   * Set on a model that follows motion measured from the images: the rates of
-   * the running means of the motion estimate and of the share of the frame
-   * difference it explains, the damping of the least-squares fit, how often
-   * its sums are halved to form the window, the predicted probabilities
-   * below which the estimate is not followed and above which it is followed
-   * fully, the same pair for the share of the difference the estimate has
-   * been explaining, and the weight, as a share of the damping, that holds
-   * the estimate towards no motion. `network` gives the probability: four
-   * inputs, eight hidden channels, one output.
-   */
-  follow?: {
-    rate: number;
-    shareRate: number;
-    damping: number;
-    pools: number;
-    threshold: [number, number];
-    explained: [number, number];
-    prior: number;
-    network: {
-      hidden: NeuralDenoiseLayer;
-      out: NeuralDenoiseLayer;
-    };
-  };
   /**
    * Set on a model with a learned spatial filter, which takes the fixed
    * kernel's place: a 3x3 kernel predicted for every pixel at each level of
@@ -135,6 +115,6 @@ export type NeuralDenoiseModel = {
   };
 };
 export declare const neuralDenoiseModels: Record<
-  NeuralDenoiseQuality,
+  NeuralDenoiseProfile,
   NeuralDenoiseModel
 >;

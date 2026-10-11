@@ -8,26 +8,28 @@
 
 | | `TAANode` | `NeuralDenoiseNode` |
 | --- | --- | --- |
-| Moving objects | May leave a faint trail and grainy edges | Less trailing. Detail stays sharper while it moves slowly enough to follow, and looks softer when it moves faster |
-| While the camera moves | Some grain returns | Stays smooth. A fast turn looks softer while it lasts |
+| Moving objects | May leave a faint trail and grainy edges | Rejects stale history to reduce trailing. Moving detail can look softer and grainier until it stops |
+| While the camera moves | Some grain returns | Preserves fine detail with less grain. A fast turn still looks softer while it lasts |
 | Still image | Smooth | Cleaner, with more fine detail |
-| Cost | Lower | More GPU time, and two and a half to three and a half times the memory |
+| Cost | Lower | More GPU time, and about 2.6–3.2 times the memory |
 | Renderer | WebGPU and its WebGL2 fallback | Native WebGPU only |
 
-## Choose a quality level
+## Choose a profile
 
-The third constructor argument picks one of two levels.
+The third constructor argument picks one of two profiles. They trade detail, noise and flicker differently; the preferred result depends on the scene and motion.
 
-| Level | What you get | Added per frame over `TAANode`, 1280×800 / 2560×1600 |
-| --- | --- | --- |
-| `"performance"` | Reduces trails behind moving objects. Whatever moves looks a little soft and grainy until it stops | 0.6 ms / 1.9 ms |
-| `"balanced"` (default) | Also follows content that moves, such as a model that turns or deforms: its detail stays sharper and its noise settles while it moves. A learned filter cleans each frame, so a settled image flickers less and a fast camera move keeps more detail | 0.9 ms / 3.2 ms |
+| Profile | What you get |
+| --- | --- |
+| `"profile1"` — Profile 1 | Fixed spatial filtering with lower GPU and memory cost |
+| `"profile2"` — Profile 2 (default) | Adaptive spatial filtering and finer decisions at edges, with higher GPU and memory cost |
 
-Times are from an Apple M5 Pro with Three.js's default linear working color space, on the example model in this repository. `"performance"` uses about two and a half times the memory of `TAANode` and `"balanced"` about three and a half times. What the levels add depends mostly on the size of the image, not on the scene.
+Compare fine detail, flicker, isolated dots and newly exposed backgrounds in your scenes when choosing between them. The profile numbers do not rank image quality.
 
-Following needs no setup: the node measures motion from the image itself, with no velocity buffer and no per-object data. It has limits. Content that moves by more than a few pixels per frame is not followed, and neither are places where layers at different depths move in different directions behind each other. Both look as they do at `"performance"`. Right beside something that moves, still detail can look a little softer for a moment.
+The node uses about 95 bytes per output pixel at `"profile1"` and 116 at `"profile2"`, including its image history and intermediate textures. At 2560×1600 this is about 371 MiB and 453 MiB, in addition to the scene's resources. Cost depends on the device and image size.
 
-The level is fixed when the node is created. To change it, dispose the node and create another.
+Both profiles align history using the camera and depth. They do not track an object's own motion: where an object moves, the network rejects stale history and relies more on the current frame. A newly exposed background needs time to settle. Neither profile requires a velocity buffer or per-object data.
+
+The profile is fixed when the node is created. To change it, dispose the node and create another.
 
 ## Before you start
 
@@ -48,7 +50,7 @@ import { RenderPipeline } from "three/webgpu";
 splatRenderer.stochastic = true;
 
 const denoise = renderer.backend.isWebGPUBackend
-  ? new NeuralDenoiseNode(scene, camera) // or (scene, camera, "performance")
+  ? new NeuralDenoiseNode(scene, camera) // Defaults to "profile2"; or pass "profile1".
   : new TAANode(scene, camera);
 const pipeline = new RenderPipeline(renderer, denoise);
 
@@ -84,7 +86,7 @@ Partly transparent Splats look the same whatever Three.js's working color space 
 | --- | --- | --- |
 | `scene` | Constructor scene | Scene to render; call `reset()` when replacing it |
 | `camera` | Constructor camera | Camera to render with; call `reset()` when replacing it |
-| `quality` | `"balanced"` | Read-only. The level given to the constructor: `"performance"` or `"balanced"` |
+| `profile` | `"profile2"` | Read-only. The profile given to the constructor: `"profile1"` or `"profile2"` |
 | `depthTexture` | Read-only | Scene depth of the current frame |
 | `projectionMatrix` | Read-only | Projection that matches `depthTexture` |
 | `stabilize` | `true` | Blends each image with the one before it wherever the network trusts its history. `false` leaves a little more flicker while the image settles |
@@ -102,4 +104,4 @@ Partly transparent Splats look the same whatever Three.js's working color space 
 
 ## Background
 
-The method follows Hu et al., [Ultra-fast Neural Inference for Stochastic Gaussian Splatting Denoising](https://arxiv.org/abs/2609.25604), adapted to scenes with moving objects and trained on this library's stochastic rendering. The networks for both levels are built in; there is nothing to download.
+The method follows Hu et al., [Ultra-fast Neural Inference for Stochastic Gaussian Splatting Denoising](https://arxiv.org/abs/2609.25604), adapted to scenes with moving objects and trained on this library's stochastic rendering. The networks for both profiles are built in; there is nothing to download.

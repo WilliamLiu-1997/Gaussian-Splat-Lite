@@ -70,14 +70,14 @@ export const renderOptionGroups = [
         ],
       },
       {
-        property: "denoiserQuality",
-        label: "Neural denoiser quality",
+        property: "denoiserProfile",
+        label: "Neural denoiser profile",
         description:
-          "Performance takes less GPU time. Balanced also follows moving content and cleans each frame with a learned filter.",
-        defaultValue: "balanced",
+          "Profile 1 uses fixed filtering; Profile 2 uses adaptive filtering and finer edge decisions. Each trades detail, noise and flicker differently.",
+        defaultValue: "profile2",
         choices: [
-          ["performance", "Performance"],
-          ["balanced", "Balanced"],
+          ["profile1", "Profile 1"],
+          ["profile2", "Profile 2"],
         ],
       },
       {

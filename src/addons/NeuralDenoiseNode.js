@@ -73,8 +73,6 @@ class Passes {
   passes;
   /** The network's hidden channels, in groups of four: render targets per layer. */
   groups;
-  /** Motion measured from the images, still at half resolution. */
-  follow;
   constructor(device, model) {
     this.device = device;
     this.uniformBuffer = device.createBuffer({
@@ -92,7 +90,6 @@ class Passes {
     this.groups = code.groups;
     const F = FILTERABLE;
     const U = UNFILTERABLE;
-    const shift = code.follow ? [F] : [];
     // One render target, and one input texture, per group of hidden channels.
     const sampled = Array(code.groups).fill(F);
     const written = Array(code.groups).fill(HALF);
@@ -110,20 +107,7 @@ class Passes {
       features: this.pass(
         "features",
         code.features,
-        [
-          U,
-          U,
-          F,
-          F,
-          F,
-          ...(code.filter ? [F] : [F, F]),
-          F,
-          F,
-          F,
-          F,
-          F,
-          ...shift,
-        ],
+        [U, U, F, F, F, ...(code.filter ? [F] : [F, F]), F, F, F, F, F],
         // The first layer, and the evidence with this frame in it.
         [...written, HALF],
       ),
@@ -131,7 +115,7 @@ class Passes {
       predict: this.pass(
         "predict",
         code.predict,
-        [...sampled, U, ...shift],
+        [...sampled, U],
         // Trust and filter strength.
         [HALF, "r16float"],
       ),
@@ -152,29 +136,12 @@ class Passes {
           // previous frame kept.
           F,
           U,
-          ...shift,
+          // The existing 4x4 frame mean for rejected learned-filter history.
+          ...(code.filter ? [F] : []),
         ],
         // Both history paths, their statistics, and the image shown.
         [HALF, HALF, HALF, HALF],
       ),
-    };
-    this.follow = code.follow && {
-      motion: this.pass(
-        "motion",
-        code.follow.motion,
-        [U, F, F, F, F],
-        [HALF, HALF],
-      ),
-      pool: this.pass("pool", code.follow.pool, [F, F], [HALF, HALF], false),
-      // The estimate and next frame's decision are state, written here
-      // alongside the shift this frame's history reads.
-      solve: this.pass(
-        "solve",
-        code.follow.solve,
-        [U, F, F, F, F],
-        [HALF, HALF],
-      ),
-      pools: code.follow.pools,
     };
     this.filter = code.filter ? this.filterPasses(code.filter) : null;
     this.measureRounding(code.rounding);
@@ -384,7 +351,7 @@ class Passes {
    * and writes the other.
    */
   layout(width, height, external) {
-    const { passes, groups, lowLevel, follow, filter } = this;
+    const { passes, groups, lowLevel, filter } = this;
     const full = (format = HALF) => this.texture(format, width, height);
     const pair = (format = HALF) => [full(format), full(format)];
     const scaled = (divisor, format = HALF) =>
@@ -411,7 +378,6 @@ class Passes {
     const trust = [block(), block()];
     // Signed evidence, over a few frames, that a block's history lags.
     const evidence = [block(), block()];
-    const flow = follow && [scaled(2), scaled(2)];
     // Scratch of one frame. What was drawn, in cells of 8, 32, 128 and 512
     // pixels.
     const cells = [8, 32, 128, 512].map((width) => scaled(width, CELLS));
@@ -435,23 +401,6 @@ class Passes {
         });
     }
     const filtered = filter && full();
-    // The fit's sums and the previous estimate, averaged over its window.
-    const sums = [];
-    const smooth = [];
-    if (follow)
-      for (
-        let w = Math.max(1, Math.floor(width / 2)),
-          h = Math.max(1, Math.floor(height / 2)),
-          i = 0;
-        i <= follow.pools;
-        i++
-      ) {
-        sums.push([this.texture(HALF, w, h), this.texture(HALF, w, h)]);
-        w = Math.max(1, Math.floor(w / 2));
-        h = Math.max(1, Math.floor(h / 2));
-        if (i < follow.pools) smooth.push(this.texture(HALF, w, h));
-      }
-    const shift = follow && scaled(2);
     // The network's layers write one of two sets of targets and read the other.
     const layers = [0, 1].map(() =>
       Array.from({ length: groups }, () => block()),
@@ -490,45 +439,6 @@ class Passes {
         ]);
       if (filter && filtered)
         steps.push(...this.filterSteps(filter, levels, filterLevels, filtered));
-      const followed = shift ? [shift] : [];
-      if (follow && flow && shift) {
-        const smoothed = smooth[smooth.length - 1];
-        for (let i = 0; i < smooth.length; i++)
-          steps.push([
-            passes.downsample,
-            this.bind(passes.downsample, [
-              i === 0 ? flow[previous] : smooth[i - 1],
-            ]),
-            [smooth[i]],
-          ]);
-        steps.push([
-          follow.motion,
-          this.bind(follow.motion, [
-            depth[next],
-            levels[1],
-            output[previous],
-            flow[previous],
-            smoothed,
-          ]),
-          sums[0],
-        ]);
-        for (let i = 1; i < sums.length; i++)
-          steps.push([
-            follow.pool,
-            this.bind(follow.pool, sums[i - 1]),
-            sums[i],
-          ]);
-        steps.push([
-          follow.solve,
-          this.bind(follow.solve, [
-            depth[next],
-            ...sums[sums.length - 1],
-            flow[previous],
-            smoothed,
-          ]),
-          [flow[next], shift],
-        ]);
-      }
       steps.push(
         [
           passes.features,
@@ -546,14 +456,13 @@ class Passes {
             aux[previous],
             trust[previous],
             evidence[previous],
-            ...followed,
           ]),
           [...layers[0], evidence[next]],
         ],
         [passes.stage, this.bind(passes.stage, layers[0]), layers[1]],
         [
           passes.predict,
-          this.bind(passes.predict, [...layers[1], depth[next], ...followed]),
+          this.bind(passes.predict, [...layers[1], depth[next]]),
           [trust[next], strength],
         ],
         [
@@ -574,7 +483,7 @@ class Passes {
             // mean over 4x4 pixels.
             filter ? filterLevels[0].result : levels[2],
             depth[previous],
-            ...followed,
+            ...(filter ? [levels[2]] : []),
           ]),
           [accumulated[next], denoised[next], aux[next], output[next]],
         ],
@@ -658,7 +567,7 @@ class Passes {
 export class NeuralDenoiseNode extends Node {
   scene;
   camera;
-  quality;
+  profile;
   static get type() {
     return "NeuralDenoiseNode";
   }
@@ -718,15 +627,15 @@ export class NeuralDenoiseNode extends Node {
   pipelineRendering = false;
   capturePending = true;
   /**
-   * @param quality  Which of the two trained models runs. `"balanced"` takes
-   *   more GPU time and keeps more fine detail while the camera moves. Fixed
-   *   for the node's lifetime.
+   * @param profile  The trained model: fixed spatial filtering (`"profile1"`)
+   *   or learned filtering with pixel correction (`"profile2"`, the default).
+   *   Fixed for the node's lifetime.
    */
-  constructor(scene, camera, quality = "balanced") {
+  constructor(scene, camera, profile = "profile2") {
     super("vec4");
     this.scene = scene;
     this.camera = camera;
-    this.quality = quality;
+    this.profile = profile;
     this.updateBeforeType = NodeUpdateType.RENDER;
     this.source.texture.name = "NeuralDenoise.scene";
     this.history[0].texture.name = "NeuralDenoise.history0";
@@ -766,7 +675,7 @@ export class NeuralDenoiseNode extends Node {
     }
     const backend = renderer.backend;
     if (this.passes === null) {
-      const model = neuralDenoiseModels[this.quality];
+      const model = neuralDenoiseModels[this.profile];
       this.passes = new Passes(backend.device, model);
     }
     const { camera, state, passes } = this;
@@ -850,31 +759,13 @@ export class NeuralDenoiseNode extends Node {
         ],
         52,
       );
-      // Where this frame's samples lie relative to pixel centres: the point
-      // the jittered projection puts at the centre of the view, seen through
-      // the unjittered one.
-      const unjittered = camera.projectionMatrix.elements;
-      const x = (jittered[8] - jittered[12]) / jittered[0];
-      const y = (jittered[9] - jittered[13]) / jittered[5];
-      const clip = (row) =>
-        unjittered[row] * x +
-        unjittered[row + 4] * y -
-        unjittered[row + 8] +
-        unjittered[row + 12];
-      u.set(
-        [
-          (clip(0) / clip(3)) * 0.5 * width,
-          (clip(1) / clip(3)) * -0.5 * height,
-        ],
-        60,
-      );
       // How far the camera turned since the previous frame, whatever scale
       // its rig carries.
       const cosine =
         ((r[0] + r[5] + r[10]) / Math.cbrt(this.relative.determinant()) - 1) /
         2;
-      u[62] = Math.acos(Math.min(1, Math.max(-1, cosine)));
-      u.set([offsetX, offsetY], 64);
+      u[60] = Math.acos(Math.min(1, Math.max(-1, cosine)));
+      u.set([offsetX, offsetY], 62);
       const encode =
         ColorManagement.getTransfer(this.workingColorSpace) === LinearTransfer;
       this.encoded.value = encode;
