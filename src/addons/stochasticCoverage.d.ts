@@ -3,7 +3,6 @@ import type { Renderer } from "three/webgpu";
 /** Four coverage decisions in one fragment, resolved by 4x MSAA. */
 export declare class StochasticCoverage {
   private readonly materials;
-  private readonly coverage;
   constructor();
   private material;
   render(

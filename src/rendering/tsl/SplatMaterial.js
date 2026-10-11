@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry.js";
+import { registerStochasticSplatMaterial } from "../StochasticSplatMaterial.js";
 import { ORDERING_TEXTURE_WIDTH } from "../uniforms.js";
 import { createProjectionProgram } from "./ProjectionProgram.js";
 import {
@@ -11,6 +12,7 @@ import {
   textureBinding,
   uniformBinding,
 } from "./shaderUtils.js";
+import { stochasticCoverage } from "./stochasticCoverage.js";
 import { splatViewUniforms } from "./viewUniforms.js";
 const stochasticHash = N.Fn(([input]) => {
   const value = N.uint(input).toVar();
@@ -21,7 +23,6 @@ const stochasticHash = N.Fn(([input]) => {
   value.bitXorAssign(value.shiftRight(16));
   return value;
 });
-const stochasticFragments = new WeakMap();
 function createSplatFragment(minAlpha, edgeFade, stochasticNoise, coverage) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
@@ -248,16 +249,13 @@ export function createSplatNodeMaterial({
     fog: false,
     toneMapped: false,
   });
-  if (stochastic) stochasticFragments.set(material, fragment);
+  if (stochastic) {
+    registerStochasticSplatMaterial(material, () =>
+      Object.assign(material.clone(), {
+        uniforms: material.uniforms,
+        colorNode: fragment(stochasticCoverage).fragmentNode,
+      }),
+    );
+  }
   return material;
-}
-
-/** Shares a stochastic Splat's vertex graph and uniforms, replacing coverage. */
-export function createStochasticSplatVariant(material, coverage) {
-  const fragment = stochasticFragments.get(material);
-  if (!fragment) return null;
-  return Object.assign(material.clone(), {
-    uniforms: material.uniforms,
-    colorNode: fragment(coverage).fragmentNode,
-  });
 }

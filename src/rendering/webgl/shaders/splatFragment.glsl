@@ -51,6 +51,7 @@ void main() {
     coord.y += int(vStochasticOffset >> 10u) * 32;
     float randomValue = (float(texelFetch(stochasticNoise, coord, 0).r) + 0.5) / 32768.0;
     #ifdef GSL_COVERAGE_SAMPLES
+    // Matches the four stratified decisions in tsl/stochasticCoverage.js.
     int mask = 0;
     for (int sampleIndex = 0; sampleIndex < 4; sampleIndex++) {
         if (fract(randomValue + float(sampleIndex) * 0.25) < alpha) mask |= 1 << sampleIndex;

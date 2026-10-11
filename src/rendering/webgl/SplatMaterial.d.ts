@@ -7,8 +7,3 @@ export declare function createWebGLSplatMaterial(
   options: SplatMaterialOptions,
   stochastic: boolean,
 ): THREE.ShaderMaterial;
-/** Shares the existing Splat shader and uniforms, adding four-sample coverage. */
-export declare function createWebGLCoverageVariant(
-  source: THREE.Material,
-  renderer: THREE.WebGLRenderer,
-): THREE.ShaderMaterial | null;

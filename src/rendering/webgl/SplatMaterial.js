@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry.js";
+import { registerStochasticSplatMaterial } from "../StochasticSplatMaterial.js";
 import { getShaders } from "./shaders.js";
-const stochasticMaterials = new WeakSet();
 /** Sorted and stochastic variants keep separate programs. */
 export function createWebGLSplatMaterial(uniforms, options, stochastic) {
   const shaders = getShaders();
@@ -18,13 +18,16 @@ export function createWebGLSplatMaterial(uniforms, options, stochastic) {
     side: THREE.FrontSide,
     allowOverride: false,
   });
-  if (stochastic) stochasticMaterials.add(material);
+  if (stochastic) {
+    registerStochasticSplatMaterial(material, (renderer) =>
+      createCoverageVariant(material, renderer),
+    );
+  }
   return material;
 }
 
 /** Shares the existing Splat shader and uniforms, adding four-sample coverage. */
-export function createWebGLCoverageVariant(source, renderer) {
-  if (!stochasticMaterials.has(source)) return null;
+function createCoverageVariant(source, renderer) {
   // RawShaderMaterial lets the extension precede precision declarations.
   // Three still supplies projectionMatrix and logDepthBufFC as usual.
   const material = new THREE.RawShaderMaterial().copy(source);
