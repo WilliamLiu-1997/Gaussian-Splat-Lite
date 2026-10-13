@@ -55,23 +55,22 @@ export class NeuralDenoisePasses {
       // four times as wide: a block with no depth of its own takes one there.
       cells: this.pass("cells", code.cells, ["depth"], [CELLS]),
       wider: this.pass("wider", code.wider, [U], [CELLS], false),
-      // The depth, and whether it is the block's own.
-      depth: this.pass("depth", code.depth, ["depth", U, U, U, U], [DEPTH]),
+      // The block's depth, whether it is its own, and the first color level.
+      depth: this.pass(
+        "depth",
+        code.depth,
+        ["depth", U, U, U, U, F],
+        [DEPTH, HALF],
+      ),
       expose: this.pass("expose", code.expose, ["depth"], [], true, true),
       encode: this.pass("encode", code.encode, [F], [HALF]),
-      sourceDownsample: this.pass(
-        "sourceDownsample",
-        code.sourceDownsample,
-        [F],
-        [HALF],
-      ),
       downsample: this.pass("downsample", code.downsample, [F], [HALF], false),
       features: this.pass(
         "features",
         code.features,
-        [U, U, F, F, F, F, F, F, F, F, F],
+        [U, U, F, F, ...(this.compact ? [] : [F]), F, F, F, F, F, F],
         // The first layer, and the evidence with this frame in it.
-        [...written, HALF],
+        [...written, HALF, ...(this.compact ? [HALF] : [])],
       ),
       stage: this.pass("stage", code.stage, sampled, written),
       predict: this.pass(
@@ -120,8 +119,8 @@ export class NeuralDenoisePasses {
         this.pass(
           `filterEncode${i}`,
           shader,
-          i === last ? [F, F] : [F, F, F, ...read],
-          wrote,
+          i === last ? [F] : [F, F, F, ...read],
+          i === last ? [...wrote, HALF] : wrote,
         ),
       ),
       kernel: filter.kernel.map((shader, i) =>
@@ -147,11 +146,11 @@ export class NeuralDenoisePasses {
         [
           filter.encode[i],
           this.bind(filter.encode[i], [
-            levels[i + 1],
+            ...(below ? [levels[i + 1]] : []),
             levels[i],
             ...(below ? [below.result, ...below.hidden] : []),
           ]),
-          encoded,
+          below ? encoded : [...encoded, levels[i + 1]],
         ],
         [
           filter.kernel[i],
@@ -276,11 +275,6 @@ export class NeuralDenoisePasses {
           this.bind(passes.wider, [cells[i - 1]]),
           [cells[i]],
         ]);
-      steps.push([
-        passes.depth,
-        this.bind(passes.depth, [sceneDepth, ...cells]),
-        [depth[next]],
-      ]);
       if (exposed)
         steps.push([
           passes.expose,
@@ -294,12 +288,15 @@ export class NeuralDenoisePasses {
           this.bind(passes.encode, [sceneColor]),
           [color],
         ]);
-      for (let i = 1; i < levels.length; i++) {
-        const downsample =
-          i === 1 ? passes.sourceDownsample : passes.downsample;
+      steps.push([
+        passes.depth,
+        this.bind(passes.depth, [sceneDepth, ...cells, color]),
+        [depth[next], levels[1]],
+      ]);
+      for (let i = 2; i < levels.length - 1; i++) {
         steps.push([
-          downsample,
-          this.bind(downsample, [levels[i - 1]]),
+          passes.downsample,
+          this.bind(passes.downsample, [levels[i - 1]]),
           [levels[i]],
         ]);
       }
@@ -313,7 +310,7 @@ export class NeuralDenoisePasses {
             depth[previous],
             color,
             levels[1],
-            levels[2],
+            ...(this.compact ? [] : [levels[2]]),
             filtered,
             accumulated[previous],
             denoised[previous],
@@ -321,7 +318,7 @@ export class NeuralDenoisePasses {
             trust[previous],
             evidence[previous],
           ]),
-          [...layers[0], evidence[next]],
+          [...layers[0], evidence[next], ...(this.compact ? [levels[2]] : [])],
         ],
         [passes.stage, this.bind(passes.stage, layers[0]), layers[1]],
         [

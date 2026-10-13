@@ -376,6 +376,7 @@ const depth = (
 @group(0) @binding(4) var cells32: texture_2d<f32>;
 @group(0) @binding(5) var cells128: texture_2d<f32>;
 @group(0) @binding(6) var cells512: texture_2d<f32>;
+@group(0) @binding(7) var colorTexture: texture_2d<f32>;
 // What a cell lends a block with no depth of its own, and whether it had
 // enough pixels drawn to decide (y). It lends the mean of their disparities
 // where they agree on a depth and the far plane where they do not: lent a
@@ -399,8 +400,7 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
 // what was drawn around it, from the narrowest cell that had enough drawn, so
 // that a rim moves with its branch and the empty space beside a model with
 // the model.
-@fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let p: vec2i = vec2i(position.xy) * 2;
+fn blockViewDepth(p: vec2i) -> vec4f {
   // View depth is monotonic: rank the raw samples first, then unproject only
   // the third nearest. Negating reversed depth keeps the same ordering.
   let direction: f32 = select(1.0, -1.0, P.clearDepth == 0.0 && P.logDepth < 0.5);
@@ -421,6 +421,17 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
   if (lent.y == 0.0) { lent = lending(cells128, p, 128); }
   if (lent.y == 0.0) { lent = lending(cells512, p, 512); }
   return vec4f(lent.x, 1.0, 0.0, 1.0);
+}
+struct Output {
+  @location(0) depth: vec4f,
+  @location(1) color: vec4f,
+};
+// Both outputs have one texel per 2x2 block of the captured image.
+@fragment fn fragment(@builtin(position) position: vec4f) -> Output {
+  var out: Output;
+  out.depth = blockViewDepth(vec2i(position.xy) * 2);
+  out.color = frameSample(colorTexture, position.xy * 2.0);
+  return out;
 }`;
 // The scene's depth without the target's margin, for the application.
 const expose = (
@@ -451,12 +462,6 @@ const DOWNSAMPLE = /* wgsl */ `${VERTEX}
 @group(0) @binding(1) var image: texture_2d<f32>;
 @fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
   return textureSampleLevel(image, linearSampler, position.xy * 2.0 / vec2f(textureDimensions(image)), 0.0);
-}`;
-// The first level reads the viewport within the scene's capture target.
-const SOURCE_DOWNSAMPLE = /* wgsl */ `${PARAMS}
-@group(0) @binding(2) var image: texture_2d<f32>;
-@fragment fn fragment(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  return frameSample(image, position.xy * 2.0);
 }`;
 const COARSE = /* wgsl */ `
 // Bilinear lookup, at a position in pixels of the frame, in an image whose
@@ -517,8 +522,8 @@ ${head("KEEP", layer, 9)}`;
     const encode = /* wgsl */ `${PARAMS}
 ${pointwise("ENCODE", widened(layers.encode, 7, 1))}
 ${COARSE}
-@group(0) @binding(2) var level: texture_2d<f32>;
-@group(0) @binding(3) var finer: texture_2d<f32>;
+${last ? "" : "@group(0) @binding(2) var level: texture_2d<f32>;"}
+@group(0) @binding(${last ? 2 : 3}) var finer: texture_2d<f32>;
 ${
   last
     ? ""
@@ -527,10 +532,12 @@ ${groups.map((g) => `@group(0) @binding(${5 + g}) var hidden${g}: texture_2d<f32
 }
 struct Output {
 ${targets("encoded")}
+${last ? `  @location(${groups.length}) color: vec4f,` : ""}
 };
 @fragment fn fragment(@builtin(position) position: vec4f) -> Output {
   let p: vec2i = vec2i(position.xy);
-  let own: vec3f = textureLoad(level, p, 0).rgb;
+  let color: vec4f = ${last ? "textureSampleLevel(finer, linearSampler, position.xy * 2.0 / vec2f(textureDimensions(finer)), 0.0)" : "textureLoad(level, p, 0)"};
+  let own: vec3f = color.rgb;
   // How far the four finer pixels this one stands for are from their mean:
   // the noise at this scale.
   var noise: f32 = 0.0;
@@ -543,6 +550,7 @@ ${targets("encoded")}
 ${last ? "" : groups.map((g) => `  let x${2 + g}: vec4f = coarse(hidden${g}, position.xy, 2.0);`).join("\n")}
   var out: Output;
 ${groups.map((g) => `  out.encoded${g} = silu(${mixed("ENCODE", g, ["x0", "x1", ...below])});`).join("\n")}
+${last ? "  out.color = color;" : ""}
   return out;
 }`;
     const kernel = /* wgsl */ `${VERTEX}${MATH}${TAPS}
@@ -784,7 +792,7 @@ fn blockSparse(pixel: vec2i) -> f32 {
 }`;
   const BLOCK_FILTERED = weights.compact
     ? /* wgsl */ `
-fn blockFiltered(block: vec2i) -> vec4f {
+fn blockFiltered(block: vec2i, color: vec4f) -> vec4f {
   let c: vec2f = vec2f(block * 4 + 2);
   var sum: vec4f = vec4f(0.0);
   for (var y: i32 = -1; y <= 1; y++) {
@@ -794,33 +802,40 @@ fn blockFiltered(block: vec2i) -> vec4f {
       sum += wx * wy * frameSample(colorTexture, c + vec2f(f32(x), f32(y)) * (11.0 / 6.0));
     }
   }
-  return mix(textureLoad(levelTwo, block, 0), sum, 0.5);
+  return mix(color, sum, 0.5);
 }
 `
     : /* wgsl */ `
-fn blockFiltered(block: vec2i) -> vec4f {
+fn blockFiltered(block: vec2i, color: vec4f) -> vec4f {
   return blockMean(filteredTexture, vec2f(block * 4 + 2) * P.invSize);
 }`;
   // The network's inputs and its first layer, per 4x4 block.
   const features = /* wgsl */ `${PARAMS}
 ${pointwise("ENCODE", net.encode)}
-@group(0) @binding(2) var depthBlocks: texture_2d<f32>;
-@group(0) @binding(3) var depthPrevious: texture_2d<f32>;
-@group(0) @binding(4) var colorTexture: texture_2d<f32>;
-@group(0) @binding(5) var levelOne: texture_2d<f32>;
-@group(0) @binding(6) var levelTwo: texture_2d<f32>;
-@group(0) @binding(7) var filteredTexture: texture_2d<f32>;
-@group(0) @binding(8) var previousAccumulated: texture_2d<f32>;
-@group(0) @binding(9) var previousDenoised: texture_2d<f32>;
-@group(0) @binding(10) var previousAux: texture_2d<f32>;
-@group(0) @binding(11) var previousTrust: texture_2d<f32>;
-@group(0) @binding(12) var previousEvidence: texture_2d<f32>;
+${[
+  "depthBlocks",
+  "depthPrevious",
+  "colorTexture",
+  "levelOne",
+  ...(weights.compact ? [] : ["levelTwo"]),
+  "filteredTexture",
+  "previousAccumulated",
+  "previousDenoised",
+  "previousAux",
+  "previousTrust",
+  "previousEvidence",
+]
+  .map(
+    (name, i) => `@group(0) @binding(${i + 2}) var ${name}: texture_2d<f32>;`,
+  )
+  .join("\n")}
 ${BLOCKS}
 ${COARSE}
 ${BLOCK_FILTERED}
 struct Output {
 ${targets("encoded")}
   @location(${groups.length}) evidence: vec4f,
+${weights.compact ? `  @location(${groups.length + 1}) color: vec4f,` : ""}
 };
 // Bilinear, clamped to the edge; float depth has no filtering sampler.
 fn previousDepth(uv: vec2f) -> f32 {
@@ -852,8 +867,8 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
   // not stand for both: the filter moves light across the block's border, so
   // beside a thin bright line the two differ for good, and a still view would
   // read as one that keeps changing.
-  let color: vec4f = textureLoad(levelTwo, block, 0);
-  let filtered: vec4f = blockFiltered(block);
+  let color: vec4f = ${weights.compact ? "textureSampleLevel(levelOne, linearSampler, position.xy * 2.0 / vec2f(textureDimensions(levelOne)), 0.0)" : "textureLoad(levelTwo, block, 0)"};
+  let filtered: vec4f = blockFiltered(block, color);
   // How far a pixel is from the mean of its 2x2 neighbours, over the block's
   // first four pixels: nothing on clean content, about the noise level on
   // stochastic Splats.
@@ -924,6 +939,7 @@ ${groups
   )
   .join("\n")}
   out.evidence = roundedHalf(evidence);
+${weights.compact ? "  out.color = color;" : ""}
   return out;
 }`;
   // First stage: a 3x3 depthwise layer and two pointwise ones.
@@ -1202,7 +1218,6 @@ ${
     expose: expose(multisampled),
     encode: ENCODE,
     downsample: DOWNSAMPLE,
-    sourceDownsample: SOURCE_DOWNSAMPLE,
     features,
     stage,
     predict,

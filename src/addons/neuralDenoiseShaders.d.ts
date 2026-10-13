@@ -31,7 +31,6 @@ type NeuralDenoiseQualityShaders = {
   expose: string;
   encode: string;
   downsample: string;
-  sourceDownsample: string;
   features: string;
   stage: string;
   predict: string;
