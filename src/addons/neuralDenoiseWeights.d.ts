@@ -8,9 +8,8 @@ export type NeuralDenoiseLayer = {
  * filter and gate's gain, with the constants it was trained under.
  * Trained on this renderer's stochastic frames.
  */
-export type NeuralDenoiseQualityModel = {
-  performance?: never;
-  /** Prototype: fixed local filtering without learned multiscale passes. */
+export type NeuralDenoiseModel = {
+  /** Use fixed local filtering without learned multiscale passes. */
   compact?: boolean;
   /** Gain of the variance gate between the two history paths. */
   gamma: number;
@@ -111,16 +110,7 @@ export type NeuralDenoiseQualityModel = {
     head: NeuralDenoiseLayer;
   };
 };
-export type NeuralDenoisePerformanceModel = {
-  performance: {
-    hidden: NeuralDenoiseLayer;
-    out: NeuralDenoiseLayer;
-  };
-};
-export type NeuralDenoiseModel =
-  | NeuralDenoiseQualityModel
-  | NeuralDenoisePerformanceModel;
 export declare const neuralDenoiseModels: {
-  quality: NeuralDenoiseQualityModel;
-  performance: NeuralDenoiseQualityModel;
+  quality: NeuralDenoiseModel;
+  performance: NeuralDenoiseModel;
 };

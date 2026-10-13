@@ -56,7 +56,7 @@ export class NeuralDenoiseNode extends Node {
   }
   /**
    * Blends the result with the previous image where the network trusts it.
-   * Quality mode only; turn it off for the two history paths alone.
+   * Applies to both modes; turn it off for the two history paths alone.
    */
   stabilize = true;
   source = new WebGLRenderTarget(1, 1, {
@@ -110,7 +110,7 @@ export class NeuralDenoiseNode extends Node {
   pipelineRendering = false;
   capturePending = true;
   /**
-   * @param mode Single-pass performance or multiscale quality (default).
+   * @param mode Fixed local filtering or learned multiscale quality (default).
    * @param msaa Enable 4× MSAA (default true).
    *   Fixed for the node's lifetime.
    */

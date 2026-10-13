@@ -23,7 +23,7 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   static get type(): string;
   /**
    * Blends the result with the previous image where the network trusts it.
-   * Quality mode only; turn it off for the two history paths alone.
+   * Applies to both modes; turn it off for the two history paths alone.
    */
   stabilize: boolean;
   private readonly source;
@@ -47,7 +47,7 @@ export declare class NeuralDenoiseNode extends Node<"vec4"> {
   private pipelineRendering;
   private capturePending;
   /**
-   * @param mode Single-pass performance or multiscale quality (default).
+   * @param mode Fixed local filtering or learned multiscale quality (default).
    * @param msaa Enable 4× MSAA (default true).
    *   Fixed for the node's lifetime.
    */

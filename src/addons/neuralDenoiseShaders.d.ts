@@ -6,25 +6,16 @@ export declare const NEURAL_DENOISE_UNIFORM_FLOATS = 68;
  * Each fragment shader's bindings are: the uniform block, a linear sampler,
  * then its textures in the order they are declared.
  *
- * Quality mode keeps view depth per 2x2 block. The network runs on 4x4 blocks, and
- * takes a block's means from a few bilinear taps straight into the previous
- * frame's state, so nothing reprojected has to be stored for it. One pass
- * per pixel then reprojects, filters, updates both paths, mixes them and
- * stabilizes the result. Performance mode uses one full-resolution pass
- * with one color history and one statistics history.
+ * Both modes keep view depth per 2x2 block. The network runs on 4x4 blocks,
+ * followed by per-pixel reprojection, filtering, blending and stabilization.
+ * Performance uses fixed local filtering and simpler history sampling;
+ * Quality uses learned multiscale filtering.
  */
 export declare function neuralDenoiseShaders(
   weights: NeuralDenoiseModel,
   multisampled?: boolean,
-): NeuralDenoiseQualityShaders | NeuralDenoisePerformanceShaders;
-type NeuralDenoisePerformanceShaders = {
-  performance: string;
-  expose: string;
-  encode: string;
-  rounding: string;
-};
-type NeuralDenoiseQualityShaders = {
-  performance?: never;
+): NeuralDenoiseShaders;
+type NeuralDenoiseShaders = {
   cells: string;
   wider: string;
   depth: string;

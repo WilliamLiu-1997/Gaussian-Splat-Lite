@@ -20,7 +20,6 @@ export class NeuralDenoisePasses {
   external = null;
   frames = [];
   filter;
-  performance;
   compact;
   passes;
   /** The network's hidden channels, in groups of four: render targets per layer. */
@@ -30,20 +29,6 @@ export class NeuralDenoisePasses {
     this.compact = model.compact === true;
     this.multisampled = multisampled;
     const code = neuralDenoiseShaders(model, multisampled);
-    this.performance = Boolean(code.performance);
-    if (this.performance) {
-      this.passes = {
-        resolve: this.pass(
-          "performance",
-          code.performance,
-          ["depth", "float", "float", "float"],
-          [HALF, HALF],
-        ),
-        encode: this.pass("encode", code.encode, ["float"], [HALF]),
-        expose: this.pass("expose", code.expose, ["depth"], [], true, true),
-      };
-      return code.rounding;
-    }
     this.groups = code.groups;
     const F = FILTERABLE;
     const U = UNFILTERABLE;
@@ -174,46 +159,7 @@ export class NeuralDenoisePasses {
     ]);
     return steps;
   }
-  performanceLayout(width, height, external) {
-    const { passes } = this;
-    const source = this.view(external.color);
-    const depth = this.view(external.depth, true);
-    const exposed = external.exposed && this.view(external.exposed);
-    const color = external.encode ? this.texture(HALF, width, height) : source;
-    const aux = [0, 1].map(() => this.texture(HALF, width, height));
-    const output = this.outputViews(external.history, width, height);
-    return (previous) => {
-      const next = 1 - previous;
-      const steps = [];
-      if (exposed)
-        steps.push([
-          passes.expose,
-          this.bind(passes.expose, [depth]),
-          [],
-          exposed,
-        ]);
-      if (external.encode)
-        steps.push([
-          passes.encode,
-          this.bind(passes.encode, [source]),
-          [color],
-        ]);
-      steps.push([
-        passes.resolve,
-        this.bind(passes.resolve, [
-          depth,
-          color,
-          output[previous],
-          aux[previous],
-        ]),
-        [output[next], aux[next]],
-      ]);
-      return steps;
-    };
-  }
   layout(width, height, external) {
-    if (this.performance)
-      return this.performanceLayout(width, height, external);
     const { passes, groups, filter } = this;
     const full = (format = HALF) => this.texture(format, width, height);
     const pair = (format = HALF) => [full(format), full(format)];

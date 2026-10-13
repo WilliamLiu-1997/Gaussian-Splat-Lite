@@ -657,116 +657,17 @@ fn compactFiltered(p: vec2f) -> vec4f {
 }
 `;
 
-// One full-resolution pass; the learned decisions share the TAA-size footprint.
-function performanceShader(network, multisampled) {
-  return /* wgsl */ `${PARAMS}${TAPS}${sceneDepth(multisampled)}
-${pointwise("FAST_ENCODE", network.hidden)}
-${pointwise("FAST_HEAD", network.out)}
-@group(0) @binding(3) var current: texture_2d<f32>;
-@group(0) @binding(4) var history: texture_2d<f32>;
-@group(0) @binding(5) var statistics: texture_2d<f32>;
-struct Output {
-  @location(0) color: vec4f,
-  @location(1) aux: vec4f,
-};
-@fragment fn fragment(@builtin(position) position: vec4f) -> Output {
-  let p: vec2i = vec2i(position.xy);
-  let color: vec4f = frameLoad(current, p);
-  var mean: vec4f = vec4f(0.0);
-  var moment: vec4f = vec4f(0.0);
-  let direction: f32 = select(1.0, -1.0, P.clearDepth == 0.0 && P.logDepth < 0.5);
-  var nearest: vec3f = vec3f(3.0e38);
-  for (var j: i32 = 0; j < 9; j++) {
-    let q: vec2i = bounded(p + TAPS[j]);
-    let c: vec4f = frameLoad(current, q);
-    mean += c;
-    moment += c * c;
-    let raw: f32 = sceneDepth(drawn(q));
-    let depth: f32 = select(raw * direction, 3.0e38, raw == P.clearDepth);
-    let a: f32 = max(nearest.x, depth);
-    let b: f32 = max(nearest.y, a);
-    nearest = vec3f(min(nearest.x, depth), min(nearest.y, a), min(nearest.z, b));
-  }
-  mean /= 9.0;
-  let variance: vec4f = max(moment / 9.0 - mean * mean, vec4f(0.0));
-  var z: f32 = P.far;
-  if (nearest.z < 3.0e38) { z = min(viewDepth(nearest.z * direction), P.far); }
-  let logz: f32 = log2(max(z, 1e-4));
-  var h: History = reproject(position.xy, z);
-  // A reset has no previous camera; match the training chain's cold start.
-  if (P.historyValid < 0.5) {
-    h.uv = position.xy * P.invSize;
-    h.motion = 0.0;
-    h.previousZ = z;
-    h.valid = 0.0;
-  }
-  var valid: f32 = h.valid * P.historyValid;
-  var previous: vec4f = vec4f(0.0);
-  var aux: vec4f = vec4f(0.0);
-  if (P.historyValid > 0.5) {
-    previous = textureSampleLevel(history, linearSampler, h.uv, 0.0);
-    aux = textureSampleLevel(statistics, linearSampler, h.uv, 0.0);
-  }
-  let difference: f32 = min(abs(aux.x - log2(max(h.previousZ, 1e-4))), 4.0);
-  if (difference > 0.3) { valid *= 1.0 - h.motion / (h.motion + 1.0); }
-  let count: f32 = aux.y * valid;
-  let ym: f32 = luma(mean.rgb);
-  let yc: f32 = luma(color.rgb);
-  let yh: f32 = luma(previous.rgb);
-  let deviation: f32 = sqrt(max(aux.z - yh * yh, 0.0) + 1e-8);
-  let scale: f32 = deviation + 0.02;
-  let innovation: f32 = yc - yh;
-  let evidence: f32 = 0.8 * aux.w * valid + 0.2 * innovation;
-  let phase: vec2f = fract((h.uv - position.xy * P.invSize) * P.size);
-  let subpixel: vec2f = max(phase, 1.0 - phase);
-  let f0: vec4f = vec4f(clamp(vec3f(innovation, abs(innovation), yc - ym) / scale,
-    vec3f(-4.0), vec3f(4.0)), min(deviation, 1.0));
-  let f1: vec4f = clamp(vec4f(chroma(color.rgb) - chroma(previous.rgb),
-    chroma(color.rgb) - chroma(mean.rgb)) / scale, vec4f(-4.0), vec4f(4.0));
-  let f2: vec4f = vec4f(count / 128.0, h.motion / (h.motion + 20.0), difference,
-    clamp(evidence / scale, -4.0, 4.0));
-  let f3: vec4f = vec4f(color.a, mean.a, previous.a, 1.0 - subpixel.x * subpixel.y);
-  let a0: vec4f = max(${mixed("FAST_ENCODE", 0, ["f0", "f1", "f2", "f3"])}, vec4f(0.0));
-  let a1: vec4f = max(${mixed("FAST_ENCODE", 1, ["f0", "f1", "f2", "f3"])}, vec4f(0.0));
-  let decisions: vec4f = vec4f(1.0) / (vec4f(1.0) + exp(-(${mixed("FAST_HEAD", 0, ["a0", "a1"])})));
-  let floorWeight: f32 = 0.008 + 0.35 * (1.0 - subpixel.x * subpixel.y) + 0.25 * h.motion / (h.motion + 20.0);
-  let weight: f32 = max(1.0 / (count + 1.0), max(floorWeight, decisions.x));
-  let keep: f32 = 1.0 / weight - 1.0;
-  let spatial: f32 = 0.8 * decisions.y / (1.0 + keep / 4.0);
-  let currentSample: vec4f = mix(color, mean, spatial);
-  let gamma: vec4f = vec4f(vec3f(0.5 + 3.5 * decisions.z), 0.5 + 3.5 * decisions.w);
-  let extent: vec4f = sqrt(variance + vec4f(1e-8)) * gamma + 0.001;
-  let delta: vec4f = previous - mean;
-  let unit: vec4f = abs(delta) / extent;
-  let ratio: f32 = max(1.0, max(max(unit.x, unit.y), max(unit.z, unit.w)));
-  let clipped: vec4f = mean + delta / ratio;
-  let kept: vec4f = clipped;
-  var out: Output;
-  out.color = roundedHalf(max(mix(kept, currentSample, weight), vec4f(0.0)));
-  out.aux = roundedHalf(vec4f(logz, min(keep + 1.0, 128.0), mix(aux.z, yc * yc, weight), evidence));
-  return out;
-}`;
-}
-
 /**
  * The WGSL of every pass, with the trained weights written in as constants.
  * Each fragment shader's bindings are: the uniform block, a linear sampler,
  * then its textures in the order they are declared.
  *
- * Quality mode keeps view depth per 2x2 block. The network runs on 4x4 blocks,
+ * Both modes keep view depth per 2x2 block. The network runs on 4x4 blocks,
  * followed by per-pixel reprojection, filtering, blending and stabilization.
- * Performance mode uses one full-resolution pass with one color history and
- * one statistics history.
+ * Performance uses fixed local filtering and simpler history sampling;
+ * Quality uses learned multiscale filtering.
  */
 export function neuralDenoiseShaders(weights, multisampled = false) {
-  if (weights.performance)
-    return {
-      performance: performanceShader(weights.performance, multisampled),
-      expose: expose(multisampled),
-      encode: ENCODE,
-      rounding: ROUNDING,
-    };
-
   const net = weights.network;
   const learned = learnedFilter(weights.filter);
   const groups = range(net.encode.b.length / 4);
@@ -904,10 +805,21 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
     let zp: f32 = previousDepth(h.uv + 0.5 * P.invSize);
     relative = clamp(abs(zp - h.previousZ) / max(max(zp, h.previousZ), 1e-6), 0.0, 1.0) * valid;
   }
-  let y: f32 = luma(color.rgb);
-  let yd: f32 = luma(filtered.rgb);
   let ys: f32 = luma(sr.rgb);
   let ydr: f32 = luma(dr.rgb);
+  // Single-sample subpixel coverage can alternate across a still edge and
+  // repeatedly reject its history. Soften only the network's change features
+  // when the block's variation can explain that change. A change continuing
+  // the previous signed evidence keeps the full response to moving content.
+  // The raw samples and spatial fallback below remain the current frame's.
+  let samplingDeviation: f32 = sqrt(max(aux.x - ys * ys, 0.0));
+  let change: f32 = max(luma(abs(color.rgb - sr.rgb)), luma(abs(filtered.rgb - dr.rgb)));
+  let persistentChange: bool = (luma(filtered.rgb) - aux.w) * kept.x > 0.0;
+  let featureBlend: f32 = 0.5 * P.cameraStill * valid * select(1.0, 0.0, persistentChange) * samplingDeviation / max(max(samplingDeviation, change), 1e-6);
+  let featureColor: vec4f = mix(color, sr, featureBlend);
+  let featureFiltered: vec4f = mix(filtered, dr, featureBlend);
+  let y: f32 = luma(featureColor.rgb);
+  let yd: f32 = luma(featureFiltered.rgb);
   let lowpass: f32 = abs(yd - ydr);
   let slowNow: f32 = abs(aux.w - yd) * valid;
   let slowFast: f32 = abs(aux.w - ydr) * valid;
@@ -919,9 +831,9 @@ fn blockMean(state: texture_2d<f32>, centre: vec2f) -> vec4f {
   let gap: vec4f = abs(evidence);
   let ratio: vec4f = min(gap / (deviation + 0.02), vec4f(4.0));
   let held: vec2f = chroma(sr.rgb);
-  let now: vec2f = chroma(color.rgb) - held;
+  let now: vec2f = chroma(featureColor.rgb) - held;
   let apart: vec2f = held - chroma(dr.rgb);
-  let cd: vec2f = chroma(filtered.rgb) - chroma(dr.rgb);
+  let cd: vec2f = chroma(featureFiltered.rgb) - chroma(dr.rgb);
   let colorHeld: f32 = sqrt(dot(apart, apart) + 1e-12) * valid;
   let distance: f32 = sqrt((yd - ydr) * (yd - ydr) + dot(cd, cd) + 1e-12);
   let fs0: vec4f = vec4f(abs(y - ys), trust.x, motion * motion, aux.y * valid / ${float(weights.accumulatedFrames)});
