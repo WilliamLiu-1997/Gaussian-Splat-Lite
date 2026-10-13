@@ -37,6 +37,7 @@ export class TAANode extends Node {
     this.useSubpixelCorrection = true;
     this.source = this.makeTarget("TAA.scene");
     this.source.samples = msaa ? 4 : 0;
+    this.source.storeMultisampledColorBuffer = false;
     this.history = [
       this.makeTarget("TAA.history0"),
       this.makeTarget("TAA.history1"),

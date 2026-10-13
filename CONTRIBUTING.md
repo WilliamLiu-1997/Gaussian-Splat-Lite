@@ -12,8 +12,6 @@ npm run dev
 
 Check WebGPU, WebGL2, and WebGPU · WebGL2 in the viewer. For rendering changes, compare sorted and stochastic rendering, mesh occlusion, and transparent edges.
 
-See [Architecture](docs/Architecture.md) for module responsibilities, backend boundaries, and resource ownership.
-
 Implementations and build scripts use JavaScript. Keep TypeScript declarations in adjacent `.d.ts` files and update them whenever the corresponding API changes. `src/index.js` and `src/index.d.ts` define the package's runtime and type exports.
 
 ## Validation
