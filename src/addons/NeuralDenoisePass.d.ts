@@ -9,7 +9,7 @@ import type {
 } from "three";
 import { Pass } from "three/addons/postprocessing/Pass.js";
 import type { NeuralDenoiseMode } from "./NeuralDenoiseNode.js";
-/** Neural denoising for WebGLRenderer. Use with EffectComposer and OutputPass. */
+/** Experimental neural denoising for WebGLRenderer. Use with EffectComposer and OutputPass. */
 export declare class NeuralDenoisePass extends Pass {
   private readonly denoise;
   private readonly copy;

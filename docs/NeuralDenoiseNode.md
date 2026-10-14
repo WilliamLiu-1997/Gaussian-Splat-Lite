@@ -1,8 +1,8 @@
-# NeuralDenoiseNode and NeuralDenoisePass
+# NeuralDenoiseNode and NeuralDenoisePass (Experimental)
 
 [Back to documentation](../README.md#documentation)
 
-The neural denoiser smooths [stochastic rendering](StochasticRendering.md). Use `NeuralDenoiseNode` with `WebGPURenderer`, including its WebGL2 fallback, or `NeuralDenoisePass` with `WebGLRenderer`. The trained models are included; no extra downloads are needed.
+The experimental neural denoiser smooths [stochastic rendering](StochasticRendering.md). Use `NeuralDenoiseNode` with `WebGPURenderer`, including its WebGL2 fallback, or `NeuralDenoisePass` with `WebGLRenderer`. The trained models are included; no extra downloads are needed.
 
 ## Choose between TAA and neural denoising
 
@@ -42,6 +42,8 @@ The fourth constructor argument, `msaa`, enables or disables 4× MSAA in either 
 | `true` (default) | Less noise during motion, with higher GPU and memory use |
 
 For example, `new NeuralDenoiseNode(scene, camera, "performance", false)` disables MSAA. `NeuralDenoisePass` accepts the same arguments. To change MSAA, dispose the node or pass and create another. The viewer has an **MSAA** switch, on by default.
+
+With MSAA off, stabilization is stronger to reduce flicker, which can add some trailing or softness during motion.
 
 ## Before you start
 

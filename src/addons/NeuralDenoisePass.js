@@ -8,7 +8,7 @@ import {
 import { FullScreenQuad, Pass } from "three/addons/postprocessing/Pass.js";
 import { NeuralDenoiseNode } from "./NeuralDenoiseNode.js";
 
-/** Neural denoising for WebGLRenderer. Use with EffectComposer and OutputPass. */
+/** Experimental neural denoising for WebGLRenderer. Use with EffectComposer and OutputPass. */
 export class NeuralDenoisePass extends Pass {
   constructor(scene, camera, mode = "quality", msaa = true) {
     super();

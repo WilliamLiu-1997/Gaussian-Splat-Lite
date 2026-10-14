@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Stochastic rendering is an optional way for `GaussianSplatRenderer` to draw transparency. It produces visible noise, so pair it with temporal anti-aliasing (TAA) or the neural denoiser to get a smooth image. Sorted alpha blending remains the default.
+Stochastic rendering is an optional way for `GaussianSplatRenderer` to draw transparency. It produces visible noise, so pair it with temporal anti-aliasing (TAA) or the experimental neural denoiser to get a smooth image. Sorted alpha blending remains the default.
 
 Stochastic rendering works on WebGPU, WebGL2, and `WebGPURenderer`'s WebGL2 fallback, including WebXR. The smoothing options below do not support WebXR.
 
@@ -24,7 +24,7 @@ Both can be changed at any time. While stochastic rendering is active, Splats ar
 
 ## Smooth the noise
 
-Use [`TAANode`](TAAPass.md#taanode-webgpurenderer) with `WebGPURenderer`, or [`TAAPass`](TAAPass.md#taapass-webglrenderer) with `WebGLRenderer`. The [neural denoiser](NeuralDenoiseNode.md) is an alternative for scenes with moving objects on all three backends. The library does not turn any of them on for you. The examples assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with one camera outside WebXR.
+Use [`TAANode`](TAAPass.md#taanode-webgpurenderer) with `WebGPURenderer`, or [`TAAPass`](TAAPass.md#taapass-webglrenderer) with `WebGLRenderer`. The [experimental neural denoiser](NeuralDenoiseNode.md) is an alternative for scenes with moving objects on all three backends. The library does not turn any of them on for you. The examples assume an existing `renderer`, `scene`, `camera`, and `splatRenderer`, with one camera outside WebXR.
 
 ### WebGPURenderer: TAANode
 

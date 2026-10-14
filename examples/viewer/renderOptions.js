@@ -62,11 +62,11 @@ export const renderOptionGroups = [
         property: "denoiser",
         label: "Stochastic denoiser",
         description:
-          "Neural offers Performance and Quality modes for reducing stochastic noise.",
+          "Experimental neural denoising offers Performance and Quality modes for reducing stochastic noise.",
         defaultValue: "neural",
         choices: [
           ["taa", "TAA"],
-          ["neural", "Neural"],
+          ["neural", "Neural (Experimental)"],
         ],
       },
       {

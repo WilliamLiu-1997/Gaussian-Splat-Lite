@@ -39,7 +39,7 @@ const VIEW_OFFSETS = [
   [3, 3],
 ];
 /**
- * Temporal neural denoiser for stochastic Splat rendering on WebGPURenderer,
+ * Experimental temporal neural denoiser for stochastic Splat rendering on WebGPURenderer,
  * including its WebGL2 fallback,
  * used in place of TAANode. After Hu et al., "Ultra-fast Neural Inference for
  * Stochastic Gaussian Splatting Denoising" (arXiv 2609.25604), adapted to
@@ -160,7 +160,10 @@ export class NeuralDenoiseNode extends Node {
     }
     const backend = renderer.backend;
     if (this.passes === null) {
-      const model = neuralDenoiseModels[this.mode];
+      const model = {
+        ...neuralDenoiseModels[this.mode],
+        stabilizeNoise: !this.msaa,
+      };
       this.passes = native
         ? new WebGPUDenoisePasses(backend.device, model, this.coverage !== null)
         : new WebGLDenoisePasses(renderer, model);

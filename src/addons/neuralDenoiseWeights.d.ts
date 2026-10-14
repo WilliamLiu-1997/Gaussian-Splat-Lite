@@ -11,6 +11,8 @@ export type NeuralDenoiseLayer = {
 export type NeuralDenoiseModel = {
   /** Use fixed local filtering without learned multiscale passes. */
   compact?: boolean;
+  /** Strengthen display stabilization for single-sample stochastic noise. */
+  stabilizeNoise?: boolean;
   /** Gain of the variance gate between the two history paths. */
   gamma: number;
   /** Longest history of the accumulated and of the denoised path, in frames. */

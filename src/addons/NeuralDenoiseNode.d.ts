@@ -8,7 +8,7 @@ import type {
 import { Node, type NodeBuilder, type NodeFrame } from "three/webgpu";
 export type NeuralDenoiseMode = "performance" | "quality";
 /**
- * Temporal neural denoiser for stochastic Splat rendering on WebGPURenderer,
+ * Experimental temporal neural denoiser for stochastic Splat rendering on WebGPURenderer,
  * including its WebGL2 fallback,
  * used in place of TAANode. After Hu et al., "Ultra-fast Neural Inference for
  * Stochastic Gaussian Splatting Denoising" (arXiv 2609.25604), adapted to

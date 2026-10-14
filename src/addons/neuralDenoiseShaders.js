@@ -1119,7 +1119,19 @@ ${
   out.denoised = roundedHalf(dn);
   out.aux = roundedHalf(vec4f(y2, ns, nh, slow));
   // Borrowed depth also makes the displayed history uncertain during motion.
-  let stabilize: f32 = ${float(weights.stabilizeBlend)} * trust.z * mix(1.0, ${float(weights.sparseStabilize)}, sparseMotion);
+  ${weights.stabilizeNoise ? "var" : "let"} stabilize: f32 = ${float(weights.stabilizeBlend)} * trust.z * mix(1.0, ${float(weights.sparseStabilize)}, sparseMotion);
+${
+  weights.stabilizeNoise
+    ? `  // A single coverage sample can change brightness even where history is
+  // usable. Retain more of the displayed image when that change fits the
+  // accumulated noise; large changes and rejected history keep responding.
+  let difference: f32 = luma(abs(composite.rgb - previous.value.rgb));
+  let uncertainty: f32 = 16.0 * error * error;
+  let confidence: f32 = uncertainty / (uncertainty + difference * difference + 1e-10);
+  // Borrowed depth cannot anchor stronger stabilization while the view moves.
+  stabilize = max(stabilize, ${float(weights.stabilizeBlend)} * trust.y * confidence * (1.0 - sparseMotion));`
+    : ""
+}
   out.shown = roundedHalf(mix(composite, clamped, stabilize * step(0.5, P.stabilize)));
   return out;
 }`;
