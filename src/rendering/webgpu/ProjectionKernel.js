@@ -24,15 +24,19 @@ export function createProjectionKernel({
   ).map((suffix) => {
     const renderSize = u(`renderSize${suffix}`, "vec2");
     return {
-      project: createProjectionProgram(uniforms, {
-        projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
-        renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
-        renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
-        renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
-        near: u(`near${suffix}`, "float"),
-        far: u(`far${suffix}`, "float"),
-        renderSize,
-      }),
+      project: createProjectionProgram(
+        uniforms,
+        {
+          projectionMatrix: u(`projectionMatrix${suffix}`, "mat4"),
+          renderToViewQuat: u(`renderToViewQuat${suffix}`, "vec4"),
+          renderToViewPos: u(`renderToViewPos${suffix}`, "vec3"),
+          renderToViewScale: u(`renderToViewScale${suffix}`, "float"),
+          near: u(`near${suffix}`, "float"),
+          far: u(`far${suffix}`, "float"),
+          renderSize,
+        },
+        cache.normalsEnabled,
+      ),
       pixelScale: renderSize.mul(focalAdjustment).mul(0.5),
     };
   });

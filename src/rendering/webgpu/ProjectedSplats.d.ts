@@ -5,6 +5,7 @@ import type {
 } from "three/webgpu";
 import type { SplatAccumulator } from "../SplatAccumulator.js";
 import type { SplatGeometry } from "../SplatGeometry.js";
+import type { EffectBinding } from "../shader/EffectBinding.js";
 import type { ProjectedVertexData } from "../tsl/SplatMaterial.js";
 import type { Uniforms } from "../uniforms.js";
 /** Fixed compute graph. Source mappings and storage may change without rebuilding shaders. */
@@ -55,7 +56,12 @@ export declare class ProjectedSplats {
   /** The selected, precompiled mode for mono or WebXR stereo. */
   private getSlots;
   private compact;
-  vertexData(camera: THREE.Camera, stochastic: boolean): ProjectedVertexData;
+  setNormals(enabled: boolean): void;
+  vertexData(
+    camera: THREE.Camera,
+    stochastic: boolean,
+    effect?: EffectBinding | null,
+  ): ProjectedVertexData;
   private resizeBuffer;
   private resize;
   render(

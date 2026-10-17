@@ -1,8 +1,11 @@
 import type * as THREE from "three";
 import type { Node } from "three/webgpu";
 import type { NodeMaterial, TextureNode } from "three/webgpu";
+import type { EffectBinding } from "../shader/EffectBinding.js";
 import type { Uniforms } from "../uniforms.js";
 export type ProjectedVertexData = {
+  viewCenter?: Node<"vec3">;
+  viewNormal?: Node<"vec3">;
   clipPosition: Node<"vec4">;
   /** Source color space; this material applies encodeLinear. */
   rgba: Node<"vec4">;
@@ -30,14 +33,17 @@ export declare function createSplatNodeMaterial({
   depthTest,
   depthWrite,
   stochastic,
+  effect,
 }: {
   uniforms: Uniforms;
+  effect?: EffectBinding | null;
   /** CPU ordering for drawing from accumulator textures. */
   orderingNode?: TextureNode<"uvec4">;
   /** Replaces accumulator projection, e.g. with a GPU projection cache. */
   vertexData?: (
     camera: THREE.Camera,
     stochastic: boolean,
+    effect?: EffectBinding | null,
   ) => ProjectedVertexData;
   premultipliedAlpha: boolean;
   transparent: boolean;

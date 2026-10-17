@@ -271,7 +271,10 @@ export class ProjectedSplats {
     // groups. Dispose follows this in the queue.
     for (const node of refresh) await this.renderer.compileComputeAsync(node);
   }
-  vertexData(camera, stochastic) {
+  setNormals(enabled) {
+    if (this.cache.setNormals(enabled)) this.projectedInputs.length = 0;
+  }
+  vertexData(camera, stochastic, effect = null) {
     const multiView = getViews(camera)[0] !== camera;
     const eye = multiView ? N.cameraIndex : N.uint(0);
     const stride = uniformBinding(this.state, "viewStride", "uint");
@@ -288,6 +291,8 @@ export class ProjectedSplats {
     const rgba = N.vec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
     const stochasticSeed = stochastic ? N.uint(0).toVar() : undefined;
+    const viewCenter = effect ? N.vec3(0).toVar() : undefined;
+    const viewNormal = effect?.normals ? N.vec3(0, 0, 1).toVar() : undefined;
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
@@ -333,7 +338,10 @@ export class ProjectedSplats {
         centerRange,
         uniformBinding(this.state, "projectionJitter", "vec2"),
         projectionMatrix,
+        effect,
       );
+      viewCenter?.assign(projected.viewCenter);
+      viewNormal?.assign(projected.viewNormal);
       clipPosition.assign(projected.clipPosition);
       rgba.assign(projected.rgba);
       splatUv.assign(projected.splatUv);
@@ -341,6 +349,8 @@ export class ProjectedSplats {
       kernelPower.assign(projected.kernelPower);
     });
     return {
+      viewCenter,
+      viewNormal,
       clipPosition,
       rgba,
       splatUv,

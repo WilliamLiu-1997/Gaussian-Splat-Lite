@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 import type { CPUOrderingUpdate, SplatMaterialOptions } from "../backend.js";
+import type { EffectBinding } from "../shader/EffectBinding.js";
 import type { Uniforms } from "../uniforms.js";
 /** WebGL materials and ordering-texture uploads. */
 export declare class WebGLSplatBackend {
@@ -14,6 +15,7 @@ export declare class WebGLSplatBackend {
     uniforms: Uniforms,
     options: SplatMaterialOptions,
   );
+  setEffect(effect: EffectBinding | null): void;
   selectMaterial(stochastic: boolean): THREE.ShaderMaterial;
   getOrderingCapacity(count: number): number;
   get cpuOrdering(): Uint32Array | null;

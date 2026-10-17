@@ -4,7 +4,9 @@ import type { SplatAccumulator } from "./SplatAccumulator.js";
 import type { SplatGeometry } from "./SplatGeometry.js";
 import type { SplatMaterial } from "./backend.js";
 import type { GaussianSplatCompatibleRenderer } from "./rendererUtils.js";
+import type { SplatShaderEffect } from "./shader/SplatShaderEffect.js";
 export interface GaussianSplatRendererOptions {
+  effect?: SplatShaderEffect | null;
   /**
    * Pass in a THREE.WebGLRenderer or an initialized THREE.WebGPURenderer so
    * Gaussian Splat Lite can perform work outside the usual render loop. Both
@@ -161,6 +163,10 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
   SplatGeometry,
   SplatMaterial
 > {
+  get effect(): SplatShaderEffect | null;
+  set effect(value: SplatShaderEffect | null);
+  private _effect;
+  private effectBinding;
   readonly renderer: GaussianSplatCompatibleRenderer;
   readonly uniforms: ReturnType<typeof GaussianSplatRenderer.makeUniforms>;
   autoUpdate: boolean;

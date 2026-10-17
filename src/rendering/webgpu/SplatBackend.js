@@ -4,8 +4,13 @@ import { ProjectedSplats } from "./ProjectedSplats.js";
 export class WebGPUSplatBackend extends NodeSplatBackend {
   constructor(renderer, uniforms, options) {
     const projection = new ProjectedSplats(renderer, uniforms);
-    super(renderer, uniforms, options, undefined, (camera, stochastic) =>
-      projection.vertexData(camera, stochastic),
+    super(
+      renderer,
+      uniforms,
+      options,
+      undefined,
+      (camera, stochastic, effect) =>
+        projection.vertexData(camera, stochastic, effect),
     );
     this.kind = "webgpu";
     this.projection = projection;

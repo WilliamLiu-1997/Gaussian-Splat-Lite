@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `SplatShaderEffect` with `shadeSplat`, `opacity`, and `shadeFragment` hooks, live uniforms, and TSL/GLSL implementations. Effects support sorted and stochastic rendering and follow Splat captures. See [Shader effects](docs/ShaderEffects.md).
+- Added optional `SplatRelight` for diffuse Three.js scene lighting, implemented through the shader effect interface. See [Relighting](docs/Relighting.md).
+- Added viewer example controls for colored lights, light rotation, ambient brightness, and light intensity.
+
 ## [1.3.1] - 2026-10-17
 
 ### Added

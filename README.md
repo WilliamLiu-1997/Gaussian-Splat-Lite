@@ -159,6 +159,8 @@ const streaming = new SogStreamScheduler({
 **Rendering**
 
 - [GaussianSplatRenderer](docs/GaussianSplatRenderer.md) — Rendering options, sorting, and on-demand rendering.
+- [Shader effects](docs/ShaderEffects.md) — Custom colors, transparency masks, and fragment shading.
+- [Relighting](docs/Relighting.md) — Optional diffuse lighting from Three.js scene lights.
 - [Stochastic rendering](docs/StochasticRendering.md) — The optional transparency mode and how to smooth its noise.
 - [TAAPass and TAANode](docs/TAAPass.md) — Temporal anti-aliasing for WebGLRenderer and WebGPURenderer.
 - [NeuralDenoiseNode and NeuralDenoisePass (Experimental)](docs/NeuralDenoiseNode.md) — Neural denoising on WebGPU and WebGL2, for scenes with moving objects.

@@ -9,12 +9,21 @@ export class WebGLSplatBackend {
     this.uniforms = uniforms;
     this.kind = "webgl";
     this.ordering = new OrderingTexture();
-    this.sortedMaterial = createWebGLSplatMaterial(uniforms, options, false);
-    this.stochasticMaterial = createWebGLSplatMaterial(uniforms, options, true);
+    this.createMaterial = (stochastic, effect) =>
+      createWebGLSplatMaterial(uniforms, options, stochastic, effect);
+    this.setEffect(null);
     const extension = renderer
       .getContext()
       .getExtension("WEBGL_provoking_vertex");
     extension?.provokingVertexWEBGL(extension.FIRST_VERTEX_CONVENTION_WEBGL);
+  }
+  setEffect(effect) {
+    const sorted = this.createMaterial(false, effect);
+    const stochastic = this.createMaterial(true, effect);
+    this.sortedMaterial?.dispose();
+    this.stochasticMaterial?.dispose();
+    this.sortedMaterial = sorted;
+    this.stochasticMaterial = stochastic;
   }
   selectMaterial(stochastic) {
     return stochastic ? this.stochasticMaterial : this.sortedMaterial;

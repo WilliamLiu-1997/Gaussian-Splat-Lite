@@ -145,3 +145,5 @@ Each capture draws the scene six times, so update reflections less often than yo
 
 - The cube texture from `renderCubeMap()` belongs to the capture. Later calls redraw the same texture, or replace it when `size`, `near`, `far`, or the renderer's stencil setting change. `renderEnvMap()` leaves it untouched unless you captured it with `filter: true`.
 - Environment maps from `renderEnvMap()` belong to you. Call `envMap.dispose()` when you are done with one.
+
+Captures follow the source renderer's [shader effect](ShaderEffects.md), evaluated for the capture camera. Effect factories create separate resources for the capture renderer.

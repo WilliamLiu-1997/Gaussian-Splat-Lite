@@ -23,6 +23,8 @@ type ProjectionInput =
       shapeAmount: Node<"float">;
     };
 export type SplatProjection = {
+  viewCenter: Node<"vec3">;
+  viewNormal: Node<"vec3">;
   valid: Node<"bool">;
   clipCenter: Node<"vec4">;
   viewDepth: Node<"float">;
@@ -40,5 +42,6 @@ export type SplatProjection = {
 export declare function createProjectionProgram(
   uniforms: Uniforms,
   view: ProjectionView,
+  normals?: boolean | Node<"bool">,
 ): (source: ProjectionInput, includeColor?: boolean) => SplatProjection;
 export {};

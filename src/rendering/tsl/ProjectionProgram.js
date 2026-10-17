@@ -1,3 +1,4 @@
+import { surfaceNormal } from "../shader/surface.js";
 import {
   E,
   N,
@@ -72,7 +73,7 @@ const wideEdgeFade = N.Fn(([alpha, power, radiusSquared, minimumAlpha]) => {
     .div(N.float(1).sub(edgeKernel).max(0.001));
 });
 /** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
-export function createProjectionProgram(uniforms, view) {
+export function createProjectionProgram(uniforms, view, normals = false) {
   const {
     projectionMatrix,
     renderToViewQuat,
@@ -95,6 +96,8 @@ export function createProjectionProgram(uniforms, view) {
     const packed = "first" in source;
     const valid = N.bool(false).toVar();
     const projectedClipCenter = N.vec4(0, 0, 2, 1).toVar();
+    const projectedCenter = N.vec3(0).toVar();
+    const projectedNormal = N.vec3(0, 0, 1).toVar();
     const projectedViewDepth = N.float(0).toVar();
     const projectedAxis1 = N.vec2(0).toVar();
     const projectedAxis2 = N.vec2(0).toVar();
@@ -297,6 +300,21 @@ export function createProjectionProgram(uniforms, view) {
                   eigenVector1.x.negate(),
                 );
                 projectedClipCenter.assign(clipCenter);
+                projectedCenter.assign(viewCenter);
+                if (normals !== false) {
+                  const assignNormal = () => {
+                    projectedNormal.assign(
+                      surfaceNormal({
+                        scales,
+                        viewQuaternion,
+                        viewCenter,
+                        isOrthographic,
+                      }),
+                    );
+                  };
+                  if (normals === true) assignNormal();
+                  else N.If(normals, assignNormal);
+                }
                 projectedViewDepth.assign(viewCenter.z.negate());
                 const scale1 = fullScale1.mul(supportScale);
                 const scale2 = fullScale2.mul(supportScale);
@@ -331,6 +349,8 @@ export function createProjectionProgram(uniforms, view) {
     });
     return {
       valid,
+      viewCenter: projectedCenter,
+      viewNormal: projectedNormal,
       clipCenter: projectedClipCenter,
       viewDepth: projectedViewDepth,
       axis1: projectedAxis1,

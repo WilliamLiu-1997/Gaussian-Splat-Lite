@@ -80,6 +80,8 @@ float wideEdgeFade(float alpha, float power, float radiusSquared) {
         / max(1.0 - edgeKernel, 0.001);
 }
 
+#pragma GSL_EFFECT_VERTEX_PARS
+
 void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -282,10 +284,13 @@ void main() {
     vStochasticOffset = (offset.x & 31u) | ((offset.y & 31u) << 5u) | (phase << 10u);
     #endif
 
+    #pragma GSL_EFFECT_VERTEX
     // RGB is constant across the quad, so convert before rasterization.
+    #if !GSL_EFFECT
     if (encodeLinear) {
         rgba.rgb = srgbToLinear(rgba.rgb);
     }
+    #endif
     // Match the TSL varying layout: half RGB/kernel power, float32 alpha/radius.
     vec3 rgb = min(rgba.rgb, vec3(65504.0));
     vSplat = uvec4(

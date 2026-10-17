@@ -19,6 +19,8 @@ flat in uint vStochasticOffset;
 
 #include <logdepthbuf_pars_fragment>
 
+#pragma GSL_EFFECT_FRAGMENT_PARS
+
 void main() {
     float z2 = dot(vSplatUv, vSplatUv);
     if (z2 > uintBitsToFloat(vSplat.w)) {
@@ -42,7 +44,8 @@ void main() {
     }
     alpha = (alpha + fade) * kernelAlpha - fade;
 
-    if (alpha < minAlpha) {
+    #pragma GSL_EFFECT_OPACITY
+    if (alpha <= 0.0 || alpha < minAlpha) {
         discard;
     }
     #if GSL_STOCHASTIC
@@ -73,6 +76,7 @@ void main() {
     // Decode color only after the fragment survives coverage tests.
     vec4 rgba = vec4(unpackHalf2x16(vSplat.x), blueKernelPower.x, alpha);
 
+    #pragma GSL_EFFECT_FRAGMENT
     #if GSL_STOCHASTIC
         fragColor = vec4(rgba.rgb, 1.0);
     #elif defined(PREMULTIPLIED_ALPHA)

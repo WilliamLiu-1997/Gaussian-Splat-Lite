@@ -9,6 +9,7 @@ import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
 import { CameraController } from "./cameraController.js";
 import { createFrameGate } from "./frameGate.js";
+import { createViewerLighting } from "./lighting.js";
 import { getModelRotationX } from "./modelOrientation.js";
 import {
   detectFileType,
@@ -184,6 +185,8 @@ function mountRendererState(state, attachInspector = true) {
     ? THREE.SRGBColorSpace
     : THREE.LinearSRGBColorSpace;
   referenceHelpers.syncColors();
+  lighting.syncColors();
+  lighting.bind(splatRenderer);
   // WebGL's output setter requires the linear working space to be set first.
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   referenceHelpers.setBackend(webGPU);
@@ -214,6 +217,7 @@ let denoiserMode = "performance";
 let msaa = false;
 let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
+const lighting = createViewerLighting(scene);
 mountRendererState(rendererState);
 
 const STATS_UPDATE_INTERVAL_MS = 500;
@@ -244,6 +248,7 @@ function renderFrame(time) {
   // Keep camera and LOD updates running while the GPU is busy.
   controls.update(time);
   activeStream?.update();
+  if (lighting.update(time)) requestRender();
   drawFrame(time);
 }
 
@@ -289,6 +294,18 @@ function drawFrame(time) {
 }
 
 const renderOptionActions = {
+  lightingEnabled: (value) => {
+    lighting.settings.enabled = value;
+  },
+  rotateLights: (value) => {
+    lighting.settings.animate = value;
+  },
+  lightAmbient: (value) => {
+    lighting.settings.ambient = value;
+  },
+  lightIntensity: (value) => {
+    lighting.settings.intensity = value;
+  },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
   },
@@ -516,6 +533,7 @@ function retireTAA() {
 const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
 let activeSplat = null;
+let activeExample = false;
 let modelUpAxis = "auto";
 let disposeActiveSource = null;
 let cancelActiveLoad = null;
@@ -537,6 +555,7 @@ syncStreamOptions();
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
 optionsPanel.reset({ skip: ["rendererBackend"] });
+optionsPanel.setGroupHidden("lightingEnabled", true);
 
 function syncStreamOptions() {
   const isSog = activeStream instanceof SogStreamScheduler;
@@ -554,6 +573,10 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  lighting.clear();
+  activeExample = false;
+  optionsPanel.setValue("lightingEnabled", false, { emit: true });
+  optionsPanel.setGroupHidden("lightingEnabled", true);
   taa?.reset();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -606,6 +629,7 @@ function frameSplat(splat) {
     ? (radius * 1.15) / Math.sin(Math.min(verticalHalfFov, horizontalHalfFov))
     : Math.min(defaultCameraDistance, radius);
 
+  lighting.setFrame(frameCenter, Math.min(radius, distance * 0.35));
   camera.near = Math.min(radius * 0.001, 0.1);
   camera.far = radius * 100;
   camera.updateProjectionMatrix();
@@ -696,7 +720,15 @@ async function initializeModel(
 
 async function loadFile(
   file,
-  { credit = "", url, button, resolveFile, manager, dispose } = {},
+  {
+    credit = "",
+    url,
+    button,
+    resolveFile,
+    manager,
+    dispose,
+    isExample = false,
+  } = {},
 ) {
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
@@ -731,6 +763,9 @@ async function loadFile(
       model.stream instanceof SogStreamScheduler,
     );
     activeSplat = model.splat;
+    activeExample = isExample;
+    optionsPanel.setValue("lightingEnabled", isExample, { emit: true });
+    optionsPanel.setGroupHidden("lightingEnabled", !isExample);
     activeStream = model.stream;
     syncStreamResolution();
     syncStreamOptions();
@@ -778,6 +813,7 @@ function loadRemoteModel(model, button) {
     url: model.url.toString(),
     credit: model.credit,
     button,
+    isExample: model === EXAMPLE_MODEL,
   });
 }
 
@@ -868,6 +904,7 @@ sourceUpAxis.addEventListener("change", (event) => {
 renderOptionsReset.addEventListener("click", () => {
   // Apply material defaults before the asynchronous backend switch copies them.
   optionsPanel.reset({ last: ["rendererBackend"] });
+  optionsPanel.setValue("lightingEnabled", activeExample, { emit: true });
 });
 
 window.addEventListener("dragenter", (event) => {
@@ -927,6 +964,7 @@ window.addEventListener("beforeunload", () => {
   cancelActiveLoad?.();
   clearActiveModel();
   referenceHelpers.dispose();
+  lighting.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);
   ui.dispose();

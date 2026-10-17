@@ -1,5 +1,7 @@
 import type * as THREE from "three";
+import type { UniformNode } from "three/webgpu";
 import type { Node, StorageArrayTexture } from "three/webgpu";
+import type { EffectBinding } from "../shader/EffectBinding.js";
 import type { SplatProjection } from "../tsl/ProjectionProgram.js";
 type TextureLimits = {
   maxTextureDimension2D: number;
@@ -15,6 +17,9 @@ export declare function getProjectionCacheSize(
 };
 /** Native projected records: compact layout, paired codec and texture ownership. */
 export declare class ProjectionCache {
+  readonly normals: StorageArrayTexture;
+  readonly normalsEnabled: UniformNode<"bool", boolean>;
+  setNormals(enabled: boolean): boolean;
   readonly textures: StorageArrayTexture[];
   readonly size: THREE.Vector4;
   private readonly dimensions;
@@ -39,7 +44,10 @@ export declare class ProjectionCache {
     jitter: Node<"vec2">,
     /** Projection of the drawn eye. */
     projectionMatrix: Node<"mat4">,
+    effect?: EffectBinding | null,
   ): {
+    viewCenter?: Node<"vec3">;
+    viewNormal?: Node<"vec3">;
     clipPosition: Node<"vec4">;
     rgba: Node<"vec4">;
     splatUv: Node<"vec2">;

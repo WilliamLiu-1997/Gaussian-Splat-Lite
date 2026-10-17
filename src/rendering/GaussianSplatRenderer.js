@@ -14,6 +14,7 @@ import {
   getViews,
   isWebGPURenderer,
 } from "./rendererUtils.js";
+import { EffectBinding } from "./shader/EffectBinding.js";
 import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms.js";
 const renderToViewScaleTmp = new THREE.Vector3();
 const renderToViewMatrixTmp = new THREE.Matrix4();
@@ -59,6 +60,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (isWebGPURenderer(options.renderer))
       applyThreeR186Patch(options.renderer);
     const uniforms = GaussianSplatRenderer.makeUniforms();
+    uniforms.gslEffectFrameSize = { value: new THREE.Vector2() };
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
     const stochastic = options.stochastic ?? false;
     const backend = createSplatBackend(options.renderer, uniforms, {
@@ -109,6 +111,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.renderer = options.renderer;
     this.backend = backend;
     this.uniforms = uniforms;
+    this._effect = null;
+    this.effectBinding = null;
     this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
     this._depthWrite = options.depthWrite ?? false;
@@ -149,6 +153,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (backend.kind !== "webgpu") {
       this.accumulators.push(new SplatAccumulator());
     }
+    if (options.effect) this.effect = options.effect;
     if (backend.kind === "webgpu") {
       backend.projection.ready.then(() => {
         if (!this.disposed) this.setDirty();
@@ -158,6 +163,21 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         if (!this.disposed) this.setDirty();
       };
     }
+  }
+  get effect() {
+    return this._effect;
+  }
+  set effect(value) {
+    if (value === this._effect) return;
+    const binding = value ? new EffectBinding(value, this.renderer) : null;
+    this.backend.setEffect(binding);
+    this.backend.projection?.setNormals(binding?.normals ?? false);
+    this.effectBinding?.dispose();
+    this.effectBinding = binding;
+    this._effect = value;
+    this.selectMaterial();
+    this.materialState = new MaterialState(this.material);
+    this.setDirty();
   }
   raycast(_raycaster, _intersects) {}
   static makeUniforms() {
@@ -176,6 +196,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.maxSplats = 0;
     this.activeSplats = 0;
     this.backend.dispose();
+    this.effectBinding?.dispose();
     this.uniforms.stochasticNoise.value.dispose();
     const accumulators = new Set();
     accumulators.add(this.display);
@@ -424,6 +445,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.uniforms,
       this._encodeLinear,
     );
+    if (this.effectBinding) {
+      const size = this.uniforms.gslEffectFrameSize.value;
+      if (currentRenderTarget)
+        size.set(currentRenderTarget.width, currentRenderTarget.height);
+      else renderer.getDrawingBufferSize(size);
+      this.effectBinding.beforeRender({
+        renderer,
+        scene,
+        camera,
+        splatRenderer: this,
+      });
+    }
     if (this.backend.kind === "webgpu") {
       this.backend.projection.render(
         display,

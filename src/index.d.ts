@@ -63,3 +63,13 @@ export { fromHalf, toHalf } from "./utils/index.js";
 export * as utils from "./utils/index.js";
 export { SplatFileType } from "./data/defines.js";
 export * as defines from "./data/defines.js";
+
+export { SplatShaderEffect } from "./rendering/shader/SplatShaderEffect.js";
+export { SplatRelight } from "./effects/relight/SplatRelight.js";
+export type {
+  SplatEffectUniform,
+  SplatEffectContext,
+  SplatFragmentContext,
+  SplatEffectFrame,
+  SplatShaderDefinition,
+} from "./rendering/shader/SplatShaderEffect.js";

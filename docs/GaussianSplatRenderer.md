@@ -19,6 +19,7 @@ Every option except `renderer` and `timer` is also a property, so you can change
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
+| `effect` | `SplatShaderEffect \| null` | `null` | Optional [shader effect](ShaderEffects.md); assign at runtime or set `null` to disable |
 | `renderer` | `WebGPURenderer \| THREE.WebGLRenderer` | Required | Your Three.js renderer |
 | `onDirty` | `() => void` | `undefined` | Called when the image needs a redraw; see [on-demand rendering](#on-demand-rendering) |
 | `autoUpdate` | `boolean` | `true` | Update Splats automatically on each render. Set to `false` to call `update()` yourself |

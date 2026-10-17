@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { StorageArrayTexture } from "three/webgpu";
+import { packNormal, unpackNormal } from "../shader/normalPacking.js";
 import { N, loadArray, uintTexture } from "../tsl/shaderUtils.js";
 function makeTexture() {
   const texture = new StorageArrayTexture(1, 1, 1);
@@ -60,17 +61,39 @@ export class ProjectionCache {
     // squared support radius, kernel power and view depth retain their float32
     // bits.
     this.textures = [makeTexture(), makeTexture()];
+    this.normals = makeTexture();
+    this.normals.format = THREE.RedIntegerFormat;
+    this.normalsEnabled = N.uniform(false, "bool");
     this.size = new THREE.Vector4(1, 1, 1, 0);
     this.dimensions = N.uniform(this.size, "uvec4");
+  }
+  setNormals(enabled) {
+    if (this.normalsEnabled.value === enabled) return false;
+    this.normalsEnabled.value = enabled;
+    this.normals.setSize(
+      enabled ? this.size.x : 1,
+      enabled ? this.size.y : 1,
+      enabled ? this.size.z : 1,
+    );
+    return true;
   }
   resize(size) {
     for (const texture of this.textures)
       texture.setSize(size.width, size.height, size.depth);
     this.size.set(size.width, size.height, size.depth, Math.log2(size.width));
+    if (this.normalsEnabled.value)
+      this.normals.setSize(size.width, size.height, size.depth);
   }
   // Call after visibility and deferred color evaluation, inside the same guard.
   write(index, projection, ndc, pixelScale, centerRange) {
     const coord = cacheTexCoord(index, this.dimensions).toVar();
+    N.If(this.normalsEnabled, () => {
+      store(
+        this.normals,
+        coord,
+        N.uvec4(packNormal(projection.viewNormal), 0, 0, 0),
+      );
+    });
     // The axes are orthogonal before the per-component viewport division.
     const axis1 = projection.axis1.mul(pixelScale).toVar();
     const axis2 = projection.axis2.mul(pixelScale).toVar();
@@ -136,6 +159,9 @@ export class ProjectionCache {
       N.uvec4(0, N.floatBitsToUint(N.float(-1)), 0, 0),
     );
     store(this.textures[1], coord, N.uvec4(0));
+    N.If(this.normalsEnabled, () => {
+      store(this.normals, coord, N.uvec4(0));
+    });
   }
   // Call inside the per-eye visible-count guard. No cache loads precede it.
   read(
@@ -146,6 +172,7 @@ export class ProjectionCache {
     jitter,
     /** Projection of the drawn eye. */
     matrix,
+    effect = null,
   ) {
     const coord = cacheTexCoord(index, this.dimensions).toVar();
     const first = loadArray(uintTexture(this.textures[0]), coord).toVar();
@@ -197,7 +224,27 @@ export class ProjectionCache {
     // The squared radius passes to the fragment stage bit for bit: a wide
     // kernel's low half carries its edge fade.
     const supportRadiusSquared = N.uintBitsToFloat(second.z);
+    let viewCenter;
+    let viewNormal;
+    if (effect) {
+      const centerNdc = N.unpackSnorm2x16(first.x).mul(centerRange);
+      const w = col2.w.mul(viewZ).add(col3.w);
+      const a = col0.xy.sub(centerNdc.mul(col0.w));
+      const b = col1.xy.sub(centerNdc.mul(col1.w));
+      const rhs = centerNdc.mul(w).sub(col2.xy.mul(viewZ).add(col3.xy));
+      const xy = N.vec2(
+        rhs.x.mul(b.y).sub(b.x.mul(rhs.y)),
+        a.x.mul(rhs.y).sub(rhs.x.mul(a.y)),
+      ).div(a.x.mul(b.y).sub(b.x.mul(a.y)));
+      viewCenter = N.vec3(xy, viewZ);
+      if (effect.normals)
+        viewNormal = unpackNormal(
+          loadArray(uintTexture(this.normals), coord).r,
+        );
+    }
     return {
+      viewCenter,
+      viewNormal,
       clipPosition: N.vec4(ndc.add(offset).mul(clipW), clipZ, clipW),
       rgba: N.vec4(ratioRed.y, greenBlue, N.uintBitsToFloat(second.y)),
       splatUv: N.positionGeometry.xy.mul(supportRadiusSquared.sqrt()),
@@ -207,5 +254,6 @@ export class ProjectionCache {
   }
   dispose() {
     for (const texture of this.textures) texture.dispose();
+    this.normals.dispose();
   }
 }
