@@ -1,5 +1,5 @@
-import { SplatFileType } from "gaussian-splat-lite";
 import { LoadingManager } from "three";
+import { SplatFileType } from "../../src/data/defines.js";
 
 const droppedPaths = new WeakMap();
 
@@ -50,6 +50,10 @@ export async function filesFromDrop(dataTransfer) {
   ).flat();
 }
 
+export function sceneTypeFor(file) {
+  return /\.(lcc2?)$/i.exec(file.name)?.[1].toLowerCase();
+}
+
 export function fileTypeFor(file) {
   const name = file.name.toLowerCase();
   if (name.endsWith(".ply")) return SplatFileType.PLY;
@@ -97,7 +101,8 @@ export function modelFromLocalFiles(selectedFiles) {
         .some((part) => part.startsWith(".")),
   );
   const indexes = files.filter(
-    (entry) => entry.name.toLowerCase() === "lod-meta.json",
+    (entry) =>
+      sceneTypeFor(entry) || entry.name.toLowerCase() === "lod-meta.json",
   );
   const models = indexes.length
     ? indexes
@@ -111,7 +116,7 @@ export function modelFromLocalFiles(selectedFiles) {
     models[0] ?? files.find((entry) => !/\.(radc|webp)$/i.test(entry.name));
   if (!file) {
     throw new Error(
-      "Include lod-meta.json with SOG chunks, meta.json with SOG images, or the .rad header with RAD chunks.",
+      "Include the .lcc/.lcc2 scene and its companions, lod-meta.json with SOG chunks, meta.json with SOG images, or the .rad header with RAD chunks.",
     );
   }
   const normalize = (path) => {
@@ -134,15 +139,22 @@ export function modelFromLocalFiles(selectedFiles) {
       map.set(key, matches);
     }
   }
+  const directoryBacked = files.some((entry) =>
+    normalize(localPath(entry)).includes("/"),
+  );
   const rootPath = normalize(localPath(file));
   const directory = rootPath.slice(0, rootPath.lastIndexOf("/") + 1);
-  const findFile = (filename, base = directory) => {
+  const findFile = (filename, base = directory, optional = false) => {
     const relative = normalize(base + filename);
-    const exact = paths.get(relative) ?? paths.get(normalize(filename));
-    const matches = exact ?? names.get(normalize(filename).split("/").at(-1));
+    const matches =
+      paths.get(relative) ??
+      (directoryBacked
+        ? undefined
+        : names.get(normalize(filename).split("/").at(-1)));
     if (matches?.length === 1) return matches[0];
     if (matches?.length > 1)
       throw new Error(`Ambiguous companion filename: ${filename}`);
+    if (optional) return undefined;
     throw new Error(`Select the companion file: ${filename}`);
   };
   const resolveFile = (filename, signal) => {
@@ -160,8 +172,16 @@ export function modelFromLocalFiles(selectedFiles) {
     const blobs = new Map();
     let disposed = false;
     const manager = new LoadingManager();
+    manager.getFileSize = (value) => {
+      if (disposed) throw new Error("Local scene source has been disposed");
+      const asset = new URL(value, url);
+      if (asset.origin !== new URL(baseUrl).origin) return undefined;
+      return (
+        findFile(decodeURIComponent(asset.pathname), "", true)?.size ?? null
+      );
+    };
     manager.setURLModifier((value) => {
-      if (disposed) throw new Error("Local SOG source has been disposed");
+      if (disposed) throw new Error("Local scene source has been disposed");
       const asset = new URL(value, url);
       if (asset.origin !== new URL(baseUrl).origin)
         throw new Error(`Select the companion file: ${value}`);

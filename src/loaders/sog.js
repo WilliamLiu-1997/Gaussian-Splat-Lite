@@ -1,3 +1,4 @@
+import * as wasm from "gaussian-splat-rs";
 import { SogDecodeSession, decode_sog_meta } from "gaussian-splat-rs";
 import { linkedAbortController } from "../runtime/abort.js";
 import { wasmCall, wasmFree } from "../runtime/wasmCall.js";
@@ -29,17 +30,37 @@ export async function loadSog(args) {
   try {
     args.signal?.throwIfAborted();
     return await decodeSog(args, controller);
+  } catch (error) {
+    if (args.decoderLimits && Reflect.get(wasm, "wasm_budget_exceeded")?.())
+      fail(
+        `decoder exceeded admitted WASM capacity of ${args.decoderLimits.maxWasmBytes} bytes`,
+      );
+    throw error;
   } finally {
     cleanup();
     controller.abort();
   }
 }
 async function decodeSog(args, controller) {
+  const limits = args.decoderLimits;
+  if (limits && !Reflect.get(wasm, "decoder_budget_supported")?.())
+    fail(
+      "WASM decoder lacks budget guards; rebuild WASM before bounded scene decoding",
+    );
+  if (limits)
+    wasmCall(() =>
+      Reflect.get(wasm, "set_decoder_memory_limit")(limits.maxWasmBytes),
+    );
+  const inputSize = args.fileBytes?.byteLength ?? args.file?.size;
+  if (limits && inputSize !== undefined && inputSize > limits.maxInputBytes)
+    fail("input exceeds decoder maxInputBytes");
   let loaded = 0;
   let total = 0;
   let lastProgress = 0;
   const progress = (bytes, expectedTotal) => {
     loaded += bytes;
+    if (limits && loaded > limits.maxInputBytes)
+      fail("assets exceed decoder maxInputBytes");
     if (expectedTotal !== undefined) total = expectedTotal;
     // A server can hide Content-Encoding, making Content-Length an underestimate.
     if (loaded > total) total = 0;
@@ -54,6 +75,12 @@ async function decodeSog(args, controller) {
   if (!isSogPrefix(prefix))
     fail("input is neither a ZIP archive nor SOG metadata");
   const zip = isJson(prefix) ? undefined : await readZip(source);
+  if (
+    limits &&
+    (zip ? Math.max(zip.meta.size, zip.meta.compressedSize) : source.size) >
+      1024 * 1024
+  )
+    fail("scene metadata exceeds 1 MiB");
   const metadataBytes = zip
     ? join(await zip.read(zip.meta), zip.meta.compressedSize)
     : await source.read(0, source.size);
@@ -63,6 +90,8 @@ async function decodeSog(args, controller) {
       zip?.meta.method ?? 0,
       zip?.meta.size ?? source.size,
       zip?.meta.crc ?? -1,
+      limits ? 1024 * 1024 : undefined,
+      limits?.maxWasmBytes,
     ),
   );
   if (args.expectedSogCount !== undefined) {
@@ -75,82 +104,11 @@ async function decodeSog(args, controller) {
   }
   controller.signal.throwIfAborted();
   const session = wasmCall(
-    () => new SogDecodeSession(metadata, Math.min(args.maxSh ?? 3, 3)),
-  );
-  let consumed = false;
-  try {
-    const groups = JSON.parse(wasmCall(() => session.plan()));
-    // Metadata and bundles with external assets do not describe the total input size.
-    if (!zip || groups.some((group) => group.some((name) => !zip.entry(name))))
-      progress(0, 0);
-    const downloadAsset = async (name) => {
-      controller.signal.throwIfAborted();
-      const entry = zip?.entry(name);
-      const chunks =
-        zip && entry
-          ? await zip.read(entry)
-          : await readSogAsset(
-              name,
-              args,
-              source.url,
-              progress,
-              controller.signal,
-            );
-      return { entry, chunks };
-    };
-    // Start all property downloads: five images, plus two with higher-order SH.
-    const downloads = groups.map((names) =>
-      names.map((name) => {
-        const task = downloadAsset(name);
-        // Observe background errors immediately and cancel their sibling requests.
-        void task.catch((error) => controller.abort(error));
-        return task;
-      }),
-    );
-    for (let index = 0; index < groups.length; index++) {
-      const group = groups[index];
-      try {
-        const assets = await Promise.all(downloads[index]);
-        downloads[index] = []; // Do not retain decoded groups through settled promises.
-        const hasNextGroup = index + 1 < groups.length;
-        for (const { entry, chunks } of assets) {
-          // Let other downloads advance before synchronous image decoding.
-          if (hasNextGroup)
-            await new Promise((resolve) => setTimeout(resolve, 0));
-          controller.signal.throwIfAborted();
-          wasmCall(() =>
-            session.decode_asset(
-              chunks,
-              entry?.method ?? 0,
-              entry?.size ?? 0,
-              entry?.crc ?? -1,
-            ),
-          );
-        }
-        let lastYield = performance.now();
-        while (!wasmCall(() => session.decode_batch())) {
-          if (
-            (hasNextGroup || args.signal) &&
-            performance.now() - lastYield >= 16
-          ) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            lastYield = performance.now();
-          }
-          controller.signal.throwIfAborted();
-        }
-      } catch (error) {
-        controller.signal.throwIfAborted();
-        fail(
-          `${group.join(", ")}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    controller.signal.throwIfAborted();
-    consumed = true;
-    const result = wasmCall(() => session.finish());
-    progress(0, loaded);
-    return result;
-  } finally {
-    if (!consumed) wasmFree(session);
-  }
-}
+    () =>
+      new SogDecodeSession(
+        metadata,
+        limits?.maxPoints,
+        limits?.maxDecoderBytes,
+        limits?.maxWasmBytes,
+        Math.min(args.maxSh ?? 3, 3),
+      ),

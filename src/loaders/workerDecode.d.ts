@@ -4,9 +4,18 @@ import type {
   SplatLoadArgs,
   SplatLoadStatus,
 } from "./loadTypes.js";
+export interface DecoderLimits {
+  maxPoints: number;
+  maxInputBytes: number;
+  maxDecoderBytes: number;
+  maxWasmBytes: number;
+}
+export type BudgetedSplatLoadArgs = SplatLoadArgs & {
+  decoderLimits?: DecoderLimits;
+};
 /** Decode in source order so streamed SOG can extract file ranges first. */
 export declare function decodeSplats(
-  args: SplatLoadArgs,
+  args: BudgetedSplatLoadArgs,
   {
     sendStatus,
   }: {
@@ -14,7 +23,7 @@ export declare function decodeSplats(
   },
 ): Promise<SplatResult>;
 export declare function loadSplats(
-  args: SplatLoadArgs,
+  args: BudgetedSplatLoadArgs,
   options: {
     sendStatus: (data: SplatLoadStatus) => void;
   },

@@ -1,5 +1,7 @@
 import {
   GaussianSplatRenderer,
+  Lcc2StreamScheduler,
+  LccStreamScheduler,
   RadStreamScheduler,
   SogStreamScheduler,
   SplatFileType,
@@ -15,6 +17,7 @@ import {
   filesFromDrop,
   modelFromLocalFiles,
   modelFromUrl,
+  sceneTypeFor,
 } from "./modelSource.js";
 import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
@@ -649,8 +652,11 @@ async function initializeModel(
   const fileType = await detectFileType(file, url);
   if (loadId !== activeLoad) return;
   const sogStream = url && file.name.toLowerCase() === "lod-meta.json";
-  if (!fileType && !sogStream && !url)
-    throw new Error("Choose a .ply, .spz, .sog, .rad, or SOG meta.json file.");
+  const sceneType = sceneTypeFor(file);
+  if (!fileType && !sogStream && !sceneType && !url)
+    throw new Error(
+      "Choose a .ply, .spz, .sog, .rad, .lcc, .lcc2, or SOG meta.json file.",
+    );
 
   const source = {
     url,
@@ -688,7 +694,15 @@ async function initializeModel(
     }
   }
 
-  if (sogStream) {
+  if (sceneType) {
+    if (!url)
+      throw new Error("Select the scene folder with its companion files.");
+    const Scheduler =
+      sceneType === "lcc" ? LccStreamScheduler : Lcc2StreamScheduler;
+    model.stream = new Scheduler({ url, manager, ...streamOptions });
+    model.stream.setCamera(camera);
+    model.splat = model.stream.group;
+  } else if (sogStream) {
     model.stream = new SogStreamScheduler({
       ...streamOptions,
       splatBudgetMode: optionsPanel.getValue("splatBudgetMode"),
@@ -751,7 +765,9 @@ async function loadFile(
 
     applyModelOrientation(
       model.splat,
-      model.stream instanceof SogStreamScheduler,
+      model.stream instanceof SogStreamScheduler ||
+        model.stream instanceof LccStreamScheduler ||
+        model.stream instanceof Lcc2StreamScheduler,
     );
     activeSplat = model.splat;
     activeStream = model.stream;
@@ -883,7 +899,9 @@ sourceUpAxis.addEventListener("change", (event) => {
   if (!activeSplat) return;
   applyModelOrientation(
     activeSplat,
-    activeStream instanceof SogStreamScheduler,
+    activeStream instanceof SogStreamScheduler ||
+      activeStream instanceof LccStreamScheduler ||
+      activeStream instanceof Lcc2StreamScheduler,
   );
   requestRender();
 });
