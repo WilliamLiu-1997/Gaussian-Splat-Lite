@@ -232,8 +232,26 @@ impl Image {
         }
     }
 
+    #[cfg(test)]
     fn decode(bytes: &[u8]) -> Result<Self> {
+        Self::decode_with_memory(bytes, |_| Ok(()))
+    }
+
+    fn decode_with_memory(
+        bytes: &[u8],
+        mut reserve: impl FnMut(usize) -> Result<()>,
+    ) -> Result<Self> {
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            ensure!(bytes.len() >= 24, "truncated PNG dimensions");
+            let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap()) as usize;
+            let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap()) as usize;
+            // Scratch estimates can exceed usize even when the decoded image fits.
+            reserve(
+                width
+                    .checked_mul(height)
+                    .map(|pixels| pixels.saturating_mul(128))
+                    .context("PNG dimensions overflow")?,
+            )?;
             let mut decoder = png::Decoder::new_with_limits(
                 Cursor::new(bytes),
                 png::Limits { bytes: usize::MAX },
@@ -275,6 +293,12 @@ impl Image {
             "animated or lossy WebP is unsupported"
         );
         let (width, height) = decoder.dimensions();
+        reserve(
+            (width as usize)
+                .checked_mul(height as usize)
+                .map(|pixels| pixels.saturating_mul(128))
+                .context("WebP dimensions overflow")?,
+        )?;
         let size = decoder
             .output_buffer_size()
             .context("WebP dimensions overflow")?;
@@ -398,8 +422,24 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 && self.images.len() < self.meta.groups[self.group].1.len(),
             "invalid asset sequence"
         );
+        let retained = self
+            .images
+            .iter()
+            .map(|image| image.bytes.capacity())
+            .sum::<usize>()
+            .saturating_add(self.palette.capacity().saturating_mul(4))
+            .saturating_add(16 * 1024 * 1024);
+        self.splats.reserve_decoder_memory(
+            retained
+                .saturating_add(bytes.capacity().saturating_mul(3))
+                .saturating_add(size.saturating_mul(3)),
+        )?;
         let bytes = unpack(bytes, method, size, crc)?;
-        let image = Image::decode(&bytes)?;
+        let working = retained.saturating_add(bytes.capacity().saturating_mul(3));
+        let image = Image::decode_with_memory(&bytes, |image_bytes| {
+            self.splats
+                .reserve_decoder_memory(working.saturating_add(image_bytes))
+        })?;
         if self.meta.groups[self.group].0 != "centroids" {
             ensure!(
                 image.width * image.height >= self.meta.count,
@@ -585,6 +625,47 @@ impl<T: SplatReceiver> SogDecoder<T> {
             return Ok(true);
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::Image;
+
+    #[test]
+    fn rejects_oversized_png_before_pixel_allocation() {
+        let mut bytes = vec![0; 24];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        bytes[16..20].copy_from_slice(&100_000u32.to_be_bytes());
+        bytes[20..24].copy_from_slice(&100_000u32.to_be_bytes());
+        let error = Image::decode_with_memory(&bytes, |size| {
+            anyhow::ensure!(size <= 1024, "image memory budget exceeded");
+            Ok(())
+        })
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.to_string(),
+            if usize::BITS == 32 {
+                "PNG dimensions overflow"
+            } else {
+                "image memory budget exceeded"
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_webp_dimensions_before_pixel_allocation() {
+        let mut bytes = b"RIFF\x12\0\0\0WEBPVP8L\x05\0\0\0\x2f".to_vec();
+        bytes.extend_from_slice(&0x00ff_c3ffu32.to_le_bytes());
+        bytes.push(0);
+        let error = Image::decode_with_memory(&bytes, |size| {
+            anyhow::ensure!(size <= 1024, "image memory budget exceeded");
+            Ok(())
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error.to_string(), "image memory budget exceeded");
     }
 }
 

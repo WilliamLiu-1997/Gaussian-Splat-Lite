@@ -164,10 +164,19 @@ fn parse_file_type(file_type: Option<String>) -> Result<Option<SplatFileType>, J
 pub fn decode_to_splats(
     file_type: Option<String>,
     path_name: Option<String>,
+    max_points: Option<u32>,
+    memory_budget: Option<f64>,
+    max_wasm_bytes: Option<f64>,
 ) -> Result<ChunkDecoder, JsValue> {
+    #[cfg(target_arch = "wasm32")]
+    crate::allocation::set_memory_limit(max_wasm_bytes)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = max_wasm_bytes;
     let file_type = parse_file_type(file_type)?;
 
-    let decoder = MultiDecoder::new(SplatsData::new(), file_type, path_name.as_deref());
+    let splats = SplatsData::with_limits(max_points, memory_budget)
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let decoder = MultiDecoder::new(splats, file_type, path_name.as_deref());
     let on_finish = |receiver: Box<dyn ChunkReceiver>| {
         let decoder: Box<MultiDecoder<SplatsData>> = receiver.into_any().downcast().unwrap();
         let file_type = decoder.file_type.unwrap();
@@ -181,6 +190,23 @@ pub fn decode_to_splats(
     };
 
     Ok(ChunkDecoder::new(Box::new(decoder), Box::new(on_finish)))
+}
+
+#[wasm_bindgen]
+pub fn decoder_budget_supported() -> bool {
+    true
+}
+
+#[wasm_bindgen]
+pub fn wasm_memory_bytes() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (core::arch::wasm32::memory_size::<0>() as u64 * 65536) as f64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0.0
+    }
 }
 
 const RAYCAST_BUFFER_COUNT: usize = 65536;

@@ -1792,6 +1792,16 @@ mod tests {
     #[test]
     fn retains_sh4_across_splat_chunks_in_all_spz_versions() {
         let count = MAX_SPLAT_CHUNK + 1;
+        let sh: Vec<u8> = (0..count * 72).map(|i| i as u8).collect();
+        let expected: Vec<f32> = sh
+            .chunks_exact(72)
+            .flat_map(|sh| sh[45..].chunks_exact(3))
+            .flat_map(|rgb| {
+                decode_splat_sh_rgb(encode_splat_sh_rgb(array::from_fn(|d| {
+                    (rgb[d] as f32 - 128.0) / 128.0
+                })))
+            })
+            .collect();
         for version in 1..=4 {
             let widths = [
                 if version == 1 { 6 } else { 9 },
@@ -1802,19 +1812,10 @@ mod tests {
                 72,
             ];
             let mut attributes: Vec<Vec<u8>> = widths.iter().map(|w| vec![0; count * w]).collect();
-            attributes[5] = (0..count * 72).map(|i| i as u8).collect();
+            attributes[5] = sh.clone();
             let file = spz_file_from_attributes(version, count, 4, &attributes);
             let mut actual = decode_in_chunks(&file, 4093).unwrap();
             assert_eq!(actual.max_sh_degree, 4);
-            let expected: Vec<f32> = attributes[5]
-                .chunks_exact(72)
-                .flat_map(|sh| sh[45..].chunks_exact(3))
-                .flat_map(|rgb| {
-                    decode_splat_sh_rgb(encode_splat_sh_rgb(array::from_fn(|d| {
-                        (rgb[d] as f32 - 128.0) / 128.0
-                    })))
-                })
-                .collect();
             assert_eq!(actual.sh4, expected);
             // Lower bands must still match the same model with SH4 removed.
             actual.sh4.clear();

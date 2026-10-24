@@ -38,7 +38,24 @@ Builds WASM, the viewer, and the package; checks JavaScript syntax, declarations
 
 For focused validation, run `npm run check`, `npm run test:js`, and `npm run lint`. `npm run build:types` checks and packages the TypeScript declarations for ESM and CommonJS; both `build:production` and `build:dev` include this step.
 
+Keep binary decoder arithmetic and edge-case matrices in Rust. Use a small built-WASM suite for exported arguments, typed-array packing, and WASM32 memory behavior rather than replaying the native numerical matrix. Test manifests, transport, and scheduling at their JavaScript owners. Give each contract one primary keeper; preserve distinct security, ownership, and asynchronous-ordering checks when consolidating suites.
+
 Review new or changed dependency install scripts and update `allowScripts` with `npm approve-scripts`.
+
+### Private LCC export checks
+
+Synthetic format and built-WASM checks run with `npm test`. Optional export checks read local files without copying them into the repository:
+
+```bash
+LCC_SAMPLE=/path/to/scene.lcc LCC2_SAMPLE=/path/to/scene.lcc2 \
+  node --test test/lcc2Refinement.test.js test/sceneStreamSamples.test.js
+PLY_SAMPLE=/path/to/source.ply SOG_SAMPLE=/path/to/export.sog \
+  node --expose-gc --test test/xgridsReference.test.js
+```
+
+Each `{FILE}_SAMPLE` variable names an exact file, not a root directory. Set only the formats you want to check; unset samples are skipped. LCC/LCC2 companions resolve relative to the selected manifest. Rerun with another `LCC2_SAMPLE` to check a different payload codec. The ignored Rust numerical check also accepts `LCC_SAMPLE`.
+
+The reference check streams a binary little-endian float-property PLY source, compares independently read source attributes and SH3, and decodes the SOG sample independently. When both `PLY_SAMPLE` and `SOG_SAMPLE` are set, they must be matching exports; the check compares their point counts and bounds. It needs the built WASM package and enough memory for one full decoded reference model. Do not redistribute private exports without permission.
 
 ## Pull requests
 

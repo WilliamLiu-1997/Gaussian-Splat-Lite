@@ -6,6 +6,7 @@ import type {
   SplatProgressEvent,
 } from "../loaders/loadTypes.js";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program.js";
+import type { SceneRangeMetadata } from "../loaders/stream/scene-stream/SceneBatchAllocator.js";
 import type { SplatEdit, SplatEdits } from "./SplatEdit.js";
 export type SplatMeshOptions = {
   url?: string;
@@ -40,6 +41,8 @@ export type SplatIntersection = THREE.Intersection<SplatMesh> & {
   index: number;
   /** Original file index; for streamed SOG, relative to this batch's chunk. */
   sourceIndex: number;
+  /** File/range identity for a streamed LCC or LCC2 hit in a shared batch. */
+  sceneStream?: SceneRangeMetadata;
 };
 /** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
 export declare class SplatMesh extends THREE.Object3D {

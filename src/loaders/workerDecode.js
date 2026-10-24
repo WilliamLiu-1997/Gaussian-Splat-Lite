@@ -1,3 +1,4 @@
+import * as wasm from "gaussian-splat-rs";
 import { decode_to_splats } from "gaussian-splat-rs";
 import { abortable } from "../runtime/abort.js";
 import { wasmCall, wasmFree } from "../runtime/wasmCall.js";
@@ -31,6 +32,18 @@ async function decodeInput(args) {
     resolveAsset,
   } = args;
   let { fileBytes } = args;
+  const limits = args.decoderLimits;
+  if (limits && !Reflect.get(wasm, "decoder_budget_supported")?.())
+    throw new Error(
+      "WASM decoder lacks budget guards; rebuild WASM before bounded scene decoding",
+    );
+  if (limits)
+    wasmCall(() =>
+      Reflect.get(wasm, "set_decoder_memory_limit")(limits.maxWasmBytes),
+    );
+  const inputSize = fileBytes?.byteLength ?? file?.size;
+  if (limits && inputSize !== undefined && inputSize > limits.maxInputBytes)
+    throw new Error("Input exceeds decoder maxInputBytes");
   if (
     fileType === "rad" ||
     (!fileType &&
@@ -133,6 +146,7 @@ async function decodeInput(args) {
           new URL(url).origin !== new URL(responseUrl).origin;
         const streamingArgs = {
           expectedSogCount: args.expectedSogCount,
+          decoderLimits: limits,
           readChunk: async () => pending.shift() ?? readInputChunk(),
           baseUrl: getAssetBaseUrl(responseUrl) ?? baseUrl,
           requestHeader: crossOrigin ? undefined : requestHeader,
@@ -149,7 +163,13 @@ async function decodeInput(args) {
     }
     args.signal?.throwIfAborted();
     const activeDecoder = wasmCall(() =>
-      decode_to_splats(fileType, pathName ?? url),
+      decode_to_splats(
+        fileType,
+        pathName ?? url,
+        limits?.maxPoints,
+        limits?.maxDecoderBytes,
+        limits?.maxWasmBytes,
+      ),
     );
     decoder = activeDecoder;
     if (expectedInputLength > 0) {
@@ -161,6 +181,8 @@ async function decodeInput(args) {
       const value = pending.shift() ?? (await readInputChunk());
       if (!value) break;
       loaded += value.length;
+      if (limits && loaded > limits.maxInputBytes)
+        throw new Error("Input exceeds decoder maxInputBytes");
       if (expectedInputLength > 0 && loaded > expectedInputLength) {
         throw new Error(
           `Input length exceeds the expected ${expectedInputLength} bytes`,
@@ -182,6 +204,10 @@ async function decodeInput(args) {
     return wasmCall(() => complete.finish());
   } catch (error) {
     await streamReader?.cancel(error).catch(() => {});
+    if (limits && Reflect.get(wasm, "wasm_budget_exceeded")?.())
+      throw new Error(
+        `Decoder exceeded admitted WASM capacity of ${limits.maxWasmBytes} bytes`,
+      );
     throw error;
   } finally {
     wasmFree(decoder);

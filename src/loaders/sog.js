@@ -1,3 +1,4 @@
+import * as wasm from "gaussian-splat-rs";
 import { SogDecodeSession, decode_sog_meta } from "gaussian-splat-rs";
 import { linkedAbortController } from "../runtime/abort.js";
 import { wasmCall, wasmFree } from "../runtime/wasmCall.js";
@@ -29,17 +30,37 @@ export async function loadSog(args) {
   try {
     args.signal?.throwIfAborted();
     return await decodeSog(args, controller);
+  } catch (error) {
+    if (args.decoderLimits && Reflect.get(wasm, "wasm_budget_exceeded")?.())
+      fail(
+        `decoder exceeded admitted WASM capacity of ${args.decoderLimits.maxWasmBytes} bytes`,
+      );
+    throw error;
   } finally {
     cleanup();
     controller.abort();
   }
 }
 async function decodeSog(args, controller) {
+  const limits = args.decoderLimits;
+  if (limits && !Reflect.get(wasm, "decoder_budget_supported")?.())
+    fail(
+      "WASM decoder lacks budget guards; rebuild WASM before bounded scene decoding",
+    );
+  if (limits)
+    wasmCall(() =>
+      Reflect.get(wasm, "set_decoder_memory_limit")(limits.maxWasmBytes),
+    );
+  const inputSize = args.fileBytes?.byteLength ?? args.file?.size;
+  if (limits && inputSize !== undefined && inputSize > limits.maxInputBytes)
+    fail("input exceeds decoder maxInputBytes");
   let loaded = 0;
   let total = 0;
   let lastProgress = 0;
   const progress = (bytes, expectedTotal) => {
     loaded += bytes;
+    if (limits && loaded > limits.maxInputBytes)
+      fail("assets exceed decoder maxInputBytes");
     if (expectedTotal !== undefined) total = expectedTotal;
     // A server can hide Content-Encoding, making Content-Length an underestimate.
     if (loaded > total) total = 0;
@@ -54,6 +75,12 @@ async function decodeSog(args, controller) {
   if (!isSogPrefix(prefix))
     fail("input is neither a ZIP archive nor SOG metadata");
   const zip = isJson(prefix) ? undefined : await readZip(source);
+  if (
+    limits &&
+    (zip ? Math.max(zip.meta.size, zip.meta.compressedSize) : source.size) >
+      1024 * 1024
+  )
+    fail("scene metadata exceeds 1 MiB");
   const metadataBytes = zip
     ? join(await zip.read(zip.meta), zip.meta.compressedSize)
     : await source.read(0, source.size);
@@ -63,6 +90,8 @@ async function decodeSog(args, controller) {
       zip?.meta.method ?? 0,
       zip?.meta.size ?? source.size,
       zip?.meta.crc ?? -1,
+      limits ? 1024 * 1024 : undefined,
+      limits?.maxWasmBytes,
     ),
   );
   if (args.expectedSogCount !== undefined) {
@@ -74,7 +103,15 @@ async function decodeSog(args, controller) {
       );
   }
   controller.signal.throwIfAborted();
-  const session = wasmCall(() => new SogDecodeSession(metadata));
+  const session = wasmCall(
+    () =>
+      new SogDecodeSession(
+        metadata,
+        limits?.maxPoints,
+        limits?.maxDecoderBytes,
+        limits?.maxWasmBytes,
+      ),
+  );
   let consumed = false;
   try {
     const groups = JSON.parse(wasmCall(() => session.plan()));
@@ -84,6 +121,12 @@ async function decodeSog(args, controller) {
     const downloadAsset = async (name) => {
       controller.signal.throwIfAborted();
       const entry = zip?.entry(name);
+      if (
+        limits &&
+        entry &&
+        Math.max(entry.size, entry.compressedSize) > limits.maxInputBytes
+      )
+        fail("ZIP asset exceeds decoder maxInputBytes");
       const chunks =
         zip && entry
           ? await zip.read(entry)

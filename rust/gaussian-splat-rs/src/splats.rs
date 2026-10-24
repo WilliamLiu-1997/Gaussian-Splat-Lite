@@ -1,5 +1,24 @@
 use std::array;
 
+#[cfg(test)]
+mod budget_tests {
+    use super::output_admission;
+
+    #[test]
+    fn rejects_header_counts_and_output_before_js_allocation() {
+        assert!(output_admission(8_000_001, 0, 8_000_000, 0, u64::MAX).is_err());
+        assert!(output_admission(usize::MAX, 0, usize::MAX, 0, u64::MAX).is_err());
+        assert!(output_admission(1, 5, 1, 0, u64::MAX).is_err());
+        // One padded row: 2048 slots, eight RGBA arrays and XYZ sort centers.
+        assert_eq!(
+            output_admission(1, 4, 1, 0, u64::MAX).unwrap(),
+            (2048, 286_720)
+        );
+        assert!(output_admission(1, 4, 1, 1024, 287_743).is_err());
+        assert!(output_admission(1, 4, 1, 1024, 287_744).is_ok());
+    }
+}
+
 use gaussian_splat_lib::{
     decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatProps, SplatReceiver},
     splat_encode::{
@@ -10,6 +29,39 @@ use gaussian_splat_lib::{
 };
 use js_sys::{Float32Array, Object, Reflect, Uint32Array};
 use wasm_bindgen::JsValue;
+
+fn output_admission(
+    count: usize,
+    degree: usize,
+    max_points: usize,
+    decoder: u64,
+    budget: u64,
+) -> anyhow::Result<(usize, u64)> {
+    anyhow::ensure!(
+        count <= max_points,
+        "Decoder maxPoints exceeded: header declares {} points, admitted {}",
+        count,
+        max_points
+    );
+    anyhow::ensure!(
+        count as u64 <= u64::from(u32::MAX) / 4,
+        "packed output exceeds the typed-array length range"
+    );
+    anyhow::ensure!(degree <= 4, "Invalid decoder SH degree");
+    let (_, _, _, capacity) = get_splat_tex_size(count);
+    anyhow::ensure!(
+        capacity as u64 * 4 <= u32::MAX as u64,
+        "packed output exceeds the typed-array length range"
+    );
+    let arrays = [2u64, 3, 4, 6, 8][degree];
+    let output = capacity as u64 * (arrays * 16 + 12);
+    anyhow::ensure!(
+        output.saturating_add(decoder) <= budget,
+        "Decoder memory budget exceeded: need at least {} bytes",
+        output.saturating_add(decoder)
+    );
+    Ok((capacity, output))
+}
 
 pub struct SplatsData {
     pub max_splats: usize,
@@ -28,6 +80,10 @@ pub struct SplatsData {
     buffer_base: usize,
     buffer_count: usize,
     buffer_dirty: [bool; 2],
+    max_points: usize,
+    memory_budget: u64,
+    decoder_memory: u64,
+    output_memory: u64,
 }
 
 impl SplatsData {
@@ -52,7 +108,42 @@ impl SplatsData {
             buffer_base: 0,
             buffer_count: 0,
             buffer_dirty: [false; 2],
+            max_points: usize::MAX,
+            memory_budget: u64::MAX,
+            decoder_memory: 0,
+            output_memory: 0,
         }
+    }
+
+    pub fn with_limits(
+        max_points: Option<u32>,
+        memory_budget: Option<f64>,
+    ) -> anyhow::Result<Self> {
+        let mut data = Self::new();
+        if let Some(points) = max_points {
+            anyhow::ensure!(points > 0, "Decoder maxPoints must be positive");
+            data.max_points = points as usize;
+        }
+        if let Some(bytes) = memory_budget {
+            anyhow::ensure!(
+                bytes.is_finite()
+                    && bytes >= 0.0
+                    && bytes.fract() == 0.0
+                    && bytes <= 9_007_199_254_740_991.0,
+                "Invalid decoder memory budget"
+            );
+            data.memory_budget = bytes as u64;
+        }
+        Ok(data)
+    }
+
+    fn check_memory(&self, output: u64, decoder: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            output.saturating_add(decoder) <= self.memory_budget,
+            "Decoder memory budget exceeded: need at least {} bytes",
+            output.saturating_add(decoder)
+        );
+        Ok(())
     }
 
     pub fn into_splat_object(self) -> Object {
@@ -308,17 +399,22 @@ impl SplatsData {
 }
 
 impl SplatReceiver for SplatsData {
+    fn reserve_decoder_memory(&mut self, bytes: usize) -> anyhow::Result<()> {
+        let bytes = self.decoder_memory.max(bytes as u64);
+        self.check_memory(self.output_memory, bytes)?;
+        self.decoder_memory = bytes;
+        Ok(())
+    }
+
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
-        // Reject impossible counts before texture padding can wrap usize on WASM32.
-        anyhow::ensure!(
-            init.num_splats as u64 <= u64::from(u32::MAX) / 4,
-            "packed output exceeds the typed-array length range"
-        );
-        let (_, _, _, max_splats) = get_splat_tex_size(init.num_splats);
-        anyhow::ensure!(
-            max_splats as u64 * 4 <= u32::MAX as u64,
-            "packed output exceeds the typed-array length range"
-        );
+        let (max_splats, output_memory) = output_admission(
+            init.num_splats,
+            init.max_sh_degree,
+            self.max_points,
+            self.decoder_memory,
+            self.memory_budget,
+        )?;
+        self.output_memory = output_memory;
         self.max_splats = max_splats;
         self.num_splats = init.num_splats;
         self.max_sh_degree = init.max_sh_degree;
