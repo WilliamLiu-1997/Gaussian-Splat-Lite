@@ -169,7 +169,7 @@
             or load one from a URL. For split scenes, include SOG meta.json and its
             .webp images, or the RAD header and its .radc files. For streamed SOG,
             drop the folder containing lod-meta.json and its chunks, or select all its files.
-            For LCC/LCC2 scenes, drop the full export folder with its companion files.
+            For <strong>.lcc</strong> and <strong>.lcc2</strong> scenes, drop the export folder.
             The model is decoded in this browser.
           </p>
           <div class="source-actions">
@@ -179,7 +179,7 @@
               type="button"
               data-file-picker
             >
-              Choose PLY, SPZ, SOG, RAD, LCC, or LCC2
+              Choose PLY, SPZ, SOG, RAD, or LCC
             </button>
             <button
               id="load-example"
@@ -194,7 +194,7 @@
           </div>
           <form id="url-form" class="url-form">
             <label class="visually-hidden" for="model-url">
-              PLY, SPZ, SOG, RAD, LCC, or LCC2 model URL
+              PLY, SPZ, SOG, RAD, Streamed SOG, LCC, or LCC2 model URL
             </label>
             <input
               id="model-url"
@@ -209,8 +209,8 @@
               Load
             </button>
           </form>
-          <p class="url-hint">Stream RAD, SOG lod-meta.json, or LCC/LCC2 scenes. Remote hosts must allow CORS; RAD and LCC storage require byte-range requests.</p>
-          <p class="url-hint">Data Organization Format originated from <a href="https://github.com/xgrids/LCC2Whitepaper">XGRIDS</a> (LCC/LCC2).</p>
+          <p class="url-hint">Stream RAD, a SOG lod-meta.json scene, or an LCC or LCC2 scene. Remote hosts must allow CORS; single-file RAD and LCC streaming require byte-range requests.</p>
+          <p class="url-hint">LCC and LCC2: Data Organization Format originated from <a href="https://www.xgrids.com/" target="_blank" rel="noopener">XGRIDS</a>.</p>
         </section>
       </main>
 

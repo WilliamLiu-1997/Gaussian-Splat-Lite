@@ -1,85 +1,16 @@
 import * as THREE from "three";
-import { streamViews } from "../StreamCameras.js";
+import { StreamFrusta } from "../streamView.js";
 import { readSogLodLeaf, selectSogLods } from "./sogLod.js";
-/**
- * Capture the cameras that see the group without traversing the manifest or
- * reducing matrix precision. WebXR selects detail from each eye's current pose and frustum.
- */
-export function captureSogView(cameras, group) {
-  group.updateWorldMatrix(true, false);
-  const views = [];
-  for (const camera of streamViews(cameras)) {
-    views.push({
-      // Invert matrixWorld like the splat projection: Camera.matrixWorldInverse
-      // can omit rig scale.
-      modelView: new THREE.Matrix4()
-        .copy(camera.matrixWorld)
-        .invert()
-        .multiply(group.matrixWorld).elements,
-      projection: camera.projectionMatrix.toArray(),
-      coordinateSystem: camera.coordinateSystem,
-      reversedDepth: camera.reversedDepth,
-    });
-  }
-  let shown = cameras.length > 0;
-  for (let node = group; node; node = node.parent) shown &&= node.visible;
-  return { cameras: views, shown };
-}
-/** Stable key of a view, for skipping unchanged selection requests. */
-export function getSogViewKey(view) {
-  return view.cameras
-    .map(
-      (camera) =>
-        `${camera.modelView.join(",")}/${camera.projection.join(",")}/${camera.coordinateSystem}/${camera.reversedDepth}`,
-    )
-    .join(";");
-}
 /** Worker traversal state keeps leaf identities stable between selections. */
 export class SogVisibility {
   constructor(manifest) {
     this.manifest = manifest;
     this.leaves = new Map();
-    this.cameras = [];
-    this.clip = new THREE.Matrix4();
+    this.frusta = new StreamFrusta();
     this.bound = new THREE.Box3();
-    this.closest = new THREE.Vector3();
-    this.inverseModelView = new THREE.Matrix4();
-  }
-  prepareCameras(view) {
-    const cameras = this.cameras;
-    cameras.length = Math.min(cameras.length, view.cameras.length);
-    view.cameras.forEach((camera, index) => {
-      let state = cameras[index];
-      if (!state) {
-        state = {
-          modelView: new THREE.Matrix4(),
-          frustum: new THREE.Frustum(),
-          cameraPosition: new THREE.Vector3(),
-          fovScale: 1,
-        };
-        cameras[index] = state;
-      }
-      state.modelView.fromArray(camera.modelView);
-      this.clip.fromArray(camera.projection).multiply(state.modelView);
-      this.inverseModelView.copy(state.modelView).invert();
-      state.cameraPosition.setFromMatrixPosition(this.inverseModelView);
-      state.frustum.setFromProjectionMatrix(
-        this.clip,
-        camera.coordinateSystem,
-        camera.reversedDepth,
-      );
-      const projection = camera.projection;
-      state.fovScale =
-        projection[11] === 0
-          ? 1
-          : 1 /
-            (Math.max(Math.abs(projection[0]), Math.abs(projection[5])) *
-              Math.tan(Math.PI / 8));
-    });
-    return cameras;
   }
   collect(view) {
-    const cameras = this.prepareCameras(view);
+    const cameras = this.frusta.prepare(view);
     const visible = [];
     const { shown } = view;
     const nodes = this.manifest.nodes;
@@ -99,17 +30,11 @@ export class SogVisibility {
       // nearest view that sees it decides its detail.
       let seen = false;
       let distance = Number.POSITIVE_INFINITY;
-      for (const { modelView, frustum, cameraPosition, fovScale } of cameras) {
-        if (!frustum.intersectsBox(this.bound)) continue;
+      for (const camera of cameras) {
+        if (!camera.frustum.intersectsBox(this.bound)) continue;
         seen = true;
-        this.bound
-          .clampPoint(cameraPosition, this.closest)
-          .applyMatrix4(modelView);
         // World-space distance to the box, without weighting by its radius.
-        distance = Math.min(
-          distance,
-          Math.max(this.closest.length() * fovScale, 1e-6),
-        );
+        distance = Math.min(distance, this.frusta.distance(camera, this.bound));
       }
       if (!seen) {
         index = nodes[offset + 6];

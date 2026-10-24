@@ -28,7 +28,7 @@ export const renderOptionGroups = [
       },
       {
         property: "splatBudgetMode",
-        label: "SOG budget mode",
+        label: "SOG/LCC budget mode",
         description:
           "Target fills the budget. Limit keeps distant detail coarse even when budget remains.",
         defaultValue: "target",
@@ -39,7 +39,7 @@ export const renderOptionGroups = [
       },
       {
         property: "lodBaseDistance",
-        label: "SOG base LOD distance",
+        label: "SOG/LCC base LOD distance",
         description:
           "Limit mode only. Higher values retain finer detail farther away. In world units.",
         min: 1,
@@ -50,7 +50,7 @@ export const renderOptionGroups = [
       },
       {
         property: "lodMultiplier",
-        label: "SOG LOD multiplier",
+        label: "SOG/LCC LOD multiplier",
         description:
           "Distance spacing between LOD levels in both Target and Limit modes.",
         min: 1,

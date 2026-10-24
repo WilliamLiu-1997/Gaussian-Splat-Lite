@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import { sogBatchAllocationSize } from "../../../data/SogRegionSplats.js";
+import { regionAllocationSize } from "../../../data/RegionSplats.js";
 import {
   getSplatByteLength,
   getSplatShDegree,
   getSplatTextureBytes,
 } from "../../../data/splatData.js";
 import { RetryTimer } from "../../../runtime/retry.js";
+import { RegionStreamBatch } from "../RegionStreamBatch.js";
 import { StreamCameras } from "../StreamCameras.js";
 import {
   notifyStreamChange,
@@ -14,10 +15,9 @@ import {
   streamRetryAt,
   streamSettings,
 } from "../streamOptions.js";
-import { SogStreamBatch } from "./SogStreamBatch.js";
+import { captureStreamView, getStreamViewKey } from "../streamView.js";
 import { SogStreamLoader } from "./SogStreamLoader.js";
 import { SOG_LOD_STRIDE, readSogLodLeaf, resolveSogLod } from "./sogLod.js";
-import { captureSogView, getSogViewKey } from "./sogVisibility.js";
 const EMPTY_SELECTION = new Uint32Array(0);
 function* retryDeadlines(chunks) {
   for (const chunk of chunks) yield chunk.retryAt;
@@ -260,7 +260,7 @@ export class SogStreamScheduler {
       this.pruneChunk(chunk);
       if (chunk.batch) chunk.batch.layers.mask = this.group.layers.mask;
     }
-    const view = captureSogView(cameras, this.group);
+    const view = captureStreamView(cameras, this.group);
     // Three can register the XR rig before it supplies the first eye poses.
     // Preserve displayed regions and in-flight loads until those poses arrive.
     if (view.shown && !view.cameras.length) return false;
@@ -307,7 +307,7 @@ export class SogStreamScheduler {
       0,
       splatBudget - Math.max(0, this.environment?.file.count ?? 0),
     );
-    const key = `${getSogViewKey(view)}/${splatBudget}/${budget}/${splatBudgetMode}/${lodBaseDistance}/${lodMultiplier}`;
+    const key = `${getStreamViewKey(view)}/${splatBudget}/${budget}/${splatBudgetMode}/${lodBaseDistance}/${lodMultiplier}`;
     if (key === this.lastRequestedKey) return;
     this.lastRequestedKey = key;
     this.selecting = true;
@@ -458,7 +458,7 @@ export class SogStreamScheduler {
       const numSh = getSplatShDegree(data.extra);
       let batch = chunk.batch;
       if (!batch) {
-        batch = new SogStreamBatch(
+        batch = new RegionStreamBatch(
           chunk.batchCapacity,
           numSh,
           this.group,
@@ -506,7 +506,7 @@ export class SogStreamScheduler {
   addBatchRange(chunk, offset, count) {
     if (!count || chunk.batchSlots.has(offset)) return;
     chunk.batchSlots.set(offset, chunk.batchCapacity);
-    chunk.batchCapacity += sogBatchAllocationSize(count);
+    chunk.batchCapacity += regionAllocationSize(count);
   }
   fadeRegion(region, visible, now) {
     const to = visible ? 1 : 0;

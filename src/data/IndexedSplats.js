@@ -107,8 +107,12 @@ export class IndexedSplats extends Splats {
     this.needsUpdate = true;
     return this.sourceIndices;
   }
-  /** Copies packed records. Input buffers remain caller-owned for both formats. */
-  writeRecords(start, data, allocation) {
+  /**
+   * Copies packed records. Input buffers remain caller-owned for both formats.
+   * A large region can be written in parts, records [from, to) at a time,
+   * starting at 0; the last part clears the allocation's padding.
+   */
+  writeRecords(start, data, allocation, from = 0, to = data.numSplats) {
     this.assertLive();
     const count = data.numSplats;
     if (
@@ -118,7 +122,12 @@ export class IndexedSplats extends Splats {
       count < 0 ||
       !Number.isSafeInteger(allocation) ||
       allocation < count ||
-      start + allocation > this.maxSplats
+      start + allocation > this.maxSplats ||
+      !Number.isSafeInteger(from) ||
+      !Number.isSafeInteger(to) ||
+      from < 0 ||
+      from > to ||
+      to > count
     )
       throw new Error("Invalid streaming Splat write range");
     const arrays = [
@@ -142,20 +151,26 @@ export class IndexedSplats extends Splats {
       Math.ceil(count / SPLAT_BOUNDS_BLOCK_SIZE) * 6
     )
       throw new Error("Incorrect spatial bounds block length");
-    this.releaseSpatialBounds(start);
-    // Packed data remains caller-owned, as do its spatial bounds.
-    const bounds = data.spatialBounds.slice();
-    this.spatialChunks.set(start, { count, bounds });
-    this.spatialBoundsBytes += bounds.byteLength;
-    this.sourceIds.set(data.sourceIds.subarray(0, count), start);
-    this.sourceIds.fill(0, start + count, start + allocation);
-    const firstLayer = Math.floor(start / this.layerSize);
-    const lastLayer = Math.ceil((start + allocation) / this.layerSize);
+    if (from === 0) {
+      this.releaseSpatialBounds(start);
+      // Packed data remains caller-owned, as do its spatial bounds.
+      const bounds = data.spatialBounds.slice();
+      this.spatialChunks.set(start, { count, bounds });
+      this.spatialBoundsBytes += bounds.byteLength;
+    }
+    const last = to === count;
+    this.sourceIds.set(data.sourceIds.subarray(from, to), start + from);
+    if (last) this.sourceIds.fill(0, start + count, start + allocation);
+    const firstLayer = Math.floor((start + from) / this.layerSize);
+    const lastLayer = Math.ceil(
+      (start + (last ? allocation : to)) / this.layerSize,
+    );
     for (let index = 0; index < this.sourceArrays.length; index++) {
       const target = this.sourceArrays[index];
       const source = arrays[index];
-      if (source) target.set(source.subarray(0, count * 4), start * 4);
-      target.fill(0, (start + count) * 4, (start + allocation) * 4);
+      if (source)
+        target.set(source.subarray(from * 4, to * 4), (start + from) * 4);
+      if (last) target.fill(0, (start + count) * 4, (start + allocation) * 4);
       for (let layer = firstLayer; layer < lastLayer; layer++)
         this.sourceTextures[index].addLayerUpdate(layer);
       this.sourceTextures[index].needsUpdate = true;

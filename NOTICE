@@ -1,15 +1,16 @@
 Gaussian Splat Lite
 Copyright 2026 William Liu <lyz15972107087@gmail.com>
 
-Data Organization Format originated from XGRIDS (LCC and LCC2).
-The formats are used under the authorization described in their whitepapers;
-XGRIDS and its Affiliates retain all rights in the data organization formats.
-This implementation is independent and is not endorsed by XGRIDS.
-Whitepapers and applicable format terms:
-https://github.com/xgrids/LCCWhitepaper/blob/b38c2eb31be24e4220f23c69c4a0f3306356920e/README.md
-https://github.com/xgrids/LCC2Whitepaper/blob/039367dbe53ccbfa07b44a8e6280ceb4ebf8aa0b/README.md
-The whitepapers restrict certain uses, including training competing AI models
-without prior written consent. Review the complete terms before distribution.
+LCC and LCC2: Data Organization Format originated from XGRIDS.
+Gaussian Splat Lite reads the LCC and LCC2 data organization formats under
+the authorization described in their whitepapers; XGRIDS and its Affiliates
+own and retain all intellectual property and other rights in these formats.
+This implementation is independent and is not endorsed by XGRIDS. The
+whitepapers prohibit using the formats to train or fine-tune AI models that
+compete with XGRIDS' products or services without XGRIDS' prior written
+consent. See the whitepapers for the complete terms:
+https://github.com/xgrids/LCCWhitepaper
+https://github.com/xgrids/LCC2Whitepaper
 
 This product includes software derived from SparkJS,
 Copyright © 2025 WORLD LABS TECHNOLOGIES, INC., licensed under the MIT

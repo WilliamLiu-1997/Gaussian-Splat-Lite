@@ -1,90 +1,87 @@
-//! Narrow worker bridge; scene metadata and byte-range I/O stay in JavaScript.
-
+//! JavaScript bridge for LCC record decoding through the shared SplatReceiver.
 use gaussian_splat_lib::{
-    decoder::SplatReceiver,
-    lcc::{decode_lcc, LccDecodeContext},
+    decoder::{SplatInit, SplatReceiver},
+    lcc::{LccDecoder, LccRanges, LccSh, LCC_BATCH, LCC_SH_BYTES},
 };
-use js_sys::{Reflect, Uint8Array};
+use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 use crate::splats::SplatsData;
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
-    js_sys::Error::new(&format!("{error:#}")).into()
+    JsValue::from_str(&error.to_string())
 }
 
-fn context_and_limits(json: &str) -> anyhow::Result<(LccDecodeContext, Option<f64>, Option<f64>)> {
-    anyhow::ensure!(json.len() <= 16384, "LCC decode context exceeds byte limit");
-    let mut value: serde_json::Value = serde_json::from_str(json)?;
-    let fields = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("Invalid LCC decode context"))?;
-    let mut limit = |name: &str| -> anyhow::Result<Option<f64>> {
-        match fields.remove(name) {
-            None | Some(serde_json::Value::Null) => Ok(None),
-            Some(value) => value
-                .as_f64()
-                .map(Some)
-                .ok_or_else(|| anyhow::anyhow!("Invalid {name}")),
-        }
-    };
-    let decoder = limit("maxDecoderBytes")?;
-    let wasm = limit("maxWasmBytes")?;
-    let context = LccDecodeContext::from_json(&serde_json::to_string(&value)?)?;
-    Ok((context, decoder, wasm))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::context_and_limits;
-
-    #[test]
-    fn accepts_budget_fields_without_weakening_the_format_context() {
-        let mut value = serde_json::json!({
-            "version": "5.0", "encoding": "COMPRESS", "fileType": "Portable", "count": 1,
-            "scaleMin": [0, 0, 0], "scaleMax": [1, 1, 1],
-            "maxDecoderBytes": 67108864, "maxWasmBytes": 33554432
-        });
-        let (context, decoder, wasm) = context_and_limits(&value.to_string()).unwrap();
-        assert_eq!(context.count, 1);
-        assert_eq!(decoder, Some(67108864.0));
-        assert_eq!(wasm, Some(33554432.0));
-        value["unrecognized"] = serde_json::json!(true);
-        assert!(context_and_limits(&value.to_string()).is_err());
-        value.as_object_mut().unwrap().remove("unrecognized");
-        value["maxDecoderBytes"] = serde_json::json!("unbounded");
-        assert!(context_and_limits(&value.to_string()).is_err());
-    }
-}
-
-/// Returns the same canonical packed fields as the ordinary decoders, without
-/// Morton reordering. Quality requires SH bytes; interleaved environments do not.
-#[wasm_bindgen(js_name = decodeLcc)]
-pub fn decode_lcc_records(
+/// Decodes data.bin records with optional shcoef.bin records, or interleaved
+/// environment.bin records. `ranges` holds scale min/max then SH min/max XYZ.
+/// Input is copied in small batches so large nodes do not grow WASM memory.
+#[wasm_bindgen]
+pub fn decode_lcc_splats(
     base: Uint8Array,
-    sh: Uint8Array,
-    context_json: &str,
-) -> Result<JsValue, JsValue> {
-    let (context, budget, _wasm_budget) = context_and_limits(context_json).map_err(js_error)?;
-    context
-        .validate_lengths(base.length() as usize, sh.length() as usize)
+    sh: Option<Uint8Array>,
+    interleaved: bool,
+    ranges: Float32Array,
+) -> Result<Object, JsValue> {
+    if ranges.length() != 12 {
+        return Err(js_error("LCC: expected twelve range values"));
+    }
+    let values = ranges.to_vec();
+    let vector = |offset: usize| [values[offset], values[offset + 1], values[offset + 2]];
+    let mut decoder = LccDecoder::new(LccRanges {
+        scale_min: vector(0),
+        scale_max: vector(3),
+        sh_min: vector(6),
+        sh_max: vector(9),
+    });
+    let layout = match (&sh, interleaved) {
+        (Some(_), _) => LccSh::Separate(&[]),
+        (None, true) => LccSh::Interleaved,
+        (None, false) => LccSh::None,
+    };
+    let stride = layout.record_bytes() as u32;
+    if !base.length().is_multiple_of(stride) {
+        return Err(js_error(
+            "LCC: record data is not a whole number of records",
+        ));
+    }
+    let count = base.length() / stride;
+    if sh
+        .as_ref()
+        .is_some_and(|sh| sh.length() as u64 != count as u64 * LCC_SH_BYTES as u64)
+    {
+        return Err(js_error(
+            "LCC: SH data length does not match the record count",
+        ));
+    }
+    let mut splats = SplatsData::new();
+    splats
+        .init_splats(&SplatInit {
+            num_splats: count as usize,
+            max_sh_degree: layout.degree(),
+        })
         .map_err(js_error)?;
-    #[cfg(target_arch = "wasm32")]
-    crate::allocation::set_memory_limit(_wasm_budget)?;
-    let mut receiver = SplatsData::with_limits(
-        Some(context.max_points.try_into().map_err(js_error)?),
-        budget,
-    )
-    .map_err(js_error)?;
-    receiver
-        .reserve_decoder_memory(
-            (base.length() as usize)
-                .saturating_add(sh.length() as usize)
-                .saturating_add(1024 * 1024),
-        )
-        .map_err(js_error)?;
-    let splats = decode_lcc(&base.to_vec(), &sh.to_vec(), &context, receiver).map_err(js_error)?;
-    let object = splats.into_splat_object();
-    Reflect::set(&object, &"fileType".into(), &JsValue::from_str("lcc"))?;
-    Ok(object.into())
+    let mut records = Vec::new();
+    let mut coefficients = Vec::new();
+    for start in (0..count).step_by(LCC_BATCH) {
+        let end = count.min(start + LCC_BATCH as u32);
+        records.resize(((end - start) * stride) as usize, 0);
+        base.subarray(start * stride, end * stride)
+            .copy_to(&mut records);
+        let batch_layout = if let Some(sh) = &sh {
+            let bytes = LCC_SH_BYTES as u32;
+            coefficients.resize(((end - start) * bytes) as usize, 0);
+            sh.subarray(start * bytes, end * bytes)
+                .copy_to(&mut coefficients);
+            LccSh::Separate(&coefficients)
+        } else {
+            layout
+        };
+        decoder
+            .decode(&mut splats, start as usize, &records, batch_layout)
+            .map_err(js_error)?;
+    }
+    splats.finish().map_err(js_error)?;
+    let output = splats.into_splat_object();
+    Reflect::set(&output, &"fileType".into(), &"lcc".into())?;
+    Ok(output)
 }

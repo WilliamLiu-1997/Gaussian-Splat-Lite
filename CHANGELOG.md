@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `LccStreamScheduler` for streaming XGRIDS LCC and LCC2 scenes with adaptive detail on WebGL, WebGPU, and the WebGL2 fallback. The parts of the scene nearest the camera get detail first, and detail changes fade in. LCC2 scenes can use SOG, SPZ, or PLY files. See [LccStreamScheduler](docs/LccStreamScheduler.md).
+- The viewer opens LCC and LCC2 scenes from a URL or a dropped export folder.
+
 ## [1.4.2] - 2026-10-24
 
 ### Changed

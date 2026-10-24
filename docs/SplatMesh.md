@@ -27,7 +27,7 @@ await splat.initialized;
 
 Splats are reordered while loading, so their indices differ from the order in the file; see [data rules](Splats.md#data-rules).
 
-For large streamed scenes, use [RadStreamScheduler](RadStreamScheduler.md) or [SogStreamScheduler](SogStreamScheduler.md) instead.
+For large streamed scenes, use [RadStreamScheduler](RadStreamScheduler.md), [SogStreamScheduler](SogStreamScheduler.md), or [LccStreamScheduler](LccStreamScheduler.md) instead.
 
 ## Options
 
@@ -129,7 +129,7 @@ if (intersections.length > 0) {
 - The model needs `raycastable: true`, the default. Picking may return nothing while the model is still being set up.
 - Each hit has an `index`, for reading the Splat from the current data, and a `sourceIndex`, its ID in the original file (`SplatIntersection` in TypeScript).
 - Values of `minRaycastOpacity` below `0.01` have limited effect: areas that transparent may not be pickable.
-- Streamed models can be picked. Hits ignore their display fades, and an `index` can change as the shown detail changes. For RAD, `sourceIndex` is the node index within the whole file; for streamed SOG, it is the index within the chunk file the hit Splat was loaded from.
+- Streamed models can be picked. Hits ignore their display fades, and an `index` can change as the shown detail changes. For RAD, `sourceIndex` is the node index within the whole file; for streamed SOG, it is the index within the chunk file the hit Splat was loaded from; for LCC, it is the record index in `data.bin`, and for LCC2 the index within the file the Splat was loaded from.
 
 ## Scene integration
 

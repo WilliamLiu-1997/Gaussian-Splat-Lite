@@ -15,6 +15,12 @@ export {
 } from "./capture/SplatCapture.js";
 export { SplatLoader } from "./loaders/SplatLoader.js";
 export {
+  LccStreamScheduler,
+  type LccStreamSchedulerOptions,
+  type LccStreamStats,
+} from "./loaders/stream/lcc-stream/LccStreamScheduler.js";
+export type { LccInfo } from "./loaders/stream/lcc-stream/lccIndex.js";
+export {
   RadStreamScheduler,
   type RadStreamSchedulerOptions,
   type RadStreamStats,
@@ -35,15 +41,6 @@ export {
   type SogStreamSchedulerOptions,
   type SogStreamStats,
 } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
-export {
-  LccStreamScheduler,
-  type LccStreamSchedulerOptions,
-} from "./loaders/stream/lcc-stream/LccStreamScheduler.js";
-export {
-  Lcc2StreamScheduler,
-  type Lcc2StreamSchedulerOptions,
-} from "./loaders/stream/lcc2-stream/Lcc2StreamScheduler.js";
-export type { SceneStreamStats } from "./loaders/stream/scene-stream/SceneStreamScheduler.js";
 export type { SplatWorker } from "./runtime/SplatWorker.js";
 export { Splats, type SplatsOptions } from "./data/Splats.js";
 export {

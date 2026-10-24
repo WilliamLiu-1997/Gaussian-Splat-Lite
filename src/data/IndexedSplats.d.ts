@@ -47,10 +47,17 @@ export declare abstract class IndexedSplats extends Splats {
   /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
   protected prepareIndices(count: number): Uint32Array<ArrayBuffer>;
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
+  /**
+   * Copies packed records. Input buffers remain caller-owned for both formats.
+   * A large region can be written in parts, records [from, to) at a time,
+   * starting at 0; the last part clears the allocation's padding.
+   */
   protected writeRecords(
     start: number,
     data: ReorderedSplatResult,
     allocation: number,
+    from?: number,
+    to?: number,
   ): void;
   private getStorageIndex;
   getSourceIndex(index: number): number;

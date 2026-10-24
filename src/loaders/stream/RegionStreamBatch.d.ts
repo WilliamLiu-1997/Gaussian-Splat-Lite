@@ -1,0 +1,26 @@
+import type * as THREE from "three";
+import type { ReorderedSplatResult } from "../../data/defines.js";
+import { SplatMesh } from "../../scene/SplatMesh.js";
+/** Regions share one source, one scene node and one accumulator generation call. */
+export declare class RegionStreamBatch extends SplatMesh {
+  readonly numSh: number;
+  private readonly group;
+  private readonly onEmpty;
+  private readonly source;
+  private readonly slots;
+  constructor(
+    capacity: number,
+    numSh: number,
+    group: THREE.Group,
+    onEmpty: () => void,
+  );
+  /** Records [from, to) of a region; it stays hidden until shown by opacity. */
+  writeRegion(
+    start: number,
+    data: ReorderedSplatResult,
+    from?: number,
+    to?: number,
+  ): void;
+  setRegionOpacity(start: number, opacity: number): void;
+  releaseRegion(start: number): void;
+}
