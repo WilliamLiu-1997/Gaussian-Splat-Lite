@@ -88,4 +88,6 @@ Temporary download failures are retried automatically, waiting longer after each
 
 Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and are not retried. Parts of the scene that are already on screen stay visible when loading more detail fails.
 
-If the scheduler can no longer choose detail after an internal failure, it calls `onError` and disposes itself. Create a new scheduler to try again.
+`firstRenderable` waits for the initial detail selection before deciding that all needed loads have failed permanently. An environment failure alone does not reject it while scene selection is pending.
+
+If detail selection fails, the scheduler calls `onError`, stops loading, and retains the last displayed coverage while its fades finish. Create a new scheduler to try again, and call `dispose()` before discarding the old one.

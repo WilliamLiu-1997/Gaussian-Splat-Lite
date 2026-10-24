@@ -35,6 +35,7 @@ export declare class SogStreamScheduler {
   private view?;
   private lastRequestedKey;
   private selecting;
+  private refinementStopped;
   private selection;
   private chunks;
   /** Chunks with a batch, cached source or in-flight load. */
@@ -103,5 +104,6 @@ export declare class SogStreamScheduler {
   private failed;
   private readonly retryTimer;
   private rejectFirstIfUnavailable;
+  private stopRefinement;
   dispose(): void;
 }

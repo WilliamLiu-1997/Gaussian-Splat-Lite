@@ -30,6 +30,7 @@ export class SogStreamScheduler {
     this.lodLeaves = new Map();
     this.lastRequestedKey = "";
     this.selecting = false;
+    this.refinementStopped = false;
     this.selection = EMPTY_SELECTION;
     this.chunks = [];
     /** Chunks with a batch, cached source or in-flight load. */
@@ -267,11 +268,17 @@ export class SogStreamScheduler {
     this.view = view;
     const { shown } = this.view;
     this.shown = shown;
+    const now = performance.now();
+    if (this.refinementStopped) {
+      const changed = this.updateFades(now);
+      this.releaseUnused(now, true);
+      if (changed) this.changed();
+      return changed;
+    }
     if (!shown) {
       this.selection = EMPTY_SELECTION;
       this.lastRequestedKey = "";
     }
-    const now = performance.now();
     const { selected, refinements } = this.selectRegions();
     const changed = this.applySelection(selected, now);
     this.updateRequests(refinements, now);
@@ -286,6 +293,7 @@ export class SogStreamScheduler {
       )
     )
       this.resolveFirst(this);
+    else this.rejectFirstIfUnavailable();
     if (changed) this.changed();
     return changed;
   }
@@ -293,6 +301,7 @@ export class SogStreamScheduler {
     const view = this.view;
     if (
       this.disposed ||
+      this.refinementStopped ||
       !this.shown ||
       this.selecting ||
       !this.manifest?.lods.length ||
@@ -339,11 +348,7 @@ export class SogStreamScheduler {
       this.releaseUnused(now, true);
       this.changed();
     } catch (error) {
-      if (!this.disposed) {
-        this.rejectFirst(error);
-        this.failed(error, this.options.url);
-        this.dispose();
-      }
+      this.stopRefinement(error);
     } finally {
       this.selecting = false;
       // Updates replace the latest view while this task runs; no request queue.
@@ -552,11 +557,7 @@ export class SogStreamScheduler {
         const { range } = pending;
         const data = results[index];
         const leaf = this.leaves.get(range.leaf);
-        if (
-          !this.disposed &&
-          leaf?.pending === pending &&
-          leaf.target === range
-        ) {
+        if (leaf?.pending === pending && leaf.target === range) {
           pending.data = data;
           pending.bytes = getSplatByteLength(data);
         } else if (leaf?.pending === pending) leaf.pending = undefined;
@@ -566,7 +567,8 @@ export class SogStreamScheduler {
         const leaf = this.leaves.get(pending.range.leaf);
         if (leaf?.pending === pending) leaf.pending = undefined;
       }
-      if (!this.disposed) {
+      if (!this.disposed && !this.refinementStopped) {
+        chunk.error = error;
         chunk.retryAt = streamRetryAt(error, chunk.failures++);
         if (!source.alive) {
           source.dispose();
@@ -619,7 +621,7 @@ export class SogStreamScheduler {
     }
   }
   pump(now) {
-    if (this.disposed) return;
+    if (this.disposed || this.refinementStopped) return;
     let loading = 0;
     for (const chunk of this.activeChunks) {
       this.pruneChunk(chunk);
@@ -680,6 +682,7 @@ export class SogStreamScheduler {
         this.resolveFirst(this);
     } catch (error) {
       if (!controller.signal.aborted && !this.disposed) {
+        chunk.error = error;
         chunk.retryAt = streamRetryAt(error, chunk.failures++);
         this.rejectFirstIfUnavailable(error);
         this.failed(error, chunk.file.url);
@@ -716,16 +719,37 @@ export class SogStreamScheduler {
     notifyStreamError(this.options, error, url);
   }
   rejectFirstIfUnavailable(error) {
+    if (
+      this.selecting ||
+      (this.manifest?.lods.length && this.selection === EMPTY_SELECTION)
+    )
+      return;
     // A failed refinement does not invalidate already renderable coverage.
     if ([...this.leaves.values()].some((leaf) => leaf.current || leaf.pending))
       return;
+    const wanted = [...this.wanted].filter((chunk) => chunk.file.count !== 0);
     if (
-      this.wanted.size > 0 &&
-      [...this.wanted].every(
-        (chunk) => chunk.retryAt === Number.POSITIVE_INFINITY,
-      )
+      wanted.length &&
+      wanted.every((chunk) => chunk.retryAt === Number.POSITIVE_INFINITY)
     )
-      this.rejectFirst(error);
+      this.rejectFirst(error ?? wanted[0].error);
+  }
+  stopRefinement(error) {
+    if (this.disposed || this.refinementStopped) return;
+    this.refinementStopped = true;
+    this.retryTimer.dispose();
+    this.wanted.clear();
+    for (const leaf of this.leaves.values()) leaf.pending = undefined;
+    for (const chunk of this.activeChunks) {
+      chunk.controller?.abort(error);
+      chunk.data?.dispose();
+      chunk.data = undefined;
+      this.pruneChunk(chunk);
+    }
+    this.loader.dispose();
+    this.rejectFirst(error);
+    this.failed(error, this.options.url);
+    this.changed();
   }
   dispose() {
     if (this.disposed) return;

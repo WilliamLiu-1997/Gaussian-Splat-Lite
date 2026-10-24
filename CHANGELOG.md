@@ -11,6 +11,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Removed raycast hit `sourceIndex`, `Splats.getSourceIndex()`, and `RadStreamScheduler.getGlobalIndex()`. Use `hit.object.splats.getSplat(hit.index)` to read the current hit; streamed indices can change when the visible detail changes.
 
+### Fixed
+
+- Streamed SOG waits for initial detail selection before rejecting `firstRenderable`, including when an empty environment finishes last.
+- Streamed SOG retains displayed coverage when detail selection fails, stopping further loading while existing fades finish.
+
 ## [1.4.2] - 2026-10-24
 
 ### Changed
