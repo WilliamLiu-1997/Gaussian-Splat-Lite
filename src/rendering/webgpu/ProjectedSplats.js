@@ -54,11 +54,8 @@ export class ProjectedSplats {
   constructor(renderer, uniforms) {
     this.renderer = renderer;
     this.uniforms = uniforms;
-    // Only the instance count changes; the other indirect draw arguments are fixed.
-    this.indirect = new IndirectStorageBufferAttribute(
-      new Uint32Array([SPLATS_PER_INSTANCE * 6, 0, 0, 0, 0]),
-      1,
-    );
+    // The GPU writes index and instance counts for the active draw mode.
+    this.indirect = new IndirectStorageBufferAttribute(new Uint32Array(5), 1);
     this.error = null;
     this.cache = new ProjectionCache();
     this.visibleCount = new StorageBufferAttribute(new Uint32Array(1), 1);
@@ -99,6 +96,8 @@ export class ProjectedSplats {
       sortMode: { value: 0 },
       // NDC translation the draw applies to unjittered projections.
       projectionJitter: { value: new THREE.Vector2() },
+      // Indices per instance of the drawn geometry, quads or triangles.
+      indexCount: { value: 0 },
     };
     // Every view, including each WebXR eye, draws one compact sorted order.
     const count = N.storage(this.visibleCount, "uint")
@@ -115,9 +114,9 @@ export class ProjectedSplats {
         this.limits.maxBufferSize,
       ),
     });
-    const drawCount = N.storage(this.indirect, "uint")
-      .setName("gslDrawIndirect")
-      .element(1);
+    const drawArgs = N.storage(this.indirect, "uint").setName(
+      "gslDrawIndirect",
+    );
     const counter = N.storage(this.visibleCount, "uint")
       .setName("gslVisibleCount")
       .toAtomic();
@@ -127,9 +126,14 @@ export class ProjectedSplats {
       .compute(1, [1])
       .setName("Splat reset visible count");
     this.finish = N.Fn(() => {
-      drawCount.assign(
-        count.add(SPLATS_PER_INSTANCE - 1).div(N.uint(SPLATS_PER_INSTANCE)),
-      );
+      drawArgs
+        .element(0)
+        .assign(uniformBinding(this.state, "indexCount", "uint"));
+      drawArgs
+        .element(1)
+        .assign(
+          count.add(SPLATS_PER_INSTANCE - 1).div(N.uint(SPLATS_PER_INSTANCE)),
+        );
     })()
       .compute(1, [1])
       .setName("Splat visible draw arguments");
@@ -302,7 +306,7 @@ export class ProjectedSplats {
     const pixelScale = renderSize
       .mul(uniformBinding(this.uniforms, "focalAdjustment", "float"))
       .mul(0.5);
-    // Indirect draws round up to whole quad groups; trim before any index or
+    // Indirect draws round up to whole Splat groups; trim before any index or
     // cache load, including the unused tail of the final instance.
     N.If(i.lessThan(count), () => {
       // Every eye draws the one shared order of compact slots.
@@ -439,6 +443,7 @@ export class ProjectedSplats {
         : null;
     geometry.setIndirect(this.indirect);
     geometry.setSplatCount(Math.max(1, accumulator.numSplats));
+    this.state.indexCount.value = geometry.index.count;
     // The accumulator version covers source, mapping, transform, animation and
     // edit changes. Output color settings are draw-only.
     // Reuse the scratch snapshot; publish it only after a successful dispatch.
@@ -450,6 +455,7 @@ export class ProjectedSplats {
     inputs[length++] = accumulator.viewOrigin.y;
     inputs[length++] = accumulator.viewOrigin.z;
     inputs[length++] = cameras.length;
+    inputs[length++] = geometry.index.count;
     inputs[length++] = stochastic;
     // Each mode keys only the sort options it reads.
     inputs[length++] = !stochastic && radial;

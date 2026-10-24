@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Stochastic rendering now uses one triangle per Splat instead of a quad, reducing vertex and triangle counts on WebGL, WebGPU, and the WebGL2 fallback.
+
 ## [1.4.1] - 2026-10-24
 
 ### Added

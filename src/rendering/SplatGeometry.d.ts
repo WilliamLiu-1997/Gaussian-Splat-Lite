@@ -1,7 +1,7 @@
 import * as THREE from "three";
 export declare const SPLATS_PER_INSTANCE = 128;
-/** Repeated quads; position.z identifies the Splat within each instance. */
+/** Repeated triangles or quads; position.z identifies the Splat in each instance. */
 export declare class SplatGeometry extends THREE.InstancedBufferGeometry {
-  constructor();
+  constructor(triangle?: boolean);
   setSplatCount(count: number): void;
 }

@@ -200,6 +200,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
   onDirty?: () => void;
   dirty: boolean;
   private readonly backend;
+  private readonly geometries;
   private readonly materialState;
   private orderingBuffer;
   private orderingReady;
@@ -333,7 +334,6 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
    * the update boundary too, keeping mode changes outside an active draw.
    */
   private syncStochasticFrame;
-  private selectMaterial;
   private applyMaterialState;
   private reportedRenderError;
   private runAutomaticUpdate;

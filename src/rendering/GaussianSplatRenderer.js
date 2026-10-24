@@ -67,9 +67,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       depthTest: options.depthTest ?? true,
       depthWrite: options.depthWrite ?? false,
     });
-    const geometry = new SplatGeometry();
+    const geometries = [new SplatGeometry(), new SplatGeometry(true)];
+    const geometry = geometries[Number(stochastic)];
     const material = backend.selectMaterial(stochastic);
     super(geometry, material);
+    this.geometries = geometries;
     this.materialState = new MaterialState(material);
     /** @internal False for a second renderer on the same scene, so each `onFrame` runs once per frame. */
     this.frameCallbacks = true;
@@ -187,7 +189,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       accumulator.dispose();
     }
     this.accumulators.length = 0;
-    this.geometry.dispose();
+    for (const geometry of this.geometries) geometry.dispose();
   }
   /** Native WebGPU sorts on the GPU before drawing; WebGL sorts in a worker. */
   get synchronousSort() {
@@ -240,13 +242,11 @@ export class GaussianSplatRenderer extends THREE.Mesh {
         : this.display.hasStochasticSeeds;
     if (active === this.stochasticFrame) return;
     this.stochasticFrame = active;
-    this.selectMaterial();
-    this.setDirty();
-  }
-  selectMaterial() {
-    const material = this.backend.selectMaterial(this.stochasticFrame);
-    this.applyMaterialState(this.stochasticFrame, material);
+    this.geometry = this.geometries[Number(active)];
+    const material = this.backend.selectMaterial(active);
+    this.applyMaterialState(active, material);
     this.material = material;
+    this.setDirty();
   }
   applyMaterialState(stochasticActive, material = this.material) {
     this.materialState.sync(material, this.material);
