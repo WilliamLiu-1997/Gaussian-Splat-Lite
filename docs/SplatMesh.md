@@ -127,9 +127,9 @@ if (intersections.length > 0) {
 ```
 
 - The model needs `raycastable: true`, the default. Picking may return nothing while the model is still being set up.
-- Each hit has an `index`, for reading the Splat from the current data, and a `sourceIndex`, its ID in the original file (`SplatIntersection` in TypeScript).
+- Each hit contains `distance`, `point`, `object`, and `index` (`SplatIntersection` in TypeScript). Read the hit Splat with `hit.object.splats.getSplat(hit.index)`.
 - Values of `minRaycastOpacity` below `0.01` have limited effect: areas that transparent may not be pickable.
-- Streamed models can be picked. Hits ignore their display fades, and an `index` can change as the shown detail changes. For RAD, `sourceIndex` is the node index within the whole file; for streamed SOG, it is the index within the chunk file the hit Splat was loaded from.
+- Streamed models can be picked. Hits ignore their display fades. An `index` belongs to the hit object's current data and can change as the shown detail changes; read the Splat before the streaming selection updates.
 
 ## Scene integration
 

@@ -295,7 +295,6 @@ export class SplatMesh extends THREE.Object3D {
           point: ray.at(distance, new THREE.Vector3()),
           object: this,
           index: splatIndex,
-          sourceIndex: splats.getSourceIndex(splatIndex),
         };
         intersects.push(hit);
       }

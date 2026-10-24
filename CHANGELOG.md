@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Removed raycast hit `sourceIndex`, `Splats.getSourceIndex()`, and `RadStreamScheduler.getGlobalIndex()`. Use `hit.object.splats.getSplat(hit.index)` to read the current hit; streamed indices can change when the visible detail changes.
+
 ## [1.4.2] - 2026-10-24
 
 ### Changed

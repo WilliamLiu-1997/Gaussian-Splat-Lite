@@ -25,8 +25,8 @@ export type SplatResult = {
   numSplats: number;
   splatArrays: [Uint32Array, Uint32Array];
   sortCenters?: Float32Array;
-  /** Storage index to original source index; absent for identity order. */
-  sourceIds?: Uint32Array;
+  /** Internal permutation for restoring custom SOG chunks to decoded record order. */
+  storageOrder?: Uint32Array;
   /** Local finite center bounds: min XYZ followed by max XYZ. */
   centerOnlyBoundingBox?: Float32Array;
   /** Local scale/rotation bounds at source alpha 0.01, including kernel shape. */
@@ -35,9 +35,8 @@ export type SplatResult = {
   spatialBounds?: Float32Array;
   extra: SplatExtra;
 };
-/** Spatially reordered records with source IDs and cached local bounds. */
+/** Spatially reordered records with cached local bounds. */
 export type ReorderedSplatResult = SplatResult & {
-  sourceIds: Uint32Array;
   centerOnlyBoundingBox: Float32Array;
   boundingBox: Float32Array;
   spatialBounds: Float32Array;

@@ -34,7 +34,7 @@ export function getSplatTextureBytes(capacity, numSh) {
 export function getSplatByteLength(data) {
   let bytes =
     (data.sortCenters?.byteLength ?? 0) +
-    (data.sourceIds?.byteLength ?? 0) +
+    (data.storageOrder?.byteLength ?? 0) +
     (data.centerOnlyBoundingBox?.byteLength ?? 0) +
     (data.boundingBox?.byteLength ?? 0) +
     (data.spatialBounds?.byteLength ?? 0);

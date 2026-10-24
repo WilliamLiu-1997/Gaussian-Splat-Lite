@@ -162,13 +162,13 @@ pub fn morton_reorder(
     count: u32,
     arrays: Array,
     sort_centers: Option<Uint32Array>,
-    source_ids: Option<Uint32Array>,
+    storage_order: Option<Uint32Array>,
     center_only_bounds: Float32Array,
     bounds: Float32Array,
     bounds_blocks: Option<Float32Array>,
     spatial_bounds: Float32Array,
     progress: Option<Function>,
-) -> Result<Uint32Array, JsValue> {
+) -> Result<(), JsValue> {
     let words = count
         .checked_mul(4)
         .ok_or_else(|| js_sys::Error::new("Morton record count exceeds the array limit"))?;
@@ -198,7 +198,7 @@ pub fn morton_reorder(
         || sort_centers
             .as_ref()
             .is_some_and(|array| array.length() < count * 3)
-        || source_ids
+        || storage_order
             .as_ref()
             .is_some_and(|array| array.length() < count)
     {
@@ -213,7 +213,7 @@ pub fn morton_reorder(
     let total = (7
         + arrays.len()
         + usize::from(sort_centers.is_some())
-        + usize::from(source_ids.is_some())
+        + usize::from(storage_order.is_some())
         + 1) as f64
         * work_count;
     let progress = progress.as_ref();
@@ -308,18 +308,13 @@ pub fn morton_reorder(
         completed += work_count;
         report_progress(progress, completed, total)?;
     }
-    if let Some(ids) = source_ids {
-        ids.subarray(0, count)
-            .copy_to(&mut source[..count as usize]);
-        for index in &mut order {
-            *index = source[*index as usize];
-        }
+    if let Some(storage_order) = storage_order {
+        storage_order.subarray(0, count).copy_from(&order);
         completed += work_count;
         report_progress(progress, completed, total)?;
     }
-    let result = Uint32Array::from(order.as_slice());
     report_progress(progress, total, total)?;
-    Ok(result)
+    Ok(())
 }
 
 fn permute<const STRIDE: usize>(source: &[u32], target: &mut [u32], order: &[u32]) {

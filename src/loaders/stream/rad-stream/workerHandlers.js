@@ -90,10 +90,9 @@ export function createRadStreamHandlers() {
         const boundsBlocks = new Float32Array(
           Math.ceil(data.numSplats / SPLAT_BOUNDS_BLOCK_SIZE) * 12,
         );
-        reorderSplats(data, boundsBlocks);
-        const sourceToStorage = invertSplatOrder(data.sourceIds);
-        for (let i = 0; i < data.numSplats; i++)
-          data.sourceIds[i] += decoded.base;
+        const storageOrder = new Uint32Array(data.numSplats);
+        reorderSplats(data, { boundsBlocks, storageOrder });
+        const sourceToStorage = invertSplatOrder(storageOrder);
         const tree = {
           centers,
           radii,

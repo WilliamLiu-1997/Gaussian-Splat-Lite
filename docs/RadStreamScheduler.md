@@ -107,7 +107,6 @@ Unused detail is released after `cooldownMs`, including while hidden, and loads 
 | `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's size from `renderer.getSize()` |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
 | `getBoundingBox()` | Approximate box around the scene, in the group's coordinates; empty until the first data loads |
-| `getGlobalIndex(mesh, renderedIndex)` | Convert a picking hit into a node index that stays the same for the whole RAD file |
 | `stats` | Visible Splats, loading progress, and estimated CPU/GPU cache sizes (`residentCpuBytes` / `residentGpuBytes`) |
 | `dispose()` | Stop loading and release the scene. Pending `initialized` and `firstRenderable` promises reject with `AbortError` |
 
@@ -117,13 +116,14 @@ Request a redraw from `onChange`, and keep calling `update()` on every animation
 
 ### Picking
 
-Hits from a streamed scene refer to the detail that is currently shown. Use `getGlobalIndex()`, or the hit's [`sourceIndex`](SplatMesh.md#raycasting), for an ID that does not change:
+Hits from a streamed scene refer to the detail that is currently shown. Read the hit Splat before the streaming selection updates, since its index can change:
 
 ```js
 const hits = raycaster.intersectObject(streaming.group, true);
 if (hits.length && hits[0].index !== undefined) {
-  const nodeIndex = streaming.getGlobalIndex(hits[0].object, hits[0].index);
-  console.log(nodeIndex, hits[0].point);
+  const hit = hits[0];
+  const splat = hit.object.splats.getSplat(hit.index);
+  console.log(splat, hit.point);
 }
 ```
 

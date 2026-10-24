@@ -52,8 +52,8 @@ function createDecodedState(data) {
   ) {
     throw new Error("sortCenters is smaller than numSplats");
   }
-  if (data.sourceIds.length < numSplats)
-    throw new Error("sourceIds is smaller than numSplats");
+  if (data.storageOrder && data.storageOrder.length < numSplats)
+    throw new Error("storageOrder is smaller than numSplats");
   if (data.centerOnlyBoundingBox?.length !== 6)
     throw new Error("Decoded center bounds must contain six values");
   if (data.boundingBox?.length !== 6)
@@ -82,7 +82,6 @@ function createEmptyState() {
     maxSplats: 0,
     numSplats: 0,
     splatArrays: [new Uint32Array(0), new Uint32Array(0)],
-    sourceIds: new Uint32Array(0),
     spatialBounds: new Float32Array(0),
     centerOnlyBoundingBox: bounds,
     boundingBox: bounds.slice(),
@@ -143,7 +142,7 @@ export class Splats {
     this.numSplats = state.numSplats;
     this.splatArrays = state.splatArrays;
     this.sortCenters = state.sortCenters;
-    this.sourceIds = state.sourceIds;
+    this.storageOrder = state.storageOrder;
     this.centerOnlyBounds = state.centerOnlyBoundingBox;
     this.bounds = state.boundingBox;
     this.spatialBounds = state.spatialBounds;
@@ -193,7 +192,7 @@ export class Splats {
     return getSplatByteLength({
       splatArrays: this.splatArrays,
       sortCenters: this.sortCenters,
-      sourceIds: this.sourceIds,
+      storageOrder: this.storageOrder,
       centerOnlyBoundingBox: this.centerOnlyBounds,
       boundingBox: this.bounds,
       spatialBounds: this.spatialBounds,
@@ -207,7 +206,7 @@ export class Splats {
       numSplats: this.numSplats,
       splatArrays: this.splatArrays,
       sortCenters: this.sortCenters,
-      sourceIds: this.sourceIds,
+      storageOrder: this.storageOrder,
       centerOnlyBoundingBox: this.centerOnlyBounds,
       boundingBox: this.bounds,
       spatialBounds: this.spatialBounds,
@@ -215,12 +214,6 @@ export class Splats {
     };
     this.dispose();
     return data;
-  }
-  /** Original source ID, retained across reordering and range extraction. */
-  getSourceIndex(index) {
-    if (!Number.isSafeInteger(index) || index < 0 || index >= this.numSplats)
-      throw new Error("Invalid splat index");
-    return this.sourceIds[index];
   }
   getSplat(index, includeSh = true) {
     if (index < 0 || index >= this.numSplats) {

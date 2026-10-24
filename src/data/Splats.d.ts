@@ -33,7 +33,7 @@ export declare class Splats {
   numSplats: number;
   private splatArrays;
   private sortCenters?;
-  protected sourceIds: Uint32Array;
+  private storageOrder?;
   protected centerOnlyBounds: Float32Array;
   protected bounds: Float32Array;
   private spatialBounds;
@@ -59,11 +59,7 @@ export declare class Splats {
   /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
   getByteLength(): number;
   /** @internal Consume owned arrays for transfer to a streaming worker. */
-  takeData(): SplatResult & {
-    sourceIds: Uint32Array;
-  };
-  /** Original source ID, retained across reordering and range extraction. */
-  getSourceIndex(index: number): number;
+  takeData(): SplatResult;
   getSplat(index: number): DecodedSplatWithSh;
   getSplat(index: number, includeSh: true): DecodedSplatWithSh;
   getSplat(index: number, includeSh: false): DecodedSplat;

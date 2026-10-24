@@ -143,7 +143,7 @@ async function decodeInput(args) {
           signal: args.signal,
         };
         return isRadPrefix(sniffed)
-          ? await loadRad(streamingArgs)
+          ? await loadRad({ ...streamingArgs, postDecode: args.postDecode })
           : await loadSog(streamingArgs);
       }
     }
@@ -229,7 +229,6 @@ export async function decodeSplats(args, { sendStatus }) {
     numSplats: decoded.numSplats,
     splatArrays: [decoded.splat0, decoded.splat1],
     sortCenters: decoded.sortCenters,
-    sourceIds: decoded.sourceIds,
     extra: {
       shBlock0: decoded.shBlock0,
       shBlock1: decoded.shBlock1,
@@ -242,14 +241,15 @@ export async function decodeSplats(args, { sendStatus }) {
 }
 export async function loadSplats(args, options) {
   const data = await decodeSplats(args, options);
-  reorderSplats(
-    data,
-    undefined,
-    createStageProgress(
+  // Custom SOG loaders return Splats; retain the permutation for range extraction.
+  data.storageOrder = new Uint32Array(data.numSplats);
+  reorderSplats(data, {
+    storageOrder: data.storageOrder,
+    onProgress: createStageProgress(
       args.reportProcessingProgress ? options.sendStatus : undefined,
       "optimize",
     ),
-  );
+  });
   return data;
 }
 let assetRequestId = 0;

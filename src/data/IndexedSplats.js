@@ -49,7 +49,6 @@ export class IndexedSplats extends Splats {
       () => new Uint32Array(capacity * 4),
     );
     this.sourceCenters = new Float32Array(this.sourceArrays[0].buffer);
-    this.sourceIds = new Uint32Array(capacity);
     this.visibleIndices = new Uint32Array(capacity);
     this.sourceTextures = this.sourceArrays.map((array) =>
       makeTexture(
@@ -129,7 +128,6 @@ export class IndexedSplats extends Splats {
     ];
     if (
       arrays.length !== this.sourceArrays.length ||
-      data.sourceIds.length < count ||
       arrays.some(
         (array) =>
           count > 0 &&
@@ -147,8 +145,6 @@ export class IndexedSplats extends Splats {
     const bounds = data.spatialBounds.slice();
     this.spatialChunks.set(start, { count, bounds });
     this.spatialBoundsBytes += bounds.byteLength;
-    this.sourceIds.set(data.sourceIds.subarray(0, count), start);
-    this.sourceIds.fill(0, start + count, start + allocation);
     const firstLayer = Math.floor(start / this.layerSize);
     const lastLayer = Math.ceil((start + allocation) / this.layerSize);
     for (let index = 0; index < this.sourceArrays.length; index++) {
@@ -167,9 +163,6 @@ export class IndexedSplats extends Splats {
     this.ensureIndices();
     this.checkVisibleRange(index, 1);
     return this.sourceIndices[index];
-  }
-  getSourceIndex(index) {
-    return this.sourceIds[this.getStorageIndex(index)];
   }
   checkVisibleRange(start, count) {
     if (
@@ -195,7 +188,6 @@ export class IndexedSplats extends Splats {
   getByteLength() {
     return (
       this.textureByteLength +
-      this.sourceIds.byteLength +
       this.centerOnlyBounds.byteLength +
       this.bounds.byteLength +
       this.spatialBoundsBytes +
@@ -335,9 +327,6 @@ export class IndexedSplats extends Splats {
     this.assertLive();
     this.ensureIndices();
     const count = this.numSplats;
-    const sourceIds = new Uint32Array(count);
-    for (let i = 0; i < count; i++)
-      sourceIds[i] = this.sourceIds[this.sourceIndices[i]];
     const arrays = this.sourceArrays.map((source) => {
       const target = new Uint32Array(count * 4);
       for (let index = 0; index < count; index++) {
@@ -350,7 +339,6 @@ export class IndexedSplats extends Splats {
     const data = {
       numSplats: count,
       splatArrays: [arrays[0], arrays[1]],
-      sourceIds,
       extra: Object.fromEntries(
         arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
       ),

@@ -492,8 +492,7 @@ export class SogStreamScheduler {
       const chunk = this.chunkFor(range);
       const source = chunk.data;
       if (!source?.alive || now < chunk.retryAt) continue;
-      const bytes =
-        getSplatTextureBytes(range.count, source.info.numSh) + range.count * 4;
+      const bytes = getSplatTextureBytes(range.count, source.info.numSh);
       const pending = { range, chunk, bytes };
       leaf.pending = pending;
       const batch = batches.get(chunk) ?? { source, regions: [] };

@@ -10,7 +10,6 @@ Wait for loading to finish before reading:
 await splat.initialized;
 const data = splat.splats;
 const item = data.getSplat(0);
-const sourceIndex = data.getSourceIndex(0);
 ```
 
 ## Options
@@ -39,7 +38,6 @@ Choose at most one of `url`, `file`, or `fileBytes`; combining them throws.
 | `getNumSplats()` / `getNumSh()` | Splat count, and the level of view-dependent color (spherical harmonics degree) the model has |
 | `getByteLength()` | Memory used by the data, in bytes |
 | `getSplat(index, includeSh?)` | Read one Splat; pass `false` to skip its view-dependent color |
-| `getSourceIndex(index)` | The Splat's ID in the original file |
 | `forEachCenter(callback)` | Visit only the center of every Splat, for example to build a spatial index |
 | `forEachSplat(callback)` | Visit every Splat |
 | `dispose()` | Cancel loading and release the data |
@@ -48,7 +46,7 @@ Calling `initialize()` again or `dispose()` cancels a load still in progress; it
 
 ## Data rules
 
-- **Indices are not file order.** Splats are reordered while loading. Use `getSourceIndex(index)`, or a picking hit's `sourceIndex`, to get the ID from the original file. Passing existing `Splats` to a mesh keeps their order.
+- **Indices address the current data.** Splats are reordered while loading, so indices may differ from file order. Passing existing `Splats` to a mesh keeps their order. Streamed indices can change when the visible detail changes.
 - **Reads return copies.** `getSplat()` returns new `center`, `scales`, `quaternion`, `opacity`, `color`, and `sh` values on each call; changing them does not change the model. `sh` holds 0, 3, 8, 15, or 24 RGB coefficients, depending on the model's degree (SH0–SH4).
 - **`forEachSplat()` reuses its objects.** The same objects are passed for every Splat, so clone anything you want to keep after the callback returns.
 - **Streamed data is read-only.** Data from [RadStreamScheduler](RadStreamScheduler.md) or [SogStreamScheduler](SogStreamScheduler.md) cannot be reinitialized.

@@ -1,5 +1,5 @@
 import { SH_KEYS } from "./splatData.js";
-/** Copy file-order records; the caller assigns source IDs after reordering. */
+/** Copy a contiguous range of file-order records before spatial reordering. */
 export function extractSplatRange(source, start, count) {
   if (
     !Number.isSafeInteger(start) ||

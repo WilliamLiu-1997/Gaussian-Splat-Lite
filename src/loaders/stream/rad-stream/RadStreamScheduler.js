@@ -239,8 +239,8 @@ export class RadStreamScheduler {
     const paddedCount = Math.ceil(this.pageSize / 2048) * 2048;
     this.maxPagePendingBytes =
       paddedCount * splatBytes +
-      // Tree data, source IDs, Morton order and bounds awaiting LOD registration.
-      this.pageSize * 30 +
+      // Tree data, Morton order and bounds awaiting LOD registration.
+      this.pageSize * 26 +
       boundsBlocks * 80;
     // Reserve GPU storage for packed records, full render indices and opacity tables.
     const pageGpuBytes =
@@ -249,7 +249,7 @@ export class RadStreamScheduler {
       16;
     const pageCpuBytes =
       pageGpuBytes +
-      pageStride * 8 + // CPU source/visible IDs.
+      pageStride * 4 + // CPU reverse map for visible indices.
       this.pageSize * 28 + // Storage map, four worker cuts, displayed/post-fade cuts.
       boundsBlocks * 72 + // CPU spatial bounds and preparation-worker bounds.
       2 * (48 + 4); // Current/post-fade bounds and page counts, charged per page.
@@ -869,12 +869,6 @@ export class RadStreamScheduler {
       }
     }
     return changed;
-  }
-  /** Map a raycast hit's rendered index back to its stable file index. */
-  getGlobalIndex(mesh, renderedIndex) {
-    const pool = this.pools.find(({ batch }) => batch === mesh);
-    if (!pool) throw new Error("Mesh does not belong to this RAD dataset");
-    return pool.batch.source.getSourceIndex(renderedIndex);
   }
   changed() {
     if (!this.disposed) notifyStreamChange(this.options);

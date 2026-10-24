@@ -30,14 +30,14 @@ function validateRadTree(start, count) {
   }
   if (end !== start.length) throw new Error("RAD: tree contains a cycle");
 }
-function createRadOutput(numSplats) {
+function createRadOutput(numSplats, mapAttributes) {
   const capacity = getTextureSize(numSplats).maxSplats;
   return {
     numSplats,
     splat0: new Uint32Array(capacity * 4),
     splat1: new Uint32Array(capacity * 4),
     sortCenters: new Float32Array(numSplats * 3),
-    sourceIds: new Uint32Array(numSplats),
+    sourceIds: mapAttributes ? new Uint32Array(numSplats) : undefined,
   };
 }
 /** Copy one chunk without retaining its arrays across reads. */
@@ -64,8 +64,9 @@ function copyRadChunk(result, chunk, offset) {
     }
   }
   if (!childCount) {
-    for (let i = 0; i < chunk.numSplats; i++)
-      result.sourceIds[output + i] = chunk.base + i;
+    if (result.sourceIds)
+      for (let i = 0; i < chunk.numSplats; i++)
+        result.sourceIds[output + i] = chunk.base + i;
     result.sortCenters.set(
       centers.subarray(0, chunk.numSplats * 3),
       output * 3,
@@ -74,7 +75,7 @@ function copyRadChunk(result, chunk, offset) {
   }
   for (let i = 0; i < chunk.numSplats; i++) {
     if (childCount[i]) continue;
-    result.sourceIds[output] = chunk.base + i;
+    if (result.sourceIds) result.sourceIds[output] = chunk.base + i;
     result.sortCenters[output * 3] = centers[i * 3];
     result.sortCenters[output * 3 + 1] = centers[i * 3 + 1];
     result.sortCenters[output * 3 + 2] = centers[i * 3 + 2];
@@ -93,7 +94,7 @@ function trimRadOutput(result, numSplats) {
   }
   if (result.sortCenters.length !== numSplats * 3)
     result.sortCenters = result.sortCenters.slice(0, numSplats * 3);
-  if (result.sourceIds.length !== numSplats)
+  if (result.sourceIds && result.sourceIds.length !== numSplats)
     result.sourceIds = result.sourceIds.slice(0, numSplats);
   return result;
 }
@@ -170,7 +171,11 @@ export async function loadRad(args) {
           count: new Uint16Array(header.meta.count),
         }
       : undefined;
-    const result = createRadOutput(header.meta.count);
+    // Only postDecode attributes need original node IDs after leaf filtering.
+    const result = createRadOutput(
+      header.meta.count,
+      tree && args.postDecode?.attributes.length > 0,
+    );
     let outputCount = 0;
     let chunkIndex = 0;
     const input = source;

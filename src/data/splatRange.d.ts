@@ -1,5 +1,5 @@
 import type { SplatResult } from "./defines.js";
-/** Copy file-order records; the caller assigns source IDs after reordering. */
+/** Copy a contiguous range of file-order records before spatial reordering. */
 export declare function extractSplatRange(
   source: SplatResult,
   start: number,

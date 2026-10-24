@@ -67,7 +67,6 @@ export function createSogStreamHandlers(decodeSplats) {
     return ranges.map(({ start, count }) => {
       const data = extractSplatRange(source, start, count);
       reorderSplats(data);
-      for (let i = 0; i < count; i++) data.sourceIds[i] += start;
       return data;
     });
   }

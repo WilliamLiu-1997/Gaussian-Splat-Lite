@@ -25,7 +25,7 @@ export declare function getSplatTextureBytes(
 export declare function getSplatByteLength(data: {
   splatArrays: readonly Uint32Array[];
   sortCenters?: Float32Array;
-  sourceIds?: Uint32Array;
+  storageOrder?: Uint32Array;
   centerOnlyBoundingBox?: Float32Array;
   boundingBox?: Float32Array;
   spatialBounds?: Float32Array;

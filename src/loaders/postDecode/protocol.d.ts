@@ -183,6 +183,7 @@ export type PostDecodeSplatData = {
   splat0: Uint32Array;
   splat1: Uint32Array;
   sortCenters: Float32Array;
+  /** Original RAD node indices for attributes after non-leaf records are omitted. */
   sourceIds?: Uint32Array;
   shBlock0?: Uint32Array;
   shBlock1?: Uint32Array;

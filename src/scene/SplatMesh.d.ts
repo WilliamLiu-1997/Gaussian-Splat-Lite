@@ -38,8 +38,6 @@ export type SplatMeshFrameContext = {
 export type SplatIntersection = THREE.Intersection<SplatMesh> & {
   /** Current readable index in this mesh's Splats. */
   index: number;
-  /** Original file index; for streamed SOG, relative to this batch's chunk. */
-  sourceIndex: number;
 };
 /** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
 export declare class SplatMesh extends THREE.Object3D {

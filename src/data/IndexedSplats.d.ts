@@ -53,7 +53,6 @@ export declare abstract class IndexedSplats extends Splats {
     allocation: number,
   ): void;
   private getStorageIndex;
-  getSourceIndex(index: number): number;
   private checkVisibleRange;
   getNumSh(): 0 | 1 | 2 | 3 | 4;
   /** Estimated GPU storage for packed records, render indices and opacity tables. */
@@ -84,9 +83,7 @@ export declare abstract class IndexedSplats extends Splats {
     callback: (index: number, x: number, y: number, z: number) => void,
   ): void;
   forEachSplat(callback: Parameters<Splats["forEachSplat"]>[0]): void;
-  takeData(): SplatResult & {
-    sourceIds: Uint32Array;
-  };
+  takeData(): SplatResult;
   setTextureUniforms(uniforms: Record<string, THREE.IUniform>): void;
   dispose(): void;
 }

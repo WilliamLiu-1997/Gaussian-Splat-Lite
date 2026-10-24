@@ -6,7 +6,7 @@ import type { SogLodRequest } from "./sogVisibility.js";
 import type { SogChunkInfo } from "./workerHandlers.js";
 export type SogStreamLoaderOptions = StreamRequestOptions & {
   url: string;
-  /** Returns owned data in file order, or with a complete source ID map. */
+  /** Returns owned Splats; the loader restores their decoded record order before slicing. */
   loadChunk?: (url: string, signal: AbortSignal) => Promise<Splats>;
 };
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */

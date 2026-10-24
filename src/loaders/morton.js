@@ -2,9 +2,12 @@ import { morton_reorder } from "gaussian-splat-rs";
 import { SPLAT_BOUNDS_BLOCK_SIZE } from "../data/defines.js";
 import { SH_KEYS } from "../data/splatData.js";
 import { wasmCall } from "../runtime/wasmCall.js";
-/** Reorder packed attributes together and retain their original source indices. */
-export function reorderSplats(data, boundsBlocks, onProgress) {
-  const { numSplats, splatArrays, sortCenters, sourceIds } = data;
+/** Reorder packed attributes and bounds, optionally writing the storage permutation. */
+export function reorderSplats(
+  data,
+  { boundsBlocks, storageOrder, onProgress } = {},
+) {
+  const { numSplats, splatArrays, sortCenters } = data;
   const centerBounds = new Float32Array(6);
   const bounds = new Float32Array(6);
   const spatialBounds = new Float32Array(
@@ -15,7 +18,7 @@ export function reorderSplats(data, boundsBlocks, onProgress) {
     const array = data.extra[key];
     if (array) arrays.push(array);
   }
-  const order = wasmCall(() =>
+  wasmCall(() =>
     morton_reorder(
       numSplats,
       arrays,
@@ -26,7 +29,7 @@ export function reorderSplats(data, boundsBlocks, onProgress) {
             sortCenters.length,
           )
         : undefined,
-      sourceIds,
+      storageOrder,
       centerBounds,
       bounds,
       boundsBlocks,
@@ -34,18 +37,17 @@ export function reorderSplats(data, boundsBlocks, onProgress) {
       onProgress,
     ),
   );
-  data.sourceIds = order;
   data.centerOnlyBoundingBox = centerBounds;
   data.boundingBox = bounds;
   data.spatialBounds = spatialBounds;
 }
 /** Restore packed chunk file order bit for bit; discard unused sort centers. */
 export function restoreSplatOrder(data) {
-  const { numSplats, splatArrays, sourceIds } = data;
+  const { numSplats, splatArrays, storageOrder } = data;
   data.sortCenters = undefined;
   data.spatialBounds = undefined;
-  if (!sourceIds) return;
-  const order = invertSplatOrder(sourceIds.subarray(0, numSplats));
+  if (!storageOrder) return;
+  const order = invertSplatOrder(storageOrder.subarray(0, numSplats));
   const [splat0, splat1] = splatArrays;
   const scratch = new Uint32Array(numSplats * 4);
   const permute = (array) => {
@@ -62,7 +64,7 @@ export function restoreSplatOrder(data) {
     const array = data.extra[key];
     if (array) permute(array);
   }
-  data.sourceIds = undefined;
+  data.storageOrder = undefined;
 }
 /** Original index to storage index; chunk ranges require a complete permutation. */
 export function invertSplatOrder(order) {
@@ -70,7 +72,7 @@ export function invertSplatOrder(order) {
   for (let i = 0; i < order.length; i++) {
     const source = order[i];
     if (source >= order.length || inverse[source] !== 0xffffffff)
-      throw new Error("Source IDs must form a complete chunk permutation");
+      throw new Error("Storage order must form a complete chunk permutation");
     inverse[source] = i;
   }
   return inverse;

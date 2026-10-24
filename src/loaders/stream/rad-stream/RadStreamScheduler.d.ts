@@ -119,8 +119,6 @@ export declare class RadStreamScheduler {
   private releasePage;
   private isPageRequired;
   private releaseUnused;
-  /** Map a raycast hit's rendered index back to its stable file index. */
-  getGlobalIndex(mesh: THREE.Object3D, renderedIndex: number): number;
   private changed;
   private failed;
   private stopRefinement;

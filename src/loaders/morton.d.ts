@@ -1,9 +1,12 @@
 import type { ReorderedSplatResult, SplatResult } from "../data/defines.js";
-/** Reorder packed attributes together and retain their original source indices. */
+/** Reorder packed attributes and bounds, optionally writing the storage permutation. */
 export declare function reorderSplats(
   data: SplatResult,
-  boundsBlocks?: Float32Array,
-  onProgress?: (loaded: number, total: number) => void,
+  options?: {
+    boundsBlocks?: Float32Array;
+    storageOrder?: Uint32Array;
+    onProgress?: (loaded: number, total: number) => void;
+  },
 ): asserts data is ReorderedSplatResult;
 /** Restore packed chunk file order bit for bit; discard unused sort centers. */
 export declare function restoreSplatOrder(data: SplatResult): void;

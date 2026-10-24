@@ -34,7 +34,7 @@ The three steps that matter:
 2. Register the camera.
 3. Call `streaming.update()` before every render.
 
-Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only. For a Splat's original ID, use the picking hit's [`sourceIndex`](SplatMesh.md#raycasting).
+Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only. Read a hit with `hit.object.splats.getSplat(hit.index)` before the streaming selection updates.
 
 ## Cameras
 
