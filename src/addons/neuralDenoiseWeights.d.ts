@@ -21,22 +21,8 @@ export type NeuralDenoiseModel = {
    */
   compactMix?: [settled: number, movingOrShort: number];
   /**
-   * Maximum share of smoothing applied to the displayed accumulated path,
-   * in [0, 1]. Omitted or zero disables it; otherwise `movingNoise` and
-   * `movingKnee` are required. Applies only while the camera moves and
-   * preserves the stored accumulated history. Object motion with a still
-   * camera continues to use the existing history rejection.
-   */
-  movingMean?: number;
-  /**
-   * Required with nonzero `movingMean`: nonnegative multiplier of the
-   * mean's squared standard error. Larger values allow smoothing across
-   * greater color differences.
-   */
-  movingNoise?: number;
-  /**
-   * Required with `compact` or nonzero `movingMean`: positive camera-induced
-   * screen motion, in pixels per frame, at which the motion response is 0.5.
+   * Required with `compact`: positive camera-induced screen motion, in
+   * pixels per frame, at which the motion response is 0.5.
    */
   movingKnee?: number;
   /** Strengthen display stabilization for single-sample stochastic noise. */
@@ -146,11 +132,7 @@ export type NeuralDenoiseModel = {
       compactMix: [settled: number, movingOrShort: number];
       movingKnee: number;
     }
-) &
-  (
-    | { movingMean?: 0 }
-    | { movingMean: number; movingNoise: number; movingKnee: number }
-  );
+);
 export declare const neuralDenoiseModels: {
   quality: NeuralDenoiseModel;
   performance: NeuralDenoiseModel;

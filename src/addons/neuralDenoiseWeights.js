@@ -549,6 +549,6 @@ const quality = {
 };
 
 export const neuralDenoiseModels = {
-  quality: { ...quality, movingMean: 1, movingNoise: 16 },
+  quality,
   performance: { ...quality, compact: true, compactMix: [0.5, 0.75] },
 };

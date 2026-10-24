@@ -239,74 +239,6 @@ ${CATMULL_ROM_WEIGHTS}
 fn catmullRom(image: texture_2d<f32>, uv: vec2f) -> vec4f {
   return catmullRomSpan(image, uv).value;
 }
-
-// Lanczos-3 without its corner taps, from nine bilinear taps: the middle pair
-// of each axis is one tap and the other four pixels of an axis one each. A
-// history that is resampled once per frame loses fine detail with every pass,
-// and this kernel loses about half of what Catmull-Rom does. Its negative
-// lobes would ring over such a history, so the result is kept inside what the
-// four pixels around the position span. At a pixel's centre it returns the
-// pixel.
-struct LanczosWeights {
-  low: vec3f,
-  high: vec3f,
-};
-fn lanczosWeights(t: f32) -> LanczosWeights {
-  // Integer-shifted sinc taps share their sine. Angle addition supplies the
-  // other factor, reducing twelve sine evaluations per axis to three trig calls.
-  let x: f32 = 3.14159265 * t;
-  let s: f32 = sin(x / 3.0);
-  let c: f32 = 0.866025404 * cos(x / 3.0);
-  let scale: f32 = 0.303963551 * sin(x);
-  let terms: vec3f = scale * vec3f(c - 0.5 * s, -c - 0.5 * s, s);
-  let low: vec3f = vec3f(t + 2.0, t + 1.0, t);
-  let high: vec3f = vec3f(t - 1.0, t - 2.0, t - 3.0);
-  var w: LanczosWeights;
-  w.low = terms / max(low * low, vec3f(1e-20));
-  w.high = terms / max(high * high, vec3f(1e-20));
-  if (abs(x) < 1e-5) { w.low.z = 1.0; }
-  if (abs(3.14159265 * (t - 1.0)) < 1e-5) { w.high.x = 1.0; }
-  return w;
-}
-struct LanczosKernel {
-  base: vec2f,
-  centre: vec2f,
-  middle: f32,
-  wx: vec4f,
-  wy: vec4f,
-  total: f32,
-}
-fn lanczosKernel(uv: vec2f) -> LanczosKernel {
-  let position: vec2f = uv * P.size - 0.5;
-  var k: LanczosKernel;
-  k.base = floor(position);
-  let t: vec2f = position - k.base;
-  let x: LanczosWeights = lanczosWeights(t.x);
-  let y: LanczosWeights = lanczosWeights(t.y);
-  let middle: vec2f = vec2f(x.low.z + x.high.x, y.low.z + y.high.x);
-  k.centre = (k.base + vec2f(x.high.x, y.high.x) / middle + 0.5) * P.invSize;
-  k.middle = middle.x * middle.y;
-  k.wx = vec4f(x.low.xy, x.high.yz) * middle.y;
-  k.wy = vec4f(y.low.xy, y.high.yz) * middle.x;
-  k.total = k.middle;
-  for (var i: i32 = 0; i < 4; i++) { k.total += k.wx[i] + k.wy[i]; }
-  return k;
-}
-fn lanczosCross(image: texture_2d<f32>, k: LanczosKernel) -> vec4f {
-  var sum: vec4f = textureSampleLevel(image, linearSampler, k.centre, 0.0) * k.middle;
-  const offsets = array<f32, 4>(-1.5, -0.5, 2.5, 3.5);
-  for (var i: i32 = 0; i < 4; i++) {
-    let along: vec2f = (k.base + offsets[i]) * P.invSize;
-    sum += textureSampleLevel(image, linearSampler, vec2f(along.x, k.centre.y), 0.0) * k.wx[i];
-    sum += textureSampleLevel(image, linearSampler, vec2f(k.centre.x, along.y), 0.0) * k.wy[i];
-  }
-  let p: vec2i = vec2i(k.base);
-  let a: vec4f = textureLoad(image, bounded(p), 0);
-  let b: vec4f = textureLoad(image, bounded(p + vec2i(1, 0)), 0);
-  let c: vec4f = textureLoad(image, bounded(p + vec2i(0, 1)), 0);
-  let d: vec4f = textureLoad(image, bounded(p + vec2i(1, 1)), 0);
-  return clamp(sum / k.total, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
-}
 `;
 const TAPS = /* wgsl */ `
 const TAPS = array<vec2i, 9>(
@@ -669,7 +601,7 @@ fn mean3x3(image: texture_2d<f32>, position: vec2f, offset: vec2f) -> vec4f {
 `;
 
 const QUALITY_RESAMPLING = /* wgsl */ `
-// Full Catmull-Rom for the denoised history, retaining all four corner taps.
+// Full Catmull-Rom for Quality histories, retaining all four corner taps.
 fn catmullRomNine(image: texture_2d<f32>, uv: vec2f) -> vec4f {
   let position: vec2f = uv * P.size;
 ${CATMULL_ROM_WEIGHTS}
@@ -1000,7 +932,7 @@ ${groups
 // half-resolution result.
 @group(0) @binding(11) var wideTexture: texture_2d<f32>;
 @group(0) @binding(12) var depthPrevious: texture_2d<f32>;
-${MEAN_3X3}${weights.compact ? "" : QUALITY_RESAMPLING}${BLOCKS}
+${weights.compact ? MEAN_3X3 : QUALITY_RESAMPLING}${BLOCKS}
 // The frame's existing 4x4 mean, used only for rejected surfaces.
 @group(0) @binding(13) var rejectedTexture: texture_2d<f32>;
 ${COARSE}
@@ -1048,17 +980,10 @@ ${weights.compact ? "" : "  let d: vec4f = textureLoad(filteredTexture, p, 0);"}
   var same: f32 = 1.0;
   let sparse: f32 = blockSparse(p);
   var sparseMotion: f32 = 0.0;
-${
-  weights.movingMean
-    ? `  // Where the history was, for the accumulated path's mean below.
-  var historyUv: vec2f = position.xy * P.invSize;`
-    : ""
-}
   if (P.historyValid > 0.5) {
     let z: f32 = blockDepth(p);
     let h: History = reproject(position.xy, z);
     valid = h.valid;
-${weights.movingMean ? "    historyUv = h.uv;" : ""}
     // The pixel's own motion, or what a turn of the camera sweeps over half
     // the view, whichever is more: at the centre of a turn the first is
     // small while every surface there shows a new face. An orthographic
@@ -1092,9 +1017,9 @@ ${
       // slowly: read bilinearly, it lost detail with every one of them.
       sr = max(catmullRom(previousAccumulated, h.uv), vec4f(0.0));
       dr = max(textureSampleLevel(previousDenoised, linearSampler, h.uv, 0.0), vec4f(0.0));`
-    : `      sr = max(lanczosCross(previousAccumulated, lanczosKernel(h.uv)), vec4f(0.0));
-      // The two short histories take Catmull-Rom: what it blurs over a few
-      // frames is noise more than detail there.
+    : `      // Full Catmull-Rom avoids the Lanczos cross kernel's frequency gain
+      // when periodic surface detail is reprojected over many frames.
+      sr = max(catmullRomNine(previousAccumulated, h.uv), vec4f(0.0));
       dr = max(catmullRomNine(previousDenoised, h.uv), vec4f(0.0));`
 }
       a = previousStatistics(h.uv);
@@ -1188,28 +1113,7 @@ ${
   let error: f32 = sqrt(max(y2 - ys * ys, 0.0) / (ns + 1e-3) + 1e-10);
   let ramp: f32 = 1.0 - exp(-ns / ${float(weights.gateFrames)});
   let keep: f32 = ramp * (1.0 - clamp(${float(weights.gamma)} * error, 0.0, 1.0)) * trust.w;
-${
-  weights.movingMean
-    ? `  // While the camera moves, the accumulated path holds few samples of the
-  // new view and its grain shows: it is shown from the 3x3 mean of its
-  // history and this frame's filtered sample. What it keeps stays sharp, so
-  // a camera that stops settles as before. This display-only smoothing does
-  // not track moving objects: with a still camera they continue to use the
-  // existing history rejection.
-  var shownAccumulated: vec4f = s;
-  if (P.historyValid > 0.5 && P.cameraStill < 0.5) {
-    let held: vec4f = max(mean3x3(previousAccumulated, historyUv * P.size, vec2f(0.0)), vec4f(0.0));
-    let moving: f32 = speed * speed / (speed * speed + ${float(weights.movingKnee * weights.movingKnee)});
-    let smoothed: vec4f = (held * ws + filtered) / ds;
-    // Only where the two differ by what the mean's noise explains: a larger
-    // difference is detail, and stays.
-    let differ: f32 = luma(abs(smoothed.rgb - s.rgb));
-    let spread: f32 = ${float(weights.movingNoise)} * error * error;
-    shownAccumulated = mix(s, smoothed, ${float(weights.movingMean)} * moving * spread / (spread + differ * differ + 1e-10));
-  }
-  let composite: vec4f = mix(dn, shownAccumulated, keep);`
-    : "  let composite: vec4f = mix(dn, s, keep);"
-}
+  let composite: vec4f = mix(dn, s, keep);
   // Stabilization: a predicted blend with the previous image, which may stay
   // as far from this frame's result as half of what it spans around the
   // pixel, plus a slack. Taking that span from this frame's result instead

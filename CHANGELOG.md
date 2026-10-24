@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Stochastic rendering now uses one triangle per Splat instead of a quad, reducing vertex and triangle counts on WebGL, WebGPU, and the WebGL2 fallback.
+- Neural denoising's `"quality"` mode no longer develops a worm-like pattern on fine detail during slow camera movement; detail there is slightly softer.
 
 ## [1.4.1] - 2026-10-24
 
