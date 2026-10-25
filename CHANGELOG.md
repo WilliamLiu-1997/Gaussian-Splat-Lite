@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-10-25
+
 ### Added
 
 - Added `--within-dist <x,y,z,radius>` to `gsl-build-lod` to keep splat centers inside or on a sphere in input coordinates before building LOD. See [Building RAD files](docs/BuildRad.md).
@@ -678,7 +680,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.4.3...HEAD
+[1.4.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.3.2...v1.4.0
