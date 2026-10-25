@@ -2,19 +2,21 @@ import type * as THREE from "three";
 import type { SogLodIndex, SogLodOptions } from "./sogLod.js";
 export type SogCamera = {
   modelView: number[];
-  projection: number[];
-  coordinateSystem: THREE.CoordinateSystem;
-  reversedDepth: boolean;
+  fovScale: number;
 };
 export type SogView = {
   /** The registered cameras that see the group; selection serves all of them. */
   cameras: SogCamera[];
   shown: boolean;
 };
-export type SogLodRequest = SogLodOptions & { view: SogView };
+export type SogLodRequest = SogLodOptions & {
+  view: SogView;
+  lodBehindPenalty: number;
+  lodDistanceShrink: number;
+};
 /**
  * Capture the cameras that see the group without traversing the manifest or
- * reducing matrix precision. WebXR selects detail from each eye's current pose and frustum.
+ * reducing matrix precision. WebXR selects detail from each eye's current pose.
  */
 export declare function captureSogView(
   cameras: readonly THREE.Camera[],
@@ -27,12 +29,16 @@ export declare class SogVisibility {
   private readonly manifest;
   private readonly leaves;
   private readonly cameras;
-  private readonly clip;
   private readonly bound;
+  private readonly typicalHalfSize;
+  private readonly shrink;
   private readonly closest;
   private readonly inverseModelView;
   constructor(
-    manifest: Pick<SogLodIndex, "nodes" | "leafOffsets" | "lods" | "lodLevels">,
+    manifest: Pick<
+      SogLodIndex,
+      "leafBounds" | "leafOffsets" | "lods" | "lodLevels"
+    >,
   );
   private prepareCameras;
   private collect;

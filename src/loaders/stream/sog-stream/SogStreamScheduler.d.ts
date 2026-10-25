@@ -10,6 +10,10 @@ export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
     lodBaseDistance?: number;
     /** Distance multiplier between LOD levels in both modes; defaults to 2. Must be finite and at least 1. */
     lodMultiplier?: number;
+    /** Effective distance multiplier directly behind a camera; defaults to 4. Must be finite and at least 1. */
+    lodBehindPenalty?: number;
+    /** Shrinks oversized regions toward their median size for LOD distance only; defaults to 0.75. Must be between 0 and 1. */
+    lodDistanceShrink?: number;
   };
 export type SogStreamStats = StreamStats & {
   visibleRegions: number;
@@ -26,6 +30,8 @@ export declare class SogStreamScheduler {
   private _splatBudgetMode;
   private _lodBaseDistance;
   private _lodMultiplier;
+  private _lodBehindPenalty;
+  private _lodDistanceShrink;
   private readonly options;
   private readonly loader;
   private readonly abort;
@@ -61,6 +67,12 @@ export declare class SogStreamScheduler {
   /** Distance multiplier between LOD levels; affects both budget modes. */
   get lodMultiplier(): number;
   set lodMultiplier(value: number);
+  /** Effective distance multiplier directly behind a camera; 1 disables it. */
+  get lodBehindPenalty(): number;
+  set lodBehindPenalty(value: number);
+  /** Fraction of excess region size removed when measuring LOD distance. */
+  get lodDistanceShrink(): number;
+  set lodDistanceShrink(value: number);
   get stats(): SogStreamStats;
   /** Group-local bounds from the index; available after initialized resolves. */
   getBoundingBox(): THREE.Box3;
@@ -71,7 +83,7 @@ export declare class SogStreamScheduler {
   /**
    * Select detail for this camera on each update. Detail follows distance,
    * so it needs no resolution. For WebXR register renderer.xr.getCamera(): it
-   * selects the greatest detail needed by any eye that sees the region. Returns whether the camera was
+   * selects the greatest detail needed by any eye. Returns whether the camera was
    * newly added.
    */
   setCamera(camera: THREE.Camera): boolean;
@@ -79,7 +91,7 @@ export declare class SogStreamScheduler {
   deleteCamera(camera: THREE.Camera): boolean;
   /**
    * Call before rendering. Returns whether the displayed data changed. Each
-   * leaf uses the distance of the nearest registered camera that sees it.
+   * leaf uses the smallest effective distance across registered cameras.
    */
   update(): boolean;
   private requestSelection;

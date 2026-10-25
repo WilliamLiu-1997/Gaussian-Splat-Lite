@@ -1,21 +1,23 @@
 import { Box3, Vector3 } from "three";
 export const SOG_LOD_STRIDE = 4;
-/** Flatten the tree and ranges into transferable typed arrays. */
+/** Pack region bounds and ranges into transferable typed arrays. */
 export function packSogLodIndex(manifest) {
-  const { leaves, files, environment } = manifest;
+  const { tree, leaves, files, environment } = manifest;
   // Float64 preserves source bounds and safe-integer counts in the worker index.
-  // Preorder nodes: min XYZ, max XYZ, subtree end, leaf ID (-1 for interiors).
-  const nodes = new Float64Array((leaves.length * 2 - 1) * 8);
-  let nextNode = 0;
-  const writeNode = (node) => {
-    const offset = nextNode++ * 8;
-    node.bound.min.toArray(nodes, offset);
-    node.bound.max.toArray(nodes, offset + 3);
-    nodes[offset + 7] = node.leaf?.id ?? -1;
-    for (const child of node.children ?? []) writeNode(child);
-    nodes[offset + 6] = nextNode;
+  const bounds = new Float64Array(6);
+  tree.bound.min.toArray(bounds);
+  tree.bound.max.toArray(bounds, 3);
+  const leafBounds = new Float64Array(leaves.length * 6);
+  const writeLeafBounds = (node) => {
+    if (node.leaf) {
+      const offset = node.leaf.id * 6;
+      node.bound.min.toArray(leafBounds, offset);
+      node.bound.max.toArray(leafBounds, offset + 3);
+    } else {
+      for (const child of node.children) writeLeafBounds(child);
+    }
   };
-  writeNode(manifest.tree);
+  writeLeafBounds(tree);
   const leafOffsets = new Uint32Array(leaves.length + 1);
   let count = 0;
   for (const leaf of leaves) {
@@ -33,7 +35,8 @@ export function packSogLodIndex(manifest) {
     });
   }
   return {
-    nodes,
+    bounds,
+    leafBounds,
     leafOffsets,
     lods,
     lodLevels: manifest.lodLevels,

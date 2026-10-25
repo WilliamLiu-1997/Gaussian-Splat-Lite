@@ -32,8 +32,10 @@ export type SogLodManifest = {
 export declare const SOG_LOD_STRIDE = 4;
 /** Packed worker index. Float64 preserves source bounds and safe-integer counts. */
 export type SogLodIndex = {
-  /** Preorder nodes: min XYZ, max XYZ, next index after the subtree, leaf ID (-1 for interiors). */
-  nodes: Float64Array;
+  /** Root min XYZ and max XYZ. */
+  bounds: Float64Array;
+  /** Per leaf ID: min XYZ and max XYZ. */
+  leafBounds: Float64Array;
   leafOffsets: Uint32Array;
   /** Per level: level, file, offset, count. */
   lods: Float64Array;
@@ -42,12 +44,9 @@ export type SogLodIndex = {
   counts: Float64Array;
   environment?: string;
 };
-/** Scheduler metadata; the complete spatial tree stays in the LOD worker. */
-export type SogLodMetadata = Omit<SogLodIndex, "nodes" | "lodLevels"> & {
-  /** Root min XYZ and max XYZ. */
-  bounds: Float64Array;
-};
-/** Flatten the tree and ranges into transferable typed arrays. */
+/** Scheduler metadata; per-region bounds stay in the LOD worker. */
+export type SogLodMetadata = Omit<SogLodIndex, "leafBounds" | "lodLevels">;
+/** Pack region bounds and ranges into transferable typed arrays. */
 export declare function packSogLodIndex(manifest: SogLodManifest): SogLodIndex;
 /** Materialize only leaves visited by the camera, preserving stable range identities. */
 export declare function readSogLodLeaf(
@@ -61,7 +60,7 @@ export declare function parseSogLodManifest(
 ): SogLodManifest;
 export type SogVisibleLeaf = {
   leaf: SogLodLeaf;
-  /** World-space distance to the region, compensated for the camera's field of view. */
+  /** Distance to the corrected region bounds, including camera direction and field of view. */
   distance: number;
 };
 export type SogBudgetMode = "target" | "limit";

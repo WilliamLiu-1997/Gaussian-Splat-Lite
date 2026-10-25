@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Streamed SOG keeps surrounding regions in its detail budget, with less detail behind the camera and corrected distances for oversized regions. Added runtime-adjustable `lodBehindPenalty` (default `4`) and `lodDistanceShrink` (default `0.75`).
+
 ### Removed
 
 - Removed raycast hit `sourceIndex`, `Splats.getSourceIndex()`, and `RadStreamScheduler.getGlobalIndex()`. Use `hit.object.splats.getSplat(hit.index)` to read the current hit; streamed indices can change when the visible detail changes.

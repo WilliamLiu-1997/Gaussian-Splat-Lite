@@ -15,21 +15,20 @@ export function createSogStreamHandlers(decodeSplats) {
     const index = packSogLodIndex(
       parseSogLodManifest(JSON.parse(new TextDecoder().decode(bytes)), baseUrl),
     );
-    const { nodes, leafOffsets, lods, lodLevels, ...metadata } = index;
+    const { leafBounds, leafOffsets, lods, lodLevels, ...metadata } = index;
     visibility = new SogVisibility({
-      nodes,
+      leafBounds,
       leafOffsets,
       lods,
       lodLevels,
     });
-    // Keep the tree here; copy shared arrays before RPC transfers them.
+    // Keep region bounds here; copy shared arrays before RPC transfers them.
     return {
       ...metadata,
-      bounds: nodes.slice(0, 6),
       leafOffsets: leafOffsets.slice(),
       lods: lods.slice(),
       retainedIndexBytes:
-        nodes.byteLength + leafOffsets.byteLength + lods.byteLength,
+        leafBounds.byteLength + leafOffsets.byteLength + lods.byteLength,
     };
   }
   function selectSogLod(request) {

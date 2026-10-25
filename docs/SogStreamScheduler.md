@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Shows large SOG `lod-meta.json` scenes by loading only the detail the camera needs, and updating it as the camera moves. It supports version 1 and older unversioned indexes, on WebGPU and WebGL2. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md).
+Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarser surroundings ready as the camera turns. It supports version 1 and older unversioned indexes, on WebGPU and WebGL2. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md).
 
 ```js
 import { SogStreamScheduler } from "gaussian-splat-lite";
@@ -38,7 +38,11 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 ## Cameras
 
-Detail depends on distance from the camera, so cameras need no resolution. Register several cameras to load detail for all of them; each part of the scene follows the nearest camera that sees it.
+Detail depends on distance and camera direction, so cameras need no resolution. Regions outside the view remain part of the same budget, with less detail behind the camera. This keeps surrounding content ready for turns, at the cost of some detail in the current view. Register several cameras to load detail for all of them; each region follows the camera requesting the finest detail.
+
+Oversized region bounds are reduced toward the scene's median region size when measuring LOD distance. This prevents large background regions from receiving excessive detail just because an edge is close to the camera. Geometry, rendering bounds, and picking are unaffected by this distance correction.
+
+### WebXR
 
 In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown for [RadStreamScheduler](RadStreamScheduler.md#webxr). Detail is chosen for each eye.
 
@@ -52,6 +56,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `splatBudgetMode` | `"target"` | `"target"` adjusts the distance bands to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
 | `lodBaseDistance` | `100` | Base LOD distance in world units for `"limit"` mode, compensated for the camera's field of view. Higher values retain finer detail farther away. Must be finite and positive |
 | `lodMultiplier` | `2` | Distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
+| `lodBehindPenalty` | `4` | Effective distance multiplier directly behind a camera, increasing smoothly from `1` at its sides. With the default LOD multiplier, `4` shifts rear detail by two distance bands. `1` disables directional bias. Must be finite and at least `1` |
+| `lodDistanceShrink` | `0.75` | Fraction of a region's excess half-size above the scene median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
 | `maxConcurrentLoads` | `4` | Maximum number of loads in progress at the same time |
@@ -70,6 +76,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `splatBudgetMode` | Switch between `"target"` and `"limit"` without reloading |
 | `lodBaseDistance` | Change the base LOD distance in `"limit"` mode without reloading |
 | `lodMultiplier` | Change the distance spacing between LOD levels in both modes without reloading |
+| `lodBehindPenalty` | Change how strongly detail behind the camera is reduced, in both modes, without reloading |
+| `lodDistanceShrink` | Change the distance correction for oversized regions, in both modes, without reloading |
 | `initialized` | Resolves when the index is loaded; rejects for invalid input |
 | `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while you wait |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |

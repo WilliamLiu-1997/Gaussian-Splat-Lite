@@ -3,12 +3,13 @@ import { streamViews } from "../StreamCameras.js";
 import { readSogLodLeaf, selectSogLods } from "./sogLod.js";
 /**
  * Capture the cameras that see the group without traversing the manifest or
- * reducing matrix precision. WebXR selects detail from each eye's current pose and frustum.
+ * reducing matrix precision. WebXR selects detail from each eye's current pose.
  */
 export function captureSogView(cameras, group) {
   group.updateWorldMatrix(true, false);
   const views = [];
   for (const camera of streamViews(cameras)) {
+    const projection = camera.projectionMatrix.elements;
     views.push({
       // Invert matrixWorld like the splat projection: Camera.matrixWorldInverse
       // can omit rig scale.
@@ -16,9 +17,12 @@ export function captureSogView(cameras, group) {
         .copy(camera.matrixWorld)
         .invert()
         .multiply(group.matrixWorld).elements,
-      projection: camera.projectionMatrix.toArray(),
-      coordinateSystem: camera.coordinateSystem,
-      reversedDepth: camera.reversedDepth,
+      fovScale:
+        projection[11] === 0
+          ? 1
+          : 1 /
+            (Math.max(Math.abs(projection[0]), Math.abs(projection[5])) *
+              Math.tan(Math.PI / 8)),
     });
   }
   let shown = cameras.length > 0;
@@ -28,22 +32,34 @@ export function captureSogView(cameras, group) {
 /** Stable key of a view, for skipping unchanged selection requests. */
 export function getSogViewKey(view) {
   return view.cameras
-    .map(
-      (camera) =>
-        `${camera.modelView.join(",")}/${camera.projection.join(",")}/${camera.coordinateSystem}/${camera.reversedDepth}`,
-    )
+    .map((camera) => `${camera.modelView.join(",")}/${camera.fovScale}`)
     .join(";");
 }
 /** Worker traversal state keeps leaf identities stable between selections. */
 export class SogVisibility {
   constructor(manifest) {
     this.manifest = manifest;
-    this.leaves = new Map();
+    this.leaves = [];
     this.cameras = [];
-    this.clip = new THREE.Matrix4();
     this.bound = new THREE.Box3();
+    this.typicalHalfSize = new THREE.Vector3();
+    this.shrink = new THREE.Vector3();
     this.closest = new THREE.Vector3();
     this.inverseModelView = new THREE.Matrix4();
+    const { leafBounds } = manifest;
+    const halfSizes = new Float64Array(leafBounds.length / 6);
+    for (let axis = 0; axis < 3; axis++) {
+      for (let id = 0; id < halfSizes.length; id++) {
+        const offset = id * 6;
+        halfSizes[id] =
+          (leafBounds[offset + axis + 3] - leafBounds[offset + axis]) * 0.5;
+      }
+      halfSizes.sort();
+      this.typicalHalfSize.setComponent(
+        axis,
+        halfSizes[halfSizes.length >>> 1],
+      );
+    }
   }
   prepareCameras(view) {
     const cameras = this.cameras;
@@ -53,86 +69,66 @@ export class SogVisibility {
       if (!state) {
         state = {
           modelView: new THREE.Matrix4(),
-          frustum: new THREE.Frustum(),
           cameraPosition: new THREE.Vector3(),
           fovScale: 1,
         };
         cameras[index] = state;
       }
       state.modelView.fromArray(camera.modelView);
-      this.clip.fromArray(camera.projection).multiply(state.modelView);
       this.inverseModelView.copy(state.modelView).invert();
       state.cameraPosition.setFromMatrixPosition(this.inverseModelView);
-      state.frustum.setFromProjectionMatrix(
-        this.clip,
-        camera.coordinateSystem,
-        camera.reversedDepth,
-      );
-      const projection = camera.projection;
-      state.fovScale =
-        projection[11] === 0
-          ? 1
-          : 1 /
-            (Math.max(Math.abs(projection[0]), Math.abs(projection[5])) *
-              Math.tan(Math.PI / 8));
+      state.fovScale = camera.fovScale;
     });
     return cameras;
   }
-  collect(view) {
+  collect({ view, lodBehindPenalty, lodDistanceShrink }) {
     const cameras = this.prepareCameras(view);
-    const visible = [];
+    const regions = [];
     const { shown } = view;
-    const nodes = this.manifest.nodes;
-    for (let index = 0; shown && index < nodes.length / 8; ) {
-      const offset = index * 8;
-      this.bound.min.fromArray(nodes, offset);
-      this.bound.max.fromArray(nodes, offset + 3);
-      const id = nodes[offset + 7];
-      if (id < 0) {
-        // A branch only needs one view that sees it.
-        if (cameras.some(({ frustum }) => frustum.intersectsBox(this.bound)))
-          index++;
-        else index = nodes[offset + 6];
-        continue;
-      }
-      // A leaf tests each view once for visibility and detail together: the
-      // nearest view that sees it decides its detail.
-      let seen = false;
+    const { leafBounds } = this.manifest;
+    for (let id = 0; shown && id < leafBounds.length / 6; id++) {
+      const offset = id * 6;
+      this.bound.min.fromArray(leafBounds, offset);
+      this.bound.max.fromArray(leafBounds, offset + 3);
+      // Only the distance box shrinks; source and rendering bounds stay intact.
+      this.bound
+        .getSize(this.shrink)
+        .multiplyScalar(0.5)
+        .sub(this.typicalHalfSize)
+        .clampScalar(0, Number.POSITIVE_INFINITY)
+        .multiplyScalar(lodDistanceShrink);
+      this.bound.min.add(this.shrink);
+      this.bound.max.sub(this.shrink);
+      // Keep surrounding regions in the budget. Any camera can request finer
+      // detail; only the part of the direction behind that camera is penalized.
       let distance = Number.POSITIVE_INFINITY;
-      for (const { modelView, frustum, cameraPosition, fovScale } of cameras) {
-        if (!frustum.intersectsBox(this.bound)) continue;
-        seen = true;
+      for (const { modelView, cameraPosition, fovScale } of cameras) {
         this.bound
           .clampPoint(cameraPosition, this.closest)
           .applyMatrix4(modelView);
-        // World-space distance to the box, without weighting by its radius.
+        // View-space +Z is behind the camera. This equals a smooth angular
+        // distance multiplier, without dividing by zero inside the box.
+        const penalizedDistance =
+          this.closest.length() +
+          Math.max(0, this.closest.z) * (lodBehindPenalty - 1);
         distance = Math.min(
           distance,
-          Math.max(this.closest.length() * fovScale, 1e-6),
+          Math.max(penalizedDistance * fovScale, 1e-6),
         );
       }
-      if (!seen) {
-        index = nodes[offset + 6];
-        continue;
-      }
-      index++;
-      let leaf = this.leaves.get(id);
-      if (!leaf) {
-        leaf = readSogLodLeaf(this.manifest, id);
-        this.leaves.set(id, leaf);
-      }
-      visible.push({ leaf, distance });
+      this.leaves[id] ??= readSogLodLeaf(this.manifest, id);
+      regions.push({ leaf: this.leaves[id], distance });
     }
-    return visible;
+    return regions;
   }
   /** Transfer only [leaf ID, LOD ordinal] pairs in loading priority order. */
   select(request) {
-    const visible = this.collect(request.view);
-    const targets = selectSogLods(visible, this.manifest.lodLevels, request);
-    visible.sort((a, b) => a.distance - b.distance || a.leaf.id - b.leaf.id);
+    const regions = this.collect(request);
+    const targets = selectSogLods(regions, this.manifest.lodLevels, request);
+    regions.sort((a, b) => a.distance - b.distance || a.leaf.id - b.leaf.id);
     const result = new Uint32Array(targets.size * 2);
     let offset = 0;
-    for (const { leaf } of visible) {
+    for (const { leaf } of regions) {
       const target = targets.get(leaf.id);
       if (!target) continue;
       result[offset++] = leaf.id;

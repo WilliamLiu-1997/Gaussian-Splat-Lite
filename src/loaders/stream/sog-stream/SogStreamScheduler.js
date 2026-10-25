@@ -49,6 +49,8 @@ export class SogStreamScheduler {
     this.splatBudgetMode = options.splatBudgetMode ?? "target";
     this.lodBaseDistance = options.lodBaseDistance ?? 100;
     this.lodMultiplier = options.lodMultiplier ?? 2;
+    this.lodBehindPenalty = options.lodBehindPenalty ?? 4;
+    this.lodDistanceShrink = options.lodDistanceShrink ?? 0.75;
     this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
@@ -111,6 +113,28 @@ export class SogStreamScheduler {
     if (!Number.isFinite(value) || value < 1)
       throw new Error("lodMultiplier must be finite and at least 1");
     this._lodMultiplier = value;
+    void this.requestSelection();
+  }
+  /** Effective distance multiplier directly behind a camera; 1 disables it. */
+  get lodBehindPenalty() {
+    return this._lodBehindPenalty;
+  }
+  set lodBehindPenalty(value) {
+    if (value === this._lodBehindPenalty) return;
+    if (!Number.isFinite(value) || value < 1)
+      throw new Error("lodBehindPenalty must be finite and at least 1");
+    this._lodBehindPenalty = value;
+    void this.requestSelection();
+  }
+  /** Fraction of excess region size removed when measuring LOD distance. */
+  get lodDistanceShrink() {
+    return this._lodDistanceShrink;
+  }
+  set lodDistanceShrink(value) {
+    if (value === this._lodDistanceShrink) return;
+    if (!Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error("lodDistanceShrink must be finite and between 0 and 1");
+    this._lodDistanceShrink = value;
     void this.requestSelection();
   }
   get stats() {
@@ -312,11 +336,13 @@ export class SogStreamScheduler {
     const splatBudgetMode = this.splatBudgetMode;
     const lodBaseDistance = this.lodBaseDistance;
     const lodMultiplier = this.lodMultiplier;
+    const lodBehindPenalty = this.lodBehindPenalty;
+    const lodDistanceShrink = this.lodDistanceShrink;
     const budget = Math.max(
       0,
       splatBudget - Math.max(0, this.environment?.file.count ?? 0),
     );
-    const key = `${getSogViewKey(view)}/${splatBudget}/${budget}/${splatBudgetMode}/${lodBaseDistance}/${lodMultiplier}`;
+    const key = `${getSogViewKey(view)}/${splatBudget}/${budget}/${splatBudgetMode}/${lodBaseDistance}/${lodMultiplier}/${lodBehindPenalty}/${lodDistanceShrink}`;
     if (key === this.lastRequestedKey) return;
     this.lastRequestedKey = key;
     this.selecting = true;
@@ -328,6 +354,8 @@ export class SogStreamScheduler {
         splatBudgetMode,
         lodBaseDistance,
         lodMultiplier,
+        lodBehindPenalty,
+        lodDistanceShrink,
       });
       if (
         this.disposed ||
@@ -335,7 +363,9 @@ export class SogStreamScheduler {
         splatBudget !== this.splatBudget ||
         splatBudgetMode !== this.splatBudgetMode ||
         lodBaseDistance !== this.lodBaseDistance ||
-        lodMultiplier !== this.lodMultiplier
+        lodMultiplier !== this.lodMultiplier ||
+        lodBehindPenalty !== this.lodBehindPenalty ||
+        lodDistanceShrink !== this.lodDistanceShrink
       )
         return;
       // Keep one completed result; accepting camera lag avoids starving motion.
