@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Streamed SOG waits for initial detail selection before rejecting `firstRenderable`, including when an empty environment finishes last.
+- Streamed SOG rejects `firstRenderable` when all required loads fail permanently, even while the camera keeps moving.
 - Streamed SOG retains displayed coverage when detail selection fails, stopping further loading while existing fades finish.
 
 ## [1.4.2] - 2026-10-24

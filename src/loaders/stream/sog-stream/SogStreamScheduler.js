@@ -320,6 +320,7 @@ export class SogStreamScheduler {
     if (key === this.lastRequestedKey) return;
     this.lastRequestedKey = key;
     this.selecting = true;
+    let accepted = false;
     try {
       const selection = await this.loader.selectLod({
         view,
@@ -346,11 +347,14 @@ export class SogStreamScheduler {
       this.updateRequests(refinements, now);
       // Retire after every accepted decision so motion cannot postpone cleanup.
       this.releaseUnused(now, true);
+      accepted = true;
       this.changed();
     } catch (error) {
       this.stopRefinement(error);
     } finally {
       this.selecting = false;
+      // Check completed decisions before camera motion starts another one.
+      if (accepted) this.rejectFirstIfUnavailable();
       // Updates replace the latest view while this task runs; no request queue.
       void this.requestSelection();
     }
