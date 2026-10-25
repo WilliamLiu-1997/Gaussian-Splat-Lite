@@ -84,6 +84,7 @@ See [RadStreamScheduler](RadStreamScheduler.md) for the complete loading and dis
 | --- | --- | --- |
 | `--lod-base <base>` | `1.75` | LOD spacing, from `1.1` to `16`; smaller values retain more detail levels. |
 | `--max-sh <0..3>` | `3` | Highest SH degree to keep, limited by the input. |
+| `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere before building LOD, in input coordinates. |
 | `--memory-budget <GiB>` | `4` | Target memory use in GiB, at least `1`; for example `16`. |
 | `--temp-dir <path>` | System temp directory | Location for temporary files; created if needed. |
 | `--rad-chunked` | Disabled | Write a header and separate `.radc` files. |

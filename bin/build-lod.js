@@ -24,6 +24,8 @@ Output: <input-stem>-lod.rad. Existing files are not overwritten.
 Options:
   --lod-base <base>      LOD spacing (default: 1.75, range: 1.1..16)
   --max-sh <0..3>        Maximum SH degree (default: 3)
+  --within-dist <x,y,z,radius>
+                        Keep splat centers within this sphere (input coordinates)
   --rad-chunked          Write a .rad header and separate .radc files
   --memory-budget <GiB>  Target memory in GiB (default: 4, minimum: 1)
   --temp-dir <path>      Temporary file location (default: system temp)
@@ -62,6 +64,7 @@ function parse(args) {
     const key = {
       "--lod-base": "lodBase",
       "--max-sh": "maxSh",
+      "--within-dist": "withinDist",
       "--memory-budget": "budget",
       "--temp-dir": "tempDir",
       "-o": "output",
@@ -86,6 +89,16 @@ function parse(args) {
     options.maxSh > 3
   )
     throw new Error("--max-sh must be an integer between 0 and 3");
+  if (options.withinDist !== undefined) {
+    const values = options.withinDist
+      .split(",")
+      .map((value) => (value.trim() ? Number(value) : Number.NaN));
+    if (values.length !== 4 || !values.every(Number.isFinite) || values[3] < 0)
+      throw new Error(
+        "--within-dist must be x,y,z,radius with finite numbers and a nonnegative radius",
+      );
+    options.withinDist = values;
+  }
   if (
     !Number.isFinite(options.budget) ||
     options.budget < GIB ||
@@ -120,7 +133,7 @@ async function convert(input, options, cancelled) {
     const splats = await readInput(input, options.maxSh, workspace);
     const count = splats.length;
     pool = new Pool(workspace, count);
-    splats.retain(pool);
+    splats.retain(pool, options.withinDist);
     console.log(
       `Read ${count} splats, SH${splats.inputSh}, in ${((performance.now() - start) / 1000).toFixed(2)}s`,
     );
@@ -132,8 +145,10 @@ async function convert(input, options, cancelled) {
       console.log(
         `Removed ${splats.invalid} splats with NaN or infinite values or a zero rotation`,
       );
-    const empty = count - splats.invalid - splats.length;
+    const empty = count - splats.invalid - splats.cropped - splats.length;
     if (empty) console.log(`Removed ${empty} empty splats`);
+    if (splats.cropped)
+      console.log(`Removed ${splats.cropped} splats outside --within-dist`);
     if (!splats.length) throw new Error("Input contains no usable splats");
     const leaves = splats.length;
     const lodStart = performance.now();

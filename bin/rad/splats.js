@@ -20,8 +20,9 @@ export const SH_DIMS = [9, 15, 21];
 export const KEEP = 0;
 export const INVALID = 1;
 export const EMPTY = 2;
+export const CROPPED = 3;
 // A worker found a page that is not cached.
-export const LATER = 3;
+export const LATER = 4;
 
 // Sets a record's feature size and area from its scales and opacity.
 export function refresh(record) {
@@ -45,6 +46,16 @@ export function validRecord(record) {
   return true;
 }
 
+// Classifies a valid record after refresh(), including optional cropping.
+export function filterRecord(record, withinDist) {
+  if (record[3] <= 0 || record[14] <= 0) return EMPTY;
+  if (!withinDist) return KEEP;
+  const [x, y, z, radius] = withinDist;
+  return Math.hypot(record[0] - x, record[1] - y, record[2] - z) > radius
+    ? CROPPED
+    : KEEP;
+}
+
 export class Splats {
   constructor(workspace, maxSh) {
     this.workspace = workspace;
@@ -52,6 +63,7 @@ export class Splats {
     this.inputSh = 0;
     this.length = 0;
     this.invalid = 0;
+    this.cropped = 0;
     this.records = new PagedArray(workspace, Float32Array);
     this.sh = SH_DIMS.map(() => new PagedArray(workspace, Uint16Array));
     // The two children of the i-th merged splat are entries 2i and 2i + 1 of
@@ -127,9 +139,11 @@ export class Splats {
 
   // Skips empty splats and counts invalid ones in `invalid`: NaN or infinite
   // values, including a zero rotation, which the decoder normalizes to NaN.
-  // Workers refresh and check blocks of splats in place; the main thread
+  // Optionally keeps only centers within [x, y, z, radius], counting the
+  // otherwise usable splats outside this sphere in `cropped`.
+  // Workers refresh, check and crop blocks of splats; the main thread
   // checks those they leave, and moves kept splats after skipped ones.
-  retain(pool) {
+  retain(pool, withinDist) {
     const progress = new Progress("Filtering splats", this.length);
     const { results } = pool;
     const block = results.length;
@@ -143,6 +157,7 @@ export class Splats {
     ];
     let count = 0;
     this.invalid = 0;
+    this.cropped = 0;
     for (let base = 0; base < this.length; base += block) {
       const size = Math.min(block, this.length - base);
       for (const [column, stride] of columns)
@@ -151,24 +166,26 @@ export class Splats {
           (base + size) * stride,
           column === this.records,
         );
-      pool.check(this, base, size);
+      pool.check(this, base, size, withinDist);
       for (let i = 0; i < size; i++) {
         const index = base + i;
         let state = results[i];
-        if (state === LATER) {
+        const later = state === LATER;
+        if (later) {
           this.read(index, record);
           refresh(record);
           state = !this.valid(index, record, rows)
             ? INVALID
-            : record[3] > 0 && record[14] > 0
-              ? KEEP
-              : EMPTY;
-          if (state === KEEP) this.records.write(index * 16, record);
+            : filterRecord(record, withinDist);
         }
         if (state === INVALID) this.invalid++;
+        if (state === CROPPED) this.cropped++;
         if (state !== KEEP) continue;
+        if (count !== index || later) {
+          if (!later) this.read(index, record);
+          this.records.write(count * 16, record);
+        }
         if (count !== index) {
-          this.records.write(count * 16, this.read(index, record));
           for (let band = 0; band < this.maxSh; band++) {
             const dims = SH_DIMS[band];
             this.sh[band].read(index * dims, rows[band]);

@@ -9,13 +9,12 @@ import {
 import { Lookup, NONE } from "./grid.js";
 import { HALF, halfBits } from "./math.js";
 import {
-  EMPTY,
   INVALID,
-  KEEP,
   LATER,
   Merger,
   SH_DIMS,
   Similarities,
+  filterRecord,
   refresh,
   validRecord,
 } from "./splats.js";
@@ -231,14 +230,15 @@ export class Pool {
     this.run(COPY, count, 1024);
   }
 
-  // Refreshes and checks `count` splats from `base` in place, setting KEEP,
-  // INVALID, EMPTY or LATER in `results`; see Splats.retain().
-  check(splats, base, count) {
+  // Refreshes, checks and optionally crops `count` splats from `base` in
+  // place, storing their filter states in `results`; see Splats.retain().
+  check(splats, base, count, withinDist) {
     this.share({
       splatRecords: splats.records.directory,
       splatSh: splats.sh
         .slice(0, splats.maxSh)
         .map((column) => column.directory),
+      withinDist,
     });
     Atomics.store(this.control, BASE, base);
     this.run(CHECK, count, 1024);
@@ -370,6 +370,7 @@ class Task {
     if (state.column)
       this.column = new SharedColumn(views, state.column, Uint16Array);
     if (state.splatRecords) {
+      this.withinDist = state.withinDist;
       this.splatRecords = new SharedColumn(
         views,
         state.splatRecords,
@@ -450,7 +451,7 @@ class Task {
       for (let d = 0; d < dims; d++)
         if (!Number.isFinite(HALF[row[at + d]])) return INVALID;
     }
-    return record[3] > 0 && record[14] > 0 ? KEEP : EMPTY;
+    return filterRecord(record, this.withinDist);
   }
 
   copy(from, to) {

@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `--within-dist <x,y,z,radius>` to `gsl-build-lod` to keep splat centers inside or on a sphere in input coordinates before building LOD. See [Building RAD files](docs/BuildRad.md).
+
 ### Changed
 
 - Streamed SOG keeps surrounding regions in its detail budget, with less detail behind the camera and corrected distances for oversized regions. Added runtime-adjustable `lodBehindPenalty` (default `4`) and `lodDistanceShrink` (default `0.75`).
