@@ -148,6 +148,7 @@ export class SogStreamScheduler {
       residentChunks: 0,
       residentCpuBytes:
         retainedIndexBytes +
+        this.selection.byteLength +
         (manifest
           ? manifest.bounds.byteLength +
             manifest.leafOffsets.byteLength +

@@ -141,6 +141,7 @@ export class RadStreamScheduler {
   }
   get stats() {
     const loader = this.loader.stats;
+    const ready = this.ready?.selection;
     const stats = {
       visibleSplats: 0,
       visibleMeshes: 0,
@@ -154,7 +155,11 @@ export class RadStreamScheduler {
         (this.displayed?.selection.indices.byteLength ?? 0),
       residentGpuBytes: 0,
       pendingBytes:
-        this.loader.pendingRegistrationBytes + (this.preparation?.bytes ?? 0),
+        this.loader.pendingRegistrationBytes +
+        (this.preparation?.bytes ?? 0) +
+        (ready?.indices.byteLength ?? 0) +
+        (ready?.fade?.indices.byteLength ?? 0) +
+        (ready?.fade?.fades.byteLength ?? 0),
       loadingChunks: 0,
       loadProgress: 0,
       downloadedBytes: loader.downloadedBytes,
@@ -172,6 +177,11 @@ export class RadStreamScheduler {
     }
     let readyPages = 0;
     for (const page of this.pages.values()) {
+      if (!this.refinementStopped && page.storage && !page.registration) {
+        // Retained centers, radii, child ranges and two traversal bitsets.
+        stats.residentCpuBytes +=
+          page.count * 22 + Math.ceil(page.count / 64) * 16;
+      }
       if (page.storage?.phase === "resident") {
         stats.residentChunks++;
         if (
