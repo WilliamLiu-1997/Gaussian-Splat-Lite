@@ -25,7 +25,7 @@ export class IndexedSplats extends Splats {
     blockBits,
     packedOpacityGroups = false,
   }) {
-    // RAD and SOG layout helpers supply aligned power-of-two layers.
+    // RAD and SOG supply aligned power-of-two layers.
     if (capacity > 0x1_0000_0000)
       throw new Error("Indexed Splat capacity exceeds 32-bit addressing");
     super();

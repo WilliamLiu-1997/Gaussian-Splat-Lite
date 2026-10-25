@@ -37,7 +37,6 @@ export declare class RadStreamScheduler {
   private readonly bounds;
   private readonly matrix;
   private meta?;
-  private pageSize;
   private pageBudget;
   private numSh;
   private maxPagePendingBytes;

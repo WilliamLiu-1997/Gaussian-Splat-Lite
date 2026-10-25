@@ -1,4 +1,7 @@
-import { SPLAT_BOUNDS_BLOCK_SIZE } from "../../../data/defines.js";
+import {
+  RAD_PAGE_SIZE,
+  SPLAT_BOUNDS_BLOCK_SIZE,
+} from "../../../data/defines.js";
 import { resetSplatBounds, unionSplatBounds } from "../../../data/splatData.js";
 /** The scheduler snapshots and pins resident pages before dispatching this work. */
 export function prepareRadSelection({ selection, pools }, chunks) {
@@ -42,17 +45,11 @@ function preparePool(
     : undefined;
   let finalCount = 0;
   let fadeKinds = 0;
-  for (const {
-    start,
-    end,
-    slot,
-    pageStart,
-    chunkIndex,
-    sourceBase,
-  } of ranges) {
+  for (const { start, end, slot, chunkIndex, sourceBase } of ranges) {
     const chunk = chunks.get(chunkIndex);
     if (!chunk) throw new Error("RAD selection references a retired chunk");
     const { sourceToStorage: order, boundsBlocks } = chunk;
+    const pageStart = slot * RAD_PAGE_SIZE;
     selectedPages[slot] = end - start;
     const selectedBlocks = [];
     for (let index = start; index < end; index++) {

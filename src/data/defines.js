@@ -7,6 +7,8 @@ export const SPLAT_TEX_HEIGHT_BITS = 11;
 export const SPLAT_TEX_WIDTH = 1 << SPLAT_TEX_WIDTH_BITS; // 2048
 export const SPLAT_TEX_HEIGHT = 1 << SPLAT_TEX_HEIGHT_BITS; // 2048
 export const SPLAT_TEX_MIN_HEIGHT = 1;
+/** Fixed records per RAD streaming page slot. */
+export const RAD_PAGE_SIZE = 65_536;
 /** Valid block shifts include zero (one opacity per Splat). */
 export const SPLAT_BLOCKS_DISABLED = 32;
 export const SplatFileType = {

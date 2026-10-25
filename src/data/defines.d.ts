@@ -3,6 +3,8 @@ export declare const SPLAT_TEX_HEIGHT_BITS = 11;
 export declare const SPLAT_TEX_WIDTH: number;
 export declare const SPLAT_TEX_HEIGHT: number;
 export declare const SPLAT_TEX_MIN_HEIGHT = 1;
+/** Fixed records per RAD streaming page slot. */
+export declare const RAD_PAGE_SIZE = 65_536;
 /** Valid block shifts include zero (one opacity per Splat). */
 export declare const SPLAT_BLOCKS_DISABLED = 32;
 export declare enum SplatFileType {

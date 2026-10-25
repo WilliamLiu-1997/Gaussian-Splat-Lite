@@ -1,69 +1,33 @@
 import { IndexedSplats } from "./IndexedSplats.js";
-import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "./defines.js";
+import { RAD_PAGE_SIZE } from "./defines.js";
 import { resetSplatBounds } from "./splatData.js";
 const EMPTY_INDICES = new Uint32Array(0);
-/** One power-of-two texture layer per page, with no shared upload layers. */
-export function radPageTextureLayout({
-  pageSize = 65_536,
-  pageCount,
-  maxArrayLayers = 256,
-}) {
-  if (
-    !Number.isSafeInteger(pageSize) ||
-    pageSize < 1 ||
-    pageSize > SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT
-  )
-    throw new Error("RAD pageSize must be between 1 and 4,194,304");
-  if (
-    !Number.isSafeInteger(maxArrayLayers) ||
-    maxArrayLayers < 1 ||
-    !Number.isSafeInteger(pageCount) ||
-    pageCount < 1 ||
-    pageCount > maxArrayLayers
-  )
-    throw new Error("RAD pageCount exceeds the texture array layer limit");
-  const pageStride =
-    2 ** Math.ceil(Math.log2(Math.max(SPLAT_TEX_WIDTH, pageSize)));
-  const capacity = pageStride * pageCount;
-  if (capacity > 0x1_0000_0000)
-    throw new Error("RAD page pool exceeds the 32-bit source index limit");
-  return {
-    pageSize,
-    pageStride,
-    pageCount,
-    capacity,
-    width: SPLAT_TEX_WIDTH,
-    height: pageStride / SPLAT_TEX_WIDTH,
-    depth: pageCount,
-  };
-}
-/** Fixed RAD page slots; shared IndexedSplats owns rendering and CPU access. */
+/** Fixed 65,536-record RAD slots, each occupying one texture array layer. */
 export class RadPagedSplats extends IndexedSplats {
-  constructor(options) {
-    const layout = radPageTextureLayout(options);
+  constructor({ pageCount, numSh, maxArrayLayers = 256 }) {
+    if (
+      !Number.isSafeInteger(maxArrayLayers) ||
+      maxArrayLayers < 1 ||
+      !Number.isSafeInteger(pageCount) ||
+      pageCount < 1 ||
+      pageCount > maxArrayLayers
+    )
+      throw new Error("RAD pageCount exceeds the texture array layer limit");
     super({
-      capacity: layout.capacity,
-      layerSize: layout.pageStride,
-      numSh: options.numSh,
+      capacity: RAD_PAGE_SIZE * pageCount,
+      layerSize: RAD_PAGE_SIZE,
+      numSh,
       blockBits: 0,
       packedOpacityGroups: true,
     });
     this.fadeProgress = 1;
     this.fadeKinds = 0;
-    this.pageSize = layout.pageSize;
-    this.pageStride = layout.pageStride;
-    this.pageCount = layout.pageCount;
+    this.pageCount = pageCount;
     this.selectedPages = new Uint32Array(this.pageCount);
-  }
-  pageStart(slot) {
-    return slot * this.pageStride;
   }
   /** Copies data; callers retain ownership of the packed buffers. */
   writePage(slot, data) {
-    const start = this.pageStart(slot);
-    if (data.numSplats > this.pageSize)
-      throw new Error("RAD chunk does not fit its page slot");
-    this.writeRecords(start, data, this.pageStride);
+    this.writeRecords(slot * RAD_PAGE_SIZE, data, RAD_PAGE_SIZE);
   }
   /** Remove the displayed cut when its scheduler becomes hidden. */
   clearSelection() {

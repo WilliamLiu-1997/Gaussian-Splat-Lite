@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import { radPageTextureLayout } from "../../../data/RadPagedSplats.js";
-import { SPLAT_BOUNDS_BLOCK_SIZE } from "../../../data/defines.js";
+import {
+  RAD_PAGE_SIZE,
+  SPLAT_BOUNDS_BLOCK_SIZE,
+} from "../../../data/defines.js";
 import {
   getSplatByteLength,
   getSplatTextureBytes,
 } from "../../../data/splatData.js";
-import { getTextureSize } from "../../../data/textureLayout.js";
 import { RetryTimer } from "../../../runtime/retry.js";
 import { getRadChunkSpan } from "../../rad/radFormat.js";
 import { StreamCameras, streamViews } from "../StreamCameras.js";
@@ -40,7 +41,6 @@ export class RadStreamScheduler {
     this.pools = [];
     this.bounds = new THREE.Box3();
     this.matrix = new THREE.Matrix4();
-    this.pageSize = 0;
     this.pageBudget = 0;
     this.numSh = 0;
     this.maxPagePendingBytes = 0;
@@ -233,34 +233,24 @@ export class RadStreamScheduler {
       this.changed();
       return this;
     }
-    this.pageSize = getRadChunkSpan(meta, 0).count;
-    for (let index = 1; index < meta.chunks.length; index++)
-      this.pageSize = Math.max(
-        this.pageSize,
-        getRadChunkSpan(meta, index).count,
-      );
-    // Validate the largest page against the texture layout limits.
-    const { pageStride } = radPageTextureLayout({
-      pageSize: this.pageSize,
-      pageCount: 1,
-    });
+    for (let index = 0; index < meta.chunks.length; index++)
+      if (getRadChunkSpan(meta, index).count > RAD_PAGE_SIZE)
+        throw new Error(
+          `RAD streaming chunk ${index} exceeds the 65,536-splat page limit`,
+        );
     const splatBytes = getSplatTextureBytes(1, this.numSh);
-    const boundsBlocks = Math.ceil(this.pageSize / SPLAT_BOUNDS_BLOCK_SIZE);
-    const paddedCount = Math.ceil(this.pageSize / 2048) * 2048;
+    const boundsBlocks = RAD_PAGE_SIZE / SPLAT_BOUNDS_BLOCK_SIZE;
     this.maxPagePendingBytes =
-      paddedCount * splatBytes +
+      RAD_PAGE_SIZE * splatBytes +
       // Tree data, Morton order and bounds awaiting LOD registration.
-      this.pageSize * 26 +
+      RAD_PAGE_SIZE * 26 +
       boundsBlocks * 80;
-    // Reserve GPU storage for packed records, full render indices and opacity tables.
-    const pageGpuBytes =
-      pageStride * (splatBytes + 0.25) + // Two-bit RAD opacity groups.
-      getTextureSize(pageStride / 4, 1).maxSplats * 16 +
-      16;
+    // Packed records, uint32 render indices and two-bit opacity groups.
+    const pageGpuBytes = RAD_PAGE_SIZE * (splatBytes + 4 + 0.25) + 16;
     const pageCpuBytes =
       pageGpuBytes +
-      pageStride * 4 + // CPU reverse map for visible indices.
-      this.pageSize * 28 + // Storage map, four worker cuts, displayed/post-fade cuts.
+      RAD_PAGE_SIZE * 4 + // CPU reverse map for visible indices.
+      RAD_PAGE_SIZE * 28 + // Storage map, four worker cuts, displayed/post-fade cuts.
       boundsBlocks * 72 + // CPU spatial bounds and preparation-worker bounds.
       2 * (48 + 4); // Current/post-fade bounds and page counts, charged per page.
     const cpuOverheadBytes = this.loader.residentCpuOverheadBytes;
@@ -545,7 +535,6 @@ export class RadStreamScheduler {
             start,
             end,
             slot,
-            pageStart: pool.batch.source.pageStart(slot),
             chunkIndex: page.index,
             sourceBase: page.base,
           });
@@ -775,7 +764,6 @@ export class RadStreamScheduler {
       // Grow on demand in small pools to bound selection preparation work.
       const count = Math.min(8, this.pageBudget - capacity);
       const batch = new RadStreamBatch({
-        pageSize: this.pageSize,
         pageCount: count,
         numSh: this.numSh,
       });

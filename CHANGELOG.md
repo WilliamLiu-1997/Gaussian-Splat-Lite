@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- RAD streaming now uses fixed 65,536-splat page slots. Smaller chunks use a full slot; chunks larger than 65,536 splats are rejected during initialization.
+
 ## [1.4.3] - 2026-10-25
 
 ### Added
