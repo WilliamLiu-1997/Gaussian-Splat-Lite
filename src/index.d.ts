@@ -35,6 +35,12 @@ export {
   type SogStreamSchedulerOptions,
   type SogStreamStats,
 } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
+export {
+  LccStreamScheduler,
+  type LccStreamSchedulerOptions,
+  type LccStreamStats,
+} from "./loaders/stream/lcc-stream/LccStreamScheduler.js";
+export type { LccInfo } from "./loaders/stream/lcc-stream/lccIndex.js";
 export type { SplatWorker } from "./runtime/SplatWorker.js";
 export { Splats, type SplatsOptions } from "./data/Splats.js";
 export {

@@ -97,7 +97,9 @@ export function modelFromLocalFiles(selectedFiles) {
         .some((part) => part.startsWith(".")),
   );
   const indexes = files.filter(
-    (entry) => entry.name.toLowerCase() === "lod-meta.json",
+    (entry) =>
+      entry.name.toLowerCase() === "lod-meta.json" ||
+      /\.lcc2?$/i.test(entry.name),
   );
   const models = indexes.length
     ? indexes
@@ -111,7 +113,7 @@ export function modelFromLocalFiles(selectedFiles) {
     models[0] ?? files.find((entry) => !/\.(radc|webp)$/i.test(entry.name));
   if (!file) {
     throw new Error(
-      "Include lod-meta.json with SOG chunks, meta.json with SOG images, or the .rad header with RAD chunks.",
+      "Include the scene index (.lcc, .lcc2, lod-meta.json, meta.json, or .rad) with its companion files.",
     );
   }
   const normalize = (path) => {
@@ -152,7 +154,7 @@ export function modelFromLocalFiles(selectedFiles) {
   if (indexes.length) {
     // Keep hierarchical URLs for relative chunk/image references. The manager
     // maps them to local blobs only at fetch time, including inside workers.
-    const baseUrl = "https://local-sog.invalid/";
+    const baseUrl = "https://local-scene.invalid/";
     const url = new URL(
       rootPath.split("/").map(encodeURIComponent).join("/"),
       baseUrl,
@@ -161,7 +163,7 @@ export function modelFromLocalFiles(selectedFiles) {
     let disposed = false;
     const manager = new LoadingManager();
     manager.setURLModifier((value) => {
-      if (disposed) throw new Error("Local SOG source has been disposed");
+      if (disposed) throw new Error("Local scene source has been disposed");
       const asset = new URL(value, url);
       if (asset.origin !== new URL(baseUrl).origin)
         throw new Error(`Select the companion file: ${value}`);
@@ -177,6 +179,9 @@ export function modelFromLocalFiles(selectedFiles) {
       file,
       url,
       manager,
+      environment: /\.lcc$/i.test(file.name)
+        ? files.some((entry) => entry.name.toLowerCase() === "environment.bin")
+        : undefined,
       dispose() {
         if (disposed) return;
         disposed = true;

@@ -1,16 +1,16 @@
-import { SogRegionSplats } from "../../../data/SogRegionSplats.js";
-import { SplatMesh } from "../../../scene/SplatMesh.js";
+import { RegionSplats } from "../../data/RegionSplats.js";
+import { SplatMesh } from "../../scene/SplatMesh.js";
 /** Regions share one source, one scene node and one accumulator generation call. */
-export class SogStreamBatch extends SplatMesh {
+export class RegionStreamBatch extends SplatMesh {
   constructor(capacity, numSh, group, onEmpty) {
-    const source = new SogRegionSplats(capacity, numSh);
+    const source = new RegionSplats(capacity, numSh);
     super({ splats: source });
     this.numSh = numSh;
     this.group = group;
     this.onEmpty = onEmpty;
     this.slots = new Map();
     this.source = source;
-    this.name = "sog-batch";
+    this.name = "stream-batch";
   }
   writeRegion(start, data) {
     const count = data.numSplats;

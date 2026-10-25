@@ -26,4 +26,4 @@ const splat = new SplatMesh({
 
 `SplatMesh` and `Splats` accept `fileType` for URLs, files, and bytes. `SplatLoader.load()` and `loadAsync()` always detect the format themselves.
 
-Large scenes with levels of detail load through their own classes: [SogStreamScheduler](SogStreamScheduler.md) for a SOG `lod-meta.json`, and [RadStreamScheduler](RadStreamScheduler.md) for RAD.
+Large scenes with levels of detail load through their own classes: [SogStreamScheduler](SogStreamScheduler.md) for a SOG `lod-meta.json`, [RadStreamScheduler](RadStreamScheduler.md) for RAD, and [LccStreamScheduler](LccStreamScheduler.md) for `.lcc`/`.lcc2` scene indexes.

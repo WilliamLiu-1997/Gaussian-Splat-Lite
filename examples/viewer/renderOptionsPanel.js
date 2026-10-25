@@ -30,6 +30,7 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     setHidden("denoiseEnabled", !stochastic);
     setHidden("denoiserQuality", !denoise);
     setHidden("msaa", !denoise);
+    setHidden("displayRadius", !getValue("displayRadiusEnabled"));
   }
 
   function createRow(option) {
@@ -131,6 +132,12 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
     setHidden,
     // Programmatic synchronization is silent unless emit is requested.
     setValue,
+    setRange(property, { min, max, defaultValue }) {
+      const entry = entries.get(property);
+      entry.input.min = String(min);
+      entry.input.max = String(max);
+      entry.option.defaultValue = defaultValue;
+    },
     setDisabled(property, disabled) {
       entries.get(property).input.disabled = disabled;
     },

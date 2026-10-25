@@ -8,7 +8,7 @@
 
 **Three.js Gaussian Splatting · WebGPU · Streaming**
 
-High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **WebGPU**/**WebGL2**. Supports PLY, SPZ, Streaming LOD including SOG and RAD.
+High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **WebGPU**/**WebGL2**. Supports PLY, SPZ, SOG, RAD, and LCC/LCC2, including streaming LOD.
 
 <div align="center">
 
@@ -29,7 +29,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 | Focus | What you get |
 | --- | --- |
 | **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
-| **Large-scene streaming** | Load RAD and SOG detail as the camera moves, with smooth transitions |
+| **Large-scene streaming** | Load RAD, SOG, and LCC/LCC2 detail as the camera moves, with smooth transitions |
 | **Stochastic rendering** | Optional transparency mode, with an experimental neural denoiser to smooth it |
 | **Offscreen capture** | Render Splats to images, cube maps, and environment maps for reflections |
 | **SDF edits** | Recolor or hide parts of a model without moving Splats |
@@ -112,7 +112,7 @@ This mode produces visible noise. Smooth it with the [experimental neural denois
 
 ## Streaming large scenes
 
-Use `RadStreamScheduler` for RAD scenes with levels of detail (LOD), or `SogStreamScheduler` for SOG `lod-meta.json` scenes. Both load detail as the camera moves and work on WebGPU and WebGL2.
+Use `RadStreamScheduler` for RAD scenes with levels of detail (LOD), `SogStreamScheduler` for SOG `lod-meta.json` scenes, or [LccStreamScheduler](docs/LccStreamScheduler.md) for XGRIDS `.lcc`/`.lcc2` indexes. They load detail as the camera moves and work on WebGPU and WebGL2.
 
 For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
 
@@ -177,6 +177,7 @@ const streaming = new SogStreamScheduler({
 - [Building RAD files](docs/BuildRad.md) — Convert models to streamable RAD with quality LOD.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
 - [SogStreamScheduler](docs/SogStreamScheduler.md) — Large SOG scenes with adaptive detail.
+- [LccStreamScheduler](docs/LccStreamScheduler.md) — LCC Unit LODs and LCC2 parent/child refinement, with fades.
 
 ## Development
 
@@ -188,7 +189,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
+Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a model or scene folder into the viewer, choose local files, or load an HTTP(S) URL. For split SOG, include `meta.json` and its `.webp` images; for split RAD, include the header and `.radc` pages. For LCC/LCC2, include the index and its companion data files. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
 
 See [Contributing](CONTRIBUTING.md#validation) for validation commands. `npm run build` emits ESM, CommonJS, declarations, and source maps in `dist/`.
 

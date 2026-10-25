@@ -6,6 +6,7 @@ export { SplatCapture } from "./capture/SplatCapture.js";
 export { SplatLoader } from "./loaders/SplatLoader.js";
 export { RadStreamScheduler } from "./loaders/stream/rad-stream/RadStreamScheduler.js";
 export { SogStreamScheduler } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
+export { LccStreamScheduler } from "./loaders/stream/lcc-stream/LccStreamScheduler.js";
 export { Splats } from "./data/Splats.js";
 export { postDecode } from "./loaders/postDecode/program.js";
 export {

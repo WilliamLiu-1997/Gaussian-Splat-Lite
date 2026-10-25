@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import { sogBatchAllocationSize } from "../../../data/SogRegionSplats.js";
+import { regionAllocationSize } from "../../../data/RegionSplats.js";
 import {
   getSplatByteLength,
   getSplatShDegree,
   getSplatTextureBytes,
 } from "../../../data/splatData.js";
 import { RetryTimer } from "../../../runtime/retry.js";
+import { RegionStreamBatch } from "../RegionStreamBatch.js";
 import { StreamCameras } from "../StreamCameras.js";
 import {
   notifyStreamChange,
@@ -14,7 +15,6 @@ import {
   streamRetryAt,
   streamSettings,
 } from "../streamOptions.js";
-import { SogStreamBatch } from "./SogStreamBatch.js";
 import { SogStreamLoader } from "./SogStreamLoader.js";
 import { SOG_LOD_STRIDE, readSogLodLeaf, resolveSogLod } from "./sogLod.js";
 import { captureSogView, getSogViewKey } from "./sogVisibility.js";
@@ -463,7 +463,7 @@ export class SogStreamScheduler {
       const numSh = getSplatShDegree(data.extra);
       let batch = chunk.batch;
       if (!batch) {
-        batch = new SogStreamBatch(
+        batch = new RegionStreamBatch(
           chunk.batchCapacity,
           numSh,
           this.group,
@@ -510,7 +510,7 @@ export class SogStreamScheduler {
   addBatchRange(chunk, offset, count) {
     if (!count || chunk.batchSlots.has(offset)) return;
     chunk.batchSlots.set(offset, chunk.batchCapacity);
-    chunk.batchCapacity += sogBatchAllocationSize(count);
+    chunk.batchCapacity += regionAllocationSize(count);
   }
   fadeRegion(region, visible, now) {
     const to = visible ? 1 : 0;

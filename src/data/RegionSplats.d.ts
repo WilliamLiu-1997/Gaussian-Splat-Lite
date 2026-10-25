@@ -1,13 +1,13 @@
 import type { Box3 } from "three";
 import { IndexedSplats } from "./IndexedSplats.js";
 import type { ReorderedSplatResult } from "./defines.js";
-export declare function sogBatchAllocationSize(count: number): number;
-export declare function sogBatchTextureLayout(count: number): {
+export declare function regionAllocationSize(count: number): number;
+export declare function regionTextureLayout(count: number): {
   capacity: number;
   layerSize: number;
 };
 /** Independently visible regions in fixed source slots. */
-export declare class SogRegionSplats extends IndexedSplats {
+export declare class RegionSplats extends IndexedSplats {
   private readonly activeRanges;
   private indicesDirty;
   private boundsDirty;

@@ -6,10 +6,10 @@ import { getTextureSize } from "./textureLayout.js";
 const BLOCK_BITS = 6;
 const BLOCK_SIZE = 1 << BLOCK_BITS;
 const MIN_LAYER_SIZE = 8192;
-export function sogBatchAllocationSize(count) {
+export function regionAllocationSize(count) {
   return Math.ceil(count / BLOCK_SIZE) * BLOCK_SIZE;
 }
-export function sogBatchTextureLayout(count) {
+export function regionTextureLayout(count) {
   // Grow the layer dimensions instead of splitting a chunk into more Meshes.
   // Keep the same backing-array alignment as Splats to avoid a second copy.
   const aligned = getTextureSize(count).maxSplats;
@@ -23,9 +23,9 @@ export function sogBatchTextureLayout(count) {
   };
 }
 /** Independently visible regions in fixed source slots. */
-export class SogRegionSplats extends IndexedSplats {
+export class RegionSplats extends IndexedSplats {
   constructor(count, numSh) {
-    const { capacity, layerSize } = sogBatchTextureLayout(count);
+    const { capacity, layerSize } = regionTextureLayout(count);
     super({ capacity, layerSize, numSh, blockBits: BLOCK_BITS });
     this.activeRanges = new Map();
     this.indicesDirty = false;
@@ -37,8 +37,8 @@ export class SogRegionSplats extends IndexedSplats {
       data.centerOnlyBoundingBox?.length !== 6 ||
       data.boundingBox?.length !== 6
     )
-      throw new Error("SOG region bounds must contain six values");
-    this.writeRecords(start, data, sogBatchAllocationSize(data.numSplats));
+      throw new Error("Stream region bounds must contain six values");
+    this.writeRecords(start, data, regionAllocationSize(data.numSplats));
     this.regionBounds.set(start, {
       centers: data.centerOnlyBoundingBox.slice(),
       full: data.boundingBox.slice(),
@@ -74,7 +74,8 @@ export class SogRegionSplats extends IndexedSplats {
       resetSplatBounds(this.bounds);
       for (const start of this.activeRanges.keys()) {
         const bounds = this.regionBounds.get(start);
-        if (!bounds) throw new Error("Visible SOG region has no cached bounds");
+        if (!bounds)
+          throw new Error("Visible Stream region has no cached bounds");
         unionSplatBounds(this.centerOnlyBounds, bounds.centers);
         unionSplatBounds(this.bounds, bounds.full);
       }

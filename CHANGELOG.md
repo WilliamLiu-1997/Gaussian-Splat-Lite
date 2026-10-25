@@ -7,14 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added [LccStreamScheduler](docs/LccStreamScheduler.md) for XGRIDS LCC/LCC2 scenes, with camera-dependent detail that fills the splat budget by default (`splatBudgetMode`), smooth transitions, and local-folder or URL loading in the viewer.
+
 ### Removed
 
 - Removed raycast hit `sourceIndex`, `Splats.getSourceIndex()`, and `RadStreamScheduler.getGlobalIndex()`. Use `hit.object.splats.getSplat(hit.index)` to read the current hit; streamed indices can change when the visible detail changes.
+
+### Changed
+
+- Viewer radius clipping is optional and disabled by default, preserving environment splats outside the model bounds.
 
 ### Fixed
 
 - Streamed SOG waits for initial detail selection before rejecting `firstRenderable`, including when an empty environment finishes last.
 - Streamed SOG retains displayed coverage when detail selection fails, stopping further loading while existing fades finish.
+- LCC 3.0 scenes without `fileType` load with SH3, matching the legacy Quality format.
+- LCC/LCC2 requests keep authentication restricted to the original index origin after redirects. LCC byte ranges detect exposed resource-version and length changes across workers.
+- LCC2 orthographic cameras use projected error at every distance, and LCC/LCC2 visibility fades can reverse without first fading to zero.
+- LCC/LCC2 preserves complete coverage during refinement and reuses cached regions after hiding and showing a scene. Prepared children and their decoded files remain resident until replacement completes or a required sibling fails permanently.
+- LCC waits for initial detail selection before rejecting `firstRenderable`, including when an empty environment finishes last. Empty filtered LCC scenes resolve normally, and selection failures preserve displayed coverage.
+- LCC LoadingManager tracks index parsing errors, and disposal removes streamed batches from the scene group.
 
 ## [1.4.2] - 2026-10-24
 

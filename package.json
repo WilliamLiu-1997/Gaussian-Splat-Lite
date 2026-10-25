@@ -1,7 +1,7 @@
 {
   "name": "gaussian-splat-lite",
   "version": "1.4.2",
-  "description": "Three.js Gaussian Splatting renderer with WebGPU/WebGL2, GPU sorting, streaming LOD, and high-precision GIS/ECEF support. Supports PLY, SPZ, SOG and RAD.",
+  "description": "Three.js Gaussian Splatting renderer with WebGPU/WebGL2, GPU sorting, streaming LOD, and high-precision GIS/ECEF support. Supports PLY, SPZ, SOG, RAD and LCC/LCC2.",
   "author": "William Liu <lyz15972107087@gmail.com>",
   "type": "module",
   "license": "Apache-2.0",
@@ -102,6 +102,8 @@
     "spz",
     "rad",
     "sog",
+    "lcc",
+    "lcc2",
     "streaming",
     "three.js",
     "threejs",

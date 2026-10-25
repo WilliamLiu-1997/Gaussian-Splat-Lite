@@ -19,7 +19,7 @@ export const renderOptionGroups = [
         property: "splatBudget",
         label: "Streaming splat budget",
         description:
-          "Splat budget for RAD and SOG streaming. Adjusts detail without reloading.",
+          "Splat budget for streamed scenes. Adjusts detail without reloading.",
         min: 1_000_000,
         max: 5_000_000,
         step: 100_000,
@@ -28,7 +28,7 @@ export const renderOptionGroups = [
       },
       {
         property: "splatBudgetMode",
-        label: "SOG budget mode",
+        label: "Budget mode",
         description:
           "Target fills the budget. Limit keeps distant detail coarse even when budget remains.",
         defaultValue: "target",
@@ -82,6 +82,25 @@ export const renderOptionGroups = [
     title: "Culling & sorting",
     description: "Trade image stability for rendering work.",
     options: [
+      {
+        property: "displayRadiusEnabled",
+        label: "Radius clipping",
+        description:
+          "Clip the model and environment to a sphere. Disabled by default.",
+        defaultValue: false,
+        trueLabel: "On",
+        falseLabel: "Off",
+      },
+      {
+        property: "displayRadius",
+        label: "Display radius",
+        description: "Clipping radius around the model center, in model units.",
+        min: 0,
+        max: 1,
+        step: "any",
+        defaultValue: 1,
+        format: (value) => Number(value.toPrecision(4)).toString(),
+      },
       {
         property: "stochastic",
         label: "Stochastic",

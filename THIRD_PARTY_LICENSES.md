@@ -168,3 +168,22 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
+
+## XGRIDS LCC/LCC2 data organization formats
+
+Data Organization Format originated from XGRIDS.
+
+Gaussian Splat Lite implements an independent reader for the LCC and LCC2
+data organization formats under authorization from XGRIDS pursuant to the
+[LCC white paper](https://github.com/xgrids/LCCWhitepaper) and
+[LCC2 white paper](https://github.com/xgrids/LCC2Whitepaper). XGRIDS and its
+Affiliates own and retain all intellectual property and other rights in
+these formats. The XGRIDS SDK is not included in this distribution.
+
+The format licenses require visible attribution and impose additional
+conditions and use restrictions; see the linked white papers for the full
+terms. In particular, without prior written consent from XGRIDS, the data
+organization formats must not be used to train or fine-tune an artificial
+intelligence model that competes directly or indirectly with XGRIDS products
+or services. Redistributors must communicate this restriction and include
+it in applicable agreements governing use or distribution of the formats.

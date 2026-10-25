@@ -1,7 +1,10 @@
 import {
   GaussianSplatRenderer,
+  LccStreamScheduler,
   RadStreamScheduler,
   SogStreamScheduler,
+  SplatEdit,
+  SplatEditSdf,
   SplatFileType,
   SplatMesh,
 } from "gaussian-splat-lite";
@@ -138,6 +141,7 @@ async function createRendererState(backend, previous, onFailure = () => {}) {
     state.controls = new CameraController(state.renderer, scene, camera, {
       worldUp: camera.up,
       damping: 0.1,
+      raycastHitFilter: isWithinDisplayRadius,
     });
     if (previous) state.controls.minDistance = previous.controls.minDistance;
     state.frameGate = createFrameGate(
@@ -297,6 +301,17 @@ const renderOptionActions = {
     if (activeSplat) applyMaxSh(activeSplat, value);
     denoiser?.reset();
   },
+  displayRadiusEnabled: (value) => {
+    if (value) activeSplat?.add(displayRadiusEdit);
+    else displayRadiusEdit.removeFromParent();
+    controls.setRaycastHitFilter(isWithinDisplayRadius);
+    denoiser?.reset();
+  },
+  displayRadius: (value) => {
+    displayRadiusSdf.radius = value;
+    controls.setRaycastHitFilter(isWithinDisplayRadius);
+    denoiser?.reset();
+  },
   halfFloatBlending: (value) => {
     halfFloatBlending = value;
     if (!value) {
@@ -308,7 +323,10 @@ const renderOptionActions = {
     if (activeStream) activeStream.splatBudget = value;
   },
   splatBudgetMode: (value) => {
-    if (activeStream instanceof SogStreamScheduler)
+    if (
+      activeStream instanceof SogStreamScheduler ||
+      activeStream instanceof LccStreamScheduler
+    )
       activeStream.splatBudgetMode = value;
     syncStreamOptions();
   },
@@ -513,6 +531,9 @@ function retireDenoiser() {
 
 const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
+const displayRadiusSdf = new SplatEditSdf({ opacity: 0 });
+const displayRadiusEdit = new SplatEdit({ invert: true });
+displayRadiusEdit.add(displayRadiusSdf);
 let activeSplat = null;
 let modelUpAxis = "auto";
 let disposeActiveSource = null;
@@ -526,6 +547,7 @@ const optionsPanel = createRenderOptionsPanel({
   groups: renderOptionGroups,
   onChange: applyRenderOption,
 });
+optionsPanel.setHidden("displayRadiusEnabled", true);
 document
   .querySelector("#stochastic-control")
   .append(
@@ -539,8 +561,14 @@ optionsPanel.reset({ skip: ["rendererBackend"] });
 function syncStreamOptions() {
   const isSog = activeStream instanceof SogStreamScheduler;
   optionsPanel.setHidden("splatBudget", !activeStream);
-  optionsPanel.setHidden("splatBudgetMode", !isSog);
+  optionsPanel.setHidden(
+    "splatBudgetMode",
+    !isSog && !(activeStream instanceof LccStreamScheduler),
+  );
   optionsPanel.setHidden("lodMultiplier", !isSog);
+  document.querySelector("#lcc-attribution").hidden = !(
+    activeStream instanceof LccStreamScheduler
+  );
   optionsPanel.setHidden(
     "lodBaseDistance",
     !isSog || activeStream.splatBudgetMode !== "limit",
@@ -559,6 +587,9 @@ function isFileDrag(event) {
 
 function clearActiveModel() {
   denoiser?.reset();
+  displayRadiusEdit.removeFromParent();
+  optionsPanel.setValue("displayRadiusEnabled", false);
+  optionsPanel.setHidden("displayRadiusEnabled", true);
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
   else activeSplat?.dispose();
@@ -583,6 +614,32 @@ function applyModelOrientation(splat, streamed) {
   // rotation; the decoded splats and index bounds remain in source space.
   splat.rotation.set(getModelRotationX(modelUpAxis, streamed), 0, 0);
   splat.updateMatrixWorld(true);
+}
+
+function initializeDisplayRadius() {
+  const bounds = activeStream
+    ? activeStream.getBoundingBox()
+    : activeSplat.getBoundingBox();
+  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+  const radius = Math.max(sphere.radius, 0.01);
+  displayRadiusSdf.position.copy(sphere.center);
+  optionsPanel.setValue("displayRadiusEnabled", false, { emit: true });
+  optionsPanel.setRange("displayRadius", {
+    min: 0,
+    max: radius,
+    defaultValue: radius,
+  });
+  optionsPanel.setValue("displayRadius", radius, { emit: true });
+  optionsPanel.setHidden("displayRadiusEnabled", false);
+}
+
+function isWithinDisplayRadius({ object, index }) {
+  if (!(object instanceof SplatMesh) || !displayRadiusEdit.parent) return true;
+  // SDF visibility is evaluated at the splat center, not the ray's surface hit.
+  const { center } = object.splats.getSplat(index, false);
+  object.localToWorld(center);
+  displayRadiusSdf.worldToLocal(center);
+  return center.lengthSq() <= displayRadiusSdf.radius ** 2;
 }
 
 function frameSplat(splat) {
@@ -626,14 +683,17 @@ function frameSplat(splat) {
 async function initializeModel(
   model,
   file,
-  { url, resolveFile, manager },
+  { url, resolveFile, manager, environment },
   loadId,
 ) {
   const fileType = await detectFileType(file, url);
   if (loadId !== activeLoad) return;
   const sogStream = url && file.name.toLowerCase() === "lod-meta.json";
-  if (!fileType && !sogStream && !url)
-    throw new Error("Choose a .ply, .spz, .sog, .rad, or SOG meta.json file.");
+  const lccStream = url && /\.lcc2?$/i.test(file.name);
+  if (!fileType && !sogStream && !lccStream && !url)
+    throw new Error(
+      "Choose a .ply, .spz, .sog, .rad, .lcc, .lcc2, or SOG metadata file.",
+    );
 
   const source = {
     url,
@@ -668,7 +728,17 @@ async function initializeModel(
     }
   }
 
-  if (sogStream) {
+  if (lccStream) {
+    model.stream = new LccStreamScheduler({
+      url,
+      manager,
+      environment,
+      ...streamOptions,
+      splatBudgetMode: optionsPanel.getValue("splatBudgetMode"),
+    });
+    model.stream.setCamera(camera);
+    model.splat = model.stream.group;
+  } else if (sogStream) {
     model.stream = new SogStreamScheduler({
       url,
       manager,
@@ -700,7 +770,7 @@ async function initializeModel(
 
 async function loadFile(
   file,
-  { url, button, resolveFile, manager, dispose } = {},
+  { url, button, resolveFile, manager, environment, dispose } = {},
 ) {
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
@@ -723,7 +793,12 @@ async function loadFile(
   ui.setStatus(`Loading ${file.name}`);
 
   try {
-    await initializeModel(model, file, { url, resolveFile, manager }, loadId);
+    await initializeModel(
+      model,
+      file,
+      { url, resolveFile, manager, environment },
+      loadId,
+    );
 
     if (loadId !== activeLoad) {
       disposeModel();
@@ -732,7 +807,8 @@ async function loadFile(
 
     applyModelOrientation(
       model.splat,
-      model.stream instanceof SogStreamScheduler,
+      model.stream instanceof SogStreamScheduler ||
+        model.stream instanceof LccStreamScheduler,
     );
     activeSplat = model.splat;
     activeStream = model.stream;
@@ -748,7 +824,7 @@ async function loadFile(
     scene.add(activeSplat);
     requestRender();
     const radStream = model.stream instanceof RadStreamScheduler;
-    // SOG has index bounds; RAD needs its first page before framing the scene.
+    // SOG/LCC have index bounds; RAD needs its first page before framing.
     if (!radStream) frameSplat(activeSplat);
     if (model.stream) {
       await model.stream.firstRenderable;
@@ -758,6 +834,7 @@ async function loadFile(
       }
       if (radStream) frameSplat(activeSplat);
     }
+    initializeDisplayRadius();
     ui.showModelInfo(file, {
       numSplats: activeSplat.numSplats,
       streamed: Boolean(activeStream),
@@ -810,10 +887,13 @@ function resizeRenderer() {
   requestRender();
 }
 
-// RAD detail follows the canvas size in CSS pixels. Resizes and renderer
+// RAD/LCC2 detail follows the canvas size in CSS pixels. Resizes and renderer
 // backend switches both pass through resizeRenderer().
 function syncStreamResolution() {
-  if (activeStream instanceof RadStreamScheduler)
+  if (
+    activeStream instanceof RadStreamScheduler ||
+    activeStream instanceof LccStreamScheduler
+  )
     activeStream.setResolutionFromRenderer(camera, renderer);
 }
 
@@ -868,7 +948,8 @@ sourceUpAxis.addEventListener("change", (event) => {
   if (!activeSplat) return;
   applyModelOrientation(
     activeSplat,
-    activeStream instanceof SogStreamScheduler,
+    activeStream instanceof SogStreamScheduler ||
+      activeStream instanceof LccStreamScheduler,
   );
   requestRender();
 });

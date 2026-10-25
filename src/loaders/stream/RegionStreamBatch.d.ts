@@ -1,8 +1,8 @@
 import type * as THREE from "three";
-import type { ReorderedSplatResult } from "../../../data/defines.js";
-import { SplatMesh } from "../../../scene/SplatMesh.js";
+import type { ReorderedSplatResult } from "../../data/defines.js";
+import { SplatMesh } from "../../scene/SplatMesh.js";
 /** Regions share one source, one scene node and one accumulator generation call. */
-export declare class SogStreamBatch extends SplatMesh {
+export declare class RegionStreamBatch extends SplatMesh {
   readonly numSh: number;
   private readonly group;
   private readonly onEmpty;

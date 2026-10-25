@@ -84,8 +84,10 @@ export declare function resolveSogLod(
   refinement?: boolean;
 };
 /** Select distance bands, fitting their common base distance to the splat budget. */
-export declare function selectSogLods(
-  visible: SogVisibleLeaf[],
+export declare function selectSogLods<
+  T extends { level: number; count: number },
+>(
+  visible: { leaf: { id: number; lods: T[] }; distance: number }[],
   lodLevels: number,
   options: SogLodOptions,
-): Map<number, SogLodRange>;
+): Map<number, T>;
