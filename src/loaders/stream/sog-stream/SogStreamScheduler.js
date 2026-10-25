@@ -225,8 +225,9 @@ export class SogStreamScheduler {
       count: manifest.counts[index],
       ranges: [],
     }));
-    if (this.manifest.environment)
-      files.push({ url: this.manifest.environment, count: -1, ranges: [] });
+    const environment =
+      this.options.loadEnvironment !== false && manifest.environment;
+    if (environment) files.push({ url: environment, count: -1, ranges: [] });
     this.chunks = files.map((file) => ({
       file,
       // Stable slots keep a chunk together regardless of region arrival order.
@@ -247,8 +248,7 @@ export class SogStreamScheduler {
         manifest.lods[offset + 3],
       );
     }
-    if (this.manifest.environment)
-      this.environment = this.chunks[this.chunks.length - 1];
+    if (environment) this.environment = this.chunks[this.chunks.length - 1];
     if (!this.environment && !this.manifest.lods.length)
       this.resolveFirst(this);
     this.changed();

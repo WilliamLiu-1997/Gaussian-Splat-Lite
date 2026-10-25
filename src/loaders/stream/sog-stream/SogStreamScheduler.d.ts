@@ -4,6 +4,8 @@ import type { SogStreamLoaderOptions } from "./SogStreamLoader.js";
 import type { SogBudgetMode } from "./sogLod.js";
 export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
   StreamSchedulerOptions & {
+    /** Load and display the manifest's environment; defaults to true. Set only at construction. */
+    loadEnvironment?: boolean;
     /** Defaults to "target". "limit" caps detail at the configured distance bands. */
     splatBudgetMode?: SogBudgetMode;
     /** Base LOD distance in world units for "limit" mode; defaults to 100. Must be finite and positive. */

@@ -52,7 +52,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | --- | --- | --- |
 | `url` | Required | URL of the scene's `lod-meta.json` |
 | `group` | New `THREE.Group` | Group that holds the scene |
-| `splatBudget` | `3_000_000` | Splat budget, including the environment. Higher values allow more detail and use more memory |
+| `loadEnvironment` | `true` | Load and display the index's environment. Set to `false` at construction to skip it and give the full splat budget to scene detail |
+| `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
 | `splatBudgetMode` | `"target"` | `"target"` adjusts the distance bands to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
 | `lodBaseDistance` | `100` | Base LOD distance in world units for `"limit"` mode, compensated for the camera's field of view. Higher values retain finer detail farther away. Must be finite and positive |
 | `lodMultiplier` | `2` | Distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
@@ -72,7 +73,7 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | API | Description |
 | --- | --- |
 | `group` | Group that holds the scene |
-| `splatBudget` | Change it at any time to adjust detail. Must be a positive integer; includes the environment |
+| `splatBudget` | Change it at any time to adjust detail. Must be a positive integer; includes the environment when enabled |
 | `splatBudgetMode` | Switch between `"target"` and `"limit"` without reloading |
 | `lodBaseDistance` | Change the base LOD distance in `"limit"` mode without reloading |
 | `lodMultiplier` | Change the distance spacing between LOD levels in both modes without reloading |

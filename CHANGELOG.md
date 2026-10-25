@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `loadEnvironment` to `SogStreamScheduler` (default `true`). Set it to `false` at construction to skip the environment and reserve the splat budget for scene detail.
+
 ### Changed
 
 - RAD streaming now uses fixed 65,536-splat page slots. Smaller chunks use a full slot; chunks larger than 65,536 splats are rejected during initialization.
