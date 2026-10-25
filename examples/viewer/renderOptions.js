@@ -1,3 +1,10 @@
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+
+function formatMemoryBudget(value) {
+  return value < GIB ? `${value / MIB} MiB` : `${value / GIB} GiB`;
+}
+
 export const renderOptionGroups = [
   {
     title: "Performance & diagnostics",
@@ -25,6 +32,30 @@ export const renderOptionGroups = [
         step: 100_000,
         defaultValue: 3_000_000,
         format: (value) => `${(value / 1_000_000).toFixed(1)}M`,
+      },
+      {
+        property: "maxResidentCpuBytes",
+        label: "RAD CPU cache budget",
+        description:
+          "Lower values use less memory but may reduce detail. Reloads RAD while keeping the current view.",
+        min: 256 * MIB,
+        max: 4 * GIB,
+        step: 256 * MIB,
+        defaultValue: 2 * GIB,
+        format: formatMemoryBudget,
+        commitOnChange: true,
+      },
+      {
+        property: "maxResidentGpuBytes",
+        label: "RAD GPU cache budget",
+        description:
+          "Lower values use less GPU memory but may reduce detail. Reloads RAD while keeping the current view.",
+        min: 256 * MIB,
+        max: 4 * GIB,
+        step: 256 * MIB,
+        defaultValue: GIB,
+        format: formatMemoryBudget,
+        commitOnChange: true,
       },
       {
         property: "splatBudgetMode",

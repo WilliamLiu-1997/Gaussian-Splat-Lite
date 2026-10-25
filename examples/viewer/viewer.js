@@ -307,6 +307,8 @@ const renderOptionActions = {
   splatBudget: (value) => {
     if (activeStream) activeStream.splatBudget = value;
   },
+  maxResidentCpuBytes: reloadRadStream,
+  maxResidentGpuBytes: reloadRadStream,
   splatBudgetMode: (value) => {
     if (activeStream instanceof SogStreamScheduler)
       activeStream.splatBudgetMode = value;
@@ -514,6 +516,8 @@ function retireDenoiser() {
 const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
 let activeSplat = null;
+let activeRadSource = null;
+let radReloadQueued = false;
 let modelUpAxis = "auto";
 let disposeActiveSource = null;
 let cancelActiveLoad = null;
@@ -537,14 +541,36 @@ syncRendererOption(getRendererBackend());
 optionsPanel.reset({ skip: ["rendererBackend"] });
 
 function syncStreamOptions() {
+  const isRad = activeStream instanceof RadStreamScheduler;
   const isSog = activeStream instanceof SogStreamScheduler;
   optionsPanel.setHidden("splatBudget", !activeStream);
+  optionsPanel.setHidden("maxResidentCpuBytes", !isRad);
+  optionsPanel.setHidden("maxResidentGpuBytes", !isRad);
   optionsPanel.setHidden("splatBudgetMode", !isSog);
   optionsPanel.setHidden("lodMultiplier", !isSog);
   optionsPanel.setHidden(
     "lodBaseDistance",
     !isSog || activeStream.splatBudgetMode !== "limit",
   );
+}
+
+function reloadRadStream() {
+  if (radReloadQueued || !activeRadSource) return;
+  radReloadQueued = true;
+  // Reset emits both budgets together; reload once with their final values.
+  queueMicrotask(() => {
+    radReloadQueued = false;
+    if (!activeRadSource || viewerDisposed) return;
+    if (
+      activeStream.maxResidentCpuBytes ===
+        optionsPanel.getValue("maxResidentCpuBytes") &&
+      activeStream.maxResidentGpuBytes ===
+        optionsPanel.getValue("maxResidentGpuBytes")
+    )
+      return;
+    const { file, ...source } = activeRadSource;
+    void loadFile(file, { ...source, preserveView: true });
+  });
 }
 
 function applyMaxSh(object, value) {
@@ -566,6 +592,7 @@ function clearActiveModel() {
   disposeActiveSource = null;
   activeSplat = null;
   activeStream = null;
+  activeRadSource = null;
   syncStreamOptions();
   ui.clearModelInfo();
   requestRender();
@@ -654,6 +681,8 @@ async function initializeModel(
     model.stream = new RadStreamScheduler({
       ...source,
       ...streamOptions,
+      maxResidentCpuBytes: optionsPanel.getValue("maxResidentCpuBytes"),
+      maxResidentGpuBytes: optionsPanel.getValue("maxResidentGpuBytes"),
     });
     model.stream.setCamera(camera);
     try {
@@ -700,7 +729,7 @@ async function initializeModel(
 
 async function loadFile(
   file,
-  { url, button, resolveFile, manager, dispose } = {},
+  { url, button, resolveFile, manager, dispose, preserveView = false } = {},
 ) {
   const loadId = ++activeLoad;
   cancelActiveLoad?.();
@@ -736,6 +765,8 @@ async function loadFile(
     );
     activeSplat = model.splat;
     activeStream = model.stream;
+    if (activeStream instanceof RadStreamScheduler)
+      activeRadSource = { file, url, resolveFile };
     applyMaxSh(activeSplat, optionsPanel.getValue("maxSh"));
     if (activeStream) {
       activeSplat.addEventListener("childadded", ({ child }) => {
@@ -749,14 +780,14 @@ async function loadFile(
     requestRender();
     const radStream = model.stream instanceof RadStreamScheduler;
     // SOG has index bounds; RAD needs its first page before framing the scene.
-    if (!radStream) frameSplat(activeSplat);
+    if (!radStream && !preserveView) frameSplat(activeSplat);
     if (model.stream) {
       await model.stream.firstRenderable;
       if (loadId !== activeLoad) {
         disposeModel();
         return;
       }
-      if (radStream) frameSplat(activeSplat);
+      if (radStream && !preserveView) frameSplat(activeSplat);
     }
     ui.showModelInfo(file, {
       numSplats: activeSplat.numSplats,

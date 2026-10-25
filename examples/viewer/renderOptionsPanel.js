@@ -98,9 +98,13 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
       }
     };
     writeValue(option.defaultValue);
-    input.addEventListener(isSelect || isToggle ? "change" : "input", () => {
-      setValue(property, readValue(), { emit: true });
-    });
+    input.addEventListener(
+      isSelect || isToggle || option.commitOnChange ? "change" : "input",
+      () => setValue(property, readValue(), { emit: true }),
+    );
+    if (option.commitOnChange) {
+      input.addEventListener("input", () => setValue(property, readValue()));
+    }
     entries.set(property, {
       input,
       option,
