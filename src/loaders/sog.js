@@ -74,7 +74,9 @@ async function decodeSog(args, controller) {
       );
   }
   controller.signal.throwIfAborted();
-  const session = wasmCall(() => new SogDecodeSession(metadata));
+  const session = wasmCall(
+    () => new SogDecodeSession(metadata, Math.min(args.maxSh ?? 3, 3)),
+  );
   let consumed = false;
   try {
     const groups = JSON.parse(wasmCall(() => session.plan()));

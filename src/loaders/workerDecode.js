@@ -133,6 +133,7 @@ async function decodeInput(args) {
           new URL(url).origin !== new URL(responseUrl).origin;
         const streamingArgs = {
           expectedSogCount: args.expectedSogCount,
+          maxSh: args.maxSh,
           readChunk: async () => pending.shift() ?? readInputChunk(),
           baseUrl: getAssetBaseUrl(responseUrl) ?? baseUrl,
           requestHeader: crossOrigin ? undefined : requestHeader,
@@ -149,7 +150,7 @@ async function decodeInput(args) {
     }
     args.signal?.throwIfAborted();
     const activeDecoder = wasmCall(() =>
-      decode_to_splats(fileType, pathName ?? url),
+      decode_to_splats(fileType, pathName ?? url, args.maxSh),
     );
     decoder = activeDecoder;
     if (expectedInputLength > 0) {

@@ -606,8 +606,7 @@ pub struct RadChunk {
 pub struct RadDecoder {
     pub meta: RadMeta,
     max_sh: usize,
-    codebooks: [Option<Vec<f32>>; 3],
-    codebooks_f16: [bool; 3],
+    codebooks: [Option<Vec<u32>>; 3],
     // Separate degrees keep omitted bands zero when chunks use different maxSh.
     palettes: [Option<Vec<u32>>; 3],
     chunk_bounds: Vec<(u32, u32)>,
@@ -624,7 +623,6 @@ impl RadDecoder {
             meta,
             max_sh,
             codebooks: array::from_fn(|_| None),
-            codebooks_f16: [false; 3],
             palettes: array::from_fn(|_| None),
             chunk_bounds,
         })
@@ -636,7 +634,7 @@ impl RadDecoder {
         bytes: &[u8],
         mut splats: T,
     ) -> Result<(T, RadChunk)> {
-        let chunk = self.decode_chunk_data(bytes, false)?;
+        let chunk = self.decode_chunk_data(bytes)?;
         splats.init_splats(&SplatInit {
             num_splats: chunk.count,
             max_sh_degree: chunk.max_sh,
@@ -687,13 +685,36 @@ impl RadDecoder {
         ))
     }
 
-    /// Seed codebooks from an already validated root; checks metadata and codebook
-    /// payloads without decoding geometry, labels, or tree payloads again.
-    pub fn initialize_codebooks(&mut self, bytes: &[u8]) -> Result<()> {
-        self.decode_chunk_data(bytes, true).map(|_| ())
+    /// Packed per-band codebooks can outlive a decoder and seed another one.
+    pub fn codebooks(&self) -> &[Option<Vec<u32>>; 3] {
+        &self.codebooks
     }
 
-    /// Quantize validated codebooks once for each requested degree.
+    pub fn set_codebooks(&mut self, codebooks: [Option<Vec<u32>>; 3]) -> Result<()> {
+        for (band, codes) in codebooks.iter().enumerate() {
+            if let Some(codes) = codes {
+                let count = self
+                    .meta
+                    .sh_code_count
+                    .filter(|count| *count > 0)
+                    .context("RAD codebook requires positive shCodeCount")?
+                    as usize;
+                ensure!(
+                    band < self.max_sh.min(self.meta.max_sh.unwrap_or(0) as usize),
+                    "RAD codebook exceeds requested SH degree"
+                );
+                ensure!(
+                    codes.len() == count * [3, 5, 7][band],
+                    "RAD packed codebook length does not match shCodeCount"
+                );
+            }
+        }
+        self.codebooks = codebooks;
+        self.palettes.fill(None);
+        Ok(())
+    }
+
+    /// Assemble packed bands once for each requested degree.
     fn sh_palette(&mut self, degree: usize) -> &[u32] {
         self.palettes[degree - 1].get_or_insert_with(|| {
             let stride = [0, 4, 8, 16][degree];
@@ -701,17 +722,9 @@ impl RadDecoder {
             let mut offset = 0;
             for (band, coefficients) in [3, 5, 7].into_iter().enumerate().take(degree) {
                 let codebook = self.codebooks[band].as_ref().unwrap();
-                let half_lookup = self.codebooks_f16[band].then(|| &*F16_SH_LOOKUP);
-                for (label, entry) in codebook.chunks_exact(coefficients * 3).enumerate() {
-                    for (i, rgb) in entry.chunks_exact(3).enumerate() {
-                        palette[label * stride + offset + i] = if let Some(lookup) = half_lookup {
-                            lookup.encode_indices(array::from_fn(|d| {
-                                f16::from_f32(rgb[d]).to_bits() as usize
-                            }))
-                        } else {
-                            encode_splat_sh_rgb(rgb.try_into().unwrap())
-                        };
-                    }
+                for (label, entry) in codebook.chunks_exact(coefficients).enumerate() {
+                    let start = label * stride + offset;
+                    palette[start..start + coefficients].copy_from_slice(entry);
                 }
                 offset += coefficients;
             }
@@ -719,7 +732,7 @@ impl RadDecoder {
         })
     }
 
-    fn decode_chunk_data(&mut self, bytes: &[u8], codebooks_only: bool) -> Result<DecodedChunk> {
+    fn decode_chunk_data(&mut self, bytes: &[u8]) -> Result<DecodedChunk> {
         ensure!(bytes.len() >= 8, "Incomplete RADC header");
         ensure!(
             bytes[..4] == RAD_CHUNK_MAGIC.to_le_bytes(),
@@ -732,12 +745,6 @@ impl RadDecoder {
         ensure!(bytes.len() >= payload_start, "Incomplete RADC metadata");
         let chunk: RadChunkMeta = serde_json::from_slice(&bytes[8..8 + json_length])
             .context("Invalid or unsupported RADC metadata")?;
-        if codebooks_only {
-            ensure!(
-                chunk.base == 0,
-                "RAD codebook initialization requires chunk 0"
-            );
-        }
         ensure!(
             chunk.version == 1,
             "Unsupported RADC version: {}",
@@ -870,19 +877,17 @@ impl RadDecoder {
                 "RAD cannot mix SH labels and direct coefficients"
             );
         }
-        let mut pending_codes: [Option<Vec<f32>>; 3] = array::from_fn(|_| None);
-        let mut pending_f16 = [false; 3];
+        let mut pending_codes: [Option<Vec<u32>>; 3] = array::from_fn(|_| None);
         let mut result = DecodedChunk {
             base: chunk.base as u32,
             count,
             max_sh,
-            lod_radii: (lod_tree && !codebooks_only).then(|| Vec::with_capacity(count)),
+            lod_radii: lod_tree.then(|| Vec::with_capacity(count)),
             ..DecodedChunk::default()
         };
         let mut labels: Option<Vec<u32>> = None;
         for prop in &chunk.properties {
-            if (codebooks_only && !prop.property.is_code())
-                || prop.property.sh_degree() > decode_sh
+            if prop.property.sh_degree() > decode_sh
                 || (prop.property == PropertyName::ShLabel && decode_sh == 0)
             {
                 continue;
@@ -992,8 +997,22 @@ impl RadDecoder {
                         PropertyName::Rgb => result.rgb = values,
                         PropertyName::Orientation => result.quaternions = values,
                         _ if name.is_code() => {
-                            pending_f16[name.sh_degree() - 1] = prop.encoding == Encoding::F16;
-                            pending_codes[name.sh_degree() - 1] = Some(values);
+                            let half_lookup =
+                                (prop.encoding == Encoding::F16).then(|| &*F16_SH_LOOKUP);
+                            pending_codes[name.sh_degree() - 1] = Some(
+                                values
+                                    .chunks_exact(3)
+                                    .map(|rgb| {
+                                        if let Some(lookup) = half_lookup {
+                                            lookup.encode_indices(array::from_fn(|d| {
+                                                f16::from_f32(rgb[d]).to_bits() as usize
+                                            }))
+                                        } else {
+                                            encode_splat_sh_rgb(rgb.try_into().unwrap())
+                                        }
+                                    })
+                                    .collect(),
+                            );
                         }
                         _ => unreachable!("property handled by a specialized decoder"),
                     }
@@ -1007,10 +1026,6 @@ impl RadDecoder {
                     .or(self.codebooks[band].as_ref())
                     .context("RAD SH codebook unavailable; decode chunk 0 first")?;
             }
-        }
-        if codebooks_only {
-            self.cache_codebooks(pending_codes, pending_f16);
-            return Ok(result);
         }
         if labels_present && decode_sh > 0 {
             let labels = labels.unwrap();
@@ -1067,18 +1082,17 @@ impl RadDecoder {
             }
         }
         // Commit only after the chunk, labels, and tree have all passed checks.
-        self.cache_codebooks(pending_codes, pending_f16);
+        self.cache_codebooks(pending_codes);
         Ok(result)
     }
 
-    fn cache_codebooks(&mut self, pending_codes: [Option<Vec<f32>>; 3], pending_f16: [bool; 3]) {
+    fn cache_codebooks(&mut self, pending_codes: [Option<Vec<u32>>; 3]) {
         if pending_codes.iter().any(Option::is_some) {
             self.palettes.fill(None);
         }
-        for (band, (cached, pending)) in self.codebooks.iter_mut().zip(pending_codes).enumerate() {
+        for (cached, pending) in self.codebooks.iter_mut().zip(pending_codes) {
             if pending.is_some() {
                 *cached = pending;
-                self.codebooks_f16[band] = pending_f16[band];
             }
         }
     }
@@ -1441,25 +1455,24 @@ mod tests {
         });
         for bytes in [longer, truncated] {
             decoder.meta.chunks[0].bytes = bytes.len() as u64;
-            let error = decoder.decode_chunk_data(&bytes, false).err().unwrap();
+            let error = decoder.decode_chunk_data(&bytes).err().unwrap();
             assert!(format!("{error:#}").contains("DEFLATE"), "{error:#}");
         }
         decoder.meta.chunks[0].bytes = root.len() as u64;
-        decoder.decode_chunk_data(&root, false).unwrap();
+        decoder.decode_chunk_data(&root).unwrap();
     }
 
     #[test]
-    fn codebook_initialization_matches_full_root_for_later_chunks() {
+    fn codebook_import_matches_full_root_for_later_chunks() {
         for half in [false, true] {
             for degree in 0..=3 {
                 let (mut seeded, root, next) = fixture(half, false, degree);
                 let mut full = RadDecoder::new(seeded.meta.clone(), degree).unwrap();
-                full.decode_chunk_data(&root, false).unwrap();
-                seeded.initialize_codebooks(&root).unwrap();
+                full.decode_chunk_data(&root).unwrap();
+                seeded.set_codebooks(full.codebooks().clone()).unwrap();
                 assert_eq!(full.codebooks, seeded.codebooks);
-                assert_eq!(full.codebooks_f16, seeded.codebooks_f16);
-                let expected = full.decode_chunk_data(&next, false).unwrap();
-                let actual = seeded.decode_chunk_data(&next, false).unwrap();
+                let expected = full.decode_chunk_data(&next).unwrap();
+                let actual = seeded.decode_chunk_data(&next).unwrap();
                 assert_eq!(actual.sh_labels, expected.sh_labels);
                 if degree > 0 {
                     assert_eq!(full.sh_palette(degree), seeded.sh_palette(degree));
@@ -1469,32 +1482,43 @@ mod tests {
     }
 
     #[test]
-    fn codebook_initialization_skips_geometry_but_checks_container() {
-        let (mut decoder, root, next) = fixture(true, true, 3);
-        assert!(decoder.decode_chunk_data(&root, false).is_err());
-        decoder.initialize_codebooks(&root).unwrap();
-        assert!(decoder.decode_chunk_data(&next, false).is_ok());
-        assert!(decoder.initialize_codebooks(&next).is_err());
+    fn codebook_import_checks_degree_and_length() {
+        let (mut decoder, root, _) = fixture(true, false, 3);
+        decoder.decode_chunk_data(&root).unwrap();
+        let mut codes = decoder.codebooks().clone();
+        let mut capped = RadDecoder::new(decoder.meta.clone(), 2).unwrap();
+        assert!(capped
+            .set_codebooks(codes.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds requested SH degree"));
+        codes[2].as_mut().unwrap().pop();
         assert!(decoder
-            .initialize_codebooks(&root[..root.len() - 1])
-            .is_err());
+            .set_codebooks(codes)
+            .unwrap_err()
+            .to_string()
+            .contains("length does not match shCodeCount"));
     }
 
     #[test]
-    fn failed_codebook_initialization_preserves_cache_and_palette() {
+    fn failed_chunk_preserves_codebooks_and_palette() {
         for half in [false, true] {
             let (mut decoder, root, _) = fixture(half, false, 3);
-            let bad = chunk(0, half, false, f32::INFINITY);
-            decoder.initialize_codebooks(&root).unwrap();
+            decoder.decode_chunk_data(&root).unwrap();
             let palette = decoder.sh_palette(3).to_vec();
             let codes = decoder.codebooks.clone();
-            // Keep the directory consistent so the failure tests the payload.
-            decoder.meta.chunks[0].bytes = bad.len() as u64;
-            assert!(decoder
-                .initialize_codebooks(&bad)
-                .unwrap_err()
-                .to_string()
-                .contains("Non-finite"));
+            for bad in [
+                chunk(0, half, true, 0.25),
+                chunk(0, half, false, f32::INFINITY),
+            ] {
+                // Keep the directory consistent so the failure tests the payload.
+                decoder.meta.chunks[0].bytes = bad.len() as u64;
+                let error = decoder.decode_chunk_data(&bad).err().unwrap();
+                assert!(error.to_string().contains("Non-finite"), "{error:#}");
+                assert_eq!(decoder.codebooks, codes);
+                assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
+            }
+            assert!(decoder.decode_chunk_data(&root[..root.len() - 1]).is_err());
             assert_eq!(decoder.codebooks, codes);
             assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
         }

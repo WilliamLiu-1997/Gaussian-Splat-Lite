@@ -21,6 +21,8 @@ export type SplatsOptions = {
   fileBytes?: Uint8Array | ArrayBuffer;
   fileType?: SplatFileType;
   fileName?: string;
+  /** Maximum SH degree to decode and store, 0–4. Defaults to 4. */
+  maxSh?: number;
   /** Resolve external SOG images or RAD chunks by metadata filename. */
   resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */

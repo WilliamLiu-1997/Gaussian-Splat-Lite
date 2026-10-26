@@ -1,4 +1,4 @@
-import type { RadMeta } from "../../rad/radFormat.js";
+import type { RadStreamMetadata } from "./RadStreamLoader.js";
 import type { RadLodSelection } from "./radLod.js";
 export type RadFade = {
   indices: Uint32Array;
@@ -14,7 +14,7 @@ export type RadStreamSelection = RadVersionedSelection & {
 /** Compare sorted cuts and build their optional fade union in one pass. Allocate
  * the union only after a difference, so unchanged decisions allocate no fade. */
 export declare function prepareRadFade(
-  meta: RadMeta,
+  meta: RadStreamMetadata,
   previous: Uint32Array,
   next: Uint32Array,
   enableFade: boolean,

@@ -8,6 +8,8 @@ export type SplatDataLoadOptions = {
   fileBytes?: Uint8Array | ArrayBuffer;
   fileType?: SplatFileType;
   fileName?: string;
+  /** Maximum SH degree to decode and store, 0–4. Defaults to 4. */
+  maxSh?: number;
   resolveFile?: SplatFileResolver;
   postDecode?: SplatPostDecodeProgram;
   signal?: AbortSignal;
@@ -27,6 +29,7 @@ export declare function loadSplatData(
     fileBytes,
     fileType,
     fileName,
+    maxSh,
     resolveFile,
     postDecode,
     signal,

@@ -11,6 +11,7 @@ export async function loadSplatData(
     fileBytes,
     fileType,
     fileName,
+    maxSh = 4,
     resolveFile,
     postDecode,
     signal,
@@ -31,6 +32,8 @@ export async function loadSplatData(
   const { controller } = request;
   try {
     signal?.throwIfAborted();
+    if (!Number.isInteger(maxSh) || maxSh < 0 || maxSh > 4)
+      throw new Error("maxSh must be an integer between 0 and 4");
     // Snapshot application attributes at the load call, before waiting for a worker.
     const serializedPostDecode = postDecode
       ? serializeSplatPostDecode(postDecode)
@@ -70,6 +73,7 @@ export async function loadSplatData(
             file,
             fileBytes: byteArray?.slice(),
             fileType,
+            maxSh,
             pathName,
             hasFileResolver: resolveFile !== undefined,
             reportProcessingProgress: onProgress !== undefined,

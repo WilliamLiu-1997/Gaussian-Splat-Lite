@@ -24,6 +24,7 @@ struct Tree {
 struct Page {
     base: u32,
     count: u32,
+    source: usize,
     tree: Option<Tree>,
     seen: Vec<u64>,
     // Nodes replaced by children during the current traversal.
@@ -31,6 +32,11 @@ struct Page {
     resident: bool,
     touched: bool,
     wanted: bool,
+}
+
+struct Source {
+    base: u32,
+    count: u32,
 }
 
 fn insert(bits: &mut [u64], index: usize) {
@@ -193,10 +199,13 @@ fn projected_size(tree: &Tree, local: usize, views: &[View]) -> f64 {
 }
 
 #[wasm_bindgen]
+#[derive(Default)]
 pub struct RadLodTree {
     count: u32,
     chunk_size: u32,
     pages: Vec<Page>,
+    roots: Vec<usize>,
+    sources: Vec<Source>,
     stack: Vec<Candidate>,
     frontier: Vec<Candidate>,
     indices: Vec<u32>,
@@ -207,14 +216,25 @@ pub struct RadLodTree {
 #[wasm_bindgen]
 impl RadLodTree {
     #[wasm_bindgen(constructor)]
-    pub fn new(meta_json: &str) -> Result<Self, JsValue> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append an input; its pages share the pool and follow previous inputs' pages.
+    pub fn add_source(&mut self, meta_json: &str) -> Result<(), JsValue> {
         let meta = RadMeta::from_json(meta_json).map_err(js_error)?;
+        let count = self
+            .count
+            .checked_add(meta.count as u32)
+            .context("Combined RAD splat count exceeds u32 index limit")
+            .map_err(js_error)?;
         let pages = (0..meta.chunks.len())
             .map(|index| {
                 let (base, count) = meta.chunk_bounds(index)?;
                 Ok(Page {
-                    base,
+                    base: self.count + base,
                     count,
+                    source: self.sources.len(),
                     tree: None,
                     seen: Vec::new(),
                     refined: Vec::new(),
@@ -225,16 +245,20 @@ impl RadLodTree {
             })
             .collect::<Result<Vec<_>>>()
             .map_err(js_error)?;
-        Ok(Self {
+        if meta.count > 0 {
+            self.roots.push(self.pages.len());
+            // Later inputs fall back to page_index's binary search.
+            if self.count == 0 {
+                self.chunk_size = meta.chunk_size.unwrap_or(meta.count as u32);
+            }
+        }
+        self.sources.push(Source {
+            base: self.count,
             count: meta.count as u32,
-            chunk_size: meta.chunk_size.unwrap_or(meta.count as u32),
-            pages,
-            stack: Vec::new(),
-            frontier: Vec::new(),
-            indices: Vec::new(),
-            wanted: Vec::new(),
-            touched: Vec::new(),
-        })
+        });
+        self.count = count;
+        self.pages.extend(pages);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)] // Copy each transferred tree array once.
@@ -283,11 +307,21 @@ impl RadLodTree {
                 .rposition(|&count| count != 0)
                 .map_or(0, |index| index + 1),
         );
+        let mut child_start = child_start.to_vec();
+        let source = &self.sources[page.source];
+        for (start, &count) in child_start.iter_mut().zip(&child_count) {
+            if count != 0 {
+                if u64::from(*start) + u64::from(count) > u64::from(source.count) {
+                    return Err(js_error("RAD child range is out of bounds"));
+                }
+                *start += source.base;
+            }
+        }
         page.tree = Some(Tree {
             generation,
             centers,
             radii,
-            child_start: child_start.to_vec(),
+            child_start,
             child_count,
         });
         Ok(())
@@ -340,7 +374,7 @@ impl RadLodTree {
             &resident_chunks.to_vec(),
             budget,
             threshold,
-            page_budget,
+            page_budget as usize,
             budget_tolerance,
         )
         .map_err(js_error)?;
@@ -357,7 +391,7 @@ impl RadLodTree {
 }
 
 impl RadLodTree {
-    // traverse validates the nonempty child range before looking up either end.
+    // Nonempty child ranges are validated when their page is registered.
     fn page_index(&self, index: u32) -> usize {
         let candidate = (index / self.chunk_size) as usize;
         if let Some(page) = self.pages.get(candidate) {
@@ -417,7 +451,7 @@ impl RadLodTree {
         remaining: &mut u32,
         views: &[View],
         threshold: f64,
-        page_budget: u32,
+        page_budget: usize,
     ) -> Result<()> {
         let parent_page = self.page_index(candidate.index);
         let page = &self.pages[parent_page];
@@ -427,17 +461,16 @@ impl RadLodTree {
             .child_start
             .get(local)
             .context("RAD child range is out of bounds")?;
-        let end = start as u64 + candidate.child_count as u64;
-        ensure!(end <= self.count as u64, "RAD child range is out of bounds");
+        let end = start + candidate.child_count;
         let first = self.page_index(start);
-        let last = self.page_index((end - 1) as u32);
+        let last = self.page_index(end - 1);
         // Claim pages in refinement priority order, including missing pages.
         // Keeping the parent when its children do not fit produces a complete
         // coarser cut and lets the scheduler retire lower-priority old pages.
-        let new_pages = (first..=last)
+        let additional = (first..=last)
             .filter(|&index| !self.pages[index].touched && !self.pages[index].wanted)
             .count();
-        if self.touched.len() + self.wanted.len() + new_pages > page_budget as usize {
+        if self.touched.len() + self.wanted.len() + additional > page_budget {
             return Ok(());
         }
         let mut ready = true;
@@ -459,7 +492,7 @@ impl RadLodTree {
         *remaining -= candidate.child_count - 1;
         for child_page in first..=last {
             let page = &self.pages[child_page];
-            let children = start.max(page.base)..(end as u32).min(page.base + page.count);
+            let children = start.max(page.base)..end.min(page.base + page.count);
             self.enqueue_range(children, child_page, *remaining + 1, views, threshold)?;
         }
         insert(&mut self.pages[parent_page].refined, local);
@@ -472,7 +505,7 @@ impl RadLodTree {
         resident: &[u32],
         budget: u32,
         threshold: f64,
-        page_budget: u32,
+        page_budget: usize,
         budget_tolerance: f64,
     ) -> Result<()> {
         self.stack.clear();
@@ -495,14 +528,28 @@ impl RadLodTree {
         if self.count == 0 {
             return Ok(());
         }
-        if !self.pages[0].resident {
-            self.wanted.push(0);
-            return Ok(());
-        }
-        self.touch(0);
+        ensure!(
+            budget as usize >= self.roots.len(),
+            "RAD splat budget must cover every source root"
+        );
+        ensure!(
+            page_budget >= self.roots.len(),
+            "RAD memory budgets must cover every source root"
+        );
         let cap = (budget as f64 * (1.0 + budget_tolerance)).min(self.count as f64) as u32;
-        let mut remaining = cap - 1;
-        self.enqueue_range(0..1, 0, cap, views, threshold)?;
+        let mut remaining = cap - self.roots.len() as u32;
+        for root in 0..self.roots.len() {
+            let index = self.roots[root];
+            let page = &mut self.pages[index];
+            if !page.resident {
+                page.wanted = true;
+                self.wanted.push(index as u32);
+                continue;
+            }
+            let base = page.base;
+            self.touch(index);
+            self.enqueue_range(base..base + 1, index, remaining + 1, views, threshold)?;
+        }
         let mut current = (threshold * 1000.0).min(f64::MAX);
         loop {
             // Finish a threshold round before stopping at the target, but

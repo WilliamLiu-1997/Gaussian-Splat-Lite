@@ -2,23 +2,26 @@ import { DefaultLoadingManager } from "three";
 import { abortable } from "../../../runtime/abort.js";
 import { RadSource } from "../../rad/RadSource.js";
 import { StreamWorkerPool } from "../StreamWorkerPool.js";
+import { streamSources } from "../streamOptions.js";
 import { RadStreamWorker } from "./RadStreamWorker.js";
 /** Separate traversal and display preparation workers, plus bounded page decoders. */
 export class RadStreamLoader {
-  constructor(options, maxConcurrentLoads, onRegistrationSettled) {
-    this.options = options;
+  constructor(options, maxConcurrentLoads, maxSh, onRegistrationSettled) {
+    this.maxSh = maxSh;
     this.onRegistrationSettled = onRegistrationSettled;
     this.decoderReady = new WeakMap();
     this.controller = new AbortController();
-    this.pending = new Map();
     this.pendingRegistrationBytes = 0;
-    this.estimatedCodebookBytes = 0;
     this.selectionBytes = 0;
     this.preparationBytes = 0;
-    this.source = new RadSource({
-      ...options,
-      manager: options.manager ?? DefaultLoadingManager,
-    });
+    this.sources = streamSources(options).map((options) => ({
+      source: new RadSource({
+        ...options,
+        manager: options.manager ?? DefaultLoadingManager,
+      }),
+      estimatedCodebookCacheBytes: 0,
+      estimatedCodebookBytes: 0,
+    }));
     this.lodWorker = new RadStreamWorker();
     this.preparationWorker = new RadStreamWorker();
     this.pool = new StreamWorkerPool(
@@ -28,28 +31,47 @@ export class RadStreamLoader {
     );
   }
   get stats() {
+    let cachedBytes = 0;
+    let downloadedBytes = this.pool.downloadedBytes;
+    let codebookCacheBytes = 0;
+    for (const input of this.sources) {
+      const stats = input.source.stats;
+      cachedBytes += stats.cachedBytes;
+      downloadedBytes += stats.downloadedBytes;
+      for (const codes of input.codebooks ?? [])
+        codebookCacheBytes += codes?.byteLength ?? 0;
+    }
     return {
-      cachedBytes: this.source.stats.cachedBytes,
-      downloadedBytes:
-        this.source.stats.downloadedBytes + this.pool.downloadedBytes,
+      cachedBytes,
+      downloadedBytes,
       peakWasmMemoryBytes:
         this.pool.peakWasmMemoryBytes +
         this.lodWorker.peakWasmMemoryBytes +
         this.preparationWorker.peakWasmMemoryBytes,
-      estimatedCodebookBytes:
-        this.estimatedCodebookBytes *
-        this.pool.workers.filter((worker) => !worker.disposed).length,
-      bootstrapBytes: this.rootBytes?.byteLength ?? 0,
+      estimatedCodebookBytes: this.pool.workers.reduce(
+        (bytes, worker) =>
+          bytes +
+          (worker.disposed
+            ? 0
+            : (this.decoderReady.get(worker)?.input.estimatedCodebookBytes ??
+              0)),
+        0,
+      ),
+      codebookCacheBytes,
       selectionBytes: this.selectionBytes + this.preparationBytes,
     };
   }
-  /** Reserve the source cache and codebooks for all decoder workers. */
+  /** Reserve per-input packed codebooks and each worker's current decoder. */
   get residentCpuOverheadBytes() {
-    return (
-      this.source.stats.cachedBytes +
-      this.estimatedCodebookBytes * this.pool.concurrency +
-      (this.estimatedCodebookBytes ? this.header.meta.chunks[0].bytes : 0)
-    );
+    // Each worker retains only its current input's decoder/codebooks.
+    let bytes = 0;
+    let codebookBytes = 0;
+    for (const input of this.sources) {
+      bytes += input.source.stats.cachedBytes;
+      bytes += input.estimatedCodebookCacheBytes;
+      codebookBytes = Math.max(codebookBytes, input.estimatedCodebookBytes);
+    }
+    return bytes + codebookBytes * this.pool.concurrency;
   }
   get selectionWorkerLost() {
     return (
@@ -66,92 +88,76 @@ export class RadStreamLoader {
   initialize(signal) {
     signal?.throwIfAborted();
     this.assertActive();
-    this.initialization ??= this.source
-      .readHeader(this.controller.signal)
-      .then(async (bytes) => {
-        const header = await this.lodWorker.call("initializeRad", {
-          bytes,
-        });
-        this.assertActive();
-        this.header = header;
-        const degree = header.meta.maxSh ?? 0;
-        // Float codebooks plus packed caches for every degree up to maxSh.
-        this.estimatedCodebookBytes =
-          (header.meta.shCodeCount ?? 0) * [0, 52, 144, 292][degree];
-        return header;
-      });
+    this.initialization ??= this.readHeaders();
     return abortable(this.initialization, signal);
+  }
+  async readHeaders() {
+    const bytes = [];
+    for (const input of this.sources)
+      bytes.push(await input.source.readHeader(this.controller.signal));
+    const result = await this.lodWorker.call("initializeRad", {
+      bytes,
+      maxSh: this.maxSh,
+    });
+    this.assertActive();
+    this.meta = result.meta;
+    let chunkBase = 0;
+    result.headers.forEach((header, index) => {
+      const input = this.sources[index];
+      input.header = header;
+      input.chunkBase = chunkBase;
+      chunkBase += header.meta.chunks.length;
+      const degree = Math.min(header.meta.maxSh ?? 0, this.maxSh);
+      const codeCount = header.meta.count ? (header.meta.shCodeCount ?? 0) : 0;
+      input.estimatedCodebookCacheBytes = codeCount * [0, 12, 32, 60][degree];
+      // Packed bands plus the palettes for every supported page SH degree.
+      input.estimatedCodebookBytes = codeCount * [0, 28, 80, 172][degree];
+    });
+    return result;
   }
   async loadChunk(index, signal) {
     signal?.throwIfAborted();
     this.assertActive();
-    let pending = this.pending.get(index);
-    if (!pending || pending.signal?.aborted) {
-      const task = this.loadChunkInternal(index, signal).finally(() => {
-        if (this.pending.get(index) === pending) this.pending.delete(index);
-      });
-      pending = { task, signal };
-      this.pending.set(index, pending);
-    }
-    // Keep cancelled synchronous work reserved until its worker reply arrives.
-    return pending.task;
-  }
-  async loadChunkInternal(index, signal) {
-    const header = await this.initialize(signal);
-    // Codebooks live in chunk zero. Its initial geometry is held only until the
-    // caller requests that page, avoiding a duplicate fetch during races.
-    this.rootReady ??= this.decode(0, header, this.controller.signal)
-      .then((data) => {
-        this.assertActive();
-        this.initialRoot = data;
-      })
-      .catch((error) => {
-        this.rootReady = undefined;
-        throw error;
-      });
-    await abortable(this.rootReady, signal);
-    if (index === 0 && this.initialRoot) {
-      const root = this.initialRoot;
-      this.initialRoot = undefined;
-      return root;
-    }
-    return this.decode(index, header, signal);
-  }
-  async decode(index, header, signal) {
-    this.assertActive();
+    // The scheduler owns each page's load and requests roots before children.
+    const input = this.sources[this.meta.chunks[index].source];
+    const { header, source } = input;
+    const localIndex = index - input.chunkBase;
     return this.pool.run(
       {
         signal,
-        manager: this.options.manager ?? DefaultLoadingManager,
+        manager: source.options.manager,
         cancel: (worker, generation) =>
           worker.call("cancelRadLoad", { generation }),
       },
       async ({ worker, id: generation, signal, start, progress }) => {
         this.assertActive();
         let ready = this.decoderReady.get(worker);
-        if (!ready) {
-          ready = worker
+        // A decoder created before its input's root succeeded lacks codebooks.
+        if (ready?.input !== input || ready.codebooks !== input.codebooks) {
+          const promise = worker
             .call("initializeRadDecoder", {
               header,
-              rootBytes: this.rootBytes?.slice(),
+              maxSh: this.maxSh,
+              codebooks: input.codebooks?.map((codes) => codes?.slice()),
             })
             .catch((error) => {
               worker.dispose(error);
               throw error;
             });
+          ready = { input, codebooks: input.codebooks, promise };
           this.decoderReady.set(worker, ready);
         }
         // Resolve application callbacks here; page bodies stay inside the worker.
         const [request] = await Promise.all([
-          this.source.prepareChunk(header, index, signal),
-          ready,
+          source.prepareChunk(header, localIndex, signal),
+          ready.promise,
         ]);
         signal.throwIfAborted();
         this.assertActive();
         if (typeof request.input === "string") start(request.input);
         const result = await worker.call(
           "loadRadChunk",
-          { index, generation, request },
+          { index: localIndex, generation, request },
           {
             onStatus: (status) => progress(status.loaded),
           },
@@ -159,7 +165,7 @@ export class RadStreamLoader {
         this.assertActive();
         signal.throwIfAborted();
         try {
-          this.source.acceptChunkResponse(request, result.state);
+          source.acceptChunkResponse(request, result.state);
         } catch (error) {
           // A response rejected against another worker must not seed future jobs.
           worker.dispose(error);
@@ -167,7 +173,11 @@ export class RadStreamLoader {
         }
         // Uploads can start immediately; selection waits for both registrations.
         const registration = this.registerChunk(index, generation, result.tree);
-        if (result.rootBytes) this.rootBytes = result.rootBytes;
+        if (result.codebooks) {
+          input.codebooks = result.codebooks;
+          // This decoder produced them and needs no reinitialization.
+          ready.codebooks = result.codebooks;
+        }
         return { data: result.data, registration };
       },
     );
@@ -211,10 +221,12 @@ export class RadStreamLoader {
     return registration;
   }
   getChunkUrl(index) {
-    const filename = this.header?.meta.chunks[index]?.filename;
-    const root = this.source.url;
+    const chunk = this.meta?.chunks[index];
+    const input = this.sources[chunk?.source ?? 0];
+    const filename = chunk?.filename;
+    const root = input.source.url;
     if (filename) return root ? new URL(filename, root).href : filename;
-    return root ?? this.options.file?.name ?? "RAD";
+    return root ?? input.source.options.file?.name ?? "RAD";
   }
   async selectLod(request) {
     this.assertActive();
@@ -236,7 +248,6 @@ export class RadStreamLoader {
     return result;
   }
   releaseChunk(index, generation) {
-    if (index === 0 && generation === undefined) this.initialRoot = undefined;
     if (!this.lodWorker.disposed)
       void this.lodWorker
         .call("releaseRadChunk", { index, generation })
@@ -254,17 +265,19 @@ export class RadStreamLoader {
     this.controller.abort(
       new DOMException("RAD loader disposed", "AbortError"),
     );
-    this.source.dispose();
+    for (const input of this.sources) {
+      input.source.dispose();
+      input.codebooks = undefined;
+      input.estimatedCodebookCacheBytes = 0;
+      input.estimatedCodebookBytes = 0;
+    }
     this.pool.dispose(this.controller.signal.reason);
+    for (const worker of this.pool.workers) this.decoderReady.delete(worker);
     this.lodWorker.dispose(this.controller.signal.reason);
     this.preparationWorker.dispose(this.controller.signal.reason);
-    this.pending.clear();
     this.pendingRegistrationBytes = 0;
-    this.initialRoot = undefined;
-    this.rootBytes = undefined;
-    this.estimatedCodebookBytes = 0;
     this.selectionBytes = 0;
     this.preparationBytes = 0;
-    this.header = undefined;
+    this.meta = undefined;
   }
 }

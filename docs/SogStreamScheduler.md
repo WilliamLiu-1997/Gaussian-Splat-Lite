@@ -20,7 +20,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
 });
 
-// Resolves when the first data is on screen. update() must be running.
+// Keep updating and rendering while waiting for the first data.
 await streaming.firstRenderable;
 
 // When removing the model:
@@ -36,6 +36,27 @@ The three steps that matter:
 
 Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only. Read a hit with `hit.object.splats.getSplat(hit.index)` before the streaming selection updates.
 
+## Multiple inputs
+
+Use `sources` instead of a top-level `url` to load several Streamed SOG inputs together:
+
+```js
+const streaming = new SogStreamScheduler({
+  sources: [
+    { url: "/scene/buildings/lod-meta.json" },
+    { url: "/scene/landscape/lod-meta.json", environment: false },
+  ],
+  splatBudget: 3_000_000,
+  maxConcurrentLoads: 4,
+});
+```
+
+All inputs use the coordinates stored in their files, relative to `streaming.group`. They share one detail selection, splat budget, and loading concurrency. Set an input's `environment` to `false` to skip its environment. Enabled environments share the splat budget with all inputs' detail.
+
+Each entry accepts the single-input loading options, including `loadChunk`, `manager`, `requestHeader`, and `withCredentials`; omitted options inherit the scheduler's settings. `sources` must be nonempty. Use separate schedulers for inputs that need independent transforms or budgets.
+
+`initialized` waits for every input's metadata. `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene.
+
 ## Cameras
 
 Detail depends on distance and camera direction, so cameras need no resolution. Regions outside the view remain part of the same budget, with less detail behind the camera. This keeps surrounding content ready for turns, at the cost of some detail in the current view. Register several cameras to load detail for all of them; each region follows the camera requesting the finest detail.
@@ -50,10 +71,11 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `url` | Required | URL of the scene's `lod-meta.json` |
-| `group` | New `THREE.Group` | Group that holds the scene |
-| `loadEnvironment` | `true` | Load and display the index's environment. Set to `false` at construction to skip it and give the full splat budget to scene detail |
+| `sources` | — | Multiple inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
+| `url` | Required without `sources` | URL of the scene's `lod-meta.json` |
+| `environment` | `true` | Load the input's environment; set to `false` to skip it. Also available on each `sources` entry |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
+| `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
 | `splatBudgetMode` | `"target"` | `"target"` adjusts the distance bands to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
 | `lodBaseDistance` | `100` | Base LOD distance in world units for `"limit"` mode, compensated for the camera's field of view. Higher values retain finer detail farther away. Must be finite and positive |
 | `lodMultiplier` | `2` | Distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
@@ -72,15 +94,16 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 
 | API | Description |
 | --- | --- |
-| `group` | Group that holds the scene |
+| `group` | Group created by this scheduler to hold the streamed scene |
 | `splatBudget` | Change it at any time to adjust detail. Must be a positive integer; includes the environment when enabled |
+| `maxSh` | Read-only SH decoding and storage limit chosen at creation |
 | `splatBudgetMode` | Switch between `"target"` and `"limit"` without reloading |
 | `lodBaseDistance` | Change the base LOD distance in `"limit"` mode without reloading |
 | `lodMultiplier` | Change the distance spacing between LOD levels in both modes without reloading |
 | `lodBehindPenalty` | Change how strongly detail behind the camera is reduced, in both modes, without reloading |
 | `lodDistanceShrink` | Change the distance correction for oversized regions, in both modes, without reloading |
 | `initialized` | Resolves when the index is loaded; rejects for invalid input |
-| `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while you wait |
+| `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep updating and rendering while you wait |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
 | `getBoundingBox()` | Box around the scene, in the group's coordinates; available once `initialized` resolves |
@@ -90,6 +113,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 ### On-demand rendering
 
 Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render. Loading, retries, and fades only make progress inside `update()`.
+
+Each scheduler has a 24 MiB allowance for source texture layers waiting for GPU upload. Repeated `update()` calls do not renew it; rendering submits the queued layers and makes room for more data. A region larger than the allowance proceeds when no upload bytes are pending. Keep rendering while waiting for `firstRenderable`, even before any batches are visible. This allowance does not cap total CPU/GPU memory or uploads from other schedulers.
 
 ## Error recovery
 

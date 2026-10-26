@@ -1,4 +1,9 @@
-import type { RadMeta } from "../../rad/radFormat.js";
+import type { RadStreamMetadata } from "./RadStreamLoader.js";
+export declare function radPageCosts(numSh: number): {
+  cpu: number;
+  gpu: number;
+  pending: number;
+};
 /** CPU-only page data split between traversal and display preparation workers. */
 export type RadLodChunk = {
   centers: Float32Array;
@@ -23,7 +28,7 @@ export type RadLodRequest = {
   views: RadLodView[];
   splatBudget: number;
   splatBudgetTolerance: number;
-  /** Combined limit for resident tree paths and requested pages. */
+  /** Shared slot limit after accounting for both resident memory budgets. */
   pageBudget: number;
   pixelThreshold: number;
   residentChunks: number[];
@@ -36,4 +41,7 @@ export type RadLodSelection = {
   touchedChunks: Uint32Array;
 };
 /** Resolve validated LOD indices without assuming that chunks are 64K records. */
-export declare function radChunkIndex(meta: RadMeta, index: number): number;
+export declare function radChunkIndex(
+  meta: RadStreamMetadata,
+  index: number,
+): number;

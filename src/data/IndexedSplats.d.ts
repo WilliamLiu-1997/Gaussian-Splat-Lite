@@ -1,7 +1,9 @@
 import type * as THREE from "three";
+import type { GaussianSplatCompatibleRenderer } from "../rendering/rendererUtils.js";
 import type { SplatOpacityTable } from "./SplatOpacityTable.js";
 import { Splats, type SplatsOptions } from "./Splats.js";
 import type { ReorderedSplatResult, SplatResult } from "./defines.js";
+import type { PendingUploads } from "./pendingUploads.js";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 import type { decodeSplat } from "./unpack.js";
 type IndexedSplatsOptions = {
@@ -29,6 +31,8 @@ export declare abstract class IndexedSplats extends Splats {
   private indexTexture;
   private readonly blockBits;
   private disposed;
+  /** Owner's pending-upload queue; written layers wait there for the renderer. */
+  uploadQueue?: PendingUploads;
   private readonly spatialChunks;
   private spatialBoundsBytes;
   constructor({
@@ -51,7 +55,14 @@ export declare abstract class IndexedSplats extends Splats {
     start: number,
     data: ReorderedSplatResult,
     allocation: number,
+    numSh?: number,
   ): void;
+  /** Remaining dirty layers; successful uploads clear them in the renderer. */
+  get pendingUploadBytes(): number;
+  /** Additional upload bytes for layers in [firstLayer, lastLayer). */
+  getUploadBytes(firstLayer: number, lastLayer: number): number;
+  /** Upload written layers now, including storage not yet in the scene. */
+  uploadPending(renderer: GaussianSplatCompatibleRenderer): void;
   private getStorageIndex;
   private checkVisibleRange;
   getNumSh(): 0 | 1 | 2 | 3 | 4;

@@ -29,6 +29,10 @@ function validateSplatMeshInitializationInputs(options) {
 }
 /** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
 export class SplatMesh extends THREE.Object3D {
+  /** SH limit fixed at construction; loading a file also caps its stored SH data. */
+  get maxSh() {
+    return this._maxSh;
+  }
   get isInitialized() {
     return this.splats?.isInitialized ?? false;
   }
@@ -64,7 +68,9 @@ export class SplatMesh extends THREE.Object3D {
     this.numSplats = 0;
     this.recolor = new THREE.Color(1, 1, 1);
     this.opacity = 1;
-    this.maxSh = 4;
+    this._maxSh = options.maxSh ?? 4;
+    if (!Number.isInteger(this._maxSh) || this._maxSh < 0 || this._maxSh > 4)
+      throw new Error("maxSh must be an integer between 0 and 4");
     this.edits = null;
     this.sdfEdits = null;
     this.version = 0;
@@ -72,7 +78,6 @@ export class SplatMesh extends THREE.Object3D {
     this.centerVersion = 0;
     this.mappingVersion = 0;
     this.lastNumSplats = -1;
-    this.lastMaxSh = -1;
     this.lastMatrixWorld = new THREE.Matrix4();
     this.hasLastMatrixWorld = false;
     this.lastRecolor = new THREE.Vector4().setScalar(Number.NaN);
@@ -89,6 +94,7 @@ export class SplatMesh extends THREE.Object3D {
         fileBytes: options.fileBytes,
         fileType: options.fileType,
         fileName: options.fileName,
+        maxSh: this.maxSh,
         resolveFile: options.resolveFile,
         postDecode: options.postDecode,
         onProgress: options.onProgress,
@@ -154,10 +160,6 @@ export class SplatMesh extends THREE.Object3D {
     if (source.needsUpdate) {
       updated = true;
       centersUpdated = true;
-    }
-    if (this.maxSh !== this.lastMaxSh) {
-      this.lastMaxSh = this.maxSh;
-      updated = true;
     }
     this.updateWorldMatrix(true, false);
     if (

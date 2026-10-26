@@ -16,6 +16,7 @@ export type SplatRequestOptions = {
 };
 /** Format loaders share transport and resolver inputs; decoding stays format-specific. */
 export type SplatSourceArgs = SplatRequestOptions & {
+  maxSh?: number;
   url?: string;
   file?: Blob;
   fileBytes?: Uint8Array;
@@ -39,6 +40,8 @@ export type SplatLoadArgs = SplatRequestOptions & {
   baseUrl?: string;
   postDecode?: SerializedSplatPostDecode;
   expectedSogCount?: number;
+  /** Maximum SH degree to decode and store, 0–4. Defaults to the format's maximum. */
+  maxSh?: number;
   hasFileResolver?: boolean;
   /** Request processing progress; streaming loaders only track downloaded bytes. */
   reportProcessingProgress?: boolean;

@@ -4,6 +4,7 @@ import type {
   RadSelectionReply,
   RadSelectionRequest,
 } from "./RadSelectionState.js";
+import type { RadStreamMetadata } from "./RadStreamLoader.js";
 import type {
   RadSelectionChunk,
   RadSelectionPreparation,
@@ -15,10 +16,15 @@ export declare function createRadStreamHandlers(): {
   prepareRadSelection(
     request: Parameters<typeof prepareRadSelection>[0],
   ): RadSelectionPreparation;
-  initializeRad(request: { bytes: Uint8Array }): RadHeader;
+  initializeRad(request: { bytes: Uint8Array[]; maxSh: number }): {
+    meta: RadStreamMetadata;
+    headers: RadHeader[];
+    roots: number[];
+  };
   initializeRadDecoder(request: {
     header: RadHeader;
-    rootBytes?: Uint8Array;
+    maxSh: number;
+    codebooks?: (Uint32Array | undefined)[];
   }): void;
   loadRadChunk(
     args: {
@@ -35,7 +41,7 @@ export declare function createRadStreamHandlers(): {
     data: RadStreamChunk;
     tree: RadLodChunk;
     state: RadResourceState | undefined;
-    rootBytes: Uint8Array<ArrayBufferLike> | undefined;
+    codebooks: (Uint32Array | undefined)[] | undefined;
   }>;
   cancelRadLoad(request: { generation: number }): void;
   retainRadChunk(request: {

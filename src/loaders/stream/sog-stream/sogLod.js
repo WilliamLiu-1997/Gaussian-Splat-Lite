@@ -2,7 +2,7 @@ import { Box3, Vector3 } from "three";
 export const SOG_LOD_STRIDE = 4;
 /** Pack region bounds and ranges into transferable typed arrays. */
 export function packSogLodIndex(manifest) {
-  const { tree, leaves, files, environment } = manifest;
+  const { tree, leaves, files } = manifest;
   // Float64 preserves source bounds and safe-integer counts in the worker index.
   const bounds = new Float64Array(6);
   tree.bound.min.toArray(bounds);
@@ -42,7 +42,6 @@ export function packSogLodIndex(manifest) {
     lodLevels: manifest.lodLevels,
     urls: files.map((file) => file.url),
     counts: Float64Array.from(files, (file) => file.count),
-    environment,
   };
 }
 /** Materialize only leaves visited by the camera, preserving stable range identities. */

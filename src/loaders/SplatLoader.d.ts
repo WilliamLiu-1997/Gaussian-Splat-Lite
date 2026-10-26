@@ -8,6 +8,8 @@ type SplatLoadOptions = Omit<SplatDataLoadOptions, "onLoad"> & {
   onLoad?: (decoded: Splats) => void;
 };
 export declare class SplatLoader extends Loader {
+  /** Maximum SH degree to decode and store for subsequent loads, 0–4. Defaults to 4. */
+  maxSh: number;
   private readonly requests;
   abort(): this;
   load(

@@ -1,5 +1,6 @@
 import type { SplatResult } from "../../../data/defines.js";
 import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes.js";
+import type { SogStreamMetadata } from "./SogStreamLoader.js";
 import type { SogLodRequest } from "./sogVisibility.js";
 export type SogChunkInfo = {
   numSplats: number;
@@ -21,6 +22,7 @@ export declare function createSogStreamHandlers(
       ...args
     }: SplatLoadArgs & {
       id: number;
+      maxSh: number;
     },
     options: {
       sendStatus: (data: SplatLoadStatus) => void;
@@ -29,9 +31,11 @@ export declare function createSogStreamHandlers(
   cacheSogChunk: ({
     id,
     data,
+    maxSh,
   }: {
     id: number;
     data: SplatResult;
+    maxSh: number;
   }) => SogChunkInfo;
   extractSogRegions: ({
     id,
@@ -48,20 +52,11 @@ export declare function createSogStreamHandlers(
   }: {
     id: number;
   }) => void;
-  parseSogIndex: ({
-    bytes,
-    baseUrl,
-  }: {
+  parseSogIndex: (request: {
     bytes: ArrayBuffer;
     baseUrl: string;
-  }) => {
-    bounds: Float64Array<ArrayBuffer>;
-    leafOffsets: Uint32Array<ArrayBuffer>;
-    lods: Float64Array<ArrayBuffer>;
-    retainedIndexBytes: number;
-    urls: string[];
-    counts: Float64Array;
-    environment?: string;
-  };
+    environment?: boolean;
+  }) => void;
+  initializeSogIndex: () => SogStreamMetadata & { retainedIndexBytes: number };
   selectSogLod: (request: SogLodRequest) => Uint32Array<ArrayBufferLike>;
 };

@@ -42,12 +42,15 @@ export type SogLodIndex = {
   lodLevels: number;
   urls: string[];
   counts: Float64Array;
-  environment?: string;
 };
 /** Scheduler metadata; per-region bounds stay in the LOD worker. */
 export type SogLodMetadata = Omit<SogLodIndex, "leafBounds" | "lodLevels">;
 /** Pack region bounds and ranges into transferable typed arrays. */
-export declare function packSogLodIndex(manifest: SogLodManifest): SogLodIndex;
+export declare function packSogLodIndex(
+  manifest: Pick<SogLodManifest, "tree" | "leaves" | "lodLevels"> & {
+    files: Pick<SogLodFile, "url" | "count">[];
+  },
+): SogLodIndex;
 /** Materialize only leaves visited by the camera, preserving stable range identities. */
 export declare function readSogLodLeaf(
   index: Pick<SogLodIndex, "leafOffsets" | "lods">,

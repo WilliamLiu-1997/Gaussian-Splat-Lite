@@ -336,6 +336,7 @@ pub fn decode_sog_meta(bytes: Vec<u8>, method: u32, size: usize, crc: f64) -> Re
 
 pub struct SogDecoder<T: SplatReceiver> {
     meta: Metadata,
+    max_sh: usize,
     splats: T,
     initialized: bool,
     group: usize,
@@ -349,10 +350,16 @@ pub struct SogDecoder<T: SplatReceiver> {
 }
 
 impl<T: SplatReceiver> SogDecoder<T> {
-    pub fn new(splats: T, metadata: &str) -> Result<Self> {
-        let meta = Metadata::parse(metadata)?;
+    pub fn new(splats: T, metadata: &str, max_sh: usize) -> Result<Self> {
+        ensure!(max_sh <= 3, "maxSh must be between 0 and 3");
+        let mut meta = Metadata::parse(metadata)?;
+        if max_sh == 0 {
+            meta.groups
+                .retain(|(role, _)| !matches!(*role, "centroids" | "labels"));
+        }
         Ok(Self {
             meta,
+            max_sh,
             splats,
             initialized: false,
             group: 0,
@@ -423,7 +430,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
         }
         self.splats.init_splats(&SplatInit {
             num_splats: self.meta.count,
-            max_sh_degree: self.meta.degree,
+            max_sh_degree: self.meta.degree.min(self.max_sh),
         })?;
         self.initialized = true;
         Ok(())
@@ -452,12 +459,13 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 && self.meta.palette_count <= image.height * 64,
             "invalid centroid count or height"
         );
-        let words = SH_WORDS[self.meta.degree];
+        let num_sh = degree.min(self.max_sh);
+        let words = SH_WORDS[num_sh];
         let lookup = ShLookup::new(self.meta.sh);
         self.palette.resize(self.meta.palette_count * words, 0);
         for label in 0..self.meta.palette_count {
             let pixel = (label / 64) * image.width + (label % 64) * SH_COEFFS[degree];
-            for coeff in 0..SH_COEFFS[self.meta.degree] {
+            for coeff in 0..SH_COEFFS[num_sh] {
                 self.palette[label * words + coeff] =
                     lookup.encode(array::from_fn(|d| image.channel(pixel + coeff, d)));
             }
@@ -569,7 +577,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 splats.set_sh_palette(
                     self.base,
                     count,
-                    self.meta.degree,
+                    self.meta.degree.min(self.max_sh),
                     &self.palette,
                     &self.labels,
                 );

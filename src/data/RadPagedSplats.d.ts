@@ -40,8 +40,8 @@ export declare class RadPagedSplats extends IndexedSplats {
   private fadeProgress;
   private fadeKinds;
   constructor(options: RadPagedSplatsOptions);
-  /** Copies data; callers retain ownership of the packed buffers. */
-  writePage(slot: number, data: ReorderedSplatResult): void;
+  /** Copies data and zeros SH above numSh; callers retain the packed buffers. */
+  writePage(slot: number, data: ReorderedSplatResult, numSh?: number): void;
   /** Remove the displayed cut when its scheduler becomes hidden. */
   clearSelection(): boolean;
   /** Snapshot only changed pools; never transfer live texture storage. */

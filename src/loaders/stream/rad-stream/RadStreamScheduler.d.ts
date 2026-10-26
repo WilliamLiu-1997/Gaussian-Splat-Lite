@@ -20,6 +20,7 @@ export type RadStreamStats = StreamStats & {
 export declare class RadStreamScheduler {
   private readonly options;
   readonly group: THREE.Group;
+  private readonly uploads;
   readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
   readonly cooldownMs: number;
@@ -28,6 +29,7 @@ export declare class RadStreamScheduler {
   readonly maxResidentCpuBytes: number;
   readonly maxResidentGpuBytes: number;
   private _splatBudget;
+  private readonly _maxSh;
   private _splatBudgetTolerance;
   private readonly loader;
   private readonly abort;
@@ -37,9 +39,9 @@ export declare class RadStreamScheduler {
   private readonly bounds;
   private readonly matrix;
   private meta?;
+  private sources;
   private pageBudget;
-  private numSh;
-  private maxPagePendingBytes;
+  private rootPages;
   private disposed;
   private shown;
   private displayed?;
@@ -59,6 +61,8 @@ export declare class RadStreamScheduler {
   /** Target selected-node budget. Assigning a new value requests LOD selection. */
   get splatBudget(): number;
   set splatBudget(value: number);
+  /** Maximum decoded and stored SH degree (0–3), fixed at construction. */
+  get maxSh(): number;
   /** Allowed fractional budget overshoot; zero forbids overshoot. */
   get splatBudgetTolerance(): number;
   set splatBudgetTolerance(value: number);

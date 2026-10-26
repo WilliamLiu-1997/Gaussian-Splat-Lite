@@ -13,6 +13,8 @@ export type SplatMeshOptions = {
   fileBytes?: Uint8Array | ArrayBuffer;
   fileType?: SplatFileType;
   fileName?: string;
+  /** Fixed SH limit 0–4 (default 4). Also caps storage when loading a file; existing Splats are unchanged. */
+  maxSh?: number;
   resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;
@@ -44,6 +46,7 @@ export declare class SplatMesh extends THREE.Object3D {
   private lastInitialization?;
   private readiness;
   private onLoad?;
+  private readonly _maxSh;
   get isInitialized(): boolean;
   get initialized(): Promise<SplatMesh>;
   private followInitialization;
@@ -51,7 +54,8 @@ export declare class SplatMesh extends THREE.Object3D {
   numSplats: number;
   recolor: THREE.Color;
   opacity: number;
-  maxSh: number;
+  /** SH limit fixed at construction; loading a file also caps its stored SH data. */
+  get maxSh(): number;
   edits: SplatEdit[] | null;
   editable: boolean;
   raycastable: boolean;
@@ -64,7 +68,6 @@ export declare class SplatMesh extends THREE.Object3D {
   mappingVersion: number;
   private lastSplats?;
   private lastNumSplats;
-  private lastMaxSh;
   private lastMatrixWorld;
   private hasLastMatrixWorld;
   private lastRecolor;

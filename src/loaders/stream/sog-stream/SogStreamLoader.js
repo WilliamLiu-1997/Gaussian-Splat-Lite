@@ -4,6 +4,7 @@ import { abortable } from "../../../runtime/abort.js";
 import { getAssetBaseUrl } from "../../assetUrl.js";
 import { joinBytes, readResponse, requestOptions } from "../../source.js";
 import { StreamWorkerPool } from "../StreamWorkerPool.js";
+import { streamSources } from "../streamOptions.js";
 import { SogStreamWorker } from "./SogStreamWorker.js";
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */
 export class SogChunkSource {
@@ -32,10 +33,13 @@ export class SogChunkSource {
 }
 /** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */
 export class SogStreamLoader {
-  constructor(options, maxConcurrentLoads, onChange) {
-    this.options = options;
+  constructor(options, maxConcurrentLoads, maxSh, onChange) {
+    this.maxSh = maxSh;
     this.controller = new AbortController();
-    this.baseUrl = "";
+    this.sources = streamSources(options).map((options) => ({
+      options,
+      baseUrl: "",
+    }));
     this.downloadedBytes = 0;
     this.retainedIndexBytes = 0;
     this.pool = new StreamWorkerPool(
@@ -59,24 +63,35 @@ export class SogStreamLoader {
   initialize(signal) {
     signal?.throwIfAborted();
     this.assertActive();
-    this.initialization ??= this.readIndex().catch((error) => {
+    this.initialization ??= this.readIndices().catch((error) => {
       this.dispose();
       throw error;
     });
     return abortable(this.initialization, signal);
   }
-  async readIndex() {
+  async readIndices() {
+    for (const input of this.sources) await this.readIndex(input);
+    const { retainedIndexBytes, ...index } = await this.lodWorker.call(
+      "initializeSogIndex",
+      undefined,
+    );
+    this.assertActive();
+    this.retainedIndexBytes = retainedIndexBytes;
+    return index;
+  }
+  async readIndex(input) {
+    const { options } = input;
     const signal = this.controller.signal;
-    const manager = this.options.manager ?? DefaultLoadingManager;
+    const manager = options.manager ?? DefaultLoadingManager;
     const resolveBase =
       typeof document === "undefined" ? undefined : document.baseURI;
-    const url = new URL(manager.resolveURL(this.options.url), resolveBase).href;
-    const resourceUrl = new URL(this.options.url, resolveBase ?? url).href;
-    this.baseUrl = getAssetBaseUrl(url) ?? resourceUrl;
+    const url = new URL(manager.resolveURL(options.url), resolveBase).href;
+    const resourceUrl = new URL(options.url, resolveBase ?? url).href;
+    input.baseUrl = getAssetBaseUrl(url) ?? resourceUrl;
     manager.itemStart(url);
     try {
       const response = await fetch(url, {
-        ...requestOptions(this.options, url, resourceUrl),
+        ...requestOptions(options, url, resourceUrl),
         signal,
       });
       const { chunks, size } = await readResponse(
@@ -88,17 +103,12 @@ export class SogStreamLoader {
         signal,
       );
       const bytes = new Uint8Array(joinBytes(chunks, size)).buffer;
+      await this.lodWorker.call("parseSogIndex", {
+        bytes,
+        baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
+        environment: options.environment,
+      });
       this.assertActive();
-      const { retainedIndexBytes, ...index } = await this.lodWorker.call(
-        "parseSogIndex",
-        {
-          bytes,
-          baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
-        },
-      );
-      this.assertActive();
-      this.retainedIndexBytes = retainedIndexBytes;
-      return index;
     } catch (error) {
       manager.itemError(url);
       throw error;
@@ -110,9 +120,10 @@ export class SogStreamLoader {
     this.assertActive();
     return this.lodWorker.call("selectSogLod", request);
   }
-  async load(url, count, signal) {
+  async load(sourceIndex, url, count, signal) {
     this.assertActive();
-    const manager = this.options.manager ?? DefaultLoadingManager;
+    const { options, baseUrl } = this.sources[sourceIndex];
+    const manager = options.manager ?? DefaultLoadingManager;
     return this.pool.run(
       {
         signal,
@@ -122,26 +133,27 @@ export class SogStreamLoader {
       async ({ worker, id, signal, retain, start, progress }) => {
         this.assertActive();
         let info;
-        if (this.options.loadChunk) {
-          const custom = await this.options.loadChunk(url, signal);
+        if (options.loadChunk) {
+          const custom = await options.loadChunk(url, signal);
           try {
             signal.throwIfAborted();
             info = await worker.call("cacheSogChunk", {
               id,
               data: custom.takeData(),
+              maxSh: this.maxSh,
             });
           } finally {
             custom.dispose();
           }
         } else {
           const resolveBase =
-            typeof document === "undefined" ? this.baseUrl : document.baseURI;
+            typeof document === "undefined" ? baseUrl : document.baseURI;
           const resourceUrl = new URL(url, resolveBase).href;
           const resolved = new URL(manager.resolveURL(url), resolveBase).href;
           start(resolved);
           const sameOrigin =
             new URL(getAssetBaseUrl(resolved) ?? resourceUrl).origin ===
-            new URL(this.baseUrl).origin;
+            new URL(baseUrl).origin;
           info = await worker.call(
             "loadSogChunk",
             {
@@ -149,10 +161,9 @@ export class SogStreamLoader {
               url: resolved,
               baseUrl: resourceUrl,
               fileType: "sog",
-              requestHeader: sameOrigin
-                ? this.options.requestHeader
-                : undefined,
-              withCredentials: sameOrigin && this.options.withCredentials,
+              maxSh: this.maxSh,
+              requestHeader: sameOrigin ? options.requestHeader : undefined,
+              withCredentials: sameOrigin && options.withCredentials,
               expectedSogCount: count < 0 ? undefined : count,
             },
             {

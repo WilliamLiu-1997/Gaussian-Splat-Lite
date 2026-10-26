@@ -3,7 +3,6 @@ import type { ReorderedSplatResult } from "../../../data/defines.js";
 import { SplatMesh } from "../../../scene/SplatMesh.js";
 /** Regions share one source, one scene node and one accumulator generation call. */
 export declare class SogStreamBatch extends SplatMesh {
-  readonly numSh: number;
   private readonly group;
   private readonly onEmpty;
   private readonly source;

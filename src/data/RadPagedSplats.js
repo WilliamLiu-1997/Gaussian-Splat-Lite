@@ -25,9 +25,9 @@ export class RadPagedSplats extends IndexedSplats {
     this.pageCount = pageCount;
     this.selectedPages = new Uint32Array(this.pageCount);
   }
-  /** Copies data; callers retain ownership of the packed buffers. */
-  writePage(slot, data) {
-    this.writeRecords(slot * RAD_PAGE_SIZE, data, RAD_PAGE_SIZE);
+  /** Copies data and zeros SH above numSh; callers retain the packed buffers. */
+  writePage(slot, data, numSh) {
+    this.writeRecords(slot * RAD_PAGE_SIZE, data, RAD_PAGE_SIZE, numSh);
   }
   /** Remove the displayed cut when its scheduler becomes hidden. */
   clearSelection() {

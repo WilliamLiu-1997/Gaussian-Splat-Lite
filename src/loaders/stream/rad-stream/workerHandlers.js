@@ -19,21 +19,55 @@ export function createRadStreamHandlers() {
     prepareRadSelection(request) {
       return prepareRadSelection(request, chunks);
     },
-    initializeRad({ bytes }) {
-      const value = wasmCall(() => decode_rad_header(bytes));
-      if (!value) throw new Error("RAD: truncated header");
-      header = value;
-      lod = wasmCall(() => new RadLodTree(JSON.stringify(value.meta)));
-      return value;
+    initializeRad({ bytes, maxSh }) {
+      const headers = bytes.map((bytes) => {
+        const value = wasmCall(() => decode_rad_header(bytes));
+        if (!value) throw new Error("RAD: truncated header");
+        return value;
+      });
+      // Explicit chunk spans; chunkSize only speeds up the first input's lookups.
+      const meta = {
+        count: 0,
+        lodTree: true,
+        maxSh: 0,
+        chunkSize: headers.find(({ meta }) => meta.count)?.meta.chunkSize,
+        chunks: [],
+      };
+      const roots = [];
+      lod = wasmCall(() => new RadLodTree());
+      for (let source = 0; source < headers.length; source++) {
+        const value = headers[source];
+        wasmCall(() => lod.add_source(JSON.stringify(value.meta)));
+        meta.maxSh = Math.max(meta.maxSh, value.meta.maxSh ?? 0);
+        if (value.meta.count) {
+          roots.push(meta.chunks.length);
+          meta.lodTree &&= !!value.meta.lodTree;
+        }
+        value.meta.chunks.forEach((chunk, index) => {
+          const span = getRadChunkSpan(value.meta, index);
+          meta.chunks.push({
+            ...chunk,
+            base: meta.count + span.base,
+            count: span.count,
+            source,
+          });
+        });
+        meta.count += value.meta.count;
+      }
+      meta.maxSh = Math.min(meta.maxSh, maxSh);
+      header = { meta };
+      return { meta, headers, roots };
     },
-    initializeRadDecoder({ header: value, rootBytes }) {
+    initializeRadDecoder({ header: value, maxSh, codebooks }) {
+      decoder?.free();
       header = value;
       decoder = wasmCall(
-        () =>
-          new RadDecoder(JSON.stringify(header.meta), header.meta.maxSh ?? 0),
+        () => new RadDecoder(JSON.stringify(header.meta), maxSh),
       );
-      // The first worker validated the root; other workers only need its codebooks.
-      if (rootBytes) wasmCall(() => decoder.initialize_codebooks(rootBytes));
+      if (codebooks)
+        wasmCall(() =>
+          decoder.set_codebooks(codebooks[0], codebooks[1], codebooks[2]),
+        );
     },
     async loadRadChunk({ index, generation, request }, { sendStatus }) {
       const controller = new AbortController();
@@ -101,12 +135,12 @@ export function createRadStreamHandlers() {
           sourceToStorage,
           boundsBlocks,
         };
-        // Only the root's compressed bytes seed codebooks in other workers.
-        const rootBytes =
-          index === 0 && header.meta.shCodeCount && header.meta.maxSh
-            ? bytes
+        // The input owns this packed cache independently of worker decoders.
+        const codebooks =
+          index === 0 && header.meta.shCodeCount && data.extra.shBlock0
+            ? wasmCall(() => decoder.get_codebooks())
             : undefined;
-        return { data, tree, state, rootBytes };
+        return { data, tree, state, codebooks };
       } finally {
         sendStatus({ loaded });
         loads.delete(generation);

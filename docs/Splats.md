@@ -23,6 +23,7 @@ The constructor and `initialize()` accept `SplatsOptions`:
 | `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | Complete file data in memory |
 | `fileType` | `SplatFileType` | Detected from the name | Set the format explicitly |
 | `fileName` | `string` | `File.name` when available | Name used to detect the format |
+| `maxSh` | `number` | `4` | Maximum SH degree to decode and store; integer `0`–`4`, further limited by the model's degree |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Supply the extra files of a split SOG or RAD model; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | [Change each Splat while loading](PostDecode.md) |
 | `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Loading progress](SplatLoader.md#loading-progress) callback |

@@ -32,6 +32,8 @@ export class IndexedSplats extends Splats {
     this.sourceIndices = new Uint32Array(0);
     this.indexTexture = Splats.emptyTexture;
     this.disposed = false;
+    /** Owner's pending-upload queue; written layers wait there for the renderer. */
+    this.uploadQueue = undefined;
     this.spatialChunks = new Map();
     this.spatialBoundsBytes = 0;
     this.maxSplats = capacity;
@@ -107,7 +109,7 @@ export class IndexedSplats extends Splats {
     return this.sourceIndices;
   }
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
-  writeRecords(start, data, allocation) {
+  writeRecords(start, data, allocation, numSh = this.numSh) {
     this.assertLive();
     const count = data.numSplats;
     if (
@@ -120,14 +122,14 @@ export class IndexedSplats extends Splats {
       start + allocation > this.maxSplats
     )
       throw new Error("Invalid streaming Splat write range");
+    if (!Number.isInteger(numSh) || numSh < 0 || numSh > this.numSh)
+      throw new Error("Invalid streaming Splat SH degree");
     const arrays = [
       ...data.splatArrays,
-      ...SH_KEYS.slice(0, SH_ARRAY_COUNTS[this.numSh]).map(
-        (key) => data.extra[key],
-      ),
+      ...SH_KEYS.slice(0, SH_ARRAY_COUNTS[numSh]).map((key) => data.extra[key]),
     ];
     if (
-      arrays.length !== this.sourceArrays.length ||
+      arrays.length !== 2 + SH_ARRAY_COUNTS[numSh] ||
       arrays.some(
         (array) =>
           count > 0 &&
@@ -151,12 +153,38 @@ export class IndexedSplats extends Splats {
       const target = this.sourceArrays[index];
       const source = arrays[index];
       if (source) target.set(source.subarray(0, count * 4), start * 4);
-      target.fill(0, (start + count) * 4, (start + allocation) * 4);
+      // A lower-SH page may reuse a slot previously occupied by higher SH.
+      target.fill(
+        0,
+        (start + (source ? count : 0)) * 4,
+        (start + allocation) * 4,
+      );
       for (let layer = firstLayer; layer < lastLayer; layer++)
         this.sourceTextures[index].addLayerUpdate(layer);
       this.sourceTextures[index].needsUpdate = true;
     }
     this.needsUpdate = true;
+    this.uploadQueue?.add(this);
+  }
+  /** Remaining dirty layers; successful uploads clear them in the renderer. */
+  get pendingUploadBytes() {
+    let layers = 0;
+    for (const texture of this.sourceTextures)
+      layers += texture.layerUpdates.size;
+    return layers * this.layerSize * 16;
+  }
+  /** Additional upload bytes for layers in [firstLayer, lastLayer). */
+  getUploadBytes(firstLayer, lastLayer) {
+    let layers = 0;
+    for (const texture of this.sourceTextures)
+      for (let layer = firstLayer; layer < lastLayer; layer++)
+        if (!texture.layerUpdates.has(layer)) layers++;
+    return layers * this.layerSize * 16;
+  }
+  /** Upload written layers now, including storage not yet in the scene. */
+  uploadPending(renderer) {
+    for (const texture of this.sourceTextures)
+      if (texture.layerUpdates.size > 0) renderer.initTexture(texture);
   }
   getStorageIndex(index) {
     this.assertLive();
@@ -376,6 +404,8 @@ export class IndexedSplats extends Splats {
   dispose() {
     if (this.disposed) return;
     super.dispose();
+    this.uploadQueue?.delete(this);
+    this.uploadQueue = undefined;
     for (const texture of this.sourceTextures) texture.dispose();
     if (this.indexTexture !== Splats.emptyTexture) this.indexTexture.dispose();
     this.opacities.dispose();

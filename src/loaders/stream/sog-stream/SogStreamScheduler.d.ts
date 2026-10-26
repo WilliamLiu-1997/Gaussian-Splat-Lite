@@ -4,8 +4,6 @@ import type { SogStreamLoaderOptions } from "./SogStreamLoader.js";
 import type { SogBudgetMode } from "./sogLod.js";
 export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
   StreamSchedulerOptions & {
-    /** Load and display the manifest's environment; defaults to true. Set only at construction. */
-    loadEnvironment?: boolean;
     /** Defaults to "target". "limit" caps detail at the configured distance bands. */
     splatBudgetMode?: SogBudgetMode;
     /** Base LOD distance in world units for "limit" mode; defaults to 100. Must be finite and positive. */
@@ -23,12 +21,14 @@ export type SogStreamStats = StreamStats & {
 /** Camera-driven Streamed SOG loading with per-chunk sources and region fades. */
 export declare class SogStreamScheduler {
   readonly group: THREE.Group;
+  private readonly uploads;
   readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
   readonly cooldownMs: number;
   readonly fadeDurationMs: number;
   readonly maxConcurrentLoads: number;
   private _splatBudget;
+  private readonly _maxSh;
   private _splatBudgetMode;
   private _lodBaseDistance;
   private _lodMultiplier;
@@ -48,7 +48,7 @@ export declare class SogStreamScheduler {
   private chunks;
   /** Chunks with a batch, cached source or in-flight load. */
   private readonly activeChunks;
-  private environment?;
+  private environments;
   private leaves;
   private wanted;
   private readonly fades;
@@ -60,6 +60,8 @@ export declare class SogStreamScheduler {
   /** Visible-point budget, including the environment. Reassign to reselect LODs. */
   get splatBudget(): number;
   set splatBudget(value: number);
+  /** Maximum decoded and stored SH degree (0–3), fixed at construction. */
+  get maxSh(): number;
   /** Fill the budget, or limit detail to the configured distance bands. */
   get splatBudgetMode(): SogBudgetMode;
   set splatBudgetMode(value: SogBudgetMode);
@@ -100,7 +102,6 @@ export declare class SogStreamScheduler {
   private updateRequests;
   private selectRegions;
   private leafState;
-  private chunkFor;
   private applySelection;
   private updateRegionVisibility;
   private attachPendingRegions;

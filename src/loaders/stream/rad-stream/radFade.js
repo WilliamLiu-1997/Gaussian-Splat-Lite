@@ -1,4 +1,3 @@
-import { getRadChunkSpan } from "../../rad/radFormat.js";
 import { radChunkIndex } from "./radLod.js";
 /** Compare sorted cuts and build their optional fade union in one pass. Allocate
  * the union only after a difference, so unchanged decisions allocate no fade. */
@@ -42,7 +41,7 @@ export function prepareRadFade(meta, previous, next, enableFade) {
     indices[count++] = index;
     if (index < pageEnd) continue;
     const chunk = radChunkIndex(meta, index);
-    const range = getRadChunkSpan(meta, chunk);
+    const range = meta.chunks[chunk];
     pageEnd = range.base + range.count;
     chunks.push(chunk);
   }
@@ -73,7 +72,7 @@ function changedRadChunks(meta, previous, next) {
     else newOffset++;
     if (index < pageEnd) continue;
     const chunk = radChunkIndex(meta, index);
-    const range = getRadChunkSpan(meta, chunk);
+    const range = meta.chunks[chunk];
     pageEnd = range.base + range.count;
     chunks.push(chunk);
   }

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SPLAT_TEX_WIDTH } from "../data/defines.js";
+import { PENDING_UPLOADS } from "../data/pendingUploads.js";
 import { emptySplatTexture, getTextureSize } from "../data/textureLayout.js";
 import { SplatEdit, SplatEdits } from "../scene/SplatEdit.js";
 import { SplatMesh } from "../scene/SplatMesh.js";
@@ -43,6 +44,7 @@ export class SplatAccumulator {
       shownCount: 0,
       edits: [],
       editCount: 0,
+      uploads: [],
     };
     this.frameContext = {
       time: 0,
@@ -59,6 +61,7 @@ export class SplatAccumulator {
     this.mapping = [];
     const nodes = this.sceneNodes;
     nodes.meshes.length = nodes.shownMeshes.length = nodes.edits.length = 0;
+    nodes.uploads.length = 0;
     nodes.meshCount = nodes.shownCount = nodes.editCount = 0;
     nodes.excludedObjects = undefined;
     this.numSplats = 0;
@@ -260,7 +263,14 @@ export class SplatAccumulator {
     nodes.layerMask = layerMask;
     nodes.excludedObjects = excludedObjects;
     nodes.meshCount = nodes.shownCount = nodes.editCount = 0;
+    nodes.uploads.length = 0;
     collectSceneNodes(scene, true, false, false, nodes);
+    // Streaming storage uploads as written, before its batch joins the scene.
+    for (const queue of nodes.uploads) {
+      for (const source of queue) source.uploadPending(renderer);
+      queue.clear();
+    }
+    nodes.uploads.length = 0;
     const { meshes, shownMeshes, edits } = nodes;
     const meshCount = nodes.meshCount;
     meshes.length = meshCount;
@@ -375,6 +385,7 @@ export class SplatAccumulator {
  * Collects, in scene order: Splat meshes on the layers, those of them whose
  * ancestors are all visible, and visible edits outside any Splat mesh.
  * Excluded subtrees still contribute global edits, matching display rendering.
+ * Pending streaming uploads are collected regardless of visibility.
  */
 function collectSceneNodes(
   node,
@@ -386,6 +397,8 @@ function collectSceneNodes(
   const visible = parentVisible && node.visible !== false;
   const excluded = parentExcluded || nodes.excludedObjects?.has(node) === true;
   const isMesh = node instanceof SplatMesh;
+  const uploads = node[PENDING_UPLOADS];
+  if (uploads?.size) nodes.uploads.push(uploads);
   if (isMesh) {
     if (!excluded && (nodes.layerMask & node.layers.mask) !== 0) {
       nodes.meshes[nodes.meshCount++] = node;

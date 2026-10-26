@@ -4,8 +4,7 @@ import { SplatMesh } from "../../../scene/SplatMesh.js";
 export class SogStreamBatch extends SplatMesh {
   constructor(capacity, numSh, group, onEmpty) {
     const source = new SogRegionSplats(capacity, numSh);
-    super({ splats: source });
-    this.numSh = numSh;
+    super({ splats: source, maxSh: numSh });
     this.group = group;
     this.onEmpty = onEmpty;
     this.slots = new Map();

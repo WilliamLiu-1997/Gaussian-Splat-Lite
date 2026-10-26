@@ -26,7 +26,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
 });
 
-// Resolves when the first data is on screen. update() must be running.
+// Keep updating and rendering while waiting for the first data.
 await streaming.firstRenderable;
 
 // When removing the model:
@@ -41,6 +41,27 @@ The three steps that matter:
 3. Call `streaming.update()` before every render.
 
 Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only.
+
+## Multiple inputs
+
+Use `sources` instead of a top-level `url`, `file`, or `fileBytes` to load several RAD inputs together:
+
+```js
+const streaming = new RadStreamScheduler({
+  sources: [
+    { url: "/models/buildings.rad" },
+    { url: "/models/landscape.rad" },
+  ],
+  splatBudget: 3_000_000,
+  maxConcurrentLoads: 4,
+});
+```
+
+All inputs use the coordinates stored in their files, relative to `streaming.group`. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Memory is reserved at the highest SH degree among the inputs, limited by `maxSh`; lower-SH inputs use the same per-Splat storage. Inputs may use different chunk sizes, up to 65,536 Splats per chunk.
+
+Each entry accepts the single-input loading options, including `resolveFile`, `manager`, `requestHeader`, and `withCredentials`; options omitted from an entry inherit the scheduler's settings. `sources` must be nonempty. Use separate schedulers for inputs that need independent transforms or budgets.
+
+`initialized` waits for every input's metadata. `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene. `splatBudget` and both memory budgets must be large enough to hold the coarsest detail of every nonempty input.
 
 ## Cameras and resolution
 
@@ -74,10 +95,11 @@ renderer.setAnimationLoop(() => {
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `url` / `file` / `fileBytes` | Exactly one required | URL, `Blob`/`File`, or complete `Uint8Array`/`ArrayBuffer` |
+| `sources` | — | Multiple inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
+| `url` / `file` / `fileBytes` | One required without `sources` | URL, `Blob`/`File`, or complete `Uint8Array`/`ArrayBuffer` |
 | `resolveFile` | Relative URLs | Supply the `.radc` pages of a split scene yourself: `(filename, signal) => URL \| Blob \| Uint8Array \| ArrayBuffer`, directly or as a promise |
-| `group` | New `THREE.Group` | Group that holds the scene |
 | `splatBudget` | `3_000_000` | Target number of Splats. Higher values show more detail and use more memory |
+| `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
 | `splatBudgetTolerance` | `0.1` | Allowed fractional overshoot of `splatBudget`. `0.1` allows up to 10% extra Splats; `0` keeps each new selection within `splatBudget`. Must be finite and nonnegative |
 | `maxResidentCpuBytes` | 2 GiB | CPU memory budget for cached data, in bytes. Set a positive integer when creating the scheduler |
 | `maxResidentGpuBytes` | 1 GiB | GPU memory budget for cached data, in bytes. Set a positive integer when creating the scheduler |
@@ -97,11 +119,12 @@ Unused detail is released after `cooldownMs`, including while hidden, and loads 
 
 | API | Description |
 | --- | --- |
-| `group` | Group that holds the scene |
+| `group` | Group created by this scheduler to hold the streamed scene |
 | `splatBudget` | Change it at any time to adjust detail, even while the camera is still. Must be a positive integer |
+| `maxSh` | Read-only SH decoding and storage limit chosen at creation |
 | `splatBudgetTolerance` | Change the allowed overshoot at any time without reloading. `0` forbids overshoot |
 | `initialized` | Resolves when the scene is set up; rejects for invalid or unsupported files |
-| `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep calling `update()` while you wait |
+| `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep updating and rendering while you wait |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |
 | `setResolution(camera, width, height)` | Set a registered camera's size in CSS pixels; also accepts a `THREE.Vector2` |
 | `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's size from `renderer.getSize()` |
@@ -113,6 +136,8 @@ Unused detail is released after `cooldownMs`, including while hidden, and loads 
 ### On-demand rendering
 
 Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render. Loading, retries, and fades only make progress inside `update()`.
+
+Each scheduler has a 24 MiB allowance for source texture layers waiting for GPU upload. Repeated `update()` calls do not renew it; rendering submits the queued layers and makes room for more data. Keep rendering while waiting for `firstRenderable`, even before any batches are visible. This allowance does not cap total CPU/GPU memory or uploads from other schedulers.
 
 ### Picking
 

@@ -9,11 +9,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added `loadEnvironment` to `SogStreamScheduler` (default `true`). Set it to `false` at construction to skip the environment and reserve the splat budget for scene detail.
+- Added `sources` to `RadStreamScheduler` and `SogStreamScheduler` to stream several inputs with one detail selection. The inputs share the splat budget and loading concurrency; RAD inputs also share both memory budgets, and each uses as much memory per Splat as the highest SH degree among them, limited by `maxSh`. See [RAD streaming](docs/RadStreamScheduler.md#multiple-inputs) and [SOG streaming](docs/SogStreamScheduler.md#multiple-inputs).
+- Added an `environment` option to `SogStreamScheduler` and each of its `sources`. Set it to `false` to skip that input's environment.
+- Added `maxSh` to `RadStreamScheduler` and `SogStreamScheduler` to limit SH decoding, storage, and rendering. Set it at creation to `0`–`3` (default `3`) to reduce SH memory use; `0` keeps only the base color. RAD page budgets account for the reduced storage, and the built-in SOG loader skips higher-order SH assets at `0`.
+- Added a loading-time `maxSh` option to `SplatMesh` and `Splats`, and a `SplatLoader.maxSh` setting (`0`–`4`, default `4`). PLY, SPZ, SOG, and RAD loads omit higher SH bands from CPU arrays and GPU source textures.
 
 ### Changed
 
+- `SplatMesh.maxSh` is now read-only and set through its constructor options, matching the streaming schedulers. Assigning `mesh.maxSh` now throws a `TypeError` in strict-mode code, including ES modules. Create a new mesh to change the limit. The viewer's Max SH control has been removed.
 - RAD streaming now uses fixed 65,536-splat page slots. Smaller chunks use a full slot; chunks larger than 65,536 splats are rejected during initialization.
+- RAD and SOG schedulers now create their own `THREE.Group`; the `group` constructor option has been removed. Add and transform `streaming.group` instead.
+- RAD and SOG streaming upload written texture layers before their batches are first displayed. Each scheduler limits pending source texture uploads to 24 MiB until rendering submits them, preventing skipped renders from accumulating larger uploads. A larger SOG region proceeds alone.
 
 ## [1.4.3] - 2026-10-25
 

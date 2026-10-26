@@ -4,10 +4,9 @@ import { SplatMesh } from "../../../scene/SplatMesh.js";
 export class RadStreamBatch extends SplatMesh {
   constructor(options) {
     const source = new RadPagedSplats(options);
-    super({ splats: source });
+    super({ splats: source, maxSh: source.numSh });
     this.source = source;
     this.name = "rad-batch";
-    this.maxSh = source.numSh;
   }
   clearSelection() {
     if (!this.source.clearSelection()) return false;

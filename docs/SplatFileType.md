@@ -11,7 +11,7 @@ The model formats you can load:
 | `SplatFileType.SOG` | `"sog"` | `.sog`, or a SOG `meta.json` with its images |
 | `SplatFileType.RAD` | `"rad"` | `.rad` |
 
-PLY and SPZ support view-dependent color up to SH4 on WebGL, WebGPU, and the WebGL2 fallback. RAD and SOG support up to SH3. Models render all their available coefficients by default; set [`mesh.maxSh`](SplatMesh.md#properties) to limit the degree.
+PLY and SPZ support view-dependent color up to SH4 on WebGL, WebGPU, and the WebGL2 fallback. RAD and SOG support up to SH3. Models render all their available coefficients by default; set the [`maxSh` constructor option](SplatMesh.md#options) to limit the degree.
 
 The format is normally detected from the URL or `fileName`, so you rarely need this. Set it when the name does not show the format:
 

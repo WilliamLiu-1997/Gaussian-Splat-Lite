@@ -12,6 +12,7 @@ use js_sys::{Float32Array, Object, Reflect, Uint32Array};
 use wasm_bindgen::JsValue;
 
 pub struct SplatsData {
+    max_sh: usize,
     pub max_splats: usize,
     pub num_splats: usize,
     pub max_sh_degree: usize,
@@ -31,8 +32,9 @@ pub struct SplatsData {
 }
 
 impl SplatsData {
-    pub fn new() -> Self {
+    pub fn new(max_sh: usize) -> Self {
         Self {
+            max_sh,
             max_splats: 0,
             num_splats: 0,
             max_sh_degree: 0,
@@ -321,42 +323,22 @@ impl SplatReceiver for SplatsData {
         );
         self.max_splats = max_splats;
         self.num_splats = init.num_splats;
-        self.max_sh_degree = init.max_sh_degree;
+        self.max_sh_degree = init.max_sh_degree.min(self.max_sh);
 
         self.splat_arrays[0] = Uint32Array::new_with_length((max_splats * 4) as u32);
         self.splat_arrays[1] = Uint32Array::new_with_length((max_splats * 4) as u32);
         self.sort_centers = Float32Array::new_with_length((max_splats * 3) as u32);
 
-        self.sh_block0 = if init.max_sh_degree < 1 {
-            None
-        } else {
-            Some(Uint32Array::new_with_length((max_splats * 4) as u32))
+        let sh_block = |degree| {
+            (self.max_sh_degree >= degree)
+                .then(|| Uint32Array::new_with_length((max_splats * 4) as u32))
         };
-        self.sh_block1 = if init.max_sh_degree < 2 {
-            None
-        } else {
-            Some(Uint32Array::new_with_length((max_splats * 4) as u32))
-        };
-        self.sh_block2 = if init.max_sh_degree < 3 {
-            None
-        } else {
-            Some(Uint32Array::new_with_length((max_splats * 4) as u32))
-        };
-        self.sh_block3 = if init.max_sh_degree < 3 {
-            None
-        } else {
-            Some(Uint32Array::new_with_length((max_splats * 4) as u32))
-        };
-        self.sh_block4 = if init.max_sh_degree < 4 {
-            None
-        } else {
-            Some(Uint32Array::new_with_length((max_splats * 4) as u32))
-        };
-        self.sh_block5 = if init.max_sh_degree < 4 {
-            None
-        } else {
-            Some(Uint32Array::new_with_length((max_splats * 4) as u32))
-        };
+        self.sh_block0 = sh_block(1);
+        self.sh_block1 = sh_block(2);
+        self.sh_block2 = sh_block(3);
+        self.sh_block3 = sh_block(3);
+        self.sh_block4 = sh_block(4);
+        self.sh_block5 = sh_block(4);
 
         self.buffer_base = 0;
         self.buffer_count = 0;
@@ -622,16 +604,16 @@ impl SplatReceiver for SplatsData {
         sh3: &[f32],
         sh4: &[f32],
     ) {
-        if !sh1.is_empty() {
+        if self.max_sh_degree >= 1 && !sh1.is_empty() {
             self.set_sh1(base, count, sh1);
         }
-        if !sh2.is_empty() {
+        if self.max_sh_degree >= 2 && !sh2.is_empty() {
             self.set_sh2(base, count, sh2);
         }
-        if !sh3.is_empty() {
+        if self.max_sh_degree >= 3 && !sh3.is_empty() {
             self.set_sh3(base, count, sh3);
         }
-        if !sh4.is_empty() {
+        if self.max_sh_degree >= 4 && !sh4.is_empty() {
             self.set_sh4(base, count, sh4);
         }
     }

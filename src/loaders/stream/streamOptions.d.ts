@@ -1,12 +1,17 @@
-import type { Group, LoadingManager } from "three";
+import type { LoadingManager } from "three";
 import type { SplatRequestOptions } from "../loadTypes.js";
 export type StreamRequestOptions = SplatRequestOptions & {
   manager?: LoadingManager;
 };
+/** Single-input options remain shorthand for a one-element source list. */
+export declare function streamSources<T>(
+  options: T & { sources?: readonly T[] },
+): T[];
 export type StreamSchedulerOptions = {
-  group?: Group;
   /** Initial Splat budget; update scheduler.splatBudget to change it at runtime. */
   splatBudget?: number;
+  /** Maximum decoded and stored SH degree, 0–3. Defaults to 3; fixed at construction. */
+  maxSh?: number;
   /** Milliseconds to retain unused data after fade-out; defaults to 2000. */
   cooldownMs?: number;
   fadeDurationMs?: number;
@@ -38,6 +43,7 @@ export type StreamStats = {
 export declare function positiveInteger(value: number, name: string): number;
 export declare function streamSettings(options: StreamSchedulerOptions): {
   splatBudget: number;
+  maxSh: number;
   cooldownMs: number;
   fadeDurationMs: number;
   maxConcurrentLoads: number;

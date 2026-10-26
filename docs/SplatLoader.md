@@ -16,6 +16,7 @@ const splat = loader.parse(decoded);
 scene.add(splat);
 ```
 
+Set `loader.maxSh` before loading to limit decoded and stored SH to degree `0`–`4` (default `4`).
 The callback form matches the usual Three.js pattern:
 
 ```js

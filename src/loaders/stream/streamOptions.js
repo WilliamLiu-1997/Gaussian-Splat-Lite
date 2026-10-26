@@ -1,4 +1,18 @@
 import { retryDelay } from "../../runtime/retry.js";
+/** Single-input options remain shorthand for a one-element source list. */
+export function streamSources(options) {
+  if (options.sources === undefined) return [options];
+  const { sources, ...defaults } = options;
+  if (!Array.isArray(sources) || !sources.length)
+    throw new Error("sources must be a nonempty array");
+  if (
+    options.url !== undefined ||
+    options.file !== undefined ||
+    options.fileBytes !== undefined
+  )
+    throw new Error("Use sources or a single url/file/fileBytes input");
+  return sources.map((source) => ({ ...defaults, ...source }));
+}
 export function positiveInteger(value, name) {
   if (!Number.isSafeInteger(value) || value <= 0)
     throw new Error(`${name} must be a positive safe integer`);
@@ -9,6 +23,9 @@ export function streamSettings(options) {
     options.splatBudget ?? 3_000_000,
     "splatBudget",
   );
+  const maxSh = options.maxSh ?? 3;
+  if (!Number.isInteger(maxSh) || maxSh < 0 || maxSh > 3)
+    throw new Error("maxSh must be an integer between 0 and 3");
   const cooldownMs = options.cooldownMs ?? 2000;
   if (!Number.isFinite(cooldownMs) || cooldownMs < 0)
     throw new Error("cooldownMs must be finite and nonnegative");
@@ -21,6 +38,7 @@ export function streamSettings(options) {
   );
   return {
     splatBudget,
+    maxSh,
     cooldownMs,
     fadeDurationMs,
     maxConcurrentLoads,

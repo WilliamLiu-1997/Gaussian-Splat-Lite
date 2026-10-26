@@ -162,7 +162,11 @@ export async function loadRad(args) {
       report(source.stats.downloadedBytes);
     }
     decoder = wasmCall(
-      () => new RadDecoder(JSON.stringify(header.meta), header.meta.maxSh ?? 0),
+      () =>
+        new RadDecoder(
+          JSON.stringify(header.meta),
+          Math.min(header.meta.maxSh ?? 0, args.maxSh ?? 3),
+        ),
     );
     const activeDecoder = decoder;
     const tree = header.meta.lodTree

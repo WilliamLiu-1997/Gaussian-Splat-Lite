@@ -38,6 +38,7 @@ For large streamed scenes, use [RadStreamScheduler](RadStreamScheduler.md) or [S
 | `fileBytes` | `Uint8Array \| ArrayBuffer` | `undefined` | Complete file data in memory |
 | `fileType` | `SplatFileType` | Detected from the name | Set the format explicitly: `PLY`, `SPZ`, `SOG`, or `RAD` |
 | `fileName` | `string` | `File.name` when available | Name used to detect the format |
+| `maxSh` | `number` | `4` | Fixed SH limit; integer `0`–`4`. Caps decoding, storage, and rendering when loading a file. With existing `splats`, limits rendering only |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Supply the extra files of a split SOG or RAD model; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | [Change each Splat while loading](PostDecode.md) |
 | `splats` | `Splats` | New `Splats` | Use existing [Splats](Splats.md) data instead of loading |
@@ -59,12 +60,12 @@ Choose at most one of `url`, `file`, `fileBytes`, or `splats`; combining them th
 | `numSplats` | `number` | Current Splat count |
 | `recolor` | `THREE.Color(1, 1, 1)` | Color multiplier for the whole model |
 | `opacity` | `1` | Opacity multiplier for the whole model |
-| `maxSh` | `4` | Limit view-dependent color detail to SH0–SH4; `0` uses the base color only |
+| `maxSh` | Read-only, default `4` | SH limit chosen at construction; effective rendering is also limited by the data's degree |
 | `edits` | `SplatEdit[] \| null` | Explicit list of [edits](SplatEdit.md) for this mesh |
 | `splats` | `Splats \| undefined` | The model's [Splats](Splats.md) data |
 | `needsUpdate` | `boolean` setter | Set to `true` to force a refresh |
 
-Changes to the transform, `recolor`, `opacity`, `maxSh`, and edits are picked up automatically. If the mesh's `Splats` is loaded again, `initialized` and `isInitialized` follow the new load, and `onLoad` runs again when it finishes.
+Changes to the transform, `recolor`, `opacity`, and edits are picked up automatically. If the mesh's `Splats` is loaded again, `initialized` and `isInitialized` follow the new load, and `onLoad` runs again when it finishes.
 
 ## Methods
 

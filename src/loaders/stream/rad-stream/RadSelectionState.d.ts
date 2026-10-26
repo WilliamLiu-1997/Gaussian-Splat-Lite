@@ -1,4 +1,4 @@
-import type { RadMeta } from "../../rad/radFormat.js";
+import type { RadStreamMetadata } from "./RadStreamLoader.js";
 import type { RadStreamSelection } from "./radFade.js";
 import type { RadLodRequest, RadLodSelection } from "./radLod.js";
 export type RadSelectionRequest = RadLodRequest & {
@@ -19,7 +19,7 @@ export declare class RadSelectionState {
   private readonly cuts;
   private nextId;
   prepare(
-    meta: RadMeta,
+    meta: RadStreamMetadata,
     selected: RadLodSelection,
     { previousId, displayedId, readyId, fade }: RadSelectionRequest,
   ): RadSelectionReply;

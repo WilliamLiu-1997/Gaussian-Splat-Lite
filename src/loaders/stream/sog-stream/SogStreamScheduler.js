@@ -1,5 +1,9 @@
 import * as THREE from "three";
-import { sogBatchAllocationSize } from "../../../data/SogRegionSplats.js";
+import {
+  sogBatchAllocationSize,
+  sogBatchTextureLayout,
+} from "../../../data/SogRegionSplats.js";
+import { PendingUploads } from "../../../data/pendingUploads.js";
 import {
   getSplatByteLength,
   getSplatShDegree,
@@ -33,6 +37,7 @@ export class SogStreamScheduler {
     this.refinementStopped = false;
     this.selection = EMPTY_SELECTION;
     this.chunks = [];
+    this.environments = [];
     /** Chunks with a batch, cached source or in-flight load. */
     this.activeChunks = new Set();
     // Each leaf keeps at most one previous LOD until its fade-out finishes.
@@ -43,9 +48,11 @@ export class SogStreamScheduler {
     this.disposed = false;
     this.retryTimer = new RetryTimer(() => this.changed());
     this.options = { ...options };
-    this.group = options.group ?? new THREE.Group();
+    this.group = new THREE.Group();
+    this.uploads = new PendingUploads(this.group);
     const settings = streamSettings(options);
     this._splatBudget = settings.splatBudget;
+    this._maxSh = settings.maxSh;
     this.splatBudgetMode = options.splatBudgetMode ?? "target";
     this.lodBaseDistance = options.lodBaseDistance ?? 100;
     this.lodMultiplier = options.lodMultiplier ?? 2;
@@ -57,6 +64,7 @@ export class SogStreamScheduler {
     this.loader = new SogStreamLoader(
       this.options,
       this.maxConcurrentLoads,
+      this.maxSh,
       () => this.changed(),
     );
     this.firstRenderable = new Promise((resolve, reject) => {
@@ -81,6 +89,10 @@ export class SogStreamScheduler {
     if (value === this._splatBudget) return;
     this._splatBudget = positiveInteger(value, "splatBudget");
     void this.requestSelection();
+  }
+  /** Maximum decoded and stored SH degree (0–3), fixed at construction. */
+  get maxSh() {
+    return this._maxSh;
   }
   /** Fill the budget, or limit detail to the configured distance bands. */
   get splatBudgetMode() {
@@ -153,7 +165,9 @@ export class SogStreamScheduler {
           ? manifest.bounds.byteLength +
             manifest.leafOffsets.byteLength +
             manifest.lods.byteLength +
-            manifest.counts.byteLength
+            manifest.counts.byteLength +
+            manifest.sourceIndices.byteLength +
+            manifest.environments.byteLength
           : 0),
       residentGpuBytes: 0,
       pendingBytes: 0,
@@ -193,9 +207,10 @@ export class SogStreamScheduler {
         const target = this.lodLeaves.get(id).lods[this.selection[offset + 1]];
         if (this.leaves.get(id)?.current?.range === target) readyRegions++;
       }
-      if (this.environment && this.environment.file.count !== 0) {
+      for (const chunk of this.environments) {
+        if (chunk.count === 0) continue;
         targetRegions++;
-        if (this.leaves.get(-1)?.current) readyRegions++;
+        if (this.leaves.get(-1 - chunk.index)?.current) readyRegions++;
       }
       stats.loadProgress =
         manifest.lods.length && this.selection === EMPTY_SELECTION
@@ -220,16 +235,11 @@ export class SogStreamScheduler {
     const manifest = await this.loader.initialize(this.abort.signal);
     this.abort.signal.throwIfAborted();
     this.manifest = manifest;
-    const files = manifest.urls.map((url, index) => ({
+    this.chunks = manifest.urls.map((url, index) => ({
       url,
+      index,
+      source: manifest.sourceIndices[index],
       count: manifest.counts[index],
-      ranges: [],
-    }));
-    const environment =
-      this.options.loadEnvironment !== false && manifest.environment;
-    if (environment) files.push({ url: environment, count: -1, ranges: [] });
-    this.chunks = files.map((file) => ({
-      file,
       // Stable slots keep a chunk together regardless of region arrival order.
       batchSlots: new Map(),
       batchCapacity: 0,
@@ -248,8 +258,12 @@ export class SogStreamScheduler {
         manifest.lods[offset + 3],
       );
     }
-    if (environment) this.environment = this.chunks[this.chunks.length - 1];
-    if (!this.environment && !this.manifest.lods.length)
+    this.environments = Array.from(
+      manifest.environments,
+      (index) => this.chunks[index],
+    );
+    for (const chunk of this.environments) chunk.environment = true;
+    if (!this.environments.length && !this.manifest.lods.length)
       this.resolveFirst(this);
     this.changed();
     return this;
@@ -341,7 +355,11 @@ export class SogStreamScheduler {
     const lodDistanceShrink = this.lodDistanceShrink;
     const budget = Math.max(
       0,
-      splatBudget - Math.max(0, this.environment?.file.count ?? 0),
+      splatBudget -
+        this.environments.reduce(
+          (count, chunk) => count + Math.max(0, chunk.count),
+          0,
+        ),
     );
     const key = `${getSogViewKey(view)}/${splatBudget}/${budget}/${splatBudgetMode}/${lodBaseDistance}/${lodMultiplier}/${lodBehindPenalty}/${lodDistanceShrink}`;
     if (key === this.lastRequestedKey) return;
@@ -408,15 +426,16 @@ export class SogStreamScheduler {
       const leaf = this.leafState(range.leaf);
       leaf.target = range;
       selected.push(leaf);
-      if (leaf.current?.range !== range) this.wanted.add(this.chunkFor(range));
+      if (leaf.current?.range !== range)
+        this.wanted.add(this.chunks[range.file]);
     };
-    if (this.shown && this.environment) {
-      const current = this.leaves.get(-1)?.current;
-      const range = current?.range ?? this.environment.file.ranges[0];
-      if (range && (current || this.environment.data?.alive)) show(range);
-      else if (this.environment.file.count !== 0)
-        this.wanted.add(this.environment);
-    }
+    if (this.shown)
+      for (const chunk of this.environments) {
+        const current = this.leaves.get(-1 - chunk.index)?.current;
+        const range = current?.range ?? chunk.environmentRange;
+        if (range && (current || chunk.data?.alive)) show(range);
+        else if (chunk.count !== 0) this.wanted.add(chunk);
+      }
     const refinements = [];
     for (
       let offset = 0;
@@ -458,9 +477,6 @@ export class SogStreamScheduler {
     }
     return leaf;
   }
-  chunkFor(range) {
-    return range.file < 0 ? this.environment : this.chunks[range.file];
-  }
   applySelection(selected, now) {
     // Advance an existing fade before reversing it to avoid opacity jumps.
     let changed = this.updateFades(now);
@@ -495,8 +511,21 @@ export class SogStreamScheduler {
       const { data, chunk } = pending;
       const start = chunk.batchSlots.get(range.offset);
       if (start === undefined) throw new Error("Missing chunk region slot");
-      const numSh = getSplatShDegree(data.extra);
       let batch = chunk.batch;
+      const numSh = getSplatShDegree(data.extra);
+      const layerSize =
+        batch?.source.layerSize ??
+        sogBatchTextureLayout(chunk.batchCapacity).layerSize;
+      const firstLayer = Math.floor(start / layerSize);
+      const lastLayer = Math.ceil(
+        (start + sogBatchAllocationSize(range.count)) / layerSize,
+      );
+      // Charge whole layers; dirty layers already await upload.
+      const bytes = batch
+        ? batch.source.getUploadBytes(firstLayer, lastLayer)
+        : getSplatTextureBytes((lastLayer - firstLayer) * layerSize, numSh);
+      // Later regions wait until rendering consumes the queued uploads.
+      if (!this.uploads.canAdd(bytes)) break;
       if (!batch) {
         batch = new SogStreamBatch(
           chunk.batchCapacity,
@@ -507,8 +536,10 @@ export class SogStreamScheduler {
             this.pruneChunk(chunk);
           },
         );
-        batch.name =
-          range.file < 0 ? "sog-environment" : `sog-chunk-${range.file}`;
+        batch.source.uploadQueue = this.uploads;
+        batch.name = chunk.environment
+          ? "sog-environment"
+          : `sog-chunk-${range.file}`;
         chunk.batch = batch;
         this.activeChunks.add(chunk);
       }
@@ -529,7 +560,7 @@ export class SogStreamScheduler {
     for (const leaf of selected) {
       const range = leaf.target;
       if (!range || leaf.current?.range === range || leaf.pending) continue;
-      const chunk = this.chunkFor(range);
+      const chunk = this.chunks[range.file];
       const source = chunk.data;
       if (!source?.alive || now < chunk.retryAt) continue;
       const bytes = getSplatTextureBytes(range.count, source.info.numSh);
@@ -610,7 +641,7 @@ export class SogStreamScheduler {
           this.pruneChunk(chunk);
         }
         this.rejectFirstIfUnavailable(error);
-        this.failed(error, chunk.file.url);
+        this.failed(error, chunk.url);
       }
     } finally {
       if (!this.disposed) {
@@ -624,7 +655,7 @@ export class SogStreamScheduler {
     for (const [id, leaf] of this.leaves) {
       const { current, outgoing, pending } = leaf;
       if (pending) referenced.add(pending.chunk);
-      if (outgoing) referenced.add(this.chunkFor(outgoing.range));
+      if (outgoing) referenced.add(this.chunks[outgoing.range.file]);
       if (current) {
         if (
           leaf.target ||
@@ -633,7 +664,7 @@ export class SogStreamScheduler {
           outgoing
         ) {
           current.expiresAt = undefined;
-          referenced.add(this.chunkFor(current.range));
+          referenced.add(this.chunks[current.range.file]);
         } else {
           current.expiresAt ??= now + this.cooldownMs;
           if (allowRelease && now >= current.expiresAt)
@@ -676,32 +707,31 @@ export class SogStreamScheduler {
     let decoded;
     try {
       decoded = await this.loader.load(
-        chunk.file.url,
-        chunk.file.count,
+        chunk.source,
+        chunk.url,
+        chunk.count,
         controller.signal,
       );
       controller.signal.throwIfAborted();
-      if (chunk.batch && decoded.info.numSh !== chunk.batch.numSh)
+      if (chunk.batch && decoded.info.numSh !== chunk.batch.maxSh)
         throw new Error(
-          `Chunk SH degree mismatch: expected ${chunk.batch.numSh}, received ${decoded.info.numSh}`,
+          `Chunk SH degree mismatch: expected ${chunk.batch.maxSh}, received ${decoded.info.numSh}`,
         );
-      if (chunk === this.environment) {
-        chunk.file.count = decoded.info.numSplats;
-        this.addBatchRange(chunk, 0, chunk.file.count);
-        chunk.file.ranges = chunk.file.count
-          ? [
-              {
-                leaf: -1,
-                level: 0,
-                file: -1,
-                offset: 0,
-                count: chunk.file.count,
-              },
-            ]
-          : [];
-      } else if (decoded.info.numSplats !== chunk.file.count) {
+      if (chunk.environment) {
+        chunk.count = decoded.info.numSplats;
+        this.addBatchRange(chunk, 0, chunk.count);
+        chunk.environmentRange = chunk.count
+          ? {
+              leaf: -1 - chunk.index,
+              level: 0,
+              file: chunk.index,
+              offset: 0,
+              count: chunk.count,
+            }
+          : undefined;
+      } else if (decoded.info.numSplats !== chunk.count) {
         throw new Error(
-          `Chunk count mismatch: expected ${chunk.file.count}, received ${decoded.info.numSplats}`,
+          `Chunk count mismatch: expected ${chunk.count}, received ${decoded.info.numSplats}`,
         );
       }
       chunk.data = decoded;
@@ -710,8 +740,8 @@ export class SogStreamScheduler {
       chunk.failures = 0;
       chunk.retryAt = 0;
       if (
-        chunk === this.environment &&
-        !chunk.file.count &&
+        chunk.environment &&
+        this.environments.every((environment) => environment.count === 0) &&
         !this.manifest?.lods.length
       )
         this.resolveFirst(this);
@@ -720,7 +750,7 @@ export class SogStreamScheduler {
         chunk.error = error;
         chunk.retryAt = streamRetryAt(error, chunk.failures++);
         this.rejectFirstIfUnavailable(error);
-        this.failed(error, chunk.file.url);
+        this.failed(error, chunk.url);
       }
     } finally {
       decoded?.dispose();
@@ -729,7 +759,7 @@ export class SogStreamScheduler {
       if (!this.disposed) {
         this.pump(performance.now());
         // Loading the environment changes the budget available to LOD.
-        if (chunk === this.environment) void this.requestSelection();
+        if (chunk.environment) void this.requestSelection();
         this.changed();
       }
     }
@@ -762,7 +792,7 @@ export class SogStreamScheduler {
     // A failed refinement does not invalidate already renderable coverage.
     if ([...this.leaves.values()].some((leaf) => leaf.current || leaf.pending))
       return;
-    const wanted = [...this.wanted].filter((chunk) => chunk.file.count !== 0);
+    const wanted = [...this.wanted].filter((chunk) => chunk.count !== 0);
     if (
       wanted.length &&
       wanted.every((chunk) => chunk.retryAt === Number.POSITIVE_INFINITY)
@@ -783,7 +813,7 @@ export class SogStreamScheduler {
     }
     this.loader.dispose();
     this.rejectFirst(error);
-    this.failed(error, this.options.url);
+    this.failed(error, this.options.url ?? this.options.sources[0].url);
     this.changed();
   }
   dispose() {
@@ -807,7 +837,7 @@ export class SogStreamScheduler {
     this.wanted.clear();
     this.chunks = [];
     this.activeChunks.clear();
-    this.environment = undefined;
+    this.environments = [];
     this.manifest = undefined;
     this.lodLeaves.clear();
     this.view = undefined;

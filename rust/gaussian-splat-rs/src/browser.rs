@@ -164,10 +164,19 @@ fn parse_file_type(file_type: Option<String>) -> Result<Option<SplatFileType>, J
 pub fn decode_to_splats(
     file_type: Option<String>,
     path_name: Option<String>,
+    max_sh: Option<u32>,
 ) -> Result<ChunkDecoder, JsValue> {
     let file_type = parse_file_type(file_type)?;
+    let max_sh = max_sh.unwrap_or(4);
+    if max_sh > 4 {
+        return Err(JsValue::from_str("maxSh must be between 0 and 4"));
+    }
 
-    let decoder = MultiDecoder::new(SplatsData::new(), file_type, path_name.as_deref());
+    let decoder = MultiDecoder::new(
+        SplatsData::new(max_sh as usize),
+        file_type,
+        path_name.as_deref(),
+    );
     let on_finish = |receiver: Box<dyn ChunkReceiver>| {
         let decoder: Box<MultiDecoder<SplatsData>> = receiver.into_any().downcast().unwrap();
         let file_type = decoder.file_type.unwrap();
