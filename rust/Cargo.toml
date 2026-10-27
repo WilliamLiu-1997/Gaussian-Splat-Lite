@@ -2,6 +2,7 @@
 members = [
     "gaussian-splat-rs",
     "gaussian-splat-lib",
+    "gaussian-splat-cluster",
 ]
 resolver = "2"
 

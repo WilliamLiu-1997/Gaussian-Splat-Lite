@@ -102,6 +102,30 @@ try {
   for (const file of ["decoder.js", "decoder_bg.wasm"]) {
     cpSync(join(decoderOutput, file), new URL(file, decoderDestination));
   }
+  // The SH codebook kernel of `gsl-build-lod --cluster-sh` is a module of
+  // its own: it needs relaxed SIMD, which the decoder must not.
+  run(
+    "cargo",
+    [
+      "build",
+      "--release",
+      "--locked",
+      "--target",
+      "wasm32-unknown-unknown",
+      "--package",
+      "gaussian-splat-cluster",
+    ],
+    { env: buildEnv },
+  );
+  cpSync(
+    join(
+      buildEnv.CARGO_TARGET_DIR,
+      "wasm32-unknown-unknown",
+      "release",
+      "gaussian_splat_cluster.wasm",
+    ),
+    new URL("cluster.wasm", decoderDestination),
+  );
 
   if (!lodOnly) {
     const output = join(buildDir, "pkg");

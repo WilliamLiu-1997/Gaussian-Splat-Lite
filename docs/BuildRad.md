@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Convert PLY or SPZ models into RAD files with levels of detail (LOD), ready for [RAD streaming](RadStreamScheduler.md). Requires Node.js 20.19+ on the 20.x branch, or 22.12+. No compilation is required.
+Convert PLY or SPZ models into RAD files with levels of detail (LOD), ready for [RAD streaming](RadStreamScheduler.md). Requires Node.js 22.12 or later. No compilation is required.
 
 ```sh
 npm install --global gaussian-splat-lite
@@ -46,6 +46,25 @@ gsl-build-lod scene.ply --lod-base 1.75
 
 `--lod-base` controls the spacing between detail levels (default `1.75`, range `1.1`–`16`). Smaller values produce more intermediate levels and usually larger files; larger values produce fewer levels and usually smaller files. This setting does not discard input splats.
 
+## SH codebook
+
+```sh
+# Use the default SH codebook with 10 refinement iterations.
+gsl-build-lod scene.ply
+
+# Change the number of refinement iterations.
+gsl-build-lod scene.ply --cluster-sh=20
+
+# Store SH coefficients without a codebook.
+gsl-build-lod scene.ply --no-cluster-sh
+```
+
+By default, SH coefficients are stored as a shared codebook of up to 65,536 entries, and each splat stores the index of its entry. This can substantially reduce SH data for large models; the savings depend on the splat count and SH values. Models with at most 65,536 splats after LOD still store one codebook entry per splat plus labels, so the file may grow. Each splat's view-dependent color comes from its nearest entry, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
+
+The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. Clustering runs on as many CPU cores as the memory target leaves room for and usually takes less time than the rest of the conversion. When there are more than 1,048,576 splats after LOD, the iterations use a sample that favors large, opaque splats: 1,048,576 splats or 5% of them, whichever is larger. Only the final assignment visits every splat. With 16,384 or more entries, each iteration and the final assignment compare a splat only with the entries in the groups of similar entries nearest to it; a few splats then get an entry that is nearly, but not exactly, the nearest.
+
+Models without SH, or converted with `--max-sh 0`, are written without a codebook.
+
 ## Memory and temporary storage
 
 ```sh
@@ -85,6 +104,8 @@ See [RadStreamScheduler](RadStreamScheduler.md) for the complete loading and dis
 | `--lod-base <base>` | `1.75` | LOD spacing, from `1.1` to `16`; smaller values retain more detail levels. |
 | `--max-sh <0..3>` | `3` | Highest SH degree to keep, limited by the input. |
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere before building LOD, in input coordinates. |
+| `--cluster-sh[=<n>]` | Enabled, `10` iterations | Store SH as a codebook of up to 65,536 entries, refined in `n` iterations. See [SH codebook](#sh-codebook). |
+| `--no-cluster-sh` | — | Store SH coefficients without a codebook. |
 | `--memory-budget <GiB>` | `4` | Target memory use in GiB, at least `1`; for example `16`. |
 | `--temp-dir <path>` | System temp directory | Location for temporary files; created if needed. |
 | `--rad-chunked` | Disabled | Write a header and separate `.radc` files. |

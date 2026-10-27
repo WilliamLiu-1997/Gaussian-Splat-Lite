@@ -10,20 +10,22 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import {
-  Worker,
-  isMainThread,
-  parentPort,
-  workerData,
-} from "node:worker_threads";
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { deflateRawSync } from "node:zlib";
 import { HALF, half, halfBits, opacityRadius } from "./math.js";
-import { YOUNG_MB, encoders } from "./parallel.js";
+import { WorkerGroup, encoders } from "./parallel.js";
 import { Progress } from "./progress.js";
 import { SH_DIMS } from "./splats.js";
 import { readAll, removePath, writeAll } from "./storage.js";
 
 const CHUNK = 65536;
+// Fixed s8 range with SPZ's 1/128 SH step; -1 clips to -127/128.
+const SH_MAX = 127 / 128;
+function encodeSh(value) {
+  const magnitude = Math.min(127, Math.round(Math.abs(value) * 128));
+  return (value < 0 ? -magnitude : magnitude) & 255;
+}
+const SH_CODES = Uint8Array.from(HALF, encodeSh);
 function header(magic, meta) {
   const json = Buffer.from(JSON.stringify(meta));
   const result = Buffer.alloc(8 + Math.ceil(json.length / 8) * 8);
@@ -99,18 +101,15 @@ function alpha(value) {
     ? half(Math.min(2, 1 + 0.25 * (opacityRadius(value) - 1)))
     : value;
 }
-// What the encoding ranges depend on, counted from gathered chunks.
+// The base attributes that determine the encoding ranges.
 class Counts {
   constructor() {
     this.colors = new Histogram();
     this.scales = new Histogram();
-    this.sh = SH_DIMS.map(() => new Histogram());
     this.alphaF16 = false;
   }
-  add(chunk) {
-    const { records, count } = chunk;
-    for (let i = 0; i < count; i++) {
-      const offset = i * 16;
+  add(records) {
+    for (let offset = 0; offset < records.length; offset += 16) {
       this.alphaF16 ||= alpha(records[offset + 3]) > 1;
       for (let d = 4; d <= 6; d++)
         this.colors.add(halfBits(records[offset + d]));
@@ -122,19 +121,15 @@ class Counts {
       );
       this.scales.add(halfBits(Math.max(a, b, c)));
     }
-    for (let band = 0; band < chunk.sh.length; band++)
-      for (const bits of chunk.sh[band]) this.sh[band].add(bits);
   }
   merge(other) {
     this.colors.merge(other.colors);
     this.scales.merge(other.scales);
-    for (let band = 0; band < SH_DIMS.length; band++)
-      this.sh[band].merge(other.sh[band]);
     this.alphaF16 ||= other.alphaF16;
   }
 }
 
-function encoding(counts, maxSh) {
+function encoding(counts) {
   const { colors, scales } = counts;
   const rgbMin = Math.min(0, colors.percentile(0.01));
   const rgbMax = Math.max(1, colors.percentile(0.99));
@@ -143,67 +138,65 @@ function encoding(counts, maxSh) {
     Math.max(Math.log(1e-30), scales.percentile(0.01)),
   );
   const lnScaleMax = Math.max(9, scales.percentile(0.99));
-  const limits = [1, 1, 1];
-  for (let band = 0; band < maxSh; band++) {
-    const histogram = counts.sh[band];
-    limits[band] = Math.max(
-      1,
-      Math.abs(histogram.percentile(0.05)),
-      Math.abs(histogram.percentile(0.95)),
-    );
-  }
-  // The s8 code of each half value, per band.
-  const sh = limits.map((limit) => {
-    const codes = new Uint8Array(65536);
-    for (let bits = 0; bits < 65536; bits++)
-      codes[bits] =
-        signedRound(Math.max(-127, Math.min(127, (HALF[bits] / limit) * 127))) &
-        255;
-    return codes;
-  });
   return {
     alphaF16: counts.alphaF16,
     rgbF16: rgbMin < -1 || rgbMax > 2,
-    sh,
     scaleF16: lnScaleMax - lnScaleMin > 25,
-    limits,
     meta: {
       rgbMin,
       rgbMax,
       lnScaleMin,
       lnScaleMax,
-      sh1Max: limits[0],
-      sh2Max: limits[1],
-      sh3Max: limits[2],
+      sh1Max: SH_MAX,
+      sh2Max: SH_MAX,
+      sh3Max: SH_MAX,
       lodOpacity: true,
     },
   };
 }
 const unorm = (value, min, max) =>
   Math.round(Math.max(0, Math.min(255, ((value - min) / (max - min)) * 255)));
-const signedRound = (value) =>
-  value < 0 ? -Math.round(-value) : Math.round(value);
 
-// The columns of the splats from `base` on that encodeChunk() reads, and
-// Counts without the children.
-function gather(splats, base, count, children = true) {
+// The columns encodeChunk() reads. With a codebook, labels replace the SH.
+function gather(splats, base, count, codebook) {
   return {
     base,
     count,
+    maxSh: splats.maxSh,
     records: splats.records.read(base * 16, new Float32Array(count * 16)),
-    sh: splats.sh
-      .slice(0, splats.maxSh)
-      .map((column, band) =>
-        column.read(
-          base * SH_DIMS[band],
-          new Uint16Array(count * SH_DIMS[band]),
-        ),
-      ),
-    ...(children && {
-      counts: splats.childCount.read(base, new Uint32Array(count)),
-      starts: splats.childStart.read(base, new Float64Array(count)),
+    sh: codebook
+      ? []
+      : splats.sh
+          .slice(0, splats.maxSh)
+          .map((column, band) =>
+            column.read(
+              base * SH_DIMS[band],
+              new Uint16Array(count * SH_DIMS[band]),
+            ),
+          ),
+    ...(codebook && {
+      labels: codebook.labels.read(base, new Uint16Array(count)),
     }),
+    counts: splats.childCount.read(base, new Uint32Array(count)),
+    starts: splats.childStart.read(base, new Float64Array(count)),
   };
+}
+
+// The codebook's entries as s8 codes of each band, coefficient by coefficient.
+function encodeCodes(codebook, maxSh) {
+  const { count, dims, codes } = codebook;
+  const bands = [];
+  let offset = 0;
+  for (let band = 0; band < maxSh; band++) {
+    const size = SH_DIMS[band];
+    const bytes = new Uint8Array(count * size);
+    for (let d = 0; d < size; d++)
+      for (let c = 0; c < count; c++)
+        bytes[d * count + c] = encodeSh(codes[c * dims + offset + d]);
+    bands.push(bytes);
+    offset += size;
+  }
+  return bands;
 }
 
 // Raw property bytes, reused: each property is compressed before the next.
@@ -326,18 +319,25 @@ function encodeChunk(chunk, encoding) {
     bytes[i * 3 + 2] = unorm(theta, 0, Math.PI);
   }
   property("orientation", "oct88r8", bytes);
+  if (chunk.labels) {
+    // The first chunk holds the codebook for all.
+    for (let band = 0; chunk.codes && band < chunk.maxSh; band++)
+      property(`sh${band + 1}_code`, "s8", chunk.codes[band], [
+        -SH_MAX,
+        SH_MAX,
+      ]);
+    bytes = raw(count * 2);
+    for (let i = 0; i < count; i++) bytes.writeUInt16LE(chunk.labels[i], i * 2);
+    property("sh_label", "u16", bytes);
+  }
   for (let band = 0; band < chunk.sh.length; band++) {
     const dims = SH_DIMS[band];
     const values = chunk.sh[band];
-    const codes = encoding.sh[band];
     bytes = raw(count * dims);
     for (let d = 0; d < dims; d++)
       for (let i = 0; i < count; i++)
-        bytes[d * count + i] = codes[values[i * dims + d]];
-    property(`sh${band + 1}`, "s8", bytes, [
-      -encoding.limits[band],
-      encoding.limits[band],
-    ]);
+        bytes[d * count + i] = SH_CODES[values[i * dims + d]];
+    property(`sh${band + 1}`, "s8", bytes, [-SH_MAX, SH_MAX]);
   }
   const counts = raw(count * 2);
   const starts = raw(count * 4, 1);
@@ -352,7 +352,7 @@ function encodeChunk(chunk, encoding) {
     version: 1,
     base,
     count,
-    maxSh: chunk.sh.length,
+    maxSh: chunk.maxSh,
     lodTree: true,
     splatEncoding: encoding.meta,
     payloadBytes,
@@ -369,8 +369,8 @@ class Coder {
     this.counts = new Counts();
     this.format = undefined;
   }
-  handle({ type, chunk, format }) {
-    if (type === "count") this.counts.add(chunk);
+  handle({ type, records, chunk, format }) {
+    if (type === "count") this.counts.add(records);
     else if (type === "counts") return this.counts;
     else if (type === "format") this.format = format;
     else return encodeChunk(chunk, this.format);
@@ -379,62 +379,33 @@ class Coder {
 }
 
 // Spreads counting and encoding over worker threads.
-class Encoder {
+class Encoder extends WorkerGroup {
   // Encodes `chunks` with workers when there is more than one and the
   // workspace has room for them.
   constructor(workspace, chunks) {
+    const count = encoders(workspace, chunks);
+    super(
+      new URL(import.meta.url),
+      count,
+      { coder: true },
+      count ? undefined : new Coder(),
+      "Encoding",
+    );
     this.next = 0;
-    this.coder = new Coder();
-    this.workers = Array.from({ length: encoders(workspace, chunks) }, () => {
-      const worker = new Worker(new URL(import.meta.url), {
-        workerData: { coder: true },
-        resourceLimits: {
-          maxOldGenerationSizeMb: 64,
-          maxYoungGenerationSizeMb: YOUNG_MB,
-        },
-      });
-      worker.unref();
-      worker.waiting = [];
-      worker.on("message", (result) => worker.waiting.shift().resolve(result));
-      // A failed worker fails its pending and later requests.
-      const fail = (error) => {
-        worker.failed ??= error;
-        for (const job of worker.waiting.splice(0)) job.reject(worker.failed);
-      };
-      worker.on("error", fail);
-      worker.on("exit", (code) =>
-        fail(new Error(`Encoding worker exited (${code})`)),
-      );
-      return worker;
-    });
   }
   get size() {
     return this.workers.length;
   }
-  request(worker, message, transfer = []) {
-    if (!worker) return Promise.resolve(this.coder.handle(message));
-    if (worker.failed) return Promise.reject(worker.failed);
-    return new Promise((resolve, reject) => {
-      worker.waiting.push({ resolve, reject });
-      worker.postMessage(message, transfer);
-    });
-  }
-  // Sends a gathered chunk to the next worker.
-  send(type, chunk) {
+  // Sends the next job to the next worker.
+  send(message, transfer) {
     return this.request(
       this.workers[this.next++ % this.workers.length],
-      { type, chunk },
-      [
-        chunk.records.buffer,
-        ...chunk.sh.map((values) => values.buffer),
-        ...(chunk.counts ? [chunk.counts.buffer, chunk.starts.buffer] : []),
-      ],
+      message,
+      transfer,
     );
   }
-  // Sends `message` to every worker, or to this thread's coder without any.
-  broadcast(message) {
-    const all = this.workers.length ? this.workers : [undefined];
-    return Promise.all(all.map((worker) => this.request(worker, message)));
+  count(records) {
+    return this.send({ type: "count", records }, [records.buffer]);
   }
   async counts() {
     const counts = new Counts();
@@ -446,12 +417,15 @@ class Encoder {
     return this.broadcast({ type: "format", format });
   }
   async encode(chunk) {
-    const bytes = await this.send("encode", chunk);
+    const bytes = await this.send({ type: "encode", chunk }, [
+      chunk.records.buffer,
+      ...chunk.sh.map((values) => values.buffer),
+      ...(chunk.labels ? [chunk.labels.buffer] : []),
+      ...(chunk.codes ?? []).map((values) => values.buffer),
+      chunk.counts.buffer,
+      chunk.starts.buffer,
+    ]);
     return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length);
-  }
-  // Resolves once the workers have stopped and their memory is free.
-  close() {
-    return Promise.all(this.workers.map((worker) => worker.terminate()));
   }
 }
 
@@ -471,7 +445,8 @@ if (!isMainThread && workerData?.coder) {
   });
 }
 
-export async function writeRad(splats, output, chunked, lodBase) {
+// With a codebook from clusterSh(), splats store SH as its labels.
+export async function writeRad(splats, output, chunked, lodBase, codebook) {
   const chunks = [];
   const stem = chunkStem(output);
   const spool = chunked ? undefined : splats.workspace.file();
@@ -529,26 +504,34 @@ export async function writeRad(splats, output, chunked, lodBase) {
     let countedChunks = 0;
     for (let base = 0; base < splats.length; base += CHUNK) {
       splats.workspace.check();
+      const count = Math.min(CHUNK, splats.length - base);
+      const records = splats.records.read(
+        base * 16,
+        new Float32Array(count * 16),
+      );
       const counted = encoder
-        .send(
-          "count",
-          gather(splats, base, Math.min(CHUNK, splats.length - base), false),
-        )
+        .count(records)
         .then(() => progress.update(++countedChunks));
       counted.catch(() => {});
       pending.push(counted);
       if (pending.length > encoder.size + 1) await pending.shift();
     }
     while (pending.length) await pending.shift();
-    const format = encoding(await encoder.counts(), splats.maxSh);
+    const format = encoding(await encoder.counts());
     await encoder.use(format);
     progress.finish();
     progress = new Progress("Encoding RAD chunks", chunkCount);
     for (let base = 0; base < splats.length; base += CHUNK) {
       splats.workspace.check();
-      const bytes = encoder.encode(
-        gather(splats, base, Math.min(CHUNK, splats.length - base)),
+      const chunk = gather(
+        splats,
+        base,
+        Math.min(CHUNK, splats.length - base),
+        codebook,
       );
+      if (codebook && base === 0)
+        chunk.codes = encodeCodes(codebook, splats.maxSh);
+      const bytes = encoder.encode(chunk);
       bytes.catch(() => {});
       pending.push(bytes);
       if (pending.length > encoder.size + 1) store(await pending.shift());
@@ -565,6 +548,7 @@ export async function writeRad(splats, output, chunked, lodBase) {
       allChunkBytes: total,
       chunks,
       splatEncoding: format.meta,
+      ...(codebook && { shCodeCount: codebook.count }),
       comment: `Gaussian Splat Lite quality LOD (base ${lodBase})`,
     });
     const writing = new Progress(

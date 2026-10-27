@@ -59,6 +59,10 @@ const WORKER_BYTES = 40 * 1024 ** 2;
 const ENCODER_BYTES = 52 * 1024 ** 2;
 const MAIN_BYTES = 64 * 1024 ** 2;
 const CHUNKS_BYTES = 24 * 1024 ** 2;
+// What an SH clustering worker thread takes besides its kernel and jobs,
+// and the cache that clustering keeps: it reads rows in order.
+const CLUSTER_BYTES = 32 * 1024 ** 2;
+const STREAM_BYTES = 64 * 1024 ** 2;
 export const YOUNG_MB = 8;
 
 // Worker threads with `bytes` each: at most 8, using at most `share` of the
@@ -85,6 +89,79 @@ export function encoders(workspace, chunks) {
   );
   workspace.expect(count * ENCODER_BYTES + CHUNKS_BYTES);
   return count;
+}
+
+// Makes room for SH clustering worker threads that take `bytes` each besides
+// the thread itself, and `extra` bytes on this thread, and returns how many
+// there are, at most `jobs`. They only compute, so they may use every other
+// core and all the room but a small cache.
+export function clusterers(workspace, bytes, extra, jobs) {
+  workspace.settle();
+  const each = CLUSTER_BYTES + bytes;
+  const count = Math.max(
+    0,
+    Math.min(
+      availableParallelism() - 1,
+      jobs,
+      Math.floor((workspace.room - extra - STREAM_BYTES) / each),
+    ),
+  );
+  workspace.expect(count * each + extra);
+  return count;
+}
+
+// Ordered request/reply workers for clustering and encoding. Their callers
+// schedule the jobs and close the workers; without workers, requests use the
+// local handler. Keep workers referenced so exit events can reject requests.
+export class WorkerGroup {
+  constructor(url, count, workerData, local, name) {
+    this.local = local;
+    this.workers = Array.from({ length: count }, () => {
+      const worker = new Worker(url, {
+        workerData,
+        resourceLimits: {
+          maxOldGenerationSizeMb: 64,
+          maxYoungGenerationSizeMb: YOUNG_MB,
+        },
+      });
+      worker.waiting = [];
+      worker.on("message", (result) => worker.waiting.shift().resolve(result));
+      // A failed worker fails its pending and later requests.
+      const fail = (error) => {
+        worker.failed ??= error;
+        for (const job of worker.waiting.splice(0)) job.reject(worker.failed);
+      };
+      worker.on("error", fail);
+      worker.on("exit", (code) =>
+        fail(new Error(`${name} worker exited (${code})`)),
+      );
+      return worker;
+    });
+  }
+
+  get threads() {
+    return this.workers.length ? this.workers : [undefined];
+  }
+
+  request(worker, message, transfer = []) {
+    if (!worker) return Promise.resolve(this.local.handle(message));
+    if (worker.failed) return Promise.reject(worker.failed);
+    return new Promise((resolve, reject) => {
+      worker.waiting.push({ resolve, reject });
+      worker.postMessage(message, transfer);
+    });
+  }
+
+  broadcast(message) {
+    return Promise.all(
+      this.threads.map((worker) => this.request(worker, message)),
+    );
+  }
+
+  // Resolves once the workers have stopped and their memory is free.
+  close() {
+    return Promise.all(this.workers.map((worker) => worker.terminate()));
+  }
 }
 
 const shared = (Type, size) =>

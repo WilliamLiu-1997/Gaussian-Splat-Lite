@@ -129,7 +129,10 @@ export class Workspace {
   shrink() {
     if (this.slots.length * PAGE_BYTES <= this.capacity) return;
     const slots = Math.floor(this.capacity / this.arenaBytes) * this.arenaPages;
-    for (const page of this.slots.slice(slots)) if (page) this.drop(page);
+    // Without a copy of the slots: a copy kept the released pages alive
+    // through the collection below, and their memory returned only later.
+    for (let slot = slots; slot < this.slots.length; slot++)
+      if (this.slots[slot]) this.drop(this.slots[slot]);
     this.slots.length = slots;
     this.reuse.length = slots;
     this.free = this.free.filter((slot) => slot < slots);

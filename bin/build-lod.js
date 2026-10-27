@@ -7,6 +7,7 @@ import {
   parentPort,
   workerData,
 } from "node:worker_threads";
+import { clusterSh, codebookKernel } from "./rad/cluster.js";
 import { readInput } from "./rad/input.js";
 import { buildLod } from "./rad/lod.js";
 import { Pool } from "./rad/parallel.js";
@@ -26,6 +27,9 @@ Options:
   --max-sh <0..3>        Maximum SH degree (default: 3)
   --within-dist <x,y,z,radius>
                         Keep splat centers within this sphere (input coordinates)
+  --cluster-sh[=<n>]     Store SH as a codebook of up to 65536 entries, refined
+                        in n iterations (default: enabled, 10 iterations)
+  --no-cluster-sh        Store SH coefficients without a codebook
   --rad-chunked          Write a .rad header and separate .radc files
   --memory-budget <GiB>  Target memory in GiB (default: 4, minimum: 1)
   --temp-dir <path>      Temporary file location (default: system temp)
@@ -34,13 +38,14 @@ Options:
 
 SH4 inputs are accepted; coefficients above --max-sh are discarded.
 The memory target covers the whole conversion, worker threads included.
-No compilation is required.`;
+Requires Node.js 22.12 or later. No compilation is required.`;
 
 function parse(args) {
   const options = {
     inputs: [],
     lodBase: 1.75,
     maxSh: 3,
+    clusterSh: 10,
     budget: 4 * GIB,
     chunked: false,
   };
@@ -53,6 +58,19 @@ function parse(args) {
     }
     if (arg === "--rad-chunked") {
       options.chunked = true;
+      continue;
+    }
+    if (arg === "--no-cluster-sh") {
+      options.clusterSh = undefined;
+      continue;
+    }
+    if (arg === "--cluster-sh" || arg.startsWith("--cluster-sh=")) {
+      const value = arg === "--cluster-sh" ? "10" : arg.slice(13);
+      options.clusterSh = value.trim() ? Number(value) : Number.NaN;
+      if (!Number.isSafeInteger(options.clusterSh) || options.clusterSh < 0)
+        throw new Error(
+          "--cluster-sh iterations must be a nonnegative integer",
+        );
       continue;
     }
     if (!arg.startsWith("-")) {
@@ -113,7 +131,7 @@ function parse(args) {
   return options;
 }
 
-async function convert(input, options, cancelled) {
+async function convert(input, options, kernel, cancelled) {
   const output =
     options.output ??
     path.join(
@@ -157,11 +175,24 @@ async function convert(input, options, cancelled) {
     console.log(
       `Built ${splats.length} LOD splats from ${leaves} leaves in ${((performance.now() - lodStart) / 1000).toFixed(2)}s`,
     );
+    let codebook;
+    if (kernel && !splats.maxSh)
+      console.log("No SH coefficients to cluster; writing without a codebook");
+    else if (kernel) {
+      const clusterStart = performance.now();
+      codebook = await clusterSh(splats, options.clusterSh, kernel);
+      // RAD encoding now reads only the codebook and labels.
+      for (const column of splats.sh) column.dispose();
+      console.log(
+        `Clustered SH into ${codebook.count} codes in ${((performance.now() - clusterStart) / 1000).toFixed(2)}s`,
+      );
+    }
     const bytes = await writeRad(
       splats,
       output,
       options.chunked,
       options.lodBase,
+      codebook,
     );
     console.log(
       `Wrote ${(bytes / 1048576).toFixed(2)} MiB in ${((performance.now() - start) / 1000).toFixed(2)}s total`,
@@ -173,11 +204,13 @@ async function convert(input, options, cancelled) {
 }
 
 async function run(options, cancelled) {
+  // Load the requested codebook kernel before converting any inputs.
+  const kernel = options.clusterSh === undefined ? undefined : codebookKernel();
   let failed = 0;
   for (const input of options.inputs) {
     if (Atomics.load(cancelled, 0)) return;
     try {
-      await convert(input, options, cancelled);
+      await convert(input, options, kernel, cancelled);
     } catch (error) {
       if (Atomics.load(cancelled, 0)) return;
       console.error(`${input}: ${error.message ?? error}`);
@@ -246,6 +279,9 @@ try {
       console[method] = (...args) => parentPort.postMessage({ method, args });
     await run(workerData.options, workerData.cancelled);
   } else {
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    if (major < 22 || (major === 22 && minor < 12))
+      throw new Error("gsl-build-lod requires Node.js 22.12 or later");
     const options = parse(process.argv.slice(2));
     if (!options) console.log(help);
     else await start(options);

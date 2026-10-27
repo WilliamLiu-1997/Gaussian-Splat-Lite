@@ -1,0 +1,13 @@
+[package]
+name = "gaussian-splat-cluster"
+version = "0.1.0"
+description = "Nearest SH codebook entries for the Gaussian Splat Lite RAD builder"
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]

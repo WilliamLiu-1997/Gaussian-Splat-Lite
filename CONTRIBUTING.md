@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Requires Node.js 20.19+ or 22.12+ and Rust via `rustup`. `npm run build:wasm` installs the `wasm32-unknown-unknown` target if needed.
+Requires Node.js 22.12 or later and Rust via `rustup`. `npm run build:wasm` installs the `wasm32-unknown-unknown` target if needed.
 
 ```bash
 npm ci
