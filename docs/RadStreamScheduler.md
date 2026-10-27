@@ -57,7 +57,7 @@ const streaming = new RadStreamScheduler({
 });
 ```
 
-All inputs use the coordinates stored in their files, relative to `streaming.group`. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Memory is reserved at the highest SH degree among the inputs, limited by `maxSh`; lower-SH inputs use the same per-Splat storage. Inputs may use different chunk sizes, up to 65,536 Splats per chunk.
+All inputs use the coordinates stored in their files, relative to `streaming.group`. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Inputs with different SH degrees all use the memory of the highest one, up to `maxSh`.
 
 Each entry accepts the single-input loading options, including `resolveFile`, `manager`, `requestHeader`, and `withCredentials`; options omitted from an entry inherit the scheduler's settings. `sources` must be nonempty. Use separate schedulers for inputs that need independent transforms or budgets.
 
@@ -105,7 +105,7 @@ renderer.setAnimationLoop(() => {
 | `maxResidentGpuBytes` | 1 GiB | GPU memory budget for cached data, in bytes. Set a positive integer when creating the scheduler |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long unused detail stays ready for reuse; it can be released sooner when either memory budget is reached. `0` releases it at once |
-| `maxConcurrentLoads` | `4` | Maximum number of simultaneous loads, regardless of page size. |
+| `maxConcurrentLoads` | `4` | Maximum number of simultaneous loads |
 | `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
 | `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Sensitive settings are not sent to other origins |
 | `onChange` | — | Called when the scene needs a redraw |
@@ -137,7 +137,7 @@ Unused detail is released after `cooldownMs`, including while hidden, and loads 
 
 Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render. Loading, retries, and fades only make progress inside `update()`.
 
-Each scheduler has a 24 MiB allowance for source texture layers waiting for GPU upload. Repeated `update()` calls do not renew it; rendering submits the queued layers and makes room for more data. Keep rendering while waiting for `firstRenderable`, even before any batches are visible. This allowance does not cap total CPU/GPU memory or uploads from other schedulers.
+New data reaches the screen only when you render, so keep rendering while waiting for `firstRenderable`, even before anything is visible.
 
 ### Picking
 

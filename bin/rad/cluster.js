@@ -12,12 +12,15 @@ import { PagedArray } from "./storage.js";
 const MAX_CODES = 65536;
 // Training reads SAMPLE_SHARE of the splats, and at least SAMPLES_PER_CODE
 // per entry; larger models train on a sample by weight, and only the final
-// assignment reads all. Entries start at evenly spaced training splats,
-// best at heavy ones: on Elevator (3.9M splats after LOD) 16 per entry fit
-// better than all splats, and on C-NorthSouth (111M) 5% fit 8.5% closer
-// than 16 per entry, for 5% more conversion time.
-const SAMPLES_PER_CODE = 16;
-const SAMPLE_SHARE = 0.05;
+// assignment reads all. Entries start at evenly spaced training splats.
+// With codebooks shrunk to keep 16 per entry at 5%, renders of Elevator and
+// JunkShop came 5–14% closer to the uncompressed SH at 10% than at 5%; on
+// C-NorthSouth (111M splats after LOD) clustering took about 185 s, not 170.
+// On Elevator (3.9M splats after LOD), 64 per entry, here all splats, came
+// 5.8% closer than 16 at full detail, with 41% fewer pixels off by more than
+// 32 levels in LOD views, in 18 s instead of 6 s.
+const SAMPLES_PER_CODE = 64;
+const SAMPLE_SHARE = 0.1;
 // Splats per job of a thread, and per call of the kernel.
 const JOB = 4096;
 const BATCH = 1024;
@@ -587,8 +590,8 @@ class Grouper {
 // weighted k-means as Spark does: entries start at evenly spaced splats,
 // each of `iterations` moves them to the weighted mean of their splats, an
 // entry without any stays, and a final pass labels each splat with its
-// nearest entry. Weights are area × opacity. Training uses 5% of the
-// splats, at least 16 per entry, sampled in proportion to their weights;
+// nearest entry. Weights are area × opacity. Training uses 10% of the
+// splats, at least 64 per entry, sampled in proportion to their weights;
 // with many entries, passes search only groups of them. Returns the
 // entries, `count` rows of `dims` SH coefficients, and the labels.
 export async function clusterSh(splats, iterations, module) {

@@ -59,9 +59,9 @@ gsl-build-lod scene.ply --cluster-sh=20
 gsl-build-lod scene.ply --no-cluster-sh
 ```
 
-By default, SH coefficients are stored as a shared codebook of up to 65,536 entries, and each splat stores the index of its entry. This can substantially reduce SH data for large models; the savings depend on the splat count and SH values. Models with at most 65,536 splats after LOD still store one codebook entry per splat plus labels, so the file may grow. Each splat's view-dependent color comes from its nearest entry, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
+By default, SH coefficients are stored as a shared codebook of up to 65,536 entries, and each splat stores the index of its entry. This can substantially reduce SH data for large models; the savings depend on the splat count and SH values. Models with at most 65,536 splats after LOD still store one codebook entry per splat plus an index for each splat, so the file may grow. Each splat's view-dependent color comes from its nearest entry, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
 
-The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. Clustering runs on as many CPU cores as the memory target leaves room for and usually takes less time than the rest of the conversion. When there are more than 1,048,576 splats after LOD, the iterations use a sample that favors large, opaque splats: 1,048,576 splats or 5% of them, whichever is larger. Only the final assignment visits every splat. With 16,384 or more entries, each iteration and the final assignment compare a splat only with the entries in the groups of similar entries nearest to it; a few splats then get an entry that is nearly, but not exactly, the nearest.
+The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. Clustering runs on as many CPU cores as the memory target leaves room for and usually takes less time than the rest of the conversion.
 
 Models without SH, or converted with `--max-sh 0`, are written without a codebook.
 

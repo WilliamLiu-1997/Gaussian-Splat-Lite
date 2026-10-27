@@ -7,28 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `gsl-build-lod` SH codebooks now match the original view-dependent color of large models more closely. Conversion takes slightly longer.
+
 ## [1.5.0] - 2026-10-27
 
 ### Added
 
-- Added `sources` to `RadStreamScheduler` and `SogStreamScheduler` to stream several inputs with one detail selection. The inputs share the splat budget and loading concurrency; RAD inputs also share both memory budgets, and each uses as much memory per Splat as the highest SH degree among them, limited by `maxSh`. See [RAD streaming](docs/RadStreamScheduler.md#multiple-inputs) and [SOG streaming](docs/SogStreamScheduler.md#multiple-inputs).
+- Added `sources` to `RadStreamScheduler` and `SogStreamScheduler` to stream several inputs with one detail selection. The inputs share the splat budget and loading concurrency; RAD inputs also share both memory budgets; inputs with different SH degrees all use the memory of the highest one, up to `maxSh`. See [RAD streaming](docs/RadStreamScheduler.md#multiple-inputs) and [SOG streaming](docs/SogStreamScheduler.md#multiple-inputs).
 - Added an `environment` option to `SogStreamScheduler` and each of its `sources`. Set it to `false` to skip that input's environment.
-- Added `maxSh` to `RadStreamScheduler` and `SogStreamScheduler` to limit SH decoding, storage, and rendering. Set it at creation to `0`–`3` (default `3`) to reduce SH memory use; `0` keeps only the base color. RAD page budgets account for the reduced storage, and the built-in SOG loader skips higher-order SH assets at `0`.
-- Added a loading-time `maxSh` option to `SplatMesh` and `Splats`, and a `SplatLoader.maxSh` setting (`0`–`4`, default `4`). PLY, SPZ, SOG, and RAD loads omit higher SH bands from CPU arrays and GPU source textures.
-- Added default SH codebook compression to `gsl-build-lod`: up to 65,536 shared SH entries and a 16-bit index per splat. Compression can reduce file size at the cost of view-dependent detail; small models may grow. Use `--cluster-sh=<n>` to change the default 10 refinement iterations or `--no-cluster-sh` to store coefficients directly. Clustering uses CPU workers within the memory target. See [SH codebook](docs/BuildRad.md#sh-codebook).
+- Added `maxSh` to `RadStreamScheduler` and `SogStreamScheduler` to limit SH decoding, storage, and rendering. Set it at creation to `0`–`3` (default `3`) to reduce memory use; `0` keeps only the base color, and streamed SOG then also skips downloading SH data.
+- Added a loading-time `maxSh` option to `SplatMesh` and `Splats`, and a `SplatLoader.maxSh` setting (`0`–`4`, default `4`). Lower values reduce memory use.
+- Added SH codebook compression to `gsl-build-lod`, on by default: splats share up to 65,536 SH entries. This can make large files much smaller at the cost of some view-dependent detail; small models may grow. Use `--cluster-sh=<n>` to change the default 10 refinement iterations or `--no-cluster-sh` to store SH without a codebook. Clustering stays within `--memory-budget`. See [SH codebook](docs/BuildRad.md#sh-codebook).
 
 ### Changed
 
 - Raised the minimum Node.js version to 22.12 for the package and `gsl-build-lod`.
 - `SplatMesh.maxSh` is now read-only and set through its constructor options, matching the streaming schedulers. Assigning `mesh.maxSh` now throws a `TypeError` in strict-mode code, including ES modules. Create a new mesh to change the limit. The viewer's Max SH control has been removed.
-- RAD streaming now uses fixed 65,536-splat page slots. Smaller chunks use a full slot; chunks larger than 65,536 splats are rejected during initialization.
+- RAD streaming no longer accepts files with chunks of more than 65,536 splats. Files from `gsl-build-lod` are unaffected.
 - RAD and SOG schedulers now create their own `THREE.Group`; the `group` constructor option has been removed. Add and transform `streaming.group` instead.
-- RAD and SOG streaming upload written texture layers before their batches are first displayed. Each scheduler limits pending source texture uploads to 24 MiB until rendering submits them, preventing skipped renders from accumulating larger uploads. A larger SOG region proceeds alone.
-- `gsl-build-lod` now quantizes SH in fixed `1/128` steps instead of using adaptive per-band ranges. Both codebook and direct output clip coefficients to `[-127/128, 127/128]`. With `--no-cluster-sh`, original SPZ splats retain their SH coefficients except `-1`, which clips to `-127/128`.
+- RAD and SOG streamed data now reaches the GPU only when you render. Keep rendering, not just calling `update()`, while waiting for `firstRenderable`.
+- With `--no-cluster-sh`, `gsl-build-lod` now keeps the view-dependent color of SPZ inputs almost exactly.
 
 ### Fixed
 
-- Fixed delayed cache memory reclamation in `gsl-build-lod` when reserving memory for worker threads.
+- Fixed `gsl-build-lod` briefly using more memory than `--memory-budget` when starting worker threads.
 
 ## [1.4.3] - 2026-10-25
 

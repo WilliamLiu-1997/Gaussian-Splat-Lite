@@ -114,7 +114,7 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 
 Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render. Loading, retries, and fades only make progress inside `update()`.
 
-Each scheduler has a 24 MiB allowance for source texture layers waiting for GPU upload. Repeated `update()` calls do not renew it; rendering submits the queued layers and makes room for more data. A region larger than the allowance proceeds when no upload bytes are pending. Keep rendering while waiting for `firstRenderable`, even before any batches are visible. This allowance does not cap total CPU/GPU memory or uploads from other schedulers.
+New data reaches the screen only when you render, so keep rendering while waiting for `firstRenderable`, even before anything is visible.
 
 ## Error recovery
 
