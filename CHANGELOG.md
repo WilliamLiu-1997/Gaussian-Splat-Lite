@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-27
+
 ### Added
 
 - Added `sources` to `RadStreamScheduler` and `SogStreamScheduler` to stream several inputs with one detail selection. The inputs share the splat budget and loading concurrency; RAD inputs also share both memory budgets, and each uses as much memory per Splat as the highest SH degree among them, limited by `maxSh`. See [RAD streaming](docs/RadStreamScheduler.md#multiple-inputs) and [SOG streaming](docs/SogStreamScheduler.md#multiple-inputs).
