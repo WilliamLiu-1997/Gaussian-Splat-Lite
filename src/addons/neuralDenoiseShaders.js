@@ -178,6 +178,31 @@ fn roundedHalf(v: vec4f) -> vec4f {
   return v + sign(v) * P.halfBias * (exponent / 1024.0);
 }
 
+// Rounding to the nearest half float loses every update smaller than half a
+// unit in the last place, so a running mean over many frames stops short of
+// its true value, on a side that depends on the pixel: a still view that
+// keeps rendering turns grainy again. A still camera's accumulated path
+// rounds up or down at random instead, with odds in proportion to the
+// distance, which keeps its mean where it belongs.
+fn pcg(v: u32) -> u32 {
+  let state: u32 = v * 747796405u + 2891336453u;
+  let word: u32 = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+// Four values in [0, 1) for a pixel, new every frame: the frame's jitter and
+// the scene's place in its target change with it.
+fn frameRandom(p: vec2i) -> vec4f {
+  let frame: vec4u = bitcast<vec4u>(vec4f(P.jitter, P.offset)) * vec4u(2654435761u, 2246822519u, 3266489917u, 668265263u);
+  let h: u32 = pcg(pcg(u32(p.x) | (u32(p.y) << 16u)) ^ frame.x ^ frame.y ^ frame.z ^ frame.w);
+  return (vec4f((vec4u(h) >> vec4u(0u, 8u, 16u, 24u)) & vec4u(255u)) + 0.5) / 256.0;
+}
+// roundedHalf, rounding at random as far as amount says.
+fn ditheredHalf(v: vec4f, u: vec4f, amount: f32) -> vec4f {
+  let magnitude: vec4f = max(abs(v), vec4f(6.1035156e-5));
+  let exponent: vec4f = bitcast<vec4f>(bitcast<vec4u>(magnitude) & vec4u(0x7f800000u));
+  return v + sign(v) * (P.halfBias + (u - 0.5) * amount) * (exponent / 1024.0);
+}
+
 struct History {
   uv: vec2f,
   valid: f32,
@@ -1123,9 +1148,18 @@ ${
   let tolerance: vec4f = 0.5 * previous.span + ${float(weights.stabilizeSlack)};
   let clamped: vec4f = clamp(previous.value, composite - tolerance, composite + tolerance);
   var out: Output;
-  out.accumulated = roundedHalf(s);
+  if (P.cameraStill > 0.5) {
+    // A history shorter than eight frames moves by many units a frame and
+    // rounds as before.
+    let u: vec4f = frameRandom(p);
+    let amount: f32 = step(8.0, aux.y);
+    out.accumulated = ditheredHalf(s, u, amount);
+    out.aux = vec4f(ditheredHalf(vec4f(y2), u.wzyx, amount).x, roundedHalf(vec4f(ns, nh, slow, 0.0)).xyz);
+  } else {
+    out.accumulated = roundedHalf(s);
+    out.aux = roundedHalf(vec4f(y2, ns, nh, slow));
+  }
   out.denoised = roundedHalf(dn);
-  out.aux = roundedHalf(vec4f(y2, ns, nh, slow));
   // Borrowed depth also makes the displayed history uncertain during motion.
   ${weights.stabilizeNoise ? "var" : "let"} stabilize: f32 = ${float(weights.stabilizeBlend)} * trust.z * mix(1.0, ${float(weights.sparseStabilize)}, sparseMotion);
 ${

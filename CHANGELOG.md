@@ -13,6 +13,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Neural denoising no longer lets a still view turn grainy again when it keeps rendering for many seconds.
+
 - `gsl-build-lod` limits pending disk writes within `--memory-budget` to prevent excessive memory use on slow disks.
 
 ## [1.5.1] - 2026-10-27
