@@ -16,7 +16,7 @@ import { HALF, half, halfBits, opacityRadius } from "./math.js";
 import { WorkerGroup, encoders } from "./parallel.js";
 import { Progress } from "./progress.js";
 import { SH_DIMS } from "./splats.js";
-import { readAll, removePath, writeAll } from "./storage.js";
+import { PAGE_BYTES, readAll, removePath } from "./storage.js";
 
 const CHUNK = 65536;
 // Fixed s8 range with SPZ's 1/128 SH step; -1 clips to -127/128.
@@ -158,27 +158,34 @@ const unorm = (value, min, max) =>
   Math.round(Math.max(0, Math.min(255, ((value - min) / (max - min)) * 255)));
 
 // The columns encodeChunk() reads. With a codebook, labels replace the SH.
-function gather(splats, base, count, codebook) {
+// The records before `kept` come through the cache, where counting left
+// them; the rest of them and the other columns, read once, pass it by.
+function gather(splats, base, count, codebook, kept) {
   return {
     base,
     count,
     maxSh: splats.maxSh,
-    records: splats.records.read(base * 16, new Float32Array(count * 16)),
+    records: splats.records.scan(
+      base * 16,
+      new Float32Array(count * 16),
+      count * 16,
+      kept * 16,
+    ),
     sh: codebook
       ? []
       : splats.sh
           .slice(0, splats.maxSh)
           .map((column, band) =>
-            column.read(
+            column.stream(
               base * SH_DIMS[band],
               new Uint16Array(count * SH_DIMS[band]),
             ),
           ),
     ...(codebook && {
-      labels: codebook.labels.read(base, new Uint16Array(count)),
+      labels: codebook.labels.stream(base, new Uint16Array(count)),
     }),
-    counts: splats.childCount.read(base, new Uint32Array(count)),
-    starts: splats.childStart.read(base, new Float64Array(count)),
+    counts: splats.childCount.stream(base, new Uint32Array(count)),
+    starts: splats.childStart.stream(base, new Float64Array(count)),
   };
 }
 
@@ -447,15 +454,16 @@ if (!isMainThread && workerData?.coder) {
 
 // With a codebook from clusterSh(), splats store SH as its labels.
 export async function writeRad(splats, output, chunked, lodBase, codebook) {
+  const { workspace } = splats;
   const chunks = [];
   const stem = chunkStem(output);
-  const spool = chunked ? undefined : splats.workspace.file();
+  const spool = chunked ? undefined : workspace.file();
   // Write every file completely before publishing chunks, then the header.
   // Track published names too, so cancellation rolls back this conversion.
   const staged = [];
   const created = [];
   const stage = (file, write) => {
-    splats.workspace.check();
+    workspace.check();
     const temporary = path.join(
       path.dirname(file),
       `.${path.basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
@@ -464,14 +472,15 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
     staged.push({ temporary, file });
     try {
       write(fd);
+      workspace.check();
       fsyncSync(fd);
-    } catch (error) {
+    } finally {
       try {
+        workspace.writeback.synced(fd);
+      } finally {
         closeSync(fd);
-      } catch {}
-      throw error;
+      }
     }
-    closeSync(fd);
   };
   let total = 0;
   let progress;
@@ -479,11 +488,11 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
     if (chunked) {
       const filename = `${stem}-${chunks.length}.radc`;
       stage(path.join(path.dirname(output), filename), (fd) =>
-        writeAll(fd, bytes, 0),
+        workspace.write(fd, bytes, 0),
       );
       chunks.push({ offset: 0, bytes: bytes.length, filename });
     } else {
-      writeAll(spool, bytes, total);
+      workspace.write(spool, bytes, total);
       chunks.push({ offset: total, bytes: bytes.length });
     }
     total += bytes.length;
@@ -493,21 +502,29 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
   // order. A chunk's failure is thrown when its turn comes, not as an
   // unhandled rejection while an earlier chunk is awaited.
   const pending = [];
-  const encoder = new Encoder(
-    splats.workspace,
-    Math.ceil(splats.length / CHUNK),
-  );
+  const encoder = new Encoder(workspace, Math.ceil(splats.length / CHUNK));
   try {
-    // Count the encoding ranges in a first pass.
+    // Count the encoding ranges in a first pass. The records that the cache
+    // holds stay there for encoding; see gather(). Recompute the prefix
+    // after measuring worker growth so it fits a cache that has shrunk.
+    const keep = () => {
+      workspace.adjust();
+      return Math.floor(Math.max(0, workspace.capacity - PAGE_BYTES) / 64);
+    };
     const chunkCount = Math.ceil(splats.length / CHUNK);
     progress = new Progress("Analyzing RAD encoding", chunkCount);
     let countedChunks = 0;
     for (let base = 0; base < splats.length; base += CHUNK) {
-      splats.workspace.check();
+      workspace.check();
+      // The encoders grow as they work, and reading past the cache loads
+      // no pages, which would measure them.
+      const kept = keep();
       const count = Math.min(CHUNK, splats.length - base);
-      const records = splats.records.read(
+      const records = splats.records.scan(
         base * 16,
         new Float32Array(count * 16),
+        count * 16,
+        kept * 16,
       );
       const counted = encoder
         .count(records)
@@ -522,12 +539,14 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
     progress.finish();
     progress = new Progress("Encoding RAD chunks", chunkCount);
     for (let base = 0; base < splats.length; base += CHUNK) {
-      splats.workspace.check();
+      workspace.check();
+      const kept = keep();
       const chunk = gather(
         splats,
         base,
         Math.min(CHUNK, splats.length - base),
         codebook,
+        kept,
       );
       if (codebook && base === 0)
         chunk.codes = encodeCodes(codebook, splats.maxSh);
@@ -556,25 +575,28 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
       meta.length + (spool === undefined ? 0 : total),
     );
     stage(output, (fd) => {
-      writeAll(fd, meta, 0);
+      workspace.write(fd, meta, 0);
       if (spool !== undefined) {
         const buffer = Buffer.allocUnsafe(1024 * 1024);
         for (let offset = 0; offset < total; offset += buffer.length) {
-          splats.workspace.check();
+          workspace.check();
           const bytes = buffer.subarray(
             0,
             Math.min(buffer.length, total - offset),
           );
           readAll(spool, bytes, offset);
-          writeAll(fd, bytes, meta.length + offset);
+          workspace.write(fd, bytes, meta.length + offset);
           writing.update(meta.length + offset + bytes.length);
         }
       }
     });
     writing.finish();
+    // Closing an output waits only for a sync that includes it; a temporary
+    // file's failed writeback must surface before anything is published.
+    workspace.writeback.wait();
     const publishing = new Progress("Publishing RAD files", staged.length);
     for (const { temporary, file } of staged) {
-      splats.workspace.check();
+      workspace.check();
       // rename can replace an existing file, so reserve the name exclusively.
       const fd = openSync(file, "wx");
       created.push(file);
@@ -582,7 +604,7 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
       renameSync(temporary, file);
       publishing.update(created.length);
     }
-    splats.workspace.check();
+    workspace.check();
     publishing.finish();
     return meta.length + total;
   } catch (error) {

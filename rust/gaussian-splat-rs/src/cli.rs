@@ -29,11 +29,17 @@ impl Receiver {
         if self.error.borrow().is_some() {
             return;
         }
+        // A view of this module's memory rather than a copy: the copies'
+        // freed buffers stayed in the process and took room from the
+        // builder's cache.
+        // SAFETY: the callback uses the values before it returns and calls
+        // nothing here, so the memory cannot grow while the view is in use.
+        let values = unsafe { Float32Array::view(values) };
         if let Err(error) = self.callback.call3(
             &JsValue::UNDEFINED,
             &name.into(),
             &JsValue::from_f64(base as f64),
-            &Float32Array::from(values),
+            &values,
         ) {
             *self.error.borrow_mut() = Some(error);
         }

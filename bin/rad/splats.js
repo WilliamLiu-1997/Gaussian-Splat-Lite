@@ -12,7 +12,7 @@ import {
   quaternion,
 } from "./math.js";
 import { Progress } from "./progress.js";
-import { IndexArray, PagedArray, Permutation } from "./storage.js";
+import { IndexArray, PAGE_BYTES, PagedArray, Permutation } from "./storage.js";
 
 export const SH_DIMS = [9, 15, 21];
 
@@ -75,8 +75,15 @@ export class Splats {
     // Each splat's merge weight, area × opacity, which merge() reads instead
     // of two records.
     this.weight = new PagedArray(workspace, Float64Array);
+    // Each splat's feature size, for the passes that read nothing else of a
+    // record, and the bounds of the centers; see reorder().
+    this.sizes = new PagedArray(workspace, Float32Array);
+    this.bounds = undefined;
     // The two child weights of each merged splat, for mergeSh().
     this.blend = new PagedArray(workspace, Float64Array);
+    // Each decoded splat's row in the SH columns: as decoded, and from
+    // mergeSh() on, in the order merges read them; see shRow().
+    this.shOrder = undefined;
     this.merged = new Float64Array(16);
     this.bits = new Uint16Array(0);
     this.merger = new Merger();
@@ -132,9 +139,6 @@ export class Splats {
 
   read(index, output) {
     return this.records.read(index * 16, output, 16);
-  }
-  feature(index) {
-    return this.records.get(index * 16 + 14);
   }
 
   // Skips empty splats and counts invalid ones in `invalid`: NaN or infinite
@@ -192,6 +196,8 @@ export class Splats {
             this.sh[band].write(count * dims, rows[band]);
           }
         }
+        // The record's page is cached.
+        this.sizes.set(count, this.records.get(count * 16 + 14));
         count++;
       }
       progress.update(base + size);
@@ -226,6 +232,7 @@ export class Splats {
     const index = this.length++;
     this.records.write(index * 16, out);
     this.weight.set(index, out[15] * out[3]);
+    this.sizes.set(index, out[14]);
     this.children.push(a);
     this.children.push(b);
     // SH coefficients do not affect merging; mergeSh() blends them later.
@@ -236,46 +243,105 @@ export class Splats {
     return index;
   }
 
-  // Blends the SH coefficients of the splats merge() created from `initial`
-  // on, in creation order, so children are done before their parents. Going
-  // band by band keeps the random reads of children within one column.
-  // Workers blend batches of splats whose children precede the batch; the
-  // rest wait for their children in the batch.
+  // Blend each SH band in creation order, children before parents. Reorder
+  // leaves for sequential reads; only merged children need random reads.
+  // Batches use at most half the cache for child pages. Workers handle
+  // earlier children; children within the batch are blended below in order.
   mergeSh(initial, pool) {
+    if (!this.maxSh) return;
     const { nodes, entries, later, blends, blended, results } = pool;
+    // Each leaf occurs once, as a merge child or the lone root. Replace its
+    // decoded SH row with its position in merge-read order.
+    const reads = new IndexArray(this.workspace);
+    const collecting = new Progress("Collecting SH order", this.length);
+    for (let k = 0; k < (this.length - initial) * 2; k++) {
+      const child = this.children.get(k);
+      if (child < initial) {
+        reads.push(this.shOrder.get(child));
+        this.shOrder.set(child, reads.length - 1);
+      }
+      if ((k & 4095) === 0) collecting.update(k / 2);
+    }
+    if (this.length === initial) {
+      reads.push(this.shOrder.get(0));
+      this.shOrder.set(0, 0);
+    }
+    collecting.finish();
+    const leafRows = new Permutation(
+      this.workspace,
+      reads,
+      initial,
+      "Preparing SH order",
+    );
+    reads.dispose();
     // Splats per batch.
     const size = later.length;
     const rows = [this.shLeft, this.shRight];
     for (let band = 0; band < this.maxSh; band++) {
+      const dims = SH_DIMS[band];
+      const column = leafRows.apply(
+        this.sh[band],
+        dims,
+        pool,
+        false,
+        `Reordering SH${band + 1}`,
+      );
+      this.sh[band] = column;
       const progress = new Progress(
         `Blending SH${band + 1}`,
         this.length - initial,
       );
-      const dims = SH_DIMS[band];
-      const column = this.sh[band].share();
-      for (let start = initial; start < this.length; start += size) {
-        const count = Math.min(size, this.length - start);
+      // The batch that last counted each page of the column.
+      const counted = new Float64Array(
+        Math.ceil((this.length * dims) / column.items),
+      );
+      let batch = 0;
+      // The row of the next decoded splat that a merge reads.
+      let next = 0;
+      for (let start = initial; start < this.length; ) {
+        const limit = Math.min(size, this.length - start);
+        const pages = Math.max(
+          1,
+          Math.floor(this.workspace.capacity / PAGE_BYTES / 2),
+        );
+        batch++;
+        let taken = 0;
+        let count = 0;
         // Load the pages of the children's rows for the workers. Consecutive
         // splats' children often share pages; a page evicted meanwhile is a
         // miss that the main thread blends.
         let left = -1;
         let right = -1;
-        for (let i = 0; i < count; i++) {
-          const a = this.children.get((start + i - initial) * 2);
-          const b = this.children.get((start + i - initial) * 2 + 1);
-          nodes[i] = a;
-          entries[i] = b;
-          blends[i * 2] = this.blend.get((start + i - initial) * 2);
-          blends[i * 2 + 1] = this.blend.get((start + i - initial) * 2 + 1);
-          later[i] = Number(a >= start || b >= start);
+        while (count < limit) {
+          const k = (start + count - initial) * 2;
+          const a = this.children.get(k);
+          const b = this.children.get(k + 1);
+          const ra = a < initial ? next : a;
+          const rb = b < initial ? next + Number(a < initial) : b;
+          const pa = Math.floor((ra * dims) / column.items);
+          const pb = Math.floor((rb * dims) / column.items);
+          let added = Number(ra < start && counted[pa] !== batch);
+          if (rb < start && counted[pb] !== batch && !(added && pb === pa))
+            added++;
+          if (count && taken + added > pages) break;
+          taken += added;
+          if (ra < start) counted[pa] = batch;
+          if (rb < start) counted[pb] = batch;
+          next += Number(a < initial) + Number(b < initial);
+          const i = count++;
+          nodes[i] = ra;
+          entries[i] = rb;
+          blends[i * 2] = this.blend.get(k);
+          blends[i * 2 + 1] = this.blend.get(k + 1);
+          later[i] = Number(ra >= start || rb >= start);
           if (later[i]) continue;
-          if (Math.floor((a * dims) / column.items) !== left) {
-            left = Math.floor((a * dims) / column.items);
-            column.page(a * dims);
+          if (pa !== left) {
+            left = pa;
+            column.page(ra * dims);
           }
-          if (Math.floor((b * dims) / column.items) !== right) {
-            right = Math.floor((b * dims) / column.items);
-            column.page(b * dims);
+          if (pb !== right) {
+            right = pb;
+            column.page(rb * dims);
           }
         }
         pool.blend(column, count, dims);
@@ -297,14 +363,19 @@ export class Splats {
             );
         }
         column.write(start * dims, blended, count * dims);
-        progress.update(start + count - initial);
+        start += count;
+        progress.update(start - initial);
       }
       progress.finish();
     }
+    leafRows.dispose();
     this.blend.dispose();
   }
 
-  // Moves row indices[i] of the records and SH to row i.
+  // Moves row indices[i] of the records to row i, and keeps `indices` for
+  // the SH rows, which move once merging has built the tree; see mergeSh().
+  // The splats' sizes and weights, and the bounds of their centers, come
+  // from the records while each window of them is cached.
   reorder(indices, pool) {
     const permutation = new Permutation(
       this.workspace,
@@ -312,23 +383,43 @@ export class Splats {
       this.length,
       "Preparing splat order",
     );
+    this.sizes.dispose();
+    const sizes = this.sizes;
+    const bounds = {
+      min: [0, 1, 2].map(() => Number.POSITIVE_INFINITY),
+      max: [0, 1, 2].map(() => Number.NEGATIVE_INFINITY),
+    };
+    const record = new Float64Array(16);
     this.records = permutation.apply(
       this.records,
       16,
       pool,
       false,
       "Reordering splats",
+      (records, start, end) => {
+        for (let i = start; i < end; i++) {
+          records.read(i * 16, record, 16);
+          for (let d = 0; d < 3; d++) {
+            bounds.min[d] = Math.min(bounds.min[d], record[d]);
+            bounds.max[d] = Math.max(bounds.max[d], record[d]);
+          }
+          this.weight.set(i, record[15] * record[3]);
+          sizes.set(i, record[14]);
+        }
+      },
     );
-    for (let band = 0; band < this.maxSh; band++)
-      this.sh[band] = permutation.apply(
-        this.sh[band],
-        SH_DIMS[band],
-        pool,
-        false,
-        `Reordering SH${band + 1}`,
-      );
+    this.bounds = bounds;
     permutation.dispose();
     this.length = indices.length;
+    if (this.maxSh) this.shOrder = indices;
+    else indices.dispose();
+  }
+
+  // The row of splat `index` in the SH columns after mergeSh(): merged
+  // splats keep theirs, and the decoded ones are in the order merges read
+  // them.
+  shRow(index) {
+    return index < this.shOrder.length ? this.shOrder.get(index) : index;
   }
 
   dispose() {
@@ -339,6 +430,7 @@ export class Splats {
       this.childCount,
       this.children,
       this.weight,
+      this.sizes,
       this.blend,
     ])
       column.dispose();

@@ -6,7 +6,7 @@ import { HALF } from "./math.js";
 import { WorkerGroup, clusterers } from "./parallel.js";
 import { Progress } from "./progress.js";
 import { SH_DIMS } from "./splats.js";
-import { PagedArray } from "./storage.js";
+import { PAGE_BYTES, PagedArray } from "./storage.js";
 
 // Codebook entries at most: RAD labels are 16-bit.
 const MAX_CODES = 65536;
@@ -323,6 +323,13 @@ class Assigner extends WorkerGroup {
   }
 }
 
+// Rows that fit in the cache, allowing a partial page per column. Repeated
+// scans cache this prefix and bypass the rest to avoid evicting it.
+function fitting(bytes, row, columns) {
+  const pages = Math.floor(bytes / PAGE_BYTES) - columns;
+  return Math.max(0, Math.floor((pages * PAGE_BYTES) / row));
+}
+
 // Reads splats' SH as rows of half bits, the bands one after another, with
 // their weights, area × opacity as merging weighs them.
 class Rows {
@@ -330,16 +337,21 @@ class Rows {
     this.splats = splats;
     this.dims = dims;
     this.length = splats.length;
+    this.kept = Number.POSITIVE_INFINITY;
     this.column = new Uint16Array(JOB * SH_DIMS[SH_DIMS.length - 1]);
     this.records = new Float32Array(JOB * 16);
   }
 
+  keep(bytes) {
+    this.kept = fitting(bytes, this.dims * 2 + 64, this.splats.maxSh + 1);
+  }
+
   read(base, count, bits, weights) {
-    const { splats, dims, column } = this;
+    const { splats, dims, column, kept } = this;
     let offset = 0;
     for (let band = 0; band < splats.maxSh; band++) {
       const size = SH_DIMS[band];
-      splats.sh[band].read(base * size, column, count * size);
+      splats.sh[band].scan(base * size, column, count * size, kept * size);
       for (let i = 0; i < count; i++)
         for (let d = 0; d < size; d++)
           bits[i * dims + offset + d] = column[i * size + d];
@@ -349,10 +361,11 @@ class Rows {
   }
 
   weigh(base, count, weights) {
-    const records = this.splats.records.read(
+    const records = this.splats.records.scan(
       base * 16,
       this.records,
       count * 16,
+      this.kept * 16,
     );
     for (let i = 0; i < count; i++)
       weights[i] = records[i * 16 + 15] * records[i * 16 + 3];
@@ -364,13 +377,19 @@ class Sample {
   constructor(workspace, dims) {
     this.dims = dims;
     this.length = 0;
+    this.kept = Number.POSITIVE_INFINITY;
     this.bits = new PagedArray(workspace, Uint16Array);
     this.weights = new PagedArray(workspace, Float64Array);
   }
 
+  keep(bytes) {
+    this.kept = fitting(bytes, this.dims * 2 + 8, 2);
+  }
+
   read(base, count, bits, weights) {
-    this.bits.read(base * this.dims, bits, count * this.dims);
-    this.weights.read(base, weights, count);
+    const { dims, kept } = this;
+    this.bits.scan(base * dims, bits, count * dims, kept * dims);
+    this.weights.scan(base, weights, count, kept);
   }
 
   dispose() {
@@ -653,11 +672,21 @@ export async function clusterSh(splats, iterations, module) {
       extra,
       Math.ceil(training.length / size),
     );
+    // Measure worker growth between passes: bypass reads do not allocate
+    // pages or trigger measurements. Leave room for labels when the final
+    // pass shares the training cache.
+    const labelPages = sampled ? 0 : Math.ceil((length * 2) / PAGE_BYTES);
+    const keep = () => {
+      workspace.adjust();
+      training.keep(workspace.capacity - labelPages * PAGE_BYTES);
+    };
+    keep();
     const codes = new Float64Array(count * dims);
     const sums = new Float64Array(count * dims);
     const totals = new Float64Array(count);
     const bits = new Uint16Array(dims);
     const weight = new Float64Array(1);
+    // Read seeds past the cached prefix directly, preserving training rows.
     for (let c = 0; c < count; c++) {
       // Spark computes the seed rows in single precision.
       const row = Math.floor(
@@ -705,6 +734,7 @@ export async function clusterSh(splats, iterations, module) {
         layout(codes, order, dims, center, blocked, norms);
         await assigner.use("codes", { codes: blocked, norms, center });
       }
+      keep();
       if (!last) {
         sums.fill(0);
         totals.fill(0);

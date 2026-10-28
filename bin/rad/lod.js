@@ -49,21 +49,17 @@ export function buildLod(splats, lodBase, pool) {
   splats.weight.dispose();
   selection.finish(`${retainedCount} nodes retained`);
 
-  // Ordering reads sizes at random; a copy without the rest of each record
-  // stays cached.
-  const sizes = new PagedArray(workspace, Float32Array);
-  const sizing = new Progress("Reading LOD sizes", splats.length);
-  for (let index = 0; index < splats.length; index++) {
-    sizes.set(index, splats.feature(index));
-    if ((index & 4095) === 0) sizing.update(index);
-  }
-  sizing.finish();
+  // Ordering reads sizes at random, from a column without the rest of each
+  // record, and lists them in logical order for chunkTree().
+  const sizes = splats.sizes;
   // A splat's logical index is its position in `order`. Its children get
   // consecutive logical indices: `first` and the `counts` - 1 after it.
   const order = new IndexArray(workspace);
   const first = new IndexArray(workspace);
   const counts = new IndexArray(workspace);
+  const ordered = new PagedArray(workspace, Float32Array);
   order.push(root);
+  ordered.push(sizes.get(root));
   // The splats to visit, by logical index, splat and size: the frontier of a
   // pass as triples of words, and a stack within it.
   let frontier = new IndexArray(workspace);
@@ -120,17 +116,22 @@ export function buildLod(splats, lodBase, pool) {
         const start = order.length;
         first.set(logical, start);
         counts.set(logical, count);
-        for (let c = 0; c < count; c++) order.push(list[c]);
         if (top + count > logicals.length) {
           logicals = grow(logicals, top, top + count);
           indices = grow(indices, top, top + count);
           lengths = grow(lengths, top, top + count);
         }
-        for (let c = count - 1; c >= 0; c--) {
-          logicals[top] = start + c;
-          indices[top] = list[c];
-          lengths[top++] = sizes.get(list[c]);
+        // Each child's size is read once, at random, for both uses.
+        for (let c = 0; c < count; c++) {
+          const length = sizes.get(list[c]);
+          order.push(list[c]);
+          ordered.push(length);
+          const at = top + count - 1 - c;
+          logicals[at] = start + c;
+          indices[at] = list[c];
+          lengths[at] = length;
         }
+        top += count;
       }
     }
     frontier.dispose();
@@ -143,7 +144,7 @@ export function buildLod(splats, lodBase, pool) {
   sizes.dispose();
   kept.dispose();
   ordering.finish();
-  chunkTree(splats, order, first, counts, pool);
+  chunkTree(splats, order, first, counts, ordered, pool);
   order.dispose();
 }
 
@@ -152,24 +153,8 @@ export function buildLod(splats, lodBase, pool) {
 function mergeLevels(splats, pool) {
   const initial = splats.length;
   const workspace = splats.workspace;
-  // Merged splats lie within the leaves' bounds. merge() reads the leaves'
-  // weights.
-  const bounds = {
-    min: [0, 1, 2].map(() => Number.POSITIVE_INFINITY),
-    max: [0, 1, 2].map(() => Number.NEGATIVE_INFINITY),
-  };
-  const record = new Float64Array(16);
-  const preparing = new Progress("Preparing LOD bounds", initial);
-  for (let i = 0; i < initial; i++) {
-    splats.read(i, record);
-    for (let d = 0; d < 3; d++) {
-      bounds.min[d] = Math.min(bounds.min[d], record[d]);
-      bounds.max[d] = Math.max(bounds.max[d], record[d]);
-    }
-    splats.weight.set(i, record[15] * record[3]);
-    if ((i & 4095) === 0) preparing.update(i);
-  }
-  preparing.finish();
+  // Merged splats lie within the leaves' bounds.
+  const { bounds, sizes } = splats;
   const removed = new PagedArray(workspace, Uint8Array);
   const similarities = new Similarities(splats);
   let active = new Heap(workspace);
@@ -187,7 +172,7 @@ function mergeLevels(splats, pool) {
   const added = new Cells(18);
   const near = new Cells(20);
   for (
-    let level = Math.ceil(Math.log2(Math.max(splats.feature(0), 0.000001)));
+    let level = Math.ceil(Math.log2(Math.max(sizes.get(0), 0.000001)));
     ;
     level++
   ) {
@@ -199,14 +184,14 @@ function mergeLevels(splats, pool) {
     let high = initial;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
-      if (splats.feature(middle) <= step) low = middle + 1;
+      if (sizes.get(middle) <= step) low = middle + 1;
       else high = middle;
     }
     const { grid, queue } = Progress.inline(() => {
       const adding = new Progress(`Preparing level ${level}`, low - frontier);
       const previous = frontier;
       while (frontier < low) {
-        active.push(frontier, -splats.feature(frontier));
+        active.push(frontier, -sizes.get(frontier));
         frontier++;
         if ((frontier & 4095) === 0) adding.update(frontier - previous);
       }
@@ -323,7 +308,7 @@ function mergeLevels(splats, pool) {
         removed.set(other, 1);
         grid.remove(self);
         grid.remove(best);
-        const feature = splats.feature(merged);
+        const feature = sizes.get(merged);
         if (feature > step) next.push(merged, -feature);
         else {
           const terms =
@@ -404,8 +389,8 @@ function sort(values, count) {
 
 // Lays out the tree in chunks of 65536 splats and moves every column into
 // that order. Children become consecutive rows: childStart is then the row of
-// a splat's first child.
-function chunkTree(splats, order, first, counts, pool) {
+// a splat's first child. `sizes` are the splats' sizes in logical order.
+function chunkTree(splats, order, first, counts, sizes, pool) {
   const workspace = splats.workspace;
   const nodes = splats.length;
   for (const column of [splats.childStart, splats.childCount, splats.children])
@@ -426,13 +411,6 @@ function chunkTree(splats, order, first, counts, pool) {
     "Reordering LOD nodes",
   );
   logical.dispose();
-  const sizes = new PagedArray(workspace, Float32Array);
-  const sizing = new Progress("Reading chunk sizes", order.length);
-  for (let index = 0; index < order.length; index++) {
-    sizes.set(index, splats.feature(index));
-    if ((index & 4095) === 0) sizing.update(index);
-  }
-  sizing.finish();
   // The row of each splat's first child.
   const starts = new PagedArray(workspace, Float64Array);
   const indices = new IndexArray(workspace);
@@ -629,28 +607,31 @@ function chunkTree(splats, order, first, counts, pool) {
     "Reordering child offsets",
   );
   chunked.dispose();
-  // The SH coefficients are still in node order.
-  const shOrder = new Progress("Collecting LOD SH order", indices.length);
-  for (let i = 0; i < indices.length; i++) {
-    indices.set(i, order.get(indices.get(i)));
-    if ((i & 4095) === 0) shOrder.update(i);
-  }
-  shOrder.finish();
-  const nodeOrder = new Permutation(
-    workspace,
-    indices,
-    nodes,
-    "Preparing LOD SH order",
-  );
-  for (let band = 0; band < splats.maxSh; band++)
-    splats.sh[band] = nodeOrder.apply(
-      splats.sh[band],
-      SH_DIMS[band],
-      pool,
-      false,
-      `Reordering LOD SH${band + 1}`,
+  // The SH coefficients are still in the order of mergeSh().
+  if (splats.maxSh) {
+    const shOrder = new Progress("Collecting LOD SH order", indices.length);
+    for (let i = 0; i < indices.length; i++) {
+      indices.set(i, splats.shRow(order.get(indices.get(i))));
+      if ((i & 4095) === 0) shOrder.update(i);
+    }
+    shOrder.finish();
+    splats.shOrder.dispose();
+    const nodeOrder = new Permutation(
+      workspace,
+      indices,
+      nodes,
+      "Preparing LOD SH order",
     );
-  nodeOrder.dispose();
+    for (let band = 0; band < splats.maxSh; band++)
+      splats.sh[band] = nodeOrder.apply(
+        splats.sh[band],
+        SH_DIMS[band],
+        pool,
+        false,
+        `Reordering LOD SH${band + 1}`,
+      );
+    nodeOrder.dispose();
+  }
   first.dispose();
   splats.length = indices.length;
   indices.dispose();

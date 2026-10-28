@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `gsl-build-lod` reduces temporary-file reads for models larger than `--memory-budget`.
+
+### Fixed
+
+- `gsl-build-lod` limits pending disk writes within `--memory-budget` to prevent excessive memory use on slow disks.
+
 ## [1.5.1] - 2026-10-27
 
 ### Changed

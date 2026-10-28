@@ -247,7 +247,7 @@ export function sortSplats(splats, pool) {
   // rank alone keeps splats of equal size in index order.
   const items = new IndexArray(workspace);
   for (let i = 0; i < count; i++) {
-    const key = rank(-splats.feature(i));
+    const key = rank(-splats.sizes.get(i));
     const words = items.page(i * 2, true);
     const offset = (i * 2) & items.mask;
     words[offset] = key;
@@ -266,5 +266,4 @@ export function sortSplats(splats, pool) {
   sorted.dispose();
   ordering.finish();
   splats.reorder(order, pool);
-  order.dispose();
 }

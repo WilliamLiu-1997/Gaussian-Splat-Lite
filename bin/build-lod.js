@@ -13,6 +13,7 @@ import { buildLod } from "./rad/lod.js";
 import { Pool } from "./rad/parallel.js";
 import { checkOutput, writeRad } from "./rad/rad.js";
 import { GIB, Workspace } from "./rad/storage.js";
+import { syncFiles } from "./rad/writeback.js";
 
 const help = `Convert PLY or SPZ files to RAD with levels of detail (LOD).
 
@@ -37,7 +38,7 @@ Options:
   -h, --help             Show this help
 
 SH4 inputs are accepted; coefficients above --max-sh are discarded.
-The memory target covers the whole conversion, worker threads included.
+The memory target covers the conversion, worker threads and pending disk writes included.
 Requires Node.js 22.12 or later. No compilation is required.`;
 
 function parse(args) {
@@ -139,7 +140,13 @@ async function convert(input, options, kernel, cancelled) {
       `${path.basename(input, path.extname(input))}-lod.rad`,
     );
   checkOutput(output, options.chunked);
-  const workspace = new Workspace(options.budget, options.tempDir, cancelled);
+  const workspace = new Workspace(
+    options.budget,
+    (files, state) =>
+      parentPort.postMessage({ method: "writeback", args: [files, state] }),
+    options.tempDir,
+    cancelled,
+  );
   const start = performance.now();
   console.log(
     `${input} -> ${output}\nMemory target: ${(options.budget / GIB).toFixed(3)} GiB`,
@@ -222,6 +229,7 @@ async function run(options, cancelled) {
 
 // Keep signal handling responsive while the conversion runs synchronous code.
 // The worker observes cancellation and unwinds its existing catch/finally blocks.
+// Cleanup finishes submitted writeback before closing files and exiting.
 async function start(options) {
   const cancelled = new Int32Array(new SharedArrayBuffer(4));
   let progressLine = "";
@@ -230,6 +238,7 @@ async function start(options) {
     progressLine = "";
   };
   const print = ({ method, args }) => {
+    if (method === "writeback") return syncFiles(...args, cancelled);
     if (method === "progress") {
       const [line, done] = args;
       if (process.stdout.isTTY) {
@@ -249,7 +258,9 @@ async function start(options) {
     const code = signal === "SIGINT" ? 130 : 143;
     if (Atomics.compareExchange(cancelled, 0, 0, code) === 0) {
       endProgress();
-      console.error(`${signal}: cancelling conversion and cleaning up...`);
+      console.error(
+        `${signal}: cancelling conversion; waiting for active disk I/O before cleanup...`,
+      );
     }
   };
   process.on("SIGINT", interrupt);

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import v8 from "node:v8";
 import { runInNewContext } from "node:vm";
 import { Progress } from "./progress.js";
+import { Writeback } from "./writeback.js";
 
 export const PAGE_BYTES = 65536;
 export const GIB = 1024 ** 3;
@@ -39,7 +40,7 @@ export function collect() {
 // which a SharedArrayBuffer does not on every platform. The cache takes what
 // the budget leaves after the rest of the process, measured as it runs.
 export class Workspace {
-  constructor(budget, parent = tmpdir(), cancelled = null) {
+  constructor(budget, sync, parent = tmpdir(), cancelled = null) {
     this.budget = budget;
     this.parent = parent;
     this.cancelled = cancelled;
@@ -74,6 +75,9 @@ export class Workspace {
     this.nextFile = 0;
     this.readBytes = 0;
     this.writeBytes = 0;
+    // File writes can remain in the system's cache after writeSync returns.
+    // Reserve room for pending writeback inside the budget on every platform.
+    this.writeback = new Writeback(64 * 1024 ** 2, sync, () => this.check());
     // An earlier conversion's arenas return once collected.
     this.settle();
   }
@@ -87,13 +91,28 @@ export class Workspace {
   get capacity() {
     return Math.max(
       this.arenaBytes,
-      this.budget - MARGIN - Math.max(this.outside, this.floor),
+      this.budget -
+        MARGIN -
+        this.writeback.limit -
+        Math.max(this.outside, this.floor),
     );
   }
 
   // Bytes the rest of the process may still grow by.
   get room() {
-    return this.budget - MARGIN - this.arenaBytes - this.outside;
+    return (
+      this.budget -
+      MARGIN -
+      this.writeback.limit -
+      this.arenaBytes -
+      this.outside
+    );
+  }
+
+  // Rebalance the cache every 64 allocations and between streaming passes.
+  adjust() {
+    this.measure();
+    this.shrink();
   }
 
   // Measures the memory of the rest of the process: all of it but the
@@ -117,7 +136,10 @@ export class Workspace {
   expect(bytes) {
     this.measure();
     this.floor = this.outside + bytes;
-    if (this.budget - MARGIN - this.floor < this.arenaBytes)
+    if (
+      this.budget - MARGIN - this.writeback.limit - this.floor <
+      this.arenaBytes
+    )
       throw new Error("Memory budget too small; increase --memory-budget");
     this.shrink();
   }
@@ -161,9 +183,32 @@ export class Workspace {
     const file = this.files.get(fd);
     this.files.delete(fd);
     try {
-      closeSync(fd);
-      rmSync(file);
-    } catch {}
+      this.writeback.synced(fd);
+    } finally {
+      try {
+        closeSync(fd);
+        rmSync(file);
+      } catch {}
+    }
+  }
+
+  // Reserve writeback room before each write, including large output chunks.
+  // Counting whole 64 KiB pages also covers partial pages on systems whose
+  // native pages are larger than 4 KiB.
+  write(fd, bytes, position) {
+    for (let offset = 0; offset < bytes.byteLength; offset += 1024 * 1024) {
+      const part =
+        bytes.byteLength <= 1024 * 1024
+          ? bytes
+          : bytes.subarray(offset, offset + 1024 * 1024);
+      const at = position + offset;
+      const size =
+        Math.ceil(((at % PAGE_BYTES) + part.byteLength) / PAGE_BYTES) *
+        PAGE_BYTES;
+      this.writeback.prepare(size);
+      writeAll(fd, part, at);
+      this.writeback.wrote(fd, size);
+    }
   }
 
   evict() {
@@ -198,10 +243,7 @@ export class Workspace {
   }
 
   allocate(array, index) {
-    if (++this.allocations % 64 === 0) {
-      this.measure();
-      this.shrink();
-    }
+    if (++this.allocations % 64 === 0) this.adjust();
     if (this.used + PAGE_BYTES > this.capacity && this.used) this.evict();
     let slot = this.free.pop();
     if (slot === undefined) {
@@ -278,25 +320,29 @@ export class Workspace {
   }
 
   dispose() {
-    const progress = this.directory
-      ? new Progress("Cleaning temporary files", this.files.size + 1)
-      : undefined;
-    let closed = 0;
-    for (const fd of this.files.keys()) {
-      this.close(fd);
-      progress?.update(++closed);
-    }
-    if (this.directory) removePath(this.directory, { recursive: true });
-    this.directory = undefined;
-    this.slots.length = 0;
-    this.reuse.length = 0;
-    this.free.length = 0;
-    this.arenas.length = 0;
-    progress?.finish();
-    if (this.readBytes || this.writeBytes) {
-      console.log(
-        `Temporary array I/O: ${(this.readBytes / 1048576).toFixed(1)} MiB read, ${(this.writeBytes / 1048576).toFixed(1)} MiB written`,
-      );
+    try {
+      this.writeback.wait(false);
+    } finally {
+      const progress = this.directory
+        ? new Progress("Cleaning temporary files", this.files.size + 1)
+        : undefined;
+      let closed = 0;
+      for (const fd of this.files.keys()) {
+        this.close(fd);
+        progress?.update(++closed);
+      }
+      if (this.directory) removePath(this.directory, { recursive: true });
+      this.directory = undefined;
+      this.slots.length = 0;
+      this.reuse.length = 0;
+      this.free.length = 0;
+      this.arenas.length = 0;
+      progress?.finish();
+      if (this.readBytes || this.writeBytes) {
+        console.log(
+          `Temporary array I/O: ${(this.readBytes / 1048576).toFixed(1)} MiB read, ${(this.writeBytes / 1048576).toFixed(1)} MiB written`,
+        );
+      }
     }
   }
 }
@@ -348,7 +394,7 @@ export class PagedArray {
     const stripe = block % this.stripes;
     const position = Math.floor(block / this.stripes) * PAGE_BYTES;
     this.fds[stripe] ??= this.workspace.file();
-    writeAll(this.fds[stripe], bytes, position);
+    this.workspace.write(this.fds[stripe], bytes, position);
     this.sizes[stripe] = Math.max(
       this.sizes[stripe] ?? 0,
       position + PAGE_BYTES,
@@ -425,6 +471,47 @@ export class PagedArray {
       offset += size;
     }
     return output;
+  }
+
+  // Read into the same array type, bypassing the cache on misses so a scan
+  // cannot evict cached pages.
+  stream(base, output, count = output.length, at = 0) {
+    const bytes = this.Type.BYTES_PER_ELEMENT;
+    let offset = 0;
+    while (offset < count) {
+      if ((++this.workspace.accesses & 4095) === 0) this.workspace.check();
+      const index = base + offset;
+      const block = Math.floor(index * this.inverse);
+      const within = index & this.mask;
+      const size = Math.min(count - offset, this.items - within);
+      const page = this.pages[block];
+      if (page)
+        output.set(page.values.subarray(within, within + size), at + offset);
+      else {
+        const stripe = block % this.stripes;
+        const position = Math.floor(block / this.stripes) * PAGE_BYTES;
+        const part = new Uint8Array(
+          output.buffer,
+          output.byteOffset + (at + offset) * bytes,
+          size * bytes,
+        );
+        // As in allocate(), a page that no file holds is zeros.
+        if (position >= (this.sizes[stripe] ?? 0)) part.fill(0);
+        else {
+          readAll(this.fds[stripe], part, position + within * bytes);
+          this.workspace.readBytes += part.byteLength;
+        }
+      }
+      offset += size;
+    }
+    return output;
+  }
+
+  // Cache the prefix before `kept`; stream the rest to preserve it for reuse.
+  scan(base, output, count, kept) {
+    const cached = Math.max(0, Math.min(count, kept - base));
+    this.read(base, output, cached);
+    return this.stream(base + cached, output, count - cached, cached);
   }
 
   write(base, values, count = values.length) {
@@ -657,8 +744,17 @@ export class Permutation {
   // rows into it; rows across pages are left to the main thread. The output
   // spreads over as many files as `source`.
   // With `words`, rows are copied as 32-bit words, which keeps any bits of
-  // floats, and the output has word views; see PagedArray.at().
-  apply(source, stride, pool, words = false, label = undefined) {
+  // floats, and the output has word views; see PagedArray.at(). `visit` is
+  // called with the output and each window's rows [start, end) once they are
+  // in place, while their pages are still cached.
+  apply(
+    source,
+    stride,
+    pool,
+    words = false,
+    label = undefined,
+    visit = undefined,
+  ) {
     const output = new PagedArray(
       this.workspace,
       source.Type,
@@ -679,6 +775,11 @@ export class Permutation {
     );
     const progress =
       label && new Progress(label, Math.ceil(this.length / window) * this.rows);
+    // The lowest and highest target + 1 of each block of source rows, found
+    // as the first window reads them: a later window that none of a block's
+    // rows land in skips the block.
+    const low = new Float64Array(Math.ceil(this.rows / block));
+    const high = new Float64Array(low.length);
     for (let start = 0; start < this.length; start += window) {
       const end = Math.min(this.length, start + window);
       output.pinned = [
@@ -687,8 +788,19 @@ export class Permutation {
       ];
       output.load(start * stride, end * stride, true);
       for (let base = 0; base < this.rows; base += block) {
+        const b = base / block;
+        if (start && (high[b] <= start || low[b] > end)) continue;
         const count = Math.min(block, this.rows - base);
         this.targets.read(base, targets, count);
+        if (!start) {
+          low[b] = Number.POSITIVE_INFINITY;
+          for (let i = 0; i < count; i++)
+            if (targets[i]) {
+              low[b] = Math.min(low[b], targets[i]);
+              high[b] = Math.max(high[b], targets[i]);
+            }
+          if (low[b] > end) continue;
+        }
         source.load(base * stride, (base + count) * stride);
         pool.copy(source, output, stride, count, base, start, end, words);
         for (let i = 0; i < count; i++) {
@@ -710,6 +822,7 @@ export class Permutation {
         }
         progress?.update(Math.floor(start / window) * this.rows + base + count);
       }
+      visit?.(output, start, end);
     }
     output.pinned = [0, 0];
     source.dispose();
@@ -763,7 +876,7 @@ export function readAll(fd, bytes, position) {
   return bytes;
 }
 
-export function writeAll(fd, bytes, position) {
+function writeAll(fd, bytes, position) {
   let offset = 0;
   while (offset < bytes.byteLength) {
     const count = writeSync(
