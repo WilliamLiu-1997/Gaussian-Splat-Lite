@@ -182,7 +182,7 @@ function gather(splats, base, count, codebook, kept) {
             ),
           ),
     ...(codebook && {
-      labels: codebook.labels.stream(base, new Uint16Array(count)),
+      labels: codebook.labels.stream(base, new codebook.labels.Type(count)),
     }),
     counts: splats.childCount.stream(base, new Uint32Array(count)),
     starts: splats.childStart.stream(base, new Float64Array(count)),
@@ -333,9 +333,16 @@ function encodeChunk(chunk, encoding) {
         -SH_MAX,
         SH_MAX,
       ]);
-    bytes = raw(count * 2);
-    for (let i = 0; i < count; i++) bytes.writeUInt16LE(chunk.labels[i], i * 2);
-    property("sh_label", "u16", bytes);
+    const labelBytes = chunk.labels.BYTES_PER_ELEMENT;
+    bytes = raw(count * labelBytes);
+    if (labelBytes === 2) {
+      for (let i = 0; i < count; i++)
+        bytes.writeUInt16LE(chunk.labels[i], i * 2);
+    } else {
+      for (let i = 0; i < count; i++)
+        bytes.writeUInt32LE(chunk.labels[i], i * 4);
+    }
+    property("sh_label", labelBytes === 2 ? "u16" : "u32", bytes);
   }
   for (let band = 0; band < chunk.sh.length; band++) {
     const dims = SH_DIMS[band];

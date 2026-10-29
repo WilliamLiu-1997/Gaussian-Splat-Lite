@@ -59,9 +59,9 @@ gsl-build-lod scene.ply --cluster-sh=20
 gsl-build-lod scene.ply --no-cluster-sh
 ```
 
-By default, SH coefficients are stored as a shared codebook of up to 65,536 entries, and each splat stores the index of its entry. This can substantially reduce SH data for large models; the savings depend on the splat count and SH values. Models with at most 65,536 splats after LOD still store one codebook entry per splat plus an index for each splat, so the file may grow. Each splat's view-dependent color comes from its nearest entry, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
+By default, SH coefficients are stored as a shared codebook, and each splat stores the index of its entry. The codebook holds up to 65,536 entries for SH1, 174,763 for SH2, or 327,680 for SH3, based on the SH degree retained after `--max-sh`. It never has more entries than the number of splats after LOD. This can substantially reduce SH data for large models; the savings depend on the splat count and SH values. Models that fit entirely in the codebook still store one entry per splat plus an index for each splat, so the file may grow. Each splat's view-dependent color comes from its nearest entry, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
 
-The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. Clustering runs on as many CPU cores as the memory target leaves room for and usually takes less time than the rest of the conversion.
+The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. Larger codebooks preserve more distinct SH values but increase conversion time and memory use. Clustering runs on as many CPU cores as the memory target leaves room for.
 
 Models without SH, or converted with `--max-sh 0`, are written without a codebook.
 
@@ -104,7 +104,7 @@ See [RadStreamScheduler](RadStreamScheduler.md) for the complete loading and dis
 | `--lod-base <base>` | `1.75` | LOD spacing, from `1.1` to `16`; smaller values retain more detail levels. |
 | `--max-sh <0..3>` | `3` | Highest SH degree to keep, limited by the input. |
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere before building LOD, in input coordinates. |
-| `--cluster-sh[=<n>]` | Enabled, `10` iterations | Store SH as a codebook of up to 65,536 entries, refined in `n` iterations. See [SH codebook](#sh-codebook). |
+| `--cluster-sh[=<n>]` | Enabled, `10` iterations | Store SH as a codebook of up to 65,536/174,763/327,680 entries for SH1/SH2/SH3, refined in `n` iterations. See [SH codebook](#sh-codebook). |
 | `--no-cluster-sh` | — | Store SH coefficients without a codebook. |
 | `--memory-budget <GiB>` | `4` | Target memory use in GiB, at least `1`; for example `16`. |
 | `--temp-dir <path>` | System temp directory | Location for temporary files; created if needed. |

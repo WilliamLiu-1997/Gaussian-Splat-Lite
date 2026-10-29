@@ -28,8 +28,9 @@ Options:
   --max-sh <0..3>        Maximum SH degree (default: 3)
   --within-dist <x,y,z,radius>
                         Keep splat centers within this sphere (input coordinates)
-  --cluster-sh[=<n>]     Store SH as a codebook of up to 65536 entries, refined
-                        in n iterations (default: enabled, 10 iterations)
+  --cluster-sh[=<n>]     Store SH as a codebook of up to 65,536 (SH1),
+                        174,763 (SH2) or 327,680 (SH3) entries, refined in n
+                        iterations (default: enabled, 10 iterations)
   --no-cluster-sh        Store SH coefficients without a codebook
   --rad-chunked          Write a .rad header and separate .radc files
   --memory-budget <GiB>  Target memory in GiB (default: 4, minimum: 1)

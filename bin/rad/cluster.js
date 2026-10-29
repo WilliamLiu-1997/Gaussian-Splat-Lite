@@ -8,8 +8,8 @@ import { Progress } from "./progress.js";
 import { SH_DIMS } from "./splats.js";
 import { PAGE_BYTES, PagedArray } from "./storage.js";
 
-// Codebook entries at most: RAD labels are 16-bit.
-const MAX_CODES = 65536;
+// Maximum entries for each retained SH degree, excluding the base color.
+const MAX_CODES = [0, 65536, 174763, 327680];
 // Training reads SAMPLE_SHARE of the splats, and at least SAMPLES_PER_CODE
 // per entry; larger models train on a sample by weight, and only the final
 // assignment reads all. Entries start at evenly spaced training splats.
@@ -61,13 +61,16 @@ export function codebookKernel() {
 
 // Bytes of a kernel instance's memory for `blocks` blocks of codes, with the
 // module's own 1 MiB, and for the groups of the final assignment, if any:
-// each group may add a block, and `scratch` bytes for the search.
+// each group may add a block, a u32 slot-to-code map, and `scratch` bytes
+// for the search.
 function kernelBytes(dims, blocks, groups, scratch) {
+  const slots = (blocks + groups) * BLOCK;
   return (
-    ((blocks + groups) * BLOCK + groups) * (dims + 1) * 4 +
+    (slots + groups) * (dims + 1) * 4 +
+    (groups ? slots * 4 : 0) +
     groups * 8 +
     scratch +
-    BATCH * (dims * 4 + 64 + 6) +
+    BATCH * (dims * 4 + 64 + 4) +
     1024 ** 2
   );
 }
@@ -96,8 +99,7 @@ class Nearest {
     this.points = align(this.sizes + groups * 4);
     this.state = align(this.points + BATCH * dims * 4);
     this.labels = this.state + (BATCH / 4) * 256;
-    this.slots = align(this.labels + BATCH * 2);
-    this.scratch = this.slots + BATCH * 4;
+    this.scratch = align(this.labels + BATCH * 4);
     const end =
       this.scratch +
       (groups ? exports.probed_scratch(BATCH, dims, groups, FINAL_PROBES) : 0);
@@ -110,8 +112,7 @@ class Nearest {
     this.startView = new Uint32Array(buffer, this.starts, groups);
     this.sizeView = new Uint32Array(buffer, this.sizes, groups);
     this.pointView = new Float32Array(buffer, this.points, BATCH * dims);
-    this.labelView = new Uint16Array(buffer, this.labels, BATCH);
-    this.slotView = new Uint32Array(buffer, this.slots, BATCH);
+    this.labelView = new Uint32Array(buffer, this.labels, BATCH);
     this.center = new Float64Array(dims);
     this.warm = false;
   }
@@ -171,7 +172,7 @@ class Nearest {
       return true;
     }
     const { bits, labels, count } = message;
-    const { dims, center, pointView, labelView, slotView, order } = this;
+    const { dims, center, pointView, labelView, order } = this;
     for (let start = 0; start < count; start += BATCH) {
       const size = Math.min(BATCH, count - start);
       // Points relative to the center; the last fills the final group of 4.
@@ -184,7 +185,7 @@ class Nearest {
       this.call(rows);
       if (!this.groups) labels.set(labelView.subarray(0, size), start);
       else
-        for (let i = 0; i < size; i++) labels[start + i] = order[slotView[i]];
+        for (let i = 0; i < size; i++) labels[start + i] = order[labelView[i]];
     }
     return { labels, bits };
   }
@@ -216,7 +217,7 @@ class Nearest {
       this.sizes,
       this.probes,
       this.scratch,
-      this.slots,
+      this.labels,
     );
   }
 }
@@ -599,14 +600,14 @@ class Grouper {
       ...result,
       starts,
       sizes: groupBlocks,
-      // Positions that hold no code are never nearest.
-      order: Uint16Array.from(order, (c) => Math.max(c, 0)),
+      // Unfilled positions stay -1; their infinite norms exclude them.
+      order,
     };
   }
 }
 
-// Clusters the splats' SH into a codebook of at most 65536 entries with
-// weighted k-means as Spark does: entries start at evenly spaced splats,
+// Clusters SH into up to 65,536/174,763/327,680 entries for SH1/SH2/SH3
+// with weighted k-means as Spark does: entries start at evenly spaced splats,
 // each of `iterations` moves them to the weighted mean of their splats, an
 // entry without any stays, and a final pass labels each splat with its
 // nearest entry. Weights are area × opacity. Training uses 10% of the
@@ -616,7 +617,7 @@ class Grouper {
 export async function clusterSh(splats, iterations, module) {
   const { workspace, length } = splats;
   const dims = SH_DIMS.slice(0, splats.maxSh).reduce((a, b) => a + b, 0);
-  const count = Math.min(length, MAX_CODES);
+  const count = Math.min(length, MAX_CODES[splats.maxSh]);
   const all = new Rows(splats, dims);
   const samples = Math.max(
     count * SAMPLES_PER_CODE,
@@ -624,7 +625,9 @@ export async function clusterSh(splats, iterations, module) {
   );
   const sampled = length > samples;
   const training = sampled ? sample(all, samples, workspace) : all;
-  const labels = new PagedArray(workspace, Uint16Array);
+  const LabelArray = count <= 65536 ? Uint16Array : Uint32Array;
+  const labelBytes = LabelArray.BYTES_PER_ELEMENT;
+  const labels = new PagedArray(workspace, LabelArray);
   let assigner;
   try {
     const blocks = Math.ceil(count / BLOCK);
@@ -649,7 +652,7 @@ export async function clusterSh(splats, iterations, module) {
       : 0;
     const bytes =
       kernelBytes(dims, blocks, groups, scratch) +
-      WINDOW * size * (dims * 2 + 10);
+      WINDOW * size * (dims * 2 + labelBytes + 8);
     // This thread's arrays, its own kernel and jobs when there is no room for
     // workers, and the layout of the codes; for groups, the codes as points
     // with their groups, the groups' means and sums, and the grouped layout
@@ -662,7 +665,7 @@ export async function clusterSh(splats, iterations, module) {
         ? count * (dims * 4 + 2) +
           groups * dims * 16 +
           (slots + groups) * (dims + 1) * 4 +
-          slots * 6
+          slots * 4
         : blocks * BLOCK * (dims + 1) * 4);
     // Reserve before allocating the codes and accumulators, so their memory
     // is not already in the RSS measurement that clusterers() adds to.
@@ -675,7 +678,9 @@ export async function clusterSh(splats, iterations, module) {
     // Measure worker growth between passes: bypass reads do not allocate
     // pages or trigger measurements. Leave room for labels when the final
     // pass shares the training cache.
-    const labelPages = sampled ? 0 : Math.ceil((length * 2) / PAGE_BYTES);
+    const labelPages = sampled
+      ? 0
+      : Math.ceil((length * labelBytes) / PAGE_BYTES);
     const keep = () => {
       workspace.adjust();
       training.keep(workspace.capacity - labelPages * PAGE_BYTES);
@@ -713,7 +718,7 @@ export async function clusterSh(splats, iterations, module) {
       workspace.check();
       const job = free.pop() ?? {
         bits: new Uint16Array(size * dims),
-        labels: new Uint16Array(size),
+        labels: new LabelArray(size),
         weights: new Float64Array(size),
       };
       job.index = index;

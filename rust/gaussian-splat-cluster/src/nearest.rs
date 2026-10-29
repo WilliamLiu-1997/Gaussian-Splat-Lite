@@ -53,7 +53,7 @@ pub unsafe extern "C" fn nearest(
     norms: *const f32,
     blocks: usize,
     state: *mut v128,
-    labels: *mut u16,
+    labels: *mut u32,
 ) {
     let groups = count / 4;
     for group in 0..groups {
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn nearest(
                     }
                 }
             }
-            *labels.add(group * 4 + p) = label as u16;
+            *labels.add(group * 4 + p) = label;
         }
     }
 }

@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-10-29
+
+### Changed
+
+- `gsl-build-lod` uses up to 174,763 SH codebook entries for SH2 and 327,680 for SH3; SH1 keeps its 65,536-entry limit. Conversion can take longer and output files may be larger.
+
 ## [1.5.2] - 2026-10-29
 
 ### Changed
@@ -720,7 +726,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.3...HEAD
+[1.5.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.4.3...v1.5.0
