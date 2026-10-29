@@ -38,8 +38,8 @@ const BLOCK = 8;
 // with few probes entries stay near their groups, in a twentieth of the
 // time; the final pass gave 99% of splats their nearest entry.
 const GROUPS = 512;
-const TRAIN_PROBES = 2;
-const FINAL_PROBES = 24;
+const TRAIN_PROBES = 4;
+const FINAL_PROBES = 16;
 const GROUP_STEPS = 4;
 
 let kernel;

@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-10-29
+
+### Changed
+
+- `gsl-build-lod` updates SH codebook clustering to balance conversion speed and view-dependent color accuracy.
+
 ## [1.5.3] - 2026-10-29
 
 ### Changed
@@ -726,7 +732,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.4...HEAD
+[1.5.4]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.0...v1.5.1
