@@ -48,6 +48,7 @@ export declare class RadStreamLoader {
   private readonly sources;
   private readonly lodWorker;
   private readonly preparationWorker;
+  private codebookWorker?;
   private readonly pool;
   private readonly decoderReady;
   private readonly controller;

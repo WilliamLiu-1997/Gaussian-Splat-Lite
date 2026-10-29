@@ -61,6 +61,8 @@ All inputs use the coordinates stored in their files, relative to `streaming.gro
 
 Each entry accepts the single-input loading options, including `resolveFile`, `manager`, `requestHeader`, and `withCredentials`; options omitted from an entry inherit the scheduler's settings. `sources` must be nonempty. Use separate schedulers for inputs that need independent transforms or budgets.
 
+SH codebooks are cached and copied in a background worker. Page decoders reuse their current input's codebook; switching inputs transfers a worker-created copy without copying the codebook on the main thread. The cache remains included in the CPU memory budget.
+
 `initialized` waits for every input's metadata. `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene. `splatBudget` and both memory budgets must be large enough to hold the coarsest detail of every nonempty input.
 
 ## Cameras and resolution

@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- RAD streaming caches and copies SH codebooks in a background worker, avoiding large main-thread copies when page decoders switch inputs.
+
 ## [1.5.4] - 2026-10-29
 
 ### Changed

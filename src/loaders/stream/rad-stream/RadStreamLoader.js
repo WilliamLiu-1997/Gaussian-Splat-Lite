@@ -1,9 +1,11 @@
 import { DefaultLoadingManager } from "three";
+import { WorkerRpc } from "../../../runtime/WorkerRpc.js";
 import { abortable } from "../../../runtime/abort.js";
 import { RadSource } from "../../rad/RadSource.js";
 import { StreamWorkerPool } from "../StreamWorkerPool.js";
 import { streamSources } from "../streamOptions.js";
 import { RadStreamWorker } from "./RadStreamWorker.js";
+import CodebookWorker from "./codebookWorker.js?worker&inline";
 /** Separate traversal and display preparation workers, plus bounded page decoders. */
 export class RadStreamLoader {
   constructor(options, maxConcurrentLoads, maxSh, onRegistrationSettled) {
@@ -21,6 +23,7 @@ export class RadStreamLoader {
       }),
       estimatedCodebookCacheBytes: 0,
       estimatedCodebookBytes: 0,
+      codebookBytes: 0,
     }));
     this.lodWorker = new RadStreamWorker();
     this.preparationWorker = new RadStreamWorker();
@@ -38,8 +41,7 @@ export class RadStreamLoader {
       const stats = input.source.stats;
       cachedBytes += stats.cachedBytes;
       downloadedBytes += stats.downloadedBytes;
-      for (const codes of input.codebooks ?? [])
-        codebookCacheBytes += codes?.byteLength ?? 0;
+      codebookCacheBytes += input.codebookBytes;
     }
     return {
       cachedBytes,
@@ -75,7 +77,9 @@ export class RadStreamLoader {
   }
   get selectionWorkerLost() {
     return (
-      (this.lodWorker.disposed || this.preparationWorker.disposed) &&
+      (this.lodWorker.disposed ||
+        this.preparationWorker.disposed ||
+        this.codebookWorker?.disposed === true) &&
       !this.controller.signal.aborted
     );
   }
@@ -84,6 +88,8 @@ export class RadStreamLoader {
     if (this.lodWorker.disposed) throw new Error("RAD LOD worker terminated");
     if (this.preparationWorker.disposed)
       throw new Error("RAD preparation worker terminated");
+    if (this.codebookWorker?.disposed)
+      throw new Error("RAD codebook worker terminated");
   }
   initialize(signal) {
     signal?.throwIfAborted();
@@ -133,25 +139,44 @@ export class RadStreamLoader {
         this.assertActive();
         let ready = this.decoderReady.get(worker);
         // A decoder created before its input's root succeeded lacks codebooks.
-        if (ready?.input !== input || ready.codebooks !== input.codebooks) {
-          const promise = worker
-            .call("initializeRadDecoder", {
+        if (
+          ready?.input !== input ||
+          ready.codebooksReady !== input.codebooksReady
+        ) {
+          const promise = (async () => {
+            await input.codebooksReady;
+            // Copies are made off-thread; both RPC hops transfer their buffers.
+            const codebooks = input.codebooksReady
+              ? await this.codebookWorker.call("get", {
+                  source: input.chunkBase,
+                })
+              : undefined;
+            signal.throwIfAborted();
+            this.assertActive();
+            await worker.call("initializeRadDecoder", {
               header,
               maxSh: this.maxSh,
-              codebooks: input.codebooks?.map((codes) => codes?.slice()),
-            })
-            .catch((error) => {
-              worker.dispose(error);
-              throw error;
+              codebooks,
             });
-          ready = { input, codebooks: input.codebooks, promise };
+          })().catch((error) => {
+            worker.dispose(error);
+            throw error;
+          });
+          ready = { input, codebooksReady: input.codebooksReady, promise };
           this.decoderReady.set(worker, ready);
         }
         // Resolve application callbacks here; page bodies stay inside the worker.
-        const [request] = await Promise.all([
-          source.prepareChunk(header, localIndex, signal),
-          ready.promise,
-        ]);
+        let request;
+        try {
+          [request] = await Promise.all([
+            source.prepareChunk(header, localIndex, signal),
+            ready.promise,
+          ]);
+        } catch (error) {
+          // Do not return this worker to the pool while initialization is pending.
+          await ready.promise.catch(() => {});
+          throw error;
+        }
         signal.throwIfAborted();
         this.assertActive();
         if (typeof request.input === "string") start(request.input);
@@ -171,13 +196,24 @@ export class RadStreamLoader {
           worker.dispose(error);
           throw error;
         }
+        if (result.codebooks) {
+          this.codebookWorker ??= new WorkerRpc(new CodebookWorker());
+          input.codebookBytes = result.codebooks.reduce(
+            (bytes, codes) => bytes + (codes?.byteLength ?? 0),
+            0,
+          );
+          input.codebooksReady = this.codebookWorker.call("set", {
+            source: input.chunkBase,
+            codebooks: result.codebooks,
+          });
+          // This decoder produced them and needs no reinitialization.
+          ready.codebooksReady = input.codebooksReady;
+          await input.codebooksReady;
+          signal.throwIfAborted();
+          this.assertActive();
+        }
         // Uploads can start immediately; selection waits for both registrations.
         const registration = this.registerChunk(index, generation, result.tree);
-        if (result.codebooks) {
-          input.codebooks = result.codebooks;
-          // This decoder produced them and needs no reinitialization.
-          ready.codebooks = result.codebooks;
-        }
         return { data: result.data, registration };
       },
     );
@@ -267,7 +303,8 @@ export class RadStreamLoader {
     );
     for (const input of this.sources) {
       input.source.dispose();
-      input.codebooks = undefined;
+      input.codebooksReady = undefined;
+      input.codebookBytes = 0;
       input.estimatedCodebookCacheBytes = 0;
       input.estimatedCodebookBytes = 0;
     }
@@ -275,6 +312,7 @@ export class RadStreamLoader {
     for (const worker of this.pool.workers) this.decoderReady.delete(worker);
     this.lodWorker.dispose(this.controller.signal.reason);
     this.preparationWorker.dispose(this.controller.signal.reason);
+    this.codebookWorker?.dispose(this.controller.signal.reason);
     this.pendingRegistrationBytes = 0;
     this.selectionBytes = 0;
     this.preparationBytes = 0;
