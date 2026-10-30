@@ -46,6 +46,13 @@ const cacheTexCoord = N.Fn(([index, size]) => {
     row.sub(layer.mul(size.y)),
     layer,
   );
+}).setLayout({
+  name: "gslCacheTexCoord",
+  type: "ivec3",
+  inputs: [
+    { name: "index", type: "uint" },
+    { name: "size", type: "uvec4" },
+  ],
 });
 function store(texture, coord, value) {
   N.storageTexture(texture, coord.xy, value)

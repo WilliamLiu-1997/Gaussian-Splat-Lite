@@ -13,7 +13,6 @@ import {
 } from "three";
 import * as N from "three/tsl";
 import { Node, NodeUpdateType } from "three/webgpu";
-import { applyThreeR186Patch } from "../patches/threeR186.js";
 import { usesNativeWebGPU } from "../rendering/rendererUtils.js";
 import { WebGLDenoisePasses } from "./neuralDenoiseGL.js";
 import { WebGPUDenoisePasses } from "./neuralDenoisePasses.js";
@@ -154,7 +153,6 @@ export class NeuralDenoiseNode extends Node {
     }
     const backend = renderer.backend;
     if (this.passes === null) {
-      applyThreeR186Patch(renderer);
       const model = {
         ...neuralDenoiseModels[this.mode],
         stabilizeNoise: !this.msaa,
@@ -169,8 +167,6 @@ export class NeuralDenoiseNode extends Node {
       cubeFace: renderer.getActiveCubeFace(),
       mipLevel: renderer.getActiveMipmapLevel(),
       viewport: renderer.getViewport(new Vector4()),
-      scissor: renderer.getScissor(new Vector4()),
-      scissorTest: renderer.getScissorTest(),
       autoClear: renderer.autoClear,
       toneMapping: renderer.toneMapping,
       clearColor: renderer.getClearColor(new Color()),
@@ -197,7 +193,6 @@ export class NeuralDenoiseNode extends Node {
     try {
       renderer.xr.enabled = false;
       if (nodeRenderer) renderer.setMRT(null);
-      renderer.setScissorTest(false);
       renderer.autoClear = true;
       renderer.toneMapping = NoToneMapping;
       const reversedDepth = camera.reversedDepth;
@@ -354,14 +349,7 @@ export class NeuralDenoiseNode extends Node {
       state.advance();
       this.capturePending = false;
     } finally {
-      renderer.setRenderTarget(
-        rendererState.renderTarget,
-        rendererState.cubeFace,
-        rendererState.mipLevel,
-      );
       renderer.setViewport(rendererState.viewport);
-      renderer.setScissor(rendererState.scissor);
-      renderer.setScissorTest(rendererState.scissorTest);
       renderer.setClearColor(
         rendererState.clearColor,
         rendererState.clearAlpha,
@@ -369,12 +357,18 @@ export class NeuralDenoiseNode extends Node {
       renderer.autoClear = rendererState.autoClear;
       renderer.toneMapping = rendererState.toneMapping;
       if (nodeRenderer) renderer.setMRT(rendererState.mrt);
+      // Restore the target last so its physical viewport and scissor replace
+      // the canvas settings, which are in logical pixels.
+      renderer.setRenderTarget(
+        rendererState.renderTarget,
+        rendererState.cubeFace,
+        rendererState.mipLevel,
+      );
       renderer.xr.enabled = xrEnabled;
     }
     return undefined;
   }
   setup(builder) {
-    applyThreeR186Patch(builder.renderer);
     const pipelineState = builder.context.renderPipelineState;
     if (pipelineState && !this.pipelineStates.has(pipelineState)) {
       this.pipelineStates.add(pipelineState);

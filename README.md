@@ -41,7 +41,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 npm install gaussian-splat-lite three
 ```
 
-Requires Three.js `>=0.186.0`.
+Requires Three.js `>=0.187.0`.
 
 ## Quick start
 

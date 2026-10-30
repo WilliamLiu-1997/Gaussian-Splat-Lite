@@ -86,7 +86,6 @@ export function renderAccumulatorLayers(
     level: renderer.getActiveMipmapLevel(),
     xr: renderer.xr.enabled,
     autoClear: renderer.autoClear,
-    scissorTest: renderer.getScissorTest(),
     mrt: nodeRenderer?.getMRT() ?? null,
   };
   uniforms.targetBase.value = base;
@@ -97,7 +96,6 @@ export function renderAccumulatorLayers(
   try {
     renderer.xr.enabled = false;
     renderer.autoClear = false;
-    nodeRenderer?.setScissorTest(true);
     nodeRenderer?.setMRT(null);
     while (base < nextBase) {
       const layer = Math.floor(base / layerSize);
@@ -118,6 +116,5 @@ export function renderAccumulatorLayers(
     nodeRenderer?.setMRT(previous.mrt);
     renderer.xr.enabled = previous.xr;
     renderer.autoClear = previous.autoClear;
-    nodeRenderer?.setScissorTest(previous.scissorTest);
   }
 }

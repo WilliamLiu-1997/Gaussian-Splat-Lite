@@ -52,8 +52,8 @@ export class SplatAccumulator {
       globalEdits: this.sceneNodes.edits,
       shrinkResources: false,
     };
-    if (threeRevision < 186) {
-      throw new Error("Gaussian Splat Lite requires Three.js r186 or above");
+    if (threeRevision < 187) {
+      throw new Error("Gaussian Splat Lite requires Three.js r187 or above");
     }
   }
   dispose() {

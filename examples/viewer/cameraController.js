@@ -305,7 +305,7 @@ class PivotPointMesh extends Mesh {
       ? new PivotNodeMaterial(size, thickness)
       : new PivotMaterial(size, thickness);
     super(new PlaneGeometry(0, 0), material);
-    // Three.js r186 preserves renderOrder with either depth mode.
+    // Three.js preserves renderOrder with either depth mode.
     this.renderOrder = Number.POSITIVE_INFINITY;
   }
 

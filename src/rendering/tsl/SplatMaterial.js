@@ -14,14 +14,18 @@ import {
 } from "./shaderUtils.js";
 import { stochasticCoverage } from "./stochasticCoverage.js";
 import { splatViewUniforms } from "./viewUniforms.js";
-const stochasticHash = N.Fn(([input]) => {
-  const value = N.uint(input).toVar();
+const stochasticHash = N.Fn(([seed]) => {
+  const value = N.uint(seed).toVar();
   value.bitXorAssign(value.shiftRight(16));
   value.mulAssign(N.uint(0x7feb352d));
   value.bitXorAssign(value.shiftRight(15));
   value.mulAssign(N.uint(0x846ca68b));
   value.bitXorAssign(value.shiftRight(16));
   return value;
+}).setLayout({
+  name: "gslStochasticHash",
+  type: "uint",
+  inputs: [{ name: "seed", type: "uint" }],
 });
 function createSplatFragment(minAlpha, edgeFade, stochasticNoise, coverage) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
@@ -95,22 +99,30 @@ function createSplatFragment(minAlpha, edgeFade, stochasticNoise, coverage) {
 }
 // Keep XY fixed while advancing the STBN time axis. Independent per-Splat XYZ
 // offsets decorrelate overlapping coverage tests without translating the field.
-function stochasticTileOffset(seed, sample, viewportOrigin) {
+const stochasticTileOffset = N.Fn(([seed, sampleIndex, viewportOrigin]) => {
   const hash = stochasticHash(seed).toVar();
   const origin = N.uvec2(viewportOrigin);
   const x = hash.sub(origin.x);
   const y = hash.shiftRight(5).sub(origin.y);
-  const phase = hash.shiftRight(10).add(sample).bitAnd(31);
+  const phase = hash.shiftRight(10).add(sampleIndex).bitAnd(31);
   return x
     .bitAnd(31)
     .bitOr(y.bitAnd(31).shiftLeft(5))
     .bitOr(phase.shiftLeft(10));
-}
+}).setLayout({
+  name: "gslStochasticTileOffset",
+  type: "uint",
+  inputs: [
+    { name: "seed", type: "uint" },
+    { name: "sampleIndex", type: "uint" },
+    { name: "viewportOrigin", type: "vec2" },
+  ],
+});
 // Half RGB saturates at its largest finite value instead of overflowing after
 // sRGB linearization. Source alpha keeps float32 bits, but half kernel power
 // can still change the final coverage of wide kernels. The squared support
 // radius passes bit for bit: a wide kernel's low half is its edge fade.
-function packSplatVarying(rgba, supportRadiusSquared, kernelPower) {
+const packSplatVarying = N.Fn(([rgba, supportRadiusSquared, kernelPower]) => {
   const rgb = rgba.rgb.min(65504);
   return N.uvec4(
     N.packHalf2x16(rgb.xy),
@@ -118,7 +130,15 @@ function packSplatVarying(rgba, supportRadiusSquared, kernelPower) {
     N.floatBitsToUint(rgba.a),
     N.floatBitsToUint(supportRadiusSquared),
   );
-}
+}).setLayout({
+  name: "gslPackSplatVarying",
+  type: "uvec4",
+  inputs: [
+    { name: "rgba", type: "vec4" },
+    { name: "supportRadiusSquared", type: "float" },
+    { name: "kernelPower", type: "float" },
+  ],
+});
 /**
  * Sorted and stochastic variants compile separate graphs, so sorted drawing
  * carries no coverage varyings, seed loads or mode branches.

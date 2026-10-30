@@ -6,19 +6,6 @@ export function viewIndex(camera) {
   if (getViews(camera)[0] === camera) return N.uint(0);
   return camera.isMultiViewCamera ? N.builtin("gl_ViewID_OVR") : N.cameraIndex;
 }
-/** A per-layout projection array also supports changing WebXR eye counts. */
-export function splatProjectionMatrix(camera) {
-  const eyes = getViews(camera);
-  if (eyes[0] === camera) return N.cameraProjectionMatrix;
-  const matrices = eyes.map((eye) => eye.projectionMatrix);
-  return N.uniformArray(matrices, "mat4")
-    .onObjectUpdate(({ camera }) => {
-      getViews(camera).forEach((eye, i) => {
-        matrices[i] = eye.projectionMatrix;
-      });
-    })
-    .element(viewIndex(camera));
-}
 /** Viewport data for drawing splats that have already been projected. */
 export function splatViewportUniforms(uniforms, camera) {
   const eyes = getViews(camera);
@@ -51,7 +38,7 @@ export function splatViewUniforms(uniforms, camera) {
   const eyes = getViews(camera);
   if (eyes[0] === camera) {
     return {
-      projectionMatrix: splatProjectionMatrix(camera),
+      projectionMatrix: N.cameraProjectionMatrix,
       renderSize: uniformBinding(uniforms, "renderSize", "vec2"),
       viewportOrigin: uniformBinding(uniforms, "viewportOrigin", "vec2"),
       renderToViewQuat: uniformBinding(uniforms, "renderToViewQuat", "vec4"),
@@ -105,7 +92,7 @@ export function splatViewUniforms(uniforms, camera) {
   const positionScale = viewData.element(offset.add(1));
   const viewportClip = viewData.element(offset.add(2));
   return {
-    projectionMatrix: splatProjectionMatrix(camera),
+    projectionMatrix: N.cameraProjectionMatrix,
     renderSize: viewportClip.xy,
     viewportOrigin: viewData.element(offset.add(3)).xy,
     renderToViewQuat: viewData.element(offset),

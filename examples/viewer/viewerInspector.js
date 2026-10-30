@@ -33,6 +33,7 @@ export class ViewerInspector extends Inspector {
       this.framesLib = {};
       this.lastFrame = null;
       this._lastFinishTime = 0;
+      this._lastRenderedFinishTime = 0;
       this.statsData.clear();
     }
     if (!recording && this._rAFId !== null) {
@@ -70,12 +71,13 @@ export class ViewerInspector extends Inspector {
     let renderedFrames = 0;
     let elapsed = 0;
 
-    // Three.js records every animation tick, including on-demand/GPU waits.
-    // Keep their elapsed time, but count a composed frame only once.
-    for (let i = this.frames.length - 1; i >= 0; i--) {
+    const latest = this.frames[this.frames.length - 1];
+    // r187's rendered-frame delta includes skipped ticks. Measure elapsed
+    // wall time once so skipped ticks count as time, including while idle.
+    for (let i = this.frames.length - 1; i > 0; i--) {
       const frame = this.frames[i];
-      if (frame.deltaTime > 0 && frame.renders.length > 0) renderedFrames++;
-      elapsed += frame.deltaTime;
+      if (frame.renders.length > 0) renderedFrames++;
+      elapsed = latest.finishTime - this.frames[i - 1].finishTime;
       if (elapsed >= 1000) break;
     }
 

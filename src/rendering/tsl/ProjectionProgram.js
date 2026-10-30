@@ -32,6 +32,13 @@ const scaleQuaternionToMatrix = N.Fn(([scale, quaternion]) => {
       scale.z.mul(N.float(1).sub(x.mul(x).add(y.mul(y)).mul(2))),
     ),
   );
+}).setLayout({
+  name: "gslScaleQuaternionToMatrix",
+  type: "mat3",
+  inputs: [
+    { name: "scale", type: "vec3" },
+    { name: "quaternion", type: "vec4" },
+  ],
 });
 const gaussianSupportRadius = N.Fn(([alpha, maximumRadius, minimumAlpha]) => {
   const radius = maximumRadius.toVar();
@@ -41,6 +48,14 @@ const gaussianSupportRadius = N.Fn(([alpha, maximumRadius, minimumAlpha]) => {
     );
   });
   return radius;
+}).setLayout({
+  name: "gslGaussianSupportRadius",
+  type: "float",
+  inputs: [
+    { name: "alpha", type: "float" },
+    { name: "maximumRadius", type: "float" },
+    { name: "minimumAlpha", type: "float" },
+  ],
 });
 const wideSupportRadius = N.Fn(
   ([alpha, power, maximumRadius, minimumAlpha]) => {
@@ -55,7 +70,16 @@ const wideSupportRadius = N.Fn(
     });
     return radius;
   },
-);
+).setLayout({
+  name: "gslWideSupportRadius",
+  type: "float",
+  inputs: [
+    { name: "alpha", type: "float" },
+    { name: "power", type: "float" },
+    { name: "maximumRadius", type: "float" },
+    { name: "minimumAlpha", type: "float" },
+  ],
+});
 // A wide kernel can still be above minAlpha where its support ends. Returns
 // the edge fade: the amount the fragment stage subtracts so the kernel,
 // rescaled about its peak, reaches minAlpha there instead. A Gaussian's fade
@@ -70,6 +94,15 @@ const wideEdgeFade = N.Fn(([alpha, power, radiusSquared, minimumAlpha]) => {
     .sub(minimumAlpha)
     .max(0)
     .div(N.float(1).sub(edgeKernel).max(0.001));
+}).setLayout({
+  name: "gslWideEdgeFade",
+  type: "float",
+  inputs: [
+    { name: "alpha", type: "float" },
+    { name: "power", type: "float" },
+    { name: "radiusSquared", type: "float" },
+    { name: "minimumAlpha", type: "float" },
+  ],
 });
 /** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
 export function createProjectionProgram(uniforms, view) {

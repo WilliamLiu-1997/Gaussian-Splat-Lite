@@ -7,10 +7,7 @@ import { getUnjitteredProjection } from "../../addons/neuralDenoiseState.js";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry.js";
 import { getMeanViewPose, getViews } from "../rendererUtils.js";
 import { N, uniformBinding } from "../tsl/shaderUtils.js";
-import {
-  splatProjectionMatrix,
-  splatViewportUniforms,
-} from "../tsl/viewUniforms.js";
+import { splatViewportUniforms } from "../tsl/viewUniforms.js";
 import { makeGenerateUniforms } from "../uniforms.js";
 import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache.js";
 import { createProjectionKernel } from "./ProjectionKernel.js";
@@ -215,16 +212,15 @@ export class ProjectedSplats {
       ),
     });
   }
-  /** Warm the remaining slots at startup, yielding between each compilation. */
+  /** Let Three schedule the remaining slots, then publish the completed set. */
   async compileSlots() {
-    for (let index = 1; index < PROJECT_SLOTS; index++) {
-      for (const set of this.slotSets.values()) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        if (this.disposed || this.error) return;
-        await this.renderer.compileComputeAsync([set.slots[index].node]);
-        set.compiled++;
-      }
-    }
+    if (this.disposed || this.error) return;
+    const sets = Array.from(this.slotSets.values());
+    await this.renderer.compileComputeAsync(
+      sets.flatMap(({ slots }) => slots.slice(1).map(({ node }) => node)),
+    );
+    // Progress counts completed pipelines, not a ready prefix of the slots.
+    for (const set of sets) set.compiled = set.slots.length;
   }
   /** The selected, precompiled mode for mono or WebXR stereo. */
   getSlots(eyeCount) {
@@ -273,7 +269,7 @@ export class ProjectedSplats {
     if (resized || seedsResized) this.projectedInputs.length = 0;
     // Preparing a compiled node again only refreshes its uniforms and bind
     // groups. Dispose follows this in the queue.
-    for (const node of refresh) await this.renderer.compileComputeAsync(node);
+    if (refresh.size) await this.renderer.compileComputeAsync([...refresh]);
   }
   vertexData(camera, stochastic) {
     const multiView = getViews(camera)[0] !== camera;
@@ -295,7 +291,7 @@ export class ProjectedSplats {
     const supportRadiusSquared = N.float(0).toVar();
     const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
-    const projectionMatrix = splatProjectionMatrix(camera);
+    const projectionMatrix = N.cameraProjectionMatrix;
     const centerRange = uniformBinding(this.uniforms, "clipXY", "float")
       .abs()
       .max(1)

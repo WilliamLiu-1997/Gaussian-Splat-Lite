@@ -362,7 +362,7 @@ fn lending(cells: texture_2d<f32>, p: vec2i, width: i32) -> vec2f {
 fn blockViewDepth(p: vec2i) -> vec4f {
   // View depth is monotonic: rank the raw samples first, then unproject only
   // the third nearest. Negating reversed depth keeps the same ordering.
-  let direction: f32 = select(1.0, -1.0, P.clearDepth == 0.0 && P.logDepth < 0.5);
+  let direction: f32 = select(1.0, -1.0, P.clearDepth == 0.0);
   var nearest: vec3f = vec3f(3.0e38);
   for (var j: i32 = 0; j < 9; j++) {
     let d: f32 = sceneDepth(drawn(p + TAPS[j]));

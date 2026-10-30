@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { applyThreeR186Patch } from "../patches/threeR186.js";
 import { SplatWorker } from "../runtime/SplatWorker.js";
 import { resolveTimer } from "../utils/three.js";
 import { MaterialState } from "./MaterialState.js";
@@ -56,7 +55,6 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       throw new Error("renderer is required in GaussianSplatRenderer options");
     }
     assertSupportedRenderer(options.renderer);
-    applyThreeR186Patch(options.renderer);
     const uniforms = GaussianSplatRenderer.makeUniforms();
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
     const stochastic = options.stochastic ?? false;

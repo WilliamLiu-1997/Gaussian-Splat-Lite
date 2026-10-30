@@ -18,8 +18,74 @@ import {
 // Finite sentinel for empty/unbounded SDFs. Runtime infinity arithmetic is not
 // portable in WGSL, and smooth ALL shapes otherwise evaluate exp(inf - inf).
 const SDF_DISTANCE_LIMIT = 1e20;
-const encodeQuaternion = N.Fn(([input]) => {
-  const quaternion = N.select(input.w.lessThan(0), input.negate(), input);
+const sdfDistance = N.Fn(([shape, position, sizes]) => {
+  const distance = N.float(SDF_DISTANCE_LIMIT).toVar();
+  N.If(shape.equal(N.uint(0)), () => {
+    distance.assign(-SDF_DISTANCE_LIMIT);
+  })
+    .ElseIf(shape.equal(N.uint(1)), () => {
+      distance.assign(position.z);
+    })
+    .ElseIf(shape.equal(N.uint(2)), () => {
+      distance.assign(position.length().sub(sizes.w));
+    })
+    .ElseIf(shape.equal(N.uint(3)), () => {
+      const q = position.abs().sub(sizes.xyz).add(sizes.w);
+      distance.assign(
+        q
+          .max(0)
+          .length()
+          .add(q.x.max(q.y.max(q.z)).min(0))
+          .sub(sizes.w),
+      );
+    })
+    .ElseIf(shape.equal(N.uint(4)), () => {
+      const radii = sizes.xyz.abs();
+      N.If(N.all(radii.greaterThan(N.vec3(0))), () => {
+        const scaledPosition = position.div(radii);
+        const k0 = scaledPosition.length();
+        const k1 = scaledPosition.div(radii).length();
+        // The approximation divides by zero at the center; use the exact
+        // signed distance there, the negative shortest radius.
+        distance.assign(radii.x.min(radii.y).min(radii.z).negate());
+        N.If(k1.greaterThan(0), () => {
+          distance.assign(k0.mul(k0.sub(1)).div(k1));
+        });
+      });
+    })
+    .ElseIf(shape.equal(N.uint(5)), () => {
+      const d = N.vec2(position.xz.length(), position.y).abs().sub(sizes.wy);
+      distance.assign(d.x.max(d.y).min(0).add(d.max(0).length()));
+    })
+    .ElseIf(shape.equal(N.uint(6)), () => {
+      const p = position.toVar();
+      p.y.subAssign(p.y.clamp(sizes.y.mul(-0.5), sizes.y.mul(0.5)));
+      distance.assign(p.length().sub(sizes.w));
+    })
+    .ElseIf(shape.equal(N.uint(7)), () => {
+      const angle = sizes.w.mul(Math.PI * 0.25);
+      const c = N.vec2(angle.sin(), angle.cos());
+      const q = N.vec2(position.xy.length(), position.z.negate());
+      const sign = N.select(q.x.mul(c.y).sub(q.y.mul(c.x)).lessThan(0), -1, 1);
+      distance.assign(
+        q
+          .sub(c.mul(q.dot(c).max(0)))
+          .length()
+          .mul(sign),
+      );
+    });
+  return distance;
+}).setLayout({
+  name: "gslSdfDistance",
+  type: "float",
+  inputs: [
+    { name: "shape", type: "uint" },
+    { name: "position", type: "vec3" },
+    { name: "sizes", type: "vec4" },
+  ],
+});
+const encodeQuaternion = N.Fn(([value]) => {
+  const quaternion = N.select(value.w.lessThan(0), value.negate(), value);
   const theta = quaternion.w.clamp(0, 1).acos().mul(2);
   const sum = quaternion.x
     .abs()
@@ -53,6 +119,10 @@ const encodeQuaternion = N.Fn(([input]) => {
   const quantV = N.uint(quantized.y);
   const angle = N.uint(theta.div(Math.PI).mul(4095).round().clamp(0, 4095));
   return angle.shiftLeft(20).bitOr(quantV.shiftLeft(10)).bitOr(quantU);
+}).setLayout({
+  name: "gslEncodeQuaternion",
+  type: "uint",
+  inputs: [{ name: "value", type: "vec4" }],
 });
 const decodeShRgb = N.Fn(([encoded]) => {
   const biasedBase = encoded.shiftRight(27).bitAnd(0x1f);
@@ -94,9 +164,155 @@ const decodeSemanticOpacity = N.Fn(([alpha, shapeAmount]) => {
     result.assign(alpha.mul(kernelOpacity));
   });
   return result;
+}).setLayout({
+  name: "gslDecodeSemanticOpacity",
+  type: "float",
+  inputs: [
+    { name: "alpha", type: "float" },
+    { name: "shapeAmount", type: "float" },
+  ],
 });
 const encodeWideSemanticOpacity = N.Fn(([opacity]) => {
   return opacity.log().mul(E).add(1).sqrt().sub(1).mul(0.25).min(1);
+}).setLayout({
+  name: "gslEncodeWideSemanticOpacity",
+  type: "float",
+  inputs: [{ name: "opacity", type: "float" }],
+});
+const evaluateSH1 = N.Fn(([data, direction]) => {
+  return decodeShRgb(data.x)
+    .mul(direction.y.mul(-0.4886025))
+    .add(decodeShRgb(data.y).mul(direction.z.mul(0.4886025)))
+    .add(decodeShRgb(data.z).mul(direction.x.mul(-0.4886025)));
+}).setLayout({
+  name: "gslEvaluateSH1",
+  type: "vec3",
+  inputs: [
+    { name: "data", type: "uvec4" },
+    { name: "direction", type: "vec3" },
+  ],
+});
+const evaluateSH12 = N.Fn(([first, second, direction]) => {
+  const result = evaluateSH1(first, direction).toVar();
+  result.addAssign(
+    decodeShRgb(first.w).mul(direction.x.mul(direction.y).mul(1.0925484)),
+  );
+  result.addAssign(
+    decodeShRgb(second.x).mul(direction.y.mul(direction.z).mul(-1.0925484)),
+  );
+  result.addAssign(
+    decodeShRgb(second.y).mul(
+      direction.z
+        .mul(direction.z)
+        .mul(2)
+        .sub(direction.x.mul(direction.x))
+        .sub(direction.y.mul(direction.y))
+        .mul(0.3153915),
+    ),
+  );
+  result.addAssign(
+    decodeShRgb(second.z).mul(direction.x.mul(direction.z).mul(-1.0925484)),
+  );
+  result.addAssign(
+    decodeShRgb(second.w).mul(
+      direction.x
+        .mul(direction.x)
+        .sub(direction.y.mul(direction.y))
+        .mul(0.5462742),
+    ),
+  );
+  return result;
+}).setLayout({
+  name: "gslEvaluateSH12",
+  type: "vec3",
+  inputs: [
+    { name: "first", type: "uvec4" },
+    { name: "second", type: "uvec4" },
+    { name: "direction", type: "vec3" },
+  ],
+});
+const evaluateSH3 = N.Fn(([first, second, direction]) => {
+  const xx = direction.x.mul(direction.x);
+  const yy = direction.y.mul(direction.y);
+  const zz = direction.z.mul(direction.z);
+  return decodeShRgb(first.x)
+    .mul(direction.y.mul(xx.mul(3).sub(yy)).mul(-0.5900436))
+    .add(
+      decodeShRgb(first.y).mul(
+        direction.x.mul(direction.y).mul(direction.z).mul(2.8906114),
+      ),
+    )
+    .add(
+      decodeShRgb(first.z).mul(
+        direction.y.mul(zz.mul(4).sub(xx).sub(yy)).mul(-0.4570458),
+      ),
+    )
+    .add(
+      decodeShRgb(first.w).mul(
+        direction.z.mul(zz.mul(2).sub(xx.mul(3)).sub(yy.mul(3))).mul(0.3731763),
+      ),
+    )
+    .add(
+      decodeShRgb(second.x).mul(
+        direction.x.mul(zz.mul(4).sub(xx).sub(yy)).mul(-0.4570458),
+      ),
+    )
+    .add(decodeShRgb(second.y).mul(direction.z.mul(xx.sub(yy)).mul(1.4453057)))
+    .add(
+      decodeShRgb(second.z).mul(
+        direction.x.mul(xx.sub(yy.mul(3))).mul(-0.5900436),
+      ),
+    );
+}).setLayout({
+  name: "gslEvaluateSH3",
+  type: "vec3",
+  inputs: [
+    { name: "first", type: "uvec4" },
+    { name: "second", type: "uvec4" },
+    { name: "direction", type: "vec3" },
+  ],
+});
+const evaluateSH4 = N.Fn(([previous, first, second, direction]) => {
+  const xx = direction.x.mul(direction.x);
+  const yy = direction.y.mul(direction.y);
+  const zz = direction.z.mul(direction.z);
+  const xy = direction.x.mul(direction.y);
+  const yz = direction.y.mul(direction.z);
+  const xz = direction.x.mul(direction.z);
+  return decodeShRgb(previous)
+    .mul(xy.mul(xx.sub(yy)).mul(2.50334294))
+    .add(decodeShRgb(first.x).mul(yz.mul(xx.mul(3).sub(yy)).mul(-1.77013077)))
+    .add(decodeShRgb(first.y).mul(xy.mul(zz.mul(7).sub(1)).mul(0.9461747)))
+    .add(decodeShRgb(first.z).mul(yz.mul(zz.mul(7).sub(3)).mul(-0.66904654)))
+    .add(
+      decodeShRgb(first.w).mul(
+        zz.mul(zz.mul(35).sub(30)).add(3).mul(0.10578555),
+      ),
+    )
+    .add(decodeShRgb(second.x).mul(xz.mul(zz.mul(7).sub(3)).mul(-0.66904654)))
+    .add(
+      decodeShRgb(second.y).mul(
+        xx.sub(yy).mul(zz.mul(7).sub(1)).mul(0.47308735),
+      ),
+    )
+    .add(decodeShRgb(second.z).mul(xz.mul(xx.sub(yy.mul(3))).mul(-1.77013077)))
+    .add(
+      decodeShRgb(second.w).mul(
+        xx
+          .mul(xx.sub(yy.mul(3)))
+          .sub(yy.mul(xx.mul(3).sub(yy)))
+          .mul(0.62583574),
+      ),
+    );
+}).setLayout({
+  name: "gslEvaluateSH4",
+  type: "vec3",
+  inputs: [
+    { name: "previous", type: "uint" },
+    { name: "first", type: "uvec4" },
+    { name: "second", type: "uvec4" },
+    { name: "direction", type: "vec3" },
+  ],
 });
 export function createGenerateProgram({ uniforms }) {
   const bindUniform = (name, type) => uniformBinding(uniforms, name, type);
@@ -130,115 +346,6 @@ export function createGenerateProgram({ uniforms }) {
   const numEdits = bindUniform("numEdits", "int");
   const sdfTexture = bindTexture("sdfTexture");
   const editTexture = bindTexture("editTexture");
-  const evaluateSH1 = N.Fn(([data, direction]) => {
-    return decodeShRgb(data.x)
-      .mul(direction.y.mul(-0.4886025))
-      .add(decodeShRgb(data.y).mul(direction.z.mul(0.4886025)))
-      .add(decodeShRgb(data.z).mul(direction.x.mul(-0.4886025)));
-  });
-  const evaluateSH12 = N.Fn(([first, second, direction]) => {
-    const result = evaluateSH1(first, direction).toVar();
-    result.addAssign(
-      decodeShRgb(first.w).mul(direction.x.mul(direction.y).mul(1.0925484)),
-    );
-    result.addAssign(
-      decodeShRgb(second.x).mul(direction.y.mul(direction.z).mul(-1.0925484)),
-    );
-    result.addAssign(
-      decodeShRgb(second.y).mul(
-        direction.z
-          .mul(direction.z)
-          .mul(2)
-          .sub(direction.x.mul(direction.x))
-          .sub(direction.y.mul(direction.y))
-          .mul(0.3153915),
-      ),
-    );
-    result.addAssign(
-      decodeShRgb(second.z).mul(direction.x.mul(direction.z).mul(-1.0925484)),
-    );
-    result.addAssign(
-      decodeShRgb(second.w).mul(
-        direction.x
-          .mul(direction.x)
-          .sub(direction.y.mul(direction.y))
-          .mul(0.5462742),
-      ),
-    );
-    return result;
-  });
-  const evaluateSH3 = N.Fn(([first, second, direction]) => {
-    const xx = direction.x.mul(direction.x);
-    const yy = direction.y.mul(direction.y);
-    const zz = direction.z.mul(direction.z);
-    return decodeShRgb(first.x)
-      .mul(direction.y.mul(xx.mul(3).sub(yy)).mul(-0.5900436))
-      .add(
-        decodeShRgb(first.y).mul(
-          direction.x.mul(direction.y).mul(direction.z).mul(2.8906114),
-        ),
-      )
-      .add(
-        decodeShRgb(first.z).mul(
-          direction.y.mul(zz.mul(4).sub(xx).sub(yy)).mul(-0.4570458),
-        ),
-      )
-      .add(
-        decodeShRgb(first.w).mul(
-          direction.z
-            .mul(zz.mul(2).sub(xx.mul(3)).sub(yy.mul(3)))
-            .mul(0.3731763),
-        ),
-      )
-      .add(
-        decodeShRgb(second.x).mul(
-          direction.x.mul(zz.mul(4).sub(xx).sub(yy)).mul(-0.4570458),
-        ),
-      )
-      .add(
-        decodeShRgb(second.y).mul(direction.z.mul(xx.sub(yy)).mul(1.4453057)),
-      )
-      .add(
-        decodeShRgb(second.z).mul(
-          direction.x.mul(xx.sub(yy.mul(3))).mul(-0.5900436),
-        ),
-      );
-  });
-  const evaluateSH4 = N.Fn(([previous, first, second, direction]) => {
-    const xx = direction.x.mul(direction.x);
-    const yy = direction.y.mul(direction.y);
-    const zz = direction.z.mul(direction.z);
-    const xy = direction.x.mul(direction.y);
-    const yz = direction.y.mul(direction.z);
-    const xz = direction.x.mul(direction.z);
-    return decodeShRgb(previous)
-      .mul(xy.mul(xx.sub(yy)).mul(2.50334294))
-      .add(decodeShRgb(first.x).mul(yz.mul(xx.mul(3).sub(yy)).mul(-1.77013077)))
-      .add(decodeShRgb(first.y).mul(xy.mul(zz.mul(7).sub(1)).mul(0.9461747)))
-      .add(decodeShRgb(first.z).mul(yz.mul(zz.mul(7).sub(3)).mul(-0.66904654)))
-      .add(
-        decodeShRgb(first.w).mul(
-          zz.mul(zz.mul(35).sub(30)).add(3).mul(0.10578555),
-        ),
-      )
-      .add(decodeShRgb(second.x).mul(xz.mul(zz.mul(7).sub(3)).mul(-0.66904654)))
-      .add(
-        decodeShRgb(second.y).mul(
-          xx.sub(yy).mul(zz.mul(7).sub(1)).mul(0.47308735),
-        ),
-      )
-      .add(
-        decodeShRgb(second.z).mul(xz.mul(xx.sub(yy.mul(3))).mul(-1.77013077)),
-      )
-      .add(
-        decodeShRgb(second.w).mul(
-          xx
-            .mul(xx.sub(yy.mul(3)))
-            .sub(yy.mul(xx.mul(3).sub(yy)))
-            .mul(0.62583574),
-        ),
-      );
-  });
   const evaluateSH = N.Fn(([coord, direction]) => {
     const result = N.vec3(0).toVar();
     N.If(numSh.equal(N.int(1)), () => {
@@ -443,73 +550,11 @@ export function createGenerateProgram({ uniforms }) {
                   .add(sdfCenter)
                   .toVar();
                 const sdfType = flags.bitAnd(0xff);
-                const distance = N.float(SDF_DISTANCE_LIMIT).toVar();
-                N.If(sdfType.equal(N.uint(0)), () => {
-                  distance.assign(-SDF_DISTANCE_LIMIT);
-                })
-                  .ElseIf(sdfType.equal(N.uint(1)), () => {
-                    distance.assign(sdfPosition.z);
-                  })
-                  .ElseIf(sdfType.equal(N.uint(2)), () => {
-                    distance.assign(sdfPosition.length().sub(sizes.w));
-                  })
-                  .ElseIf(sdfType.equal(N.uint(3)), () => {
-                    const q = sdfPosition.abs().sub(sizes.xyz).add(sizes.w);
-                    distance.assign(
-                      q
-                        .max(0)
-                        .length()
-                        .add(q.x.max(q.y.max(q.z)).min(0))
-                        .sub(sizes.w),
-                    );
-                  })
-                  .ElseIf(sdfType.equal(N.uint(4)), () => {
-                    const radii = sizes.xyz.abs();
-                    N.If(N.all(radii.greaterThan(N.vec3(0))), () => {
-                      const scaledPosition = sdfPosition.div(radii);
-                      const k0 = scaledPosition.length();
-                      const k1 = scaledPosition.div(radii).length();
-                      // The approximation divides by zero at the center;
-                      // its exact signed distance there is the shortest radius.
-                      distance.assign(
-                        radii.x.min(radii.y).min(radii.z).negate(),
-                      );
-                      N.If(k1.greaterThan(0), () => {
-                        distance.assign(k0.mul(k0.sub(1)).div(k1));
-                      });
-                    });
-                  })
-                  .ElseIf(sdfType.equal(N.uint(5)), () => {
-                    const d = N.vec2(sdfPosition.xz.length(), sdfPosition.y)
-                      .abs()
-                      .sub(sizes.wy);
-                    distance.assign(d.x.max(d.y).min(0).add(d.max(0).length()));
-                  })
-                  .ElseIf(sdfType.equal(N.uint(6)), () => {
-                    sdfPosition.y.subAssign(
-                      sdfPosition.y.clamp(sizes.y.mul(-0.5), sizes.y.mul(0.5)),
-                    );
-                    distance.assign(sdfPosition.length().sub(sizes.w));
-                  })
-                  .ElseIf(sdfType.equal(N.uint(7)), () => {
-                    const angle = sizes.w.mul(Math.PI * 0.25);
-                    const c = N.vec2(angle.sin(), angle.cos());
-                    const q = N.vec2(
-                      sdfPosition.xy.length(),
-                      sdfPosition.z.negate(),
-                    );
-                    const sign = N.select(
-                      q.x.mul(c.y).sub(q.y.mul(c.x)).lessThan(0),
-                      -1,
-                      1,
-                    );
-                    distance.assign(
-                      q
-                        .sub(c.mul(q.dot(c).max(0)))
-                        .length()
-                        .mul(sign),
-                    );
-                  });
+                const distance = sdfDistance(
+                  sdfType,
+                  sdfPosition,
+                  sizes,
+                ).toVar();
                 distance.mulAssign(N.uintBitsToFloat(data5.w));
                 N.If(flags.bitAnd(0x100).notEqual(N.uint(0)), () => {
                   distance.negateAssign();

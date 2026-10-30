@@ -2,7 +2,7 @@ import * as N from "three/tsl";
 import { Node } from "three/webgpu";
 import { usesNativeWebGPU } from "../rendererUtils.js";
 
-// Three r186 has no TSL sample-mask output. Keep the one localized builder
+// Three has no TSL sample-mask output. Keep the one localized builder
 // extension here; target allocation and draw substitution use public APIs.
 class SampleMaskNode extends Node {
   constructor(maskNode) {

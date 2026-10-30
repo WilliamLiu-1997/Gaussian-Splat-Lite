@@ -9,7 +9,6 @@ import {
 } from "three";
 import * as N from "three/tsl";
 import { NodeMaterial, NodeUpdateType, QuadMesh } from "three/webgpu";
-import { applyThreeR186Patch } from "../patches/threeR186.js";
 import { GaussianSplatRenderer } from "../rendering/GaussianSplatRenderer.js";
 import {
   assertSupportedRenderer,
@@ -38,7 +37,6 @@ export class NeuralDenoiseXR {
     this.mode = mode;
     this.msaa = msaa;
     this.nodeRenderer = isWebGPURenderer(renderer);
-    applyThreeR186Patch(renderer);
     this.onSessionEnd = () => this.disposeViews();
     renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }
@@ -187,7 +185,7 @@ export class NeuralDenoiseXR {
         // A mono RenderPipeline / renderer output quad cannot select eyes.
         renderer.toneMapping = NoToneMapping;
         renderer.outputColorSpace = ColorManagement.workingColorSpace;
-        // r186 selects native per-eye render passes through its array depth
+        // Three selects native per-eye render passes through its array depth
         // attachment, even for color-only output. XR may have disabled it in
         // anticipation of the renderer's intermediate color-conversion pass.
         if (usesNativeWebGPU(renderer) && outputTarget?.useArrayDepthTexture)

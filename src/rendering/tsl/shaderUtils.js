@@ -1,5 +1,4 @@
 import * as N from "three/tsl";
-import { NodeUpdateType } from "three/webgpu";
 import {
   SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
@@ -20,27 +19,18 @@ export function uniformBinding(uniforms, name, type) {
 }
 export function textureBinding(uniforms, name) {
   const getTexture = () => uniforms[name].value;
-  const binding = uintTexture(getTexture()).onObjectUpdate(getTexture);
   // Dynamic bindings stay distinct even while they share a texture.
-  binding.mergeable = false;
-  return binding;
+  return N.uniformTexture(getTexture())
+    .setSampler(false)
+    .onObjectUpdate(getTexture);
 }
 export function load2D(binding, coord) {
   const texel = binding.load(coord);
   texel.updateMatrix = false;
-  return updateTextureLoad(binding, texel);
+  return texel;
 }
 export function loadArray(binding, coord) {
-  return updateTextureLoad(binding, binding.load(coord.xy).depth(coord.z));
-}
-function updateTextureLoad(binding, texel) {
-  texel.updateBeforeType = NodeUpdateType.OBJECT;
-  texel.updateBefore = (frame) => {
-    // Bind the real texture before shared uniforms derive the GL target Y flip.
-    frame.updateNode(binding);
-    return undefined;
-  };
-  return texel;
+  return binding.load(coord.xy).depth(coord.z);
 }
 export const splatTexCoord = N.Fn(([index]) => {
   const value = N.uint(index);
@@ -49,10 +39,21 @@ export const splatTexCoord = N.Fn(([index]) => {
     N.int(value.shiftRight(SPLAT_TEX_WIDTH_BITS).bitAnd(SPLAT_TEX_HEIGHT_MASK)),
     N.int(value.shiftRight(SPLAT_TEX_LAYER_BITS)),
   );
+}).setLayout({
+  name: "gslSplatTexCoord",
+  type: "ivec3",
+  inputs: [{ name: "index", type: "uint" }],
 });
 export const quatVec = N.Fn(([quaternion, vector]) => {
   const t = quaternion.xyz.cross(vector).mul(2);
   return vector.add(quaternion.w.mul(t)).add(quaternion.xyz.cross(t));
+}).setLayout({
+  name: "gslQuatVec",
+  type: "vec3",
+  inputs: [
+    { name: "quaternion", type: "vec4" },
+    { name: "vector", type: "vec3" },
+  ],
 });
 export const quatQuat = N.Fn(([first, second]) => {
   return N.vec4(
@@ -77,18 +78,44 @@ export const quatQuat = N.Fn(([first, second]) => {
       .sub(first.y.mul(second.y))
       .sub(first.z.mul(second.z)),
   );
+}).setLayout({
+  name: "gslQuatQuat",
+  type: "vec4",
+  inputs: [
+    { name: "first", type: "vec4" },
+    { name: "second", type: "vec4" },
+  ],
 });
 export const decodeCenter = N.Fn(([data]) => {
   return N.uintBitsToFloat(data.xyz);
+}).setLayout({
+  name: "gslDecodeCenter",
+  type: "vec3",
+  inputs: [{ name: "data", type: "uvec4" }],
 });
 export const decodeAlphaShape = N.Fn(([data]) => {
   return N.unpackHalf2x16(data.w);
+}).setLayout({
+  name: "gslDecodeAlphaShape",
+  type: "vec2",
+  inputs: [{ name: "data", type: "uvec4" }],
 });
 export const decodeRgba = N.Fn(([data, alpha]) => {
   return N.vec4(N.unpackHalf2x16(data.x), N.unpackHalf2x16(data.y).x, alpha);
+}).setLayout({
+  name: "gslDecodeRgba",
+  type: "vec4",
+  inputs: [
+    { name: "data", type: "uvec4" },
+    { name: "alpha", type: "float" },
+  ],
 });
 export const decodeLnScales = N.Fn(([data]) => {
   return N.vec3(N.unpackHalf2x16(data.y).y, N.unpackHalf2x16(data.z));
+}).setLayout({
+  name: "gslDecodeLnScales",
+  type: "vec3",
+  inputs: [{ name: "data", type: "uvec4" }],
 });
 export const decodeQuaternion = N.Fn(([encodedValue]) => {
   const encoded = N.uint(encodedValue);
@@ -111,4 +138,8 @@ export const decodeQuaternion = N.Fn(([encodedValue]) => {
     .div(4095)
     .mul(Math.PI * 0.5);
   return N.vec4(axis.mul(halfTheta.sin()), halfTheta.cos());
+}).setLayout({
+  name: "gslDecodeQuaternion",
+  type: "vec4",
+  inputs: [{ name: "encodedValue", type: "uint" }],
 });

@@ -14,6 +14,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Breaking:** Raised the minimum Three.js version to r187 and removed the r186 runtime compatibility patch.
+- Neural denoising uses a depth-only render target when exposing depth on the WebGL2 fallback, reducing GPU texture memory.
 - **Breaking:** RAD and SOG streaming require a nonempty `sources` array, even for a single input. Put `url`/`file`/`fileBytes`, loading options and `transform` inside each source; top-level loading options are no longer inherited.
 - RAD streaming caches and copies SH codebooks in a background worker, avoiding large main-thread copies when page decoders switch inputs.
 - Streamed SOG reduces oversized regions toward each input's own median region size when measuring LOD distance.
@@ -21,7 +23,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Backported [Three.js #35264](https://github.com/mrdoob/three.js/pull/35264) to the automatic r186 compatibility patch for WebGPU, WebGL2, and the WebGL2 fallback. Reversed depth preserves `AlwaysDepth`, `NeverDepth`, `EqualDepth`, and `NotEqualDepth`; capture and neural denoising now use `AlwaysDepth` directly.
+- The viewer Inspector reports rendered FPS correctly when animation ticks are skipped with Three.js r187 and resets its timing when reopened.
+- Cube capture keeps its mip chain allocated while rendering the six faces and generates mipmaps only after the last face.
+- Neural denoising restores render-target viewport and scissor settings independently of the canvas pixel ratio.
 
 ## [1.5.4] - 2026-10-29
 

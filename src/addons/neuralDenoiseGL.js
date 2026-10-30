@@ -125,19 +125,22 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
       });
   }
   allocate(views, depth) {
+    const width = views[0]?.width ?? this.width;
+    const height = views[0]?.height ?? this.height;
     // Three sizes a depth texture only with the target that first held it,
     // and a disposed target keeps it: a new size would leave it as it was.
-    if (depth) depth.texture.renderTarget = null;
-    const target = new this.Target(
-      views[0]?.width ?? this.width,
-      views[0]?.height ?? this.height,
-      {
-        count: Math.max(1, views.length),
-        type: HalfFloatType,
-        depthBuffer: !!depth,
-        ...(depth && { depthTexture: depth.texture }),
-      },
-    );
+    if (depth) {
+      depth.texture.renderTarget = null;
+      // A depth-only target takes its size from this texture.
+      depth.texture.image.width = width;
+      depth.texture.image.height = height;
+    }
+    const target = new this.Target(width, height, {
+      count: this.nodeRenderer ? views.length : Math.max(1, views.length),
+      type: HalfFloatType,
+      depthBuffer: !!depth,
+      ...(depth && { depthTexture: depth.texture }),
+    });
     for (let i = 0; i < views.length; i++) {
       const view = views[i];
       const texture = target.textures[i];
@@ -165,9 +168,8 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
     for (const { name } of shader.textures) {
       declarations.push(`uniform sampler2D ${name};`);
       uniforms[name] = this.nodeRenderer
-        ? N.texture().setName(name)
+        ? N.uniformTexture().setName(name)
         : { value: null };
-      if (this.nodeRenderer) uniforms[name].mergeable = false;
     }
     for (let i = 0; i < parameters.length; i++) {
       declarations.push(`uniform ${parameters[i]};`);
@@ -211,6 +213,7 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
       if (shader.depth) {
         material.depthNode = execute;
         material.fragmentNode = N.vec4(0);
+        material.colorWrite = false;
       } else {
         material.fragmentNode =
           count === 1 ? execute : N.outputStruct(execute, ...values.slice(1));

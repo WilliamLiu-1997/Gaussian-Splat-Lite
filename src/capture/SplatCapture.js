@@ -245,18 +245,19 @@ export class SplatCapture {
       camera.updateCoordinateSystem();
     }
     const target = camera.renderTarget;
-    const generateMipmaps = target.texture.generateMipmaps;
-    target.texture.generateMipmaps = false;
+    const mipmapsAutoUpdate = target.texture.mipmapsAutoUpdate;
+    // Keep the full mip chain allocated while capturing its six base faces.
+    target.texture.mipmapsAutoUpdate = false;
     try {
       for (let face = 0; face < 6; face++) {
         // Generate cube mipmaps only after all six resolved faces are ready.
-        if (face === 5) target.texture.generateMipmaps = generateMipmaps;
+        if (face === 5) target.texture.mipmapsAutoUpdate = mipmapsAutoUpdate;
         renderer.setRenderTarget(target, face, camera.activeMipmapLevel);
         this.capturePass.render(scene, camera.children[face]);
       }
       target.texture.needsPMREMUpdate = true;
     } finally {
-      target.texture.generateMipmaps = generateMipmaps;
+      target.texture.mipmapsAutoUpdate = mipmapsAutoUpdate;
     }
   }
   /** Validates and snapshots the center now; the capture may wait for earlier ones. */
