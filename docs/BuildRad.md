@@ -91,7 +91,7 @@ Host all files together in the same directory and load the `.rad` file. A single
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new RadStreamScheduler({
-  url: "/models/scene-lod.rad",
+  sources: [{ url: "/models/scene-lod.rad" }],
 });
 ```
 

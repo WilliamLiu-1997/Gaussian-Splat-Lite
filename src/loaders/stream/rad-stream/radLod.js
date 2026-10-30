@@ -3,14 +3,18 @@ import {
   SPLAT_BOUNDS_BLOCK_SIZE,
 } from "../../../data/defines.js";
 import { getSplatTextureBytes } from "../../../data/splatData.js";
-/** Fixed page costs at the storage SH degree, including retained selection data. */
+/** Conservative page reservations at the storage SH degree. */
 export function radPageCosts(numSh) {
   const splatBytes = getSplatTextureBytes(1, numSh);
   const boundsBlocks = RAD_PAGE_SIZE / SPLAT_BOUNDS_BLOCK_SIZE;
   const gpu = RAD_PAGE_SIZE * (splatBytes + 4 + 0.25) + 16;
+  // Keep the removed reverse map's allowance as headroom for padded indices
+  // and overlapping selections; this is not an allocated per-record array.
+  const cpuHeadroom = RAD_PAGE_SIZE * 4;
   return {
     gpu,
-    cpu: gpu + RAD_PAGE_SIZE * (4 + 28) + boundsBlocks * 72 + 2 * (48 + 4),
+    cpu:
+      gpu + RAD_PAGE_SIZE * 28 + boundsBlocks * 72 + 2 * (48 + 4) + cpuHeadroom,
     pending: RAD_PAGE_SIZE * (splatBytes + 26) + boundsBlocks * 80,
   };
 }

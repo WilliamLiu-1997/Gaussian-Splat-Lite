@@ -7,9 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- RAD and SOG streaming inputs accept a `transform` (`THREE.Matrix4`) that places each model in the scheduler's group, including several instances of the same URL. `setSourceSettings()` moves an input without reloading its data.
+- Streamed SOG inputs accept their own `lodBaseDistance` and `lodMultiplier`. `setSourceSettings()` also changes an input's LOD settings and `environment` at runtime.
+
 ### Changed
 
+- **Breaking:** RAD and SOG streaming require a nonempty `sources` array, even for a single input. Put `url`/`file`/`fileBytes`, loading options and `transform` inside each source; top-level loading options are no longer inherited.
 - RAD streaming caches and copies SH codebooks in a background worker, avoiding large main-thread copies when page decoders switch inputs.
+- Streamed SOG reduces oversized regions toward each input's own median region size when measuring LOD distance.
+- RAD and Streamed SOG streaming use less CPU memory for loaded detail.
 
 ## [1.5.4] - 2026-10-29
 

@@ -216,26 +216,29 @@ export function resolveSogLod(leaf, target, current, isLoaded) {
   }
   return { range, load, refinement: true };
 }
-/** Select distance bands, fitting their common base distance to the splat budget. */
+/** Fit each input's distance bands to the budget with one shared scale. */
 export function selectSogLods(
   visible,
   lodLevels,
-  { budget, splatBudgetMode, lodBaseDistance, lodMultiplier },
+  { budget, splatBudgetMode, sources },
 ) {
   const limit = splatBudgetMode === "limit";
-  const bandDistances = new Float64Array(lodLevels);
-  for (let level = 1; level < bandDistances.length; level++)
-    bandDistances[level] = lodMultiplier ** (level - 1);
+  const bandDistances = sources.map(({ lodBaseDistance, lodMultiplier }) => {
+    const bands = new Float64Array(lodLevels);
+    for (let level = 1; level < bands.length; level++)
+      bands[level] = lodBaseDistance * lodMultiplier ** (level - 1);
+    return bands;
+  });
   const selected = new Map();
   let total = 0;
   // Limit mode uses the configured bands directly when they fit. Target mode
   // can use every finest level when the whole visible scene fits.
-  for (const { leaf, distance } of visible) {
+  for (const { leaf, distance, source } of visible) {
     if (!leaf.lods.length) continue;
     let index = limit ? 0 : leaf.lods.length - 1;
     while (
       index < leaf.lods.length - 1 &&
-      distance < lodBaseDistance * bandDistances[leaf.lods[index].level]
+      distance < bandDistances[source][leaf.lods[index].level]
     )
       index++;
     const target = leaf.lods[index];
@@ -244,20 +247,19 @@ export function selectSogLods(
   }
   if (total <= budget) return selected;
 
-  // Each transition gives the base distance at which a region switches finer.
-  // Visit these distances in order, so all regions share the same band scale.
+  // Each transition gives the shared scale at which a region switches finer.
+  // Per-input base distances and multipliers retain their relative influence.
   selected.clear();
   let remaining = budget;
   const heap = [];
   const better = (a, b) =>
-    a.baseDistance < b.baseDistance ||
-    (a.baseDistance === b.baseDistance && a.leaf.id < b.leaf.id);
-  const enqueue = (leaf, distance, index) => {
+    a.scale < b.scale || (a.scale === b.scale && a.leaf.id < b.leaf.id);
+  const enqueue = (leaf, distance, source, index) => {
     if (index >= leaf.lods.length) return;
     // A missing intermediate band resolves to the next finer populated level.
-    const band = bandDistances[leaf.lods[index - 1].level];
-    if (limit && distance >= lodBaseDistance * band) return;
-    const item = { leaf, distance, index, baseDistance: distance / band };
+    const band = bandDistances[source][leaf.lods[index - 1].level];
+    if (limit && distance >= band) return;
+    const item = { leaf, distance, source, index, scale: distance / band };
     let slot = heap.length;
     heap.push(item);
     while (slot > 0) {
@@ -285,27 +287,27 @@ export function selectSogLods(
     }
     return first;
   };
-  for (const { leaf, distance } of visible) {
+  for (const { leaf, distance, source } of visible) {
     const coarse = leaf.lods[0];
     if (!coarse) continue;
     selected.set(leaf.id, coarse);
     remaining -= coarse.count;
-    enqueue(leaf, distance, 1);
+    enqueue(leaf, distance, source, 1);
   }
   if (remaining <= 0) return selected;
   const transitions = [];
   while (heap.length) {
-    const baseDistance = heap[0].baseDistance;
+    const scale = heap[0].scale;
     transitions.length = 0;
     let cost = 0;
     do {
       const item = pop();
-      const { leaf, distance, index } = item;
+      const { leaf, distance, source, index } = item;
       cost += leaf.lods[index].count - leaf.lods[index - 1].count;
       transitions.push(item);
-      enqueue(leaf, distance, index + 1);
-    } while (heap.length && heap[0].baseDistance === baseDistance);
-    // Equal-distance transitions move together, including collapsed bands at
+      enqueue(leaf, distance, source, index + 1);
+    } while (heap.length && heap[0].scale === scale);
+    // Equal-scale transitions move together, including collapsed bands at
     // multiplier 1. Stop at the first group that cannot fit to avoid flicker.
     if (cost > remaining) break;
     remaining -= cost;

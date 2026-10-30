@@ -37,7 +37,7 @@ export class SogStreamLoader {
     this.maxSh = maxSh;
     this.controller = new AbortController();
     this.sources = streamSources(options).map((options) => ({
-      options,
+      options: { ...options },
       baseUrl: "",
     }));
     this.downloadedBytes = 0;
@@ -106,7 +106,6 @@ export class SogStreamLoader {
       await this.lodWorker.call("parseSogIndex", {
         bytes,
         baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
-        environment: options.environment,
       });
       this.assertActive();
     } catch (error) {

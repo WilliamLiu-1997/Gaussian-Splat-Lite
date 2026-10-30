@@ -1,6 +1,7 @@
 import type { Box3 } from "three";
 import { IndexedSplats } from "./IndexedSplats.js";
 import type { ReorderedSplatResult } from "./defines.js";
+import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 export declare function sogBatchAllocationSize(count: number): number;
 export declare function sogBatchTextureLayout(count: number): {
   capacity: number;
@@ -27,6 +28,10 @@ export declare class SogRegionSplats extends IndexedSplats {
   release(start: number): void;
   getBoundingBox(centersOnly?: boolean, target?: Box3): Box3;
   getByteLength(): number;
+  forEachRaycastRange(
+    query: SplatRaycastQuery,
+    callback: RaycastRangeCallback,
+  ): void;
   protected ensureIndices(): void;
   dispose(): void;
 }

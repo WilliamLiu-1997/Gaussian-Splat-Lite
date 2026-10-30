@@ -43,8 +43,6 @@ export type SogLodIndex = {
   urls: string[];
   counts: Float64Array;
 };
-/** Scheduler metadata; per-region bounds stay in the LOD worker. */
-export type SogLodMetadata = Omit<SogLodIndex, "leafBounds" | "lodLevels">;
 /** Pack region bounds and ranges into transferable typed arrays. */
 export declare function packSogLodIndex(
   manifest: Pick<SogLodManifest, "tree" | "leaves" | "lodLevels"> & {
@@ -63,6 +61,7 @@ export declare function parseSogLodManifest(
 ): SogLodManifest;
 export type SogVisibleLeaf = {
   leaf: SogLodLeaf;
+  source: number;
   /** Distance to the corrected region bounds, including camera direction and field of view. */
   distance: number;
 };
@@ -70,8 +69,11 @@ export type SogBudgetMode = "target" | "limit";
 export type SogLodOptions = {
   budget: number;
   splatBudgetMode: SogBudgetMode;
-  lodBaseDistance: number;
-  lodMultiplier: number;
+  sources: {
+    transform?: number[];
+    lodBaseDistance: number;
+    lodMultiplier: number;
+  }[];
 };
 /** Reuse cached refinements up to the target, then split gaps of four or more. */
 export declare function resolveSogLod(
@@ -85,7 +87,7 @@ export declare function resolveSogLod(
   /** Wait until range is attached before requesting the next LOD. */
   refinement?: boolean;
 };
-/** Select distance bands, fitting their common base distance to the splat budget. */
+/** Fit each input's distance bands to the budget with one shared scale. */
 export declare function selectSogLods(
   visible: SogVisibleLeaf[],
   lodLevels: number,

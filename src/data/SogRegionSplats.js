@@ -85,15 +85,26 @@ export class SogRegionSplats extends IndexedSplats {
   getByteLength() {
     return super.getByteLength() + this.regionBounds.size * 48;
   }
+  forEachRaycastRange(query, callback) {
+    this.assertLive();
+    this.ensureIndices();
+    // Each active region occupies one consecutive visible-index range.
+    let visibleStart = 0;
+    for (const [start, count] of this.activeRanges) {
+      const { bounds } = this.spatialChunks.get(start);
+      query.forEachRange(bounds, count, (base, length) => {
+        callback(visibleStart + base, length);
+      });
+      visibleStart += count;
+    }
+  }
   ensureIndices() {
     if (!this.indicesDirty) return;
     const indices = this.prepareIndices(this.numSplats);
     let target = 0;
     for (const [start, count] of this.activeRanges)
-      for (let source = start; source < start + count; source++) {
-        this.visibleIndices[source] = target;
+      for (let source = start; source < start + count; source++)
         indices[target++] = source;
-      }
     this.indicesDirty = false;
   }
   dispose() {

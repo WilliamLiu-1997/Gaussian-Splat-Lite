@@ -26,6 +26,8 @@ export type RadLodView = {
 };
 export type RadLodRequest = {
   views: RadLodView[];
+  /** One model-to-group matrix per input. */
+  transforms: number[][];
   splatBudget: number;
   splatBudgetTolerance: number;
   /** Shared slot limit after accounting for both resident memory budgets. */

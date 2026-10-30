@@ -24,6 +24,7 @@ export class IndexedSplats extends Splats {
     numSh,
     blockBits,
     packedOpacityGroups = false,
+    storage,
   }) {
     // RAD and SOG supply aligned power-of-two layers.
     if (capacity > 0x1_0000_0000)
@@ -34,8 +35,23 @@ export class IndexedSplats extends Splats {
     this.disposed = false;
     /** Owner's pending-upload queue; written layers wait there for the renderer. */
     this.uploadQueue = undefined;
-    this.spatialChunks = new Map();
     this.spatialBoundsBytes = 0;
+    // A view draws its own indices from another source's packed records,
+    // opacity groups and spatial bounds; that source writes and owns them.
+    this.storage = storage;
+    if (storage) {
+      this.spatialChunks = storage.spatialChunks;
+      this.maxSplats = storage.maxSplats;
+      this.layerSize = storage.layerSize;
+      this.numSh = storage.numSh;
+      this.blockBits = storage.blockBits;
+      this.opacities = storage.opacities;
+      this.sourceArrays = storage.sourceArrays;
+      this.sourceCenters = storage.sourceCenters;
+      this.sourceTextures = storage.sourceTextures;
+      return;
+    }
+    this.spatialChunks = new Map();
     this.maxSplats = capacity;
     this.layerSize = layerSize;
     this.numSh = numSh;
@@ -51,7 +67,6 @@ export class IndexedSplats extends Splats {
       () => new Uint32Array(capacity * 4),
     );
     this.sourceCenters = new Float32Array(this.sourceArrays[0].buffer);
-    this.visibleIndices = new Uint32Array(capacity);
     this.sourceTextures = this.sourceArrays.map((array) =>
       makeTexture(
         array,
@@ -72,15 +87,6 @@ export class IndexedSplats extends Splats {
   }
   /** Range-based sources can materialize their visible map lazily. */
   ensureIndices() {}
-  /** Each source updates its bounds independently of the visible-index map. */
-  commitIndices(indices) {
-    const target = this.prepareIndices(indices.length);
-    for (let index = 0; index < indices.length; index++) {
-      const source = indices[index];
-      target[index] = source;
-      this.visibleIndices[source] = index;
-    }
-  }
   /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
   prepareIndices(count) {
     this.assertLive();
@@ -111,6 +117,7 @@ export class IndexedSplats extends Splats {
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
   writeRecords(start, data, allocation, numSh = this.numSh) {
     this.assertLive();
+    if (this.storage) throw new Error("Write records through a view's storage");
     const count = data.numSplats;
     if (
       !Number.isSafeInteger(start) ||
@@ -207,19 +214,20 @@ export class IndexedSplats extends Splats {
   }
   /** Estimated GPU storage for packed records, render indices and opacity tables. */
   get textureByteLength() {
-    return (
-      this.sourceArrays.reduce((bytes, array) => bytes + array.byteLength, 0) +
-      this.sourceIndices.byteLength +
-      this.opacities.byteLength
-    );
+    let bytes = this.sourceIndices.byteLength;
+    // A view's records and opacity groups count toward its storage.
+    if (!this.storage) {
+      for (const array of this.sourceArrays) bytes += array.byteLength;
+      bytes += this.opacities.byteLength;
+    }
+    return bytes;
   }
   getByteLength() {
     return (
       this.textureByteLength +
       this.centerOnlyBounds.byteLength +
       this.bounds.byteLength +
-      this.spatialBoundsBytes +
-      this.visibleIndices.byteLength
+      this.spatialBoundsBytes
     );
   }
   center(source, axis) {
@@ -259,32 +267,6 @@ export class IndexedSplats extends Splats {
       this.spatialBoundsBytes -= chunk.bounds.byteLength;
       this.spatialChunks.delete(start);
     }
-  }
-  forEachRaycastRange(query, callback) {
-    this.assertLive();
-    this.ensureIndices();
-    let rangeStart = -1;
-    let rangeEnd = -1;
-    for (const [start, { count, bounds }] of this.spatialChunks) {
-      query.forEachRange(bounds, count, (base, length) => {
-        for (
-          let source = start + base;
-          source < start + base + length;
-          source++
-        ) {
-          const index = this.visibleIndices[source];
-          // Validate against the current cut so hidden slots need no clearing.
-          if (index >= this.numSplats || this.sourceIndices[index] !== source)
-            continue;
-          if (index !== rangeEnd) {
-            if (rangeStart >= 0) callback(rangeStart, rangeEnd - rangeStart);
-            rangeStart = index;
-          }
-          rangeEnd = index + 1;
-        }
-      });
-    }
-    if (rangeStart >= 0) callback(rangeStart, rangeEnd - rangeStart);
   }
   copySplatRecords(firstTarget, secondTarget, sourceStart, count) {
     this.assertLive();
@@ -404,18 +386,23 @@ export class IndexedSplats extends Splats {
   dispose() {
     if (this.disposed) return;
     super.dispose();
-    this.uploadQueue?.delete(this);
-    this.uploadQueue = undefined;
-    for (const texture of this.sourceTextures) texture.dispose();
     if (this.indexTexture !== Splats.emptyTexture) this.indexTexture.dispose();
-    this.opacities.dispose();
+    if (this.storage) {
+      // Shared records, opacity groups and bounds stay with the storage.
+      this.storage = undefined;
+      this.spatialChunks = new Map();
+    } else {
+      this.uploadQueue?.delete(this);
+      for (const texture of this.sourceTextures) texture.dispose();
+      this.opacities.dispose();
+      this.spatialChunks.clear();
+    }
+    this.uploadQueue = undefined;
     this.sourceArrays = [];
     this.sourceTextures = [];
     this.sourceCenters = new Float32Array(0);
     this.sourceIndices = new Uint32Array(0);
-    this.visibleIndices = new Uint32Array(0);
     this.indexTexture = Splats.emptyTexture;
-    this.spatialChunks.clear();
     this.spatialBoundsBytes = 0;
     this.disposed = true;
   }

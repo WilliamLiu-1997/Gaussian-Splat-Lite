@@ -1,4 +1,3 @@
-import { Box3 } from "three";
 import {
   SH_ARRAY_COUNTS,
   SH_KEYS,
@@ -7,72 +6,105 @@ import {
 } from "../../../data/splatData.js";
 import { extractSplatRange } from "../../../data/splatRange.js";
 import { reorderSplats, restoreSplatOrder } from "../../morton.js";
-import { packSogLodIndex, parseSogLodManifest } from "./sogLod.js";
+import {
+  packSogLodIndex,
+  parseSogLodManifest,
+  selectSogLods,
+} from "./sogLod.js";
 import { SogVisibility } from "./sogVisibility.js";
 /** LOD workers parse the index once before selection; other workers own chunk caches. */
 export function createSogStreamHandlers(decodeSplats) {
   const sogChunks = new Map();
   const sogLoads = new Map();
-  const manifests = [];
-  let visibility;
-  function parseSogIndex({ bytes, baseUrl, environment }) {
+  // Each input keeps its own octree and median region size for LOD distance.
+  const sources = [];
+  let lodLevels = 0;
+  function parseSogIndex({ bytes, baseUrl }) {
     const manifest = parseSogLodManifest(
       JSON.parse(new TextDecoder().decode(bytes)),
       baseUrl,
     );
-    if (environment === false) manifest.environment = undefined;
-    manifests.push(manifest);
+    // Keep the environment so the scheduler can enable or skip it later.
+    const environment = manifest.environment ? manifest.files.length : -1;
+    if (environment >= 0)
+      manifest.files.push({ url: manifest.environment, count: -1 });
+    const index = packSogLodIndex(manifest);
+    sources.push({ index, visibility: new SogVisibility(index), environment });
   }
   function initializeSogIndex() {
-    const tree = { bound: new Box3(), children: [] };
-    const leaves = [];
-    const files = [];
+    const urls = [];
+    const counts = [];
+    const lods = [];
+    const leafOffsets = [0];
     const sourceIndices = [];
-    const environments = [];
-    let levels = 0;
-    manifests.splice(0).forEach((manifest, source) => {
-      const leafBase = leaves.length;
-      const fileBase = files.length;
-      for (const leaf of manifest.leaves) {
-        leaf.id += leafBase;
-        for (const range of leaf.lods)
-          if (range.file >= 0) range.file += fileBase;
-        leaves.push(leaf);
-      }
-      for (const file of manifest.files) {
-        files.push(file);
+    const sourceBounds = new Float64Array(sources.length * 6);
+    const environments = new Int32Array(sources.length).fill(-1);
+    let retainedIndexBytes = 0;
+    sources.forEach(({ index, environment }, source) => {
+      sourceBounds.set(index.bounds, source * 6);
+      const fileBase = urls.length;
+      const lodBase = lods.length / 4;
+      for (const offset of index.leafOffsets.subarray(1))
+        leafOffsets.push(lodBase + offset);
+      for (let i = 0; i < index.lods.length; i += 4)
+        lods.push(
+          index.lods[i],
+          index.lods[i + 1] < 0 ? -1 : fileBase + index.lods[i + 1],
+          index.lods[i + 2],
+          index.lods[i + 3],
+        );
+      for (const url of index.urls) urls.push(url);
+      for (const count of index.counts) {
+        counts.push(count);
         sourceIndices.push(source);
       }
-      if (manifest.environment) {
-        environments.push(files.length);
-        files.push({ url: manifest.environment, count: -1 });
-        sourceIndices.push(source);
-      }
-      tree.children.push(manifest.tree);
-      tree.bound.union(manifest.tree.bound);
-      levels = Math.max(levels, manifest.lodLevels);
+      if (environment >= 0) environments[source] = fileBase + environment;
+      lodLevels = Math.max(lodLevels, index.lodLevels);
+      retainedIndexBytes +=
+        index.bounds.byteLength +
+        index.leafBounds.byteLength +
+        index.leafOffsets.byteLength +
+        index.lods.byteLength +
+        index.counts.byteLength;
     });
-    const index = packSogLodIndex({ tree, leaves, files, lodLevels: levels });
-    const { leafBounds, leafOffsets, lods, lodLevels, ...metadata } = index;
-    visibility = new SogVisibility({
-      leafBounds,
-      leafOffsets,
-      lods,
-      lodLevels,
-    });
-    // Keep region bounds here; copy shared arrays before RPC transfers them.
     return {
-      ...metadata,
+      urls,
+      counts: Float64Array.from(counts),
+      leafOffsets: Uint32Array.from(leafOffsets),
+      lods: Float64Array.from(lods),
       sourceIndices: Uint32Array.from(sourceIndices),
-      environments: Uint32Array.from(environments),
-      leafOffsets: leafOffsets.slice(),
-      lods: lods.slice(),
-      retainedIndexBytes:
-        leafBounds.byteLength + leafOffsets.byteLength + lods.byteLength,
+      sourceBounds,
+      environments,
+      retainedIndexBytes,
     };
   }
   function selectSogLod(request) {
-    return visibility.select(request);
+    const regions = [];
+    let leafBase = 0;
+    sources.forEach(({ index, visibility }, source) => {
+      const collected = visibility.collect({
+        ...request,
+        transform: request.sources[source].transform,
+      });
+      collected.forEach((region, local) => {
+        region.leaf.id = leafBase + local;
+        region.source = source;
+        regions.push(region);
+      });
+      leafBase += index.leafOffsets.length - 1;
+    });
+    const targets = selectSogLods(regions, lodLevels, request);
+    regions.sort((a, b) => a.distance - b.distance || a.leaf.id - b.leaf.id);
+    // Transfer only [leaf ID, LOD ordinal] pairs in loading priority order.
+    const result = new Uint32Array(targets.size * 2);
+    let offset = 0;
+    for (const { leaf } of regions) {
+      const target = targets.get(leaf.id);
+      if (!target) continue;
+      result[offset++] = leaf.id;
+      result[offset++] = leaf.lods.indexOf(target);
+    }
+    return result;
   }
   function cacheSogChunk({ id, data, maxSh }) {
     // Custom loaders may return higher SH than this scheduler retains.

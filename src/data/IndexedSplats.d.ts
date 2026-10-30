@@ -4,15 +4,20 @@ import type { SplatOpacityTable } from "./SplatOpacityTable.js";
 import { Splats, type SplatsOptions } from "./Splats.js";
 import type { ReorderedSplatResult, SplatResult } from "./defines.js";
 import type { PendingUploads } from "./pendingUploads.js";
-import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 import type { decodeSplat } from "./unpack.js";
-type IndexedSplatsOptions = {
-  capacity: number;
-  layerSize: number;
-  numSh: number;
-  blockBits: number;
-  packedOpacityGroups?: boolean;
-};
+type IndexedSplatsOptions =
+  | {
+      capacity: number;
+      layerSize: number;
+      numSh: number;
+      blockBits: number;
+      packedOpacityGroups?: boolean;
+      storage?: never;
+    }
+  | {
+      /** Draw own indices from this source's records, opacity groups and bounds. */
+      storage: IndexedSplats;
+    };
 type DecodedSplat = ReturnType<typeof decodeSplat>;
 type DecodedSplatWithSh = DecodedSplat & {
   sh: THREE.Color[];
@@ -24,7 +29,6 @@ export declare abstract class IndexedSplats extends Splats {
   readonly numSh: 0 | 1 | 2 | 3 | 4;
   protected readonly opacities: SplatOpacityTable;
   protected sourceIndices: Uint32Array<ArrayBuffer>;
-  protected visibleIndices: Uint32Array;
   private sourceArrays;
   private sourceCenters;
   private sourceTextures;
@@ -33,21 +37,17 @@ export declare abstract class IndexedSplats extends Splats {
   private disposed;
   /** Owner's pending-upload queue; written layers wait there for the renderer. */
   uploadQueue?: PendingUploads;
-  private readonly spatialChunks;
+  protected readonly spatialChunks: Map<
+    number,
+    { count: number; bounds: Float32Array }
+  >;
   private spatialBoundsBytes;
-  constructor({
-    capacity,
-    layerSize,
-    numSh,
-    blockBits,
-    packedOpacityGroups,
-  }: IndexedSplatsOptions);
+  private storage?;
+  constructor(options: IndexedSplatsOptions);
   protected assertLive(): void;
   initialize(options?: SplatsOptions): Promise<Splats>;
   /** Range-based sources can materialize their visible map lazily. */
   protected ensureIndices(): void;
-  /** Each source updates its bounds independently of the visible-index map. */
-  protected commitIndices(indices: Uint32Array): void;
   /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
   protected prepareIndices(count: number): Uint32Array<ArrayBuffer>;
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
@@ -76,10 +76,6 @@ export declare abstract class IndexedSplats extends Splats {
     count: number,
   ): void;
   protected releaseSpatialBounds(start: number): void;
-  forEachRaycastRange(
-    query: SplatRaycastQuery,
-    callback: RaycastRangeCallback,
-  ): void;
   copySplatRecords(
     firstTarget: Uint32Array,
     secondTarget: Uint32Array,

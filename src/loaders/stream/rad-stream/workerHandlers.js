@@ -6,6 +6,19 @@ import { RadSource } from "../../rad/RadSource.js";
 import { getRadChunkSpan, unpackRadChunk } from "../../rad/radFormat.js";
 import { RadSelectionState } from "./RadSelectionState.js";
 import { prepareRadSelection } from "./prepareRadSelection.js";
+/**
+ * Column-major a × b, summed in Matrix4.multiplyMatrices order. Loading Three
+ * here would delay every RAD worker's startup.
+ */
+function multiplyMatrices(a, b, target, offset) {
+  for (let column = 0; column < 4; column++)
+    for (let row = 0; row < 4; row++)
+      target[offset + column * 4 + row] =
+        a[row] * b[column * 4] +
+        a[row + 4] * b[column * 4 + 1] +
+        a[row + 8] * b[column * 4 + 2] +
+        a[row + 12] * b[column * 4 + 3];
+}
 /** Workers own LOD traversal, display preparation, or a persistent page decoder. */
 export function createRadStreamHandlers() {
   let header;
@@ -178,13 +191,18 @@ export function createRadStreamHandlers() {
     selectRadLod(request) {
       // 16 model-view values, pixel scale, projection type, 8 X/Y projection values.
       const stride = 26;
-      const views = new Float64Array(request.views.length * stride);
-      request.views.forEach((view, index) => {
-        const offset = index * stride;
-        views.set(view.viewFromObject, offset);
-        views[offset + 16] = view.pixelScale;
-        views[offset + 17] = Number(view.orthographic);
-        views.set(view.projectionRows, offset + 18);
+      const views = new Float64Array(
+        request.views.length * request.transforms.length * stride,
+      );
+      // Each input's views include its model-to-group transform.
+      request.transforms.forEach((transform, source) => {
+        request.views.forEach((view, index) => {
+          const offset = (source * request.views.length + index) * stride;
+          multiplyMatrices(view.viewFromObject, transform, views, offset);
+          views[offset + 16] = view.pixelScale;
+          views[offset + 17] = Number(view.orthographic);
+          views.set(view.projectionRows, offset + 18);
+        });
       });
       const selected = wasmCall(() =>
         lod.select(

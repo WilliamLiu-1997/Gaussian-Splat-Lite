@@ -1,35 +1,29 @@
-import { RadPagedSplats } from "../../../data/RadPagedSplats.js";
+import { RadPageView } from "../../../data/RadPagedSplats.js";
 import { SplatMesh } from "../../../scene/SplatMesh.js";
-/** A fixed pool of RAD pages sharing one scene node and accumulator call. */
+/** One input's pages in a pool, drawn with that input's transform. */
 export class RadStreamBatch extends SplatMesh {
-  constructor(options) {
-    const source = new RadPagedSplats(options);
-    super({ splats: source, maxSh: source.numSh });
+  constructor(storage, maxSh) {
+    const source = new RadPageView(storage);
+    super({ splats: source, maxSh });
     this.source = source;
     this.name = "rad-batch";
   }
-  clearSelection() {
-    if (!this.source.clearSelection()) return false;
-    this.numSplats = 0;
-    this.updateMappingVersion();
-    return true;
-  }
-  setFadeProgress(progress) {
-    if (!this.source.setFadeProgress(progress)) return false;
+  /** Redraw after the pool's fade coefficients change. */
+  fadeChanged() {
+    if (this.numSplats === 0) return false;
     this.updateVersion({ sort: false });
     return true;
   }
-  commitSelection(prepared) {
-    this.source.commitSelection(prepared);
+  commitSelection(cut) {
+    this.source.commitSelection(cut);
     this.numSplats = this.source.getNumSplats();
     this.updateMappingVersion();
   }
-  finishFade() {
-    if (!this.source.finishFade()) return false;
-    if (this.numSplats !== this.source.getNumSplats()) {
-      this.numSplats = this.source.getNumSplats();
-      this.updateMappingVersion();
-    } else this.updateVersion({ sort: false });
+  /** Drop outgoing records, or redraw when only the fade opacity changed. */
+  finishFade(faded) {
+    if (!this.source.finishFade()) return faded && this.fadeChanged();
+    this.numSplats = this.source.getNumSplats();
+    this.updateMappingVersion();
     return true;
   }
   dispose() {

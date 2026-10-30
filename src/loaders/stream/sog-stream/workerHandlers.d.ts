@@ -52,11 +52,7 @@ export declare function createSogStreamHandlers(
   }: {
     id: number;
   }) => void;
-  parseSogIndex: (request: {
-    bytes: ArrayBuffer;
-    baseUrl: string;
-    environment?: boolean;
-  }) => void;
+  parseSogIndex: (request: { bytes: ArrayBuffer; baseUrl: string }) => void;
   initializeSogIndex: () => SogStreamMetadata & { retainedIndexBytes: number };
   selectSogLod: (request: SogLodRequest) => Uint32Array<ArrayBufferLike>;
 };

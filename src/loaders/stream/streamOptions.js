@@ -1,17 +1,20 @@
 import { retryDelay } from "../../runtime/retry.js";
-/** Single-input options remain shorthand for a one-element source list. */
+/** Inputs are supplied only through a nonempty sources list. */
 export function streamSources(options) {
-  if (options.sources === undefined) return [options];
-  const { sources, ...defaults } = options;
+  const { sources } = options;
   if (!Array.isArray(sources) || !sources.length)
     throw new Error("sources must be a nonempty array");
+  return sources;
+}
+/** Validate an input's model-to-group transform. */
+export function checkStreamTransform(transform) {
   if (
-    options.url !== undefined ||
-    options.file !== undefined ||
-    options.fileBytes !== undefined
+    !transform?.isMatrix4 ||
+    !transform.elements.every(Number.isFinite) ||
+    transform.determinant() === 0
   )
-    throw new Error("Use sources or a single url/file/fileBytes input");
-  return sources.map((source) => ({ ...defaults, ...source }));
+    throw new Error("source.transform must be a finite, invertible Matrix4");
+  return transform;
 }
 export function positiveInteger(value, name) {
   if (!Number.isSafeInteger(value) || value <= 0)

@@ -1,3 +1,4 @@
+import type { Matrix4 } from "three";
 import type { RadSourceOptions } from "../../rad/RadSource.js";
 import type {
   RadChunkRange,
@@ -20,18 +21,14 @@ export type RadStreamSourceOptions = Pick<
   | "manager"
   | "requestHeader"
   | "withCredentials"
->;
-export type RadStreamLoaderOptions = RadStreamSourceOptions &
-  (
-    | { sources?: never }
-    | {
-        url?: never;
-        file?: never;
-        fileBytes?: never;
-        /** Inputs in the scheduler group's coordinates. */
-        sources: readonly RadStreamSourceOptions[];
-      }
-  );
+> & {
+  /** Model-to-group transform; identity when omitted. Change with setSourceSettings(). */
+  transform?: Matrix4;
+};
+export type RadStreamLoaderOptions = {
+  /** Nonempty list of inputs, fixed at creation. */
+  sources: readonly RadStreamSourceOptions[];
+};
 /** Combined directory; each chunk has an explicit span and its input index. */
 export type RadStreamMetadata = Pick<
   RadMeta,

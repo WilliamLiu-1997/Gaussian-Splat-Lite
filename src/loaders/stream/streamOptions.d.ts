@@ -1,12 +1,12 @@
-import type { LoadingManager } from "three";
+import type { LoadingManager, Matrix4 } from "three";
 import type { SplatRequestOptions } from "../loadTypes.js";
 export type StreamRequestOptions = SplatRequestOptions & {
   manager?: LoadingManager;
 };
-/** Single-input options remain shorthand for a one-element source list. */
-export declare function streamSources<T>(
-  options: T & { sources?: readonly T[] },
-): T[];
+/** Inputs are supplied only through a nonempty sources list. */
+export declare function streamSources<T>(options: {
+  sources: readonly T[];
+}): readonly T[];
 export type StreamSchedulerOptions = {
   /** Initial Splat budget; update scheduler.splatBudget to change it at runtime. */
   splatBudget?: number;
@@ -40,6 +40,10 @@ export type StreamStats = {
   downloadedBytes: number;
   peakWasmMemoryBytes: number;
 };
+/** Validate an input's model-to-group transform. */
+export declare function checkStreamTransform<T extends Matrix4>(
+  transform: T,
+): T;
 export declare function positiveInteger(value: number, name: string): number;
 export declare function streamSettings(options: StreamSchedulerOptions): {
   splatBudget: number;

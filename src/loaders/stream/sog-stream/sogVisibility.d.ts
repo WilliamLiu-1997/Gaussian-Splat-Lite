@@ -24,7 +24,7 @@ export declare function captureSogView(
 ): SogView;
 /** Stable key of a view, for skipping unchanged selection requests. */
 export declare function getSogViewKey(view: SogView): string;
-/** Worker traversal state keeps leaf identities stable between selections. */
+/** One input's octree, median region size and stable leaf identities. */
 export declare class SogVisibility {
   private readonly manifest;
   private readonly leaves;
@@ -34,14 +34,15 @@ export declare class SogVisibility {
   private readonly shrink;
   private readonly closest;
   private readonly inverseModelView;
+  private readonly sourceTransform;
   constructor(
-    manifest: Pick<
-      SogLodIndex,
-      "leafBounds" | "leafOffsets" | "lods" | "lodLevels"
-    >,
+    manifest: Pick<SogLodIndex, "leafBounds" | "leafOffsets" | "lods">,
   );
   private prepareCameras;
-  private collect;
-  /** Transfer only [leaf ID, LOD ordinal] pairs in loading priority order. */
-  select(request: SogLodRequest): Uint32Array;
+  collect(
+    request: Pick<
+      SogLodRequest,
+      "view" | "lodBehindPenalty" | "lodDistanceShrink"
+    > & { transform: number[] },
+  ): Omit<import("./sogLod.js").SogVisibleLeaf, "source">[];
 }

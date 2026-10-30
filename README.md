@@ -120,7 +120,7 @@ For RAD, replace the `SplatMesh` loading and animation loop in the quick start w
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new RadStreamScheduler({
-  url: "/assets/scene.rad",
+  sources: [{ url: "/assets/scene.rad" }],
   splatBudget: 3_000_000,
   fadeDurationMs: 200, // Smooth LOD transitions (default).
 });
@@ -148,7 +148,7 @@ For streamed SOG, use this constructor. Register the camera with `setCamera(came
 import { SogStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new SogStreamScheduler({
-  url: "/assets/scene/lod-meta.json",
+  sources: [{ url: "/assets/scene/lod-meta.json" }],
   splatBudget: 3_000_000,
   fadeDurationMs: 200, // Smooth LOD transitions (default).
 });

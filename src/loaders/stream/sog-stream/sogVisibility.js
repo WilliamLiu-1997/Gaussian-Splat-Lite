@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { streamViews } from "../StreamCameras.js";
-import { readSogLodLeaf, selectSogLods } from "./sogLod.js";
+import { readSogLodLeaf } from "./sogLod.js";
 /**
  * Capture the cameras that see the group without traversing the manifest or
  * reducing matrix precision. WebXR selects detail from each eye's current pose.
@@ -35,7 +35,7 @@ export function getSogViewKey(view) {
     .map((camera) => `${camera.modelView.join(",")}/${camera.fovScale}`)
     .join(";");
 }
-/** Worker traversal state keeps leaf identities stable between selections. */
+/** One input's octree, median region size and stable leaf identities. */
 export class SogVisibility {
   constructor(manifest) {
     this.manifest = manifest;
@@ -46,6 +46,7 @@ export class SogVisibility {
     this.shrink = new THREE.Vector3();
     this.closest = new THREE.Vector3();
     this.inverseModelView = new THREE.Matrix4();
+    this.sourceTransform = new THREE.Matrix4();
     const { leafBounds } = manifest;
     const halfSizes = new Float64Array(leafBounds.length / 6);
     for (let axis = 0; axis < 3; axis++) {
@@ -61,7 +62,8 @@ export class SogVisibility {
       );
     }
   }
-  prepareCameras(view) {
+  prepareCameras(view, transform) {
+    this.sourceTransform.fromArray(transform);
     const cameras = this.cameras;
     cameras.length = Math.min(cameras.length, view.cameras.length);
     view.cameras.forEach((camera, index) => {
@@ -74,15 +76,17 @@ export class SogVisibility {
         };
         cameras[index] = state;
       }
-      state.modelView.fromArray(camera.modelView);
+      state.modelView
+        .fromArray(camera.modelView)
+        .multiply(this.sourceTransform);
       this.inverseModelView.copy(state.modelView).invert();
       state.cameraPosition.setFromMatrixPosition(this.inverseModelView);
       state.fovScale = camera.fovScale;
     });
     return cameras;
   }
-  collect({ view, lodBehindPenalty, lodDistanceShrink }) {
-    const cameras = this.prepareCameras(view);
+  collect({ view, lodBehindPenalty, lodDistanceShrink, transform }) {
+    const cameras = this.prepareCameras(view, transform);
     const regions = [];
     const { shown } = view;
     const { leafBounds } = this.manifest;
@@ -120,20 +124,5 @@ export class SogVisibility {
       regions.push({ leaf: this.leaves[id], distance });
     }
     return regions;
-  }
-  /** Transfer only [leaf ID, LOD ordinal] pairs in loading priority order. */
-  select(request) {
-    const regions = this.collect(request);
-    const targets = selectSogLods(regions, this.manifest.lodLevels, request);
-    regions.sort((a, b) => a.distance - b.distance || a.leaf.id - b.leaf.id);
-    const result = new Uint32Array(targets.size * 2);
-    let offset = 0;
-    for (const { leaf } of regions) {
-      const target = targets.get(leaf.id);
-      if (!target) continue;
-      result[offset++] = leaf.id;
-      result[offset++] = leaf.lods.indexOf(target);
-    }
-    return result;
   }
 }

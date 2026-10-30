@@ -360,7 +360,8 @@ impl RadLodTree {
             || !threshold.is_finite()
             || threshold <= 0.0
             || views.is_empty()
-            || !views.len().is_multiple_of(VIEW_VALUES)
+            || self.sources.is_empty()
+            || !views.len().is_multiple_of(VIEW_VALUES * self.sources.len())
         {
             return Err(js_error("Invalid RAD LOD request"));
         }
@@ -419,6 +420,9 @@ impl RadLodTree {
         threshold: f64,
     ) -> Result<()> {
         let page = &mut self.pages[page_index];
+        // Each input has its own views, including its model transform.
+        let view_count = views.len() / self.sources.len();
+        let views = &views[page.source * view_count..(page.source + 1) * view_count];
         let start = (indices.start - page.base) as usize;
         let end = (indices.end - page.base) as usize;
         visit_range(&mut page.seen, start..end)?;

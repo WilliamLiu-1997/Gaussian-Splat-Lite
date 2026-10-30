@@ -669,7 +669,7 @@ async function initializeModel(
   };
   if (fileType === SplatFileType.RAD) {
     model.stream = new RadStreamScheduler({
-      ...source,
+      sources: [{ ...source, manager }],
       ...streamOptions,
       maxResidentCpuBytes: optionsPanel.getValue("maxResidentCpuBytes"),
       maxResidentGpuBytes: optionsPanel.getValue("maxResidentGpuBytes"),
@@ -689,8 +689,7 @@ async function initializeModel(
 
   if (sogStream) {
     model.stream = new SogStreamScheduler({
-      url,
-      manager,
+      sources: [{ url, manager }],
       ...streamOptions,
       splatBudgetMode: optionsPanel.getValue("splatBudgetMode"),
       lodBaseDistance: optionsPanel.getValue("lodBaseDistance"),

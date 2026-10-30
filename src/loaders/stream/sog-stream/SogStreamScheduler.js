@@ -12,11 +12,13 @@ import {
 import { RetryTimer } from "../../../runtime/retry.js";
 import { StreamCameras } from "../StreamCameras.js";
 import {
+  checkStreamTransform,
   notifyStreamChange,
   notifyStreamError,
   positiveInteger,
   streamRetryAt,
   streamSettings,
+  streamSources,
 } from "../streamOptions.js";
 import { SogStreamBatch } from "./SogStreamBatch.js";
 import { SogStreamLoader } from "./SogStreamLoader.js";
@@ -25,6 +27,21 @@ import { captureSogView, getSogViewKey } from "./sogVisibility.js";
 const EMPTY_SELECTION = new Uint32Array(0);
 function* retryDeadlines(chunks) {
   for (const chunk of chunks) yield chunk.retryAt;
+}
+function checkLodBaseDistance(value) {
+  if (!Number.isFinite(value) || value <= 0)
+    throw new Error("lodBaseDistance must be finite and positive");
+  return value;
+}
+function checkLodMultiplier(value) {
+  if (!Number.isFinite(value) || value < 1)
+    throw new Error("lodMultiplier must be finite and at least 1");
+  return value;
+}
+/** Omitted LOD settings follow the scheduler's current defaults. */
+function checkSourceLod({ lodBaseDistance, lodMultiplier }) {
+  if (lodBaseDistance !== undefined) checkLodBaseDistance(lodBaseDistance);
+  if (lodMultiplier !== undefined) checkLodMultiplier(lodMultiplier);
 }
 /** Camera-driven Streamed SOG loading with per-chunk sources and region fades. */
 export class SogStreamScheduler {
@@ -58,6 +75,20 @@ export class SogStreamScheduler {
     this.lodMultiplier = options.lodMultiplier ?? 2;
     this.lodBehindPenalty = options.lodBehindPenalty ?? 4;
     this.lodDistanceShrink = options.lodDistanceShrink ?? 0.75;
+    // Inputs are fixed at creation; setSourceSettings() changes their settings.
+    this.sourceSettings = streamSources(options).map((source) => {
+      const settings = {
+        transform: checkStreamTransform(
+          source.transform ?? new THREE.Matrix4(),
+        ).clone(),
+        environment: source.environment !== false,
+        lodBaseDistance: source.lodBaseDistance,
+        lodMultiplier: source.lodMultiplier,
+      };
+      checkSourceLod(settings);
+      return settings;
+    });
+    this.sourceLodVersion = 0;
     this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
@@ -80,6 +111,59 @@ export class SogStreamScheduler {
     // to callers awaiting them and chunk failures go through onError.
     void this.initialized.catch(() => {});
     void this.firstRenderable.catch(() => {});
+  }
+  /** An input's current settings; inputs keep their creation order. */
+  getSourceSettings(index) {
+    const settings = this.sourceSetting(index);
+    return { ...settings, transform: settings.transform.clone() };
+  }
+  /**
+   * Change an input's settings; omitted keys keep their values, and undefined
+   * LOD settings follow the scheduler defaults. Loaded data is kept.
+   */
+  setSourceSettings(index, settings) {
+    const source = this.sourceSetting(index);
+    // Only LOD settings use undefined to follow the scheduler's values.
+    const { transform = source.transform, environment = source.environment } =
+      settings;
+    const next = { ...source, ...settings, transform, environment };
+    checkStreamTransform(next.transform);
+    checkSourceLod(next);
+    let changed = false;
+    if (!source.transform.equals(next.transform)) {
+      source.transform.copy(next.transform);
+      for (const chunk of this.activeChunks) {
+        if (!chunk.batch || chunk.source !== index) continue;
+        chunk.batch.matrix.copy(source.transform);
+        chunk.batch.matrixWorldNeedsUpdate = true;
+      }
+      changed = true;
+    }
+    if (
+      source.lodBaseDistance !== next.lodBaseDistance ||
+      source.lodMultiplier !== next.lodMultiplier
+    ) {
+      source.lodBaseDistance = next.lodBaseDistance;
+      source.lodMultiplier = next.lodMultiplier;
+      // In-flight decisions used the previous bands.
+      this.sourceLodVersion++;
+      changed = true;
+    }
+    if (source.environment !== (next.environment !== false)) {
+      source.environment = next.environment !== false;
+      if (this.manifest) this.updateEnvironments();
+      changed = true;
+    }
+    if (!changed) return;
+    // Transforms, like camera motion, only request another decision.
+    this.lastRequestedKey = "";
+    void this.requestSelection();
+    this.changed();
+  }
+  sourceSetting(index) {
+    const settings = this.sourceSettings[index];
+    if (!settings) throw new Error(`SOG source index ${index} is out of range`);
+    return settings;
   }
   /** Visible-point budget, including the environment. Reassign to reselect LODs. */
   get splatBudget() {
@@ -105,26 +189,22 @@ export class SogStreamScheduler {
     this._splatBudgetMode = value;
     void this.requestSelection();
   }
-  /** Base LOD distance in world units for limit mode. Higher retains more detail. */
+  /** Default base LOD distance in world units for inputs without their own. */
   get lodBaseDistance() {
     return this._lodBaseDistance;
   }
   set lodBaseDistance(value) {
     if (value === this._lodBaseDistance) return;
-    if (!Number.isFinite(value) || value <= 0)
-      throw new Error("lodBaseDistance must be finite and positive");
-    this._lodBaseDistance = value;
+    this._lodBaseDistance = checkLodBaseDistance(value);
     void this.requestSelection();
   }
-  /** Distance multiplier between LOD levels; affects both budget modes. */
+  /** Default distance multiplier between LOD levels, in both budget modes. */
   get lodMultiplier() {
     return this._lodMultiplier;
   }
   set lodMultiplier(value) {
     if (value === this._lodMultiplier) return;
-    if (!Number.isFinite(value) || value < 1)
-      throw new Error("lodMultiplier must be finite and at least 1");
-    this._lodMultiplier = value;
+    this._lodMultiplier = checkLodMultiplier(value);
     void this.requestSelection();
   }
   /** Effective distance multiplier directly behind a camera; 1 disables it. */
@@ -162,7 +242,7 @@ export class SogStreamScheduler {
         retainedIndexBytes +
         this.selection.byteLength +
         (manifest
-          ? manifest.bounds.byteLength +
+          ? manifest.sourceBounds.byteLength +
             manifest.leafOffsets.byteLength +
             manifest.lods.byteLength +
             manifest.counts.byteLength +
@@ -225,10 +305,13 @@ export class SogStreamScheduler {
   /** Group-local bounds from the index; available after initialized resolves. */
   getBoundingBox() {
     const box = new THREE.Box3();
-    if (this.manifest) {
-      box.min.fromArray(this.manifest.bounds, 0);
-      box.max.fromArray(this.manifest.bounds, 3);
-    }
+    if (!this.manifest) return box;
+    const bound = new THREE.Box3();
+    this.sourceSettings.forEach(({ transform }, index) => {
+      bound.min.fromArray(this.manifest.sourceBounds, index * 6);
+      bound.max.fromArray(this.manifest.sourceBounds, index * 6 + 3);
+      box.union(bound.applyMatrix4(transform));
+    });
     return box;
   }
   async initialize() {
@@ -258,15 +341,25 @@ export class SogStreamScheduler {
         manifest.lods[offset + 3],
       );
     }
-    this.environments = Array.from(
-      manifest.environments,
-      (index) => this.chunks[index],
-    );
-    for (const chunk of this.environments) chunk.environment = true;
-    if (!this.environments.length && !this.manifest.lods.length)
-      this.resolveFirst(this);
+    for (const index of manifest.environments)
+      if (index >= 0) this.chunks[index].environment = true;
+    this.updateEnvironments();
     this.changed();
     return this;
+  }
+  /** Environment chunks of the inputs that enable theirs. */
+  updateEnvironments() {
+    this.environments = [];
+    this.sourceSettings.forEach((input, source) => {
+      const index = this.manifest.environments[source];
+      if (input.environment && index >= 0)
+        this.environments.push(this.chunks[index]);
+    });
+    if (
+      !this.manifest.lods.length &&
+      this.environments.every((chunk) => chunk.count === 0)
+    )
+      this.resolveFirst(this);
   }
   /** Cameras that select detail, in registration order. */
   get cameras() {
@@ -353,6 +446,7 @@ export class SogStreamScheduler {
     const lodMultiplier = this.lodMultiplier;
     const lodBehindPenalty = this.lodBehindPenalty;
     const lodDistanceShrink = this.lodDistanceShrink;
+    const sourceLodVersion = this.sourceLodVersion;
     const budget = Math.max(
       0,
       splatBudget -
@@ -371,8 +465,11 @@ export class SogStreamScheduler {
         view,
         budget,
         splatBudgetMode,
-        lodBaseDistance,
-        lodMultiplier,
+        sources: this.sourceSettings.map((input) => ({
+          lodBaseDistance: input.lodBaseDistance ?? lodBaseDistance,
+          lodMultiplier: input.lodMultiplier ?? lodMultiplier,
+          transform: input.transform.elements,
+        })),
         lodBehindPenalty,
         lodDistanceShrink,
       });
@@ -383,6 +480,7 @@ export class SogStreamScheduler {
         splatBudgetMode !== this.splatBudgetMode ||
         lodBaseDistance !== this.lodBaseDistance ||
         lodMultiplier !== this.lodMultiplier ||
+        sourceLodVersion !== this.sourceLodVersion ||
         lodBehindPenalty !== this.lodBehindPenalty ||
         lodDistanceShrink !== this.lodDistanceShrink
       )
@@ -536,6 +634,9 @@ export class SogStreamScheduler {
             this.pruneChunk(chunk);
           },
         );
+        batch.matrixAutoUpdate = false;
+        batch.matrix.copy(this.sourceSettings[chunk.source].transform);
+        batch.matrixWorldNeedsUpdate = true;
         batch.source.uploadQueue = this.uploads;
         batch.name = chunk.environment
           ? "sog-environment"
@@ -813,7 +914,7 @@ export class SogStreamScheduler {
     }
     this.loader.dispose();
     this.rejectFirst(error);
-    this.failed(error, this.options.url ?? this.options.sources[0].url);
+    this.failed(error, this.options.sources[0].url);
     this.changed();
   }
   dispose() {

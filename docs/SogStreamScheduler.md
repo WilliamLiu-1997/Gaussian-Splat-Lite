@@ -8,7 +8,7 @@ Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarse
 import { SogStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new SogStreamScheduler({
-  url: "/scene/lod-meta.json",
+  sources: [{ url: "/scene/lod-meta.json" }],
   splatBudget: 3_000_000,
 });
 scene.add(streaming.group);
@@ -38,22 +38,37 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 ## Multiple inputs
 
-Use `sources` instead of a top-level `url` to load several Streamed SOG inputs together:
+Supply every input through the nonempty `sources` array, including when loading a single model. Add entries to load several Streamed SOG inputs together:
 
 ```js
 const streaming = new SogStreamScheduler({
   sources: [
-    { url: "/scene/buildings/lod-meta.json" },
-    { url: "/scene/landscape/lod-meta.json", environment: false },
+    { url: "/scene/buildings/lod-meta.json", lodBaseDistance: 100 },
+    {
+      url: "/scene/landscape/lod-meta.json",
+      environment: false,
+      lodBaseDistance: 20,
+      lodMultiplier: 3,
+    },
   ],
   splatBudget: 3_000_000,
   maxConcurrentLoads: 4,
 });
 ```
 
-All inputs use the coordinates stored in their files, relative to `streaming.group`. They share one detail selection, splat budget, and loading concurrency. Set an input's `environment` to `false` to skip its environment. Enabled environments share the splat budget with all inputs' detail.
+Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. The inputs share one detail selection, splat budget, budget mode, and loading concurrency, while `lodBaseDistance` and `lodMultiplier` can differ per input; omitted ones follow the scheduler's values. Set an input's `environment` to `false` to skip its environment. Enabled environments share the splat budget with all inputs' detail.
 
-Each entry accepts the single-input loading options, including `loadChunk`, `manager`, `requestHeader`, and `withCredentials`; omitted options inherit the scheduler's settings. `sources` must be nonempty. Use separate schedulers for inputs that need independent transforms or budgets.
+Each entry supplies its own `url`, `loadChunk`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
+
+The inputs are fixed at creation. Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` with `setSourceSettings(index, settings)`, where `index` follows the order of `sources`. Omitted keys keep their values, and `undefined` returns a LOD setting to the scheduler's value. Loaded data is kept. `getSourceSettings(index)` returns a copy of the current settings.
+
+```js
+streaming.setSourceSettings(1, {
+  transform: new THREE.Matrix4().makeTranslation(60, 0, 0),
+  environment: true,
+  lodBaseDistance: undefined,
+});
+```
 
 `initialized` waits for every input's metadata. `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene.
 
@@ -61,7 +76,7 @@ Each entry accepts the single-input loading options, including `loadChunk`, `man
 
 Detail depends on distance and camera direction, so cameras need no resolution. Regions outside the view remain part of the same budget, with less detail behind the camera. This keeps surrounding content ready for turns, at the cost of some detail in the current view. Register several cameras to load detail for all of them; each region follows the camera requesting the finest detail.
 
-Oversized region bounds are reduced toward the scene's median region size when measuring LOD distance. This prevents large background regions from receiving excessive detail just because an edge is close to the camera. Geometry, rendering bounds, and picking are unaffected by this distance correction.
+Oversized region bounds are reduced toward their input's median region size when measuring LOD distance. This prevents large background regions from receiving excessive detail just because an edge is close to the camera. Geometry, rendering bounds, and picking are unaffected by this distance correction.
 
 ### WebXR
 
@@ -71,23 +86,31 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `sources` | — | Multiple inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
-| `url` | Required without `sources` | URL of the scene's `lod-meta.json` |
-| `environment` | `true` | Load the input's environment; set to `false` to skip it. Also available on each `sources` entry |
+| `sources` | Required | Nonempty array of inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
 | `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
-| `splatBudgetMode` | `"target"` | `"target"` adjusts the distance bands to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
-| `lodBaseDistance` | `100` | Base LOD distance in world units for `"limit"` mode, compensated for the camera's field of view. Higher values retain finer detail farther away. Must be finite and positive |
-| `lodMultiplier` | `2` | Distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
+| `splatBudgetMode` | `"target"` | `"target"` scales all inputs' distance bands together to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
+| `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
+| `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
 | `lodBehindPenalty` | `4` | Effective distance multiplier directly behind a camera, increasing smoothly from `1` at its sides. With the default LOD multiplier, `4` shifts rear detail by two distance bands. `1` disables directional bias. Must be finite and at least `1` |
-| `lodDistanceShrink` | `0.75` | Fraction of a region's excess half-size above the scene median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
+| `lodDistanceShrink` | `0.75` | Fraction of a region's excess half-size above its input's median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
 | `maxConcurrentLoads` | `4` | Maximum number of loads in progress at the same time |
-| `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
-| `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Headers and credentials are not sent to files on other origins |
 | `onChange` | — | Called when the scene needs a redraw |
 | `onError` | Logs to the console | Called when loading fails: `(error, url)` |
+
+Each `sources` entry accepts:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `url` | Required | URL of the scene's `lod-meta.json` |
+| `transform` | Identity | Input placement in the group's coordinates, as a finite, invertible `THREE.Matrix4` |
+| `environment` | `true` | Load the input's environment; set to `false` to skip it |
+| `lodBaseDistance` | Scheduler value | Override the base LOD distance for this input. Must be finite and positive |
+| `lodMultiplier` | Scheduler value | Override the distance multiplier for this input. Must be finite and at least `1` |
+| `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
+| `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Headers and credentials are not sent to files on other origins |
 | `loadChunk` | Built-in loader | Load the scene's files yourself: `(url, signal) => Promise<Splats>` |
 
 ## Properties and methods
@@ -98,13 +121,14 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `splatBudget` | Change it at any time to adjust detail. Must be a positive integer; includes the environment when enabled |
 | `maxSh` | Read-only SH decoding and storage limit chosen at creation |
 | `splatBudgetMode` | Switch between `"target"` and `"limit"` without reloading |
-| `lodBaseDistance` | Change the base LOD distance in `"limit"` mode without reloading |
-| `lodMultiplier` | Change the distance spacing between LOD levels in both modes without reloading |
+| `lodBaseDistance` | Change the default base LOD distance without reloading; inputs with their own value keep it |
+| `lodMultiplier` | Change the default spacing between LOD levels without reloading; inputs with their own value keep it |
 | `lodBehindPenalty` | Change how strongly detail behind the camera is reduced, in both modes, without reloading |
 | `lodDistanceShrink` | Change the distance correction for oversized regions, in both modes, without reloading |
 | `initialized` | Resolves when the index is loaded; rejects for invalid input |
 | `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep updating and rendering while you wait |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |
+| `setSourceSettings(index, settings)` / `getSourceSettings(index)` | Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` without reloading, or read a copy of its settings |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
 | `getBoundingBox()` | Box around the scene, in the group's coordinates; available once `initialized` resolves |
 | `stats` | Visible Splats, loading progress, and estimated CPU/GPU cache sizes (`residentCpuBytes` / `residentGpuBytes`) |

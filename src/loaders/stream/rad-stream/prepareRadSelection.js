@@ -13,42 +13,43 @@ export function prepareRadSelection({ selection, pools }, chunks) {
     pools: pools.map((pool) => preparePool(indices, fade?.fades, pool, chunks)),
   };
 }
+function emptyCut() {
+  const centerOnlyBoundingBox = new Float32Array(6);
+  const boundingBox = new Float32Array(6);
+  resetSplatBounds(centerOnlyBoundingBox);
+  resetSplatBounds(boundingBox);
+  return { count: 0, centerOnlyBoundingBox, boundingBox };
+}
 function preparePool(
   indices,
   fades,
   { pageCount, opacityBlocks, ranges },
   chunks,
 ) {
-  const count = ranges.reduce(
-    (count, { start, end }) => count + end - start,
-    0,
-  );
-  const target = new Uint32Array(count);
+  // Each page belongs to one input, whose view draws only that input's records.
+  const cuts = new Map();
+  const pageCuts = new Array(pageCount);
   // Each opacity word stores sixteen groups, while a selection word holds 32 bits.
   const selectedWords = new Uint32Array(opacityBlocks.length / 2);
   const selectedPages = new Uint32Array(pageCount);
+  const finalSelectedPages = fades ? new Uint32Array(pageCount) : undefined;
   const dirtyLayers = new Uint8Array(pageCount);
   // Flags record current (1) and post-fade (2) block membership.
   const blockFlags = new Uint8Array(
     (opacityBlocks.length * 16) / SPLAT_BOUNDS_BLOCK_SIZE,
   );
-  const centerOnlyBoundingBox = new Float32Array(6);
-  const boundingBox = new Float32Array(6);
-  resetSplatBounds(centerOnlyBoundingBox);
-  resetSplatBounds(boundingBox);
-  const final = fades
-    ? {
-        selectedPages: selectedPages.slice(),
-        centerOnlyBoundingBox: centerOnlyBoundingBox.slice(),
-        boundingBox: boundingBox.slice(),
-      }
-    : undefined;
-  let finalCount = 0;
   let fadeKinds = 0;
-  for (const { start, end, slot, chunkIndex, sourceBase } of ranges) {
+  for (const { start, end, slot, chunkIndex, sourceBase, input } of ranges) {
     const chunk = chunks.get(chunkIndex);
     if (!chunk) throw new Error("RAD selection references a retired chunk");
     const { sourceToStorage: order, boundsBlocks } = chunk;
+    let cut = cuts.get(input);
+    if (!cut) {
+      cut = { ...emptyCut(), final: fades && emptyCut() };
+      cuts.set(input, cut);
+    }
+    pageCuts[slot] = cut;
+    cut.count += end - start;
     const pageStart = slot * RAD_PAGE_SIZE;
     selectedPages[slot] = end - start;
     const selectedBlocks = [];
@@ -69,58 +70,78 @@ function preparePool(
           (opacityBlocks[word] & ~(3 << shift)) | ((fade + 1) << shift);
         dirtyLayers[slot] = 1;
       }
-      if (final && fade !== 2) {
-        finalCount++;
+      if (cut.final && fade !== 2) {
+        cut.final.count++;
         blockFlags[block] |= 2;
-        final.selectedPages[slot]++;
+        finalSelectedPages[slot]++;
       }
     }
     // Merge once per selected block, keeping bounds work out of the per-node loop.
     const blockBase = pageStart / SPLAT_BOUNDS_BLOCK_SIZE;
     for (const block of selectedBlocks) {
       const boundsOffset = (block - blockBase) * 12;
-      unionSplatBounds(centerOnlyBoundingBox, boundsBlocks, boundsOffset);
-      unionSplatBounds(boundingBox, boundsBlocks, boundsOffset + 6);
-      if (final && blockFlags[block] & 2) {
+      unionSplatBounds(cut.centerOnlyBoundingBox, boundsBlocks, boundsOffset);
+      unionSplatBounds(cut.boundingBox, boundsBlocks, boundsOffset + 6);
+      if (cut.final && blockFlags[block] & 2) {
         unionSplatBounds(
-          final.centerOnlyBoundingBox,
+          cut.final.centerOnlyBoundingBox,
           boundsBlocks,
           boundsOffset,
         );
-        unionSplatBounds(final.boundingBox, boundsBlocks, boundsOffset + 6);
+        unionSplatBounds(cut.final.boundingBox, boundsBlocks, boundsOffset + 6);
       }
     }
   }
+  for (const cut of cuts.values()) {
+    cut.indices = new Uint32Array(cut.count);
+    cut.offset = 0;
+  }
   // Enumerate selected bits in Morton storage order without sorting the cut.
   // Unsorted stochastic draws traverse this order directly.
-  let offset = 0;
-  for (let word = 0; word < selectedWords.length && offset < count; word++) {
-    let bits = selectedWords[word];
-    while (bits) {
-      target[offset++] = word * 32 + 31 - Math.clz32(bits & -bits);
-      bits &= bits - 1;
+  for (let slot = 0; slot < pageCount; slot++) {
+    const cut = pageCuts[slot];
+    if (!cut) continue;
+    const firstWord = (slot * RAD_PAGE_SIZE) / 32;
+    for (let word = firstWord; word < firstWord + RAD_PAGE_SIZE / 32; word++) {
+      let bits = selectedWords[word];
+      while (bits) {
+        const source = word * 32 + 31 - Math.clz32(bits & -bits);
+        cut.indices[cut.offset++] = source;
+        bits &= bits - 1;
+      }
     }
-  }
-  let finalSelection;
-  if (final && fadeKinds & 2) {
-    // The post-fade cut is a subset of the sorted target; omit outgoing group 3.
-    const indices = new Uint32Array(finalCount);
-    let offset = 0;
-    for (let index = 0; index < target.length; index++) {
-      const source = target[index];
-      const group = (opacityBlocks[source >>> 4] >>> ((source & 15) * 2)) & 3;
-      if (group !== 3) indices[offset++] = source;
-    }
-    finalSelection = { ...final, indices };
   }
   return {
-    indices: target,
-    centerOnlyBoundingBox,
-    boundingBox,
+    cuts: Array.from(cuts, ([input, cut]) => {
+      const { indices, centerOnlyBoundingBox, boundingBox, final } = cut;
+      let finalCut;
+      if (final && final.count < cut.count) {
+        // The post-fade cut is a subset of the sorted target; omit outgoing group 3.
+        finalCut = {
+          indices: new Uint32Array(final.count),
+          centerOnlyBoundingBox: final.centerOnlyBoundingBox,
+          boundingBox: final.boundingBox,
+        };
+        let offset = 0;
+        for (let index = 0; index < indices.length; index++) {
+          const source = indices[index];
+          const group =
+            (opacityBlocks[source >>> 4] >>> ((source & 15) * 2)) & 3;
+          if (group !== 3) finalCut.indices[offset++] = source;
+        }
+      }
+      return {
+        input,
+        indices,
+        centerOnlyBoundingBox,
+        boundingBox,
+        final: finalCut,
+      };
+    }),
     selectedPages,
+    finalSelectedPages: fadeKinds & 2 ? finalSelectedPages : undefined,
     opacityBlocks,
     dirtyLayers,
     fadeKinds,
-    final: finalSelection,
   };
 }

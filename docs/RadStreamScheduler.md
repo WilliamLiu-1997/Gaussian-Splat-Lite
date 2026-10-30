@@ -10,7 +10,7 @@ To convert your own models, see [Building RAD files](BuildRad.md).
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new RadStreamScheduler({
-  url: "/models/scene.rad",
+  sources: [{ url: "/models/scene.rad" }],
   splatBudget: 3_000_000,
   splatBudgetTolerance: 0.1, // Allow up to 10% extra Splats; 0 forbids overshoot.
   maxResidentCpuBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
@@ -44,12 +44,16 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 ## Multiple inputs
 
-Use `sources` instead of a top-level `url`, `file`, or `fileBytes` to load several RAD inputs together:
+Supply every input through the nonempty `sources` array, including when loading a single model. Add entries to load several RAD inputs together:
 
 ```js
 const streaming = new RadStreamScheduler({
   sources: [
-    { url: "/models/buildings.rad" },
+    { url: "/models/building.rad" },
+    {
+      url: "/models/building.rad",
+      transform: new THREE.Matrix4().makeTranslation(40, 0, 0),
+    },
     { url: "/models/landscape.rad" },
   ],
   splatBudget: 3_000_000,
@@ -57,9 +61,17 @@ const streaming = new RadStreamScheduler({
 });
 ```
 
-All inputs use the coordinates stored in their files, relative to `streaming.group`. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Inputs with different SH degrees all use the memory of the highest one, up to `maxSh`.
+Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Inputs with different SH degrees all use the memory of the highest one, up to `maxSh`.
 
-Each entry accepts the single-input loading options, including `resolveFile`, `manager`, `requestHeader`, and `withCredentials`; options omitted from an entry inherit the scheduler's settings. `sources` must be nonempty. Use separate schedulers for inputs that need independent transforms or budgets.
+Each entry supplies one of `url`, `file`, or `fileBytes`, and its own `resolveFile`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
+
+The inputs are fixed at creation. Move an input with `setSourceSettings(index, { transform })`, where `index` follows the order of `sources`; its loaded data is kept. `getSourceSettings(index)` returns a copy of the current settings.
+
+```js
+streaming.setSourceSettings(1, {
+  transform: new THREE.Matrix4().makeTranslation(60, 0, 0),
+});
+```
 
 SH codebooks are cached and copied in a background worker. Page decoders reuse their current input's codebook; switching inputs transfers a worker-created copy without copying the codebook on the main thread. The cache remains included in the CPU memory budget.
 
@@ -97,9 +109,7 @@ renderer.setAnimationLoop(() => {
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `sources` | — | Multiple inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
-| `url` / `file` / `fileBytes` | One required without `sources` | URL, `Blob`/`File`, or complete `Uint8Array`/`ArrayBuffer` |
-| `resolveFile` | Relative URLs | Supply the `.radc` pages of a split scene yourself: `(filename, signal) => URL \| Blob \| Uint8Array \| ArrayBuffer`, directly or as a promise |
+| `sources` | Required | Nonempty array of inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
 | `splatBudget` | `3_000_000` | Target number of Splats. Higher values show more detail and use more memory |
 | `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
 | `splatBudgetTolerance` | `0.1` | Allowed fractional overshoot of `splatBudget`. `0.1` allows up to 10% extra Splats; `0` keeps each new selection within `splatBudget`. Must be finite and nonnegative |
@@ -108,14 +118,22 @@ renderer.setAnimationLoop(() => {
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long unused detail stays ready for reuse; it can be released sooner when either memory budget is reached. `0` releases it at once |
 | `maxConcurrentLoads` | `4` | Maximum number of simultaneous loads |
-| `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
-| `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Sensitive settings are not sent to other origins |
 | `onChange` | — | Called when the scene needs a redraw |
 | `onError` | Logs to the console | Called when loading fails: `(error, url)` |
 
+Each `sources` entry accepts:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `url` / `file` / `fileBytes` | One required | URL, `Blob`/`File`, or complete `Uint8Array`/`ArrayBuffer` |
+| `transform` | Identity | Input placement in the group's coordinates, as a finite, invertible `THREE.Matrix4` |
+| `resolveFile` | Relative URLs | Supply the `.radc` pages of a split scene yourself: `(filename, signal) => URL \| Blob \| Uint8Array \| ArrayBuffer`, directly or as a promise |
+| `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
+| `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Sensitive settings are not sent to other origins |
+
 Detail already on screen stays visible while its replacement loads, if both memory budgets allow. At the limit, the scene may temporarily show less detail. During a fade, old and new detail overlap, so the visible count can briefly exceed the selection limit. Use both `splatBudgetTolerance: 0` and `fadeDurationMs: 0` to keep new selections and their transitions within `splatBudget`.
 
-Unused detail is released after `cooldownMs`, including while hidden, and loads again when needed.
+Memory is allocated as detail loads, up to the configured budgets. Unused detail is released after `cooldownMs`, including while hidden, and loads again when needed. Memory shared with detail still in use is retained until that detail is also released. Increasing the budgets allows more detail to stay ready without allocating the full allowance upfront. `stats.pageBudget` reports how many pages can be resident at once, not how many are currently allocated.
 
 ## Properties and methods
 
@@ -131,6 +149,7 @@ Unused detail is released after `cooldownMs`, including while hidden, and loads 
 | `setResolution(camera, width, height)` | Set a registered camera's size in CSS pixels; also accepts a `THREE.Vector2` |
 | `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's size from `renderer.getSize()` |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
+| `setSourceSettings(index, settings)` / `getSourceSettings(index)` | Change an input's `transform` without reloading, or read a copy of its settings |
 | `getBoundingBox()` | Approximate box around the scene, in the group's coordinates; empty until the first data loads |
 | `stats` | Visible Splats, loading progress, and estimated CPU/GPU cache sizes (`residentCpuBytes` / `residentGpuBytes`) |
 | `dispose()` | Stop loading and release the scene. Pending `initialized` and `firstRenderable` promises reject with `AbortError` |

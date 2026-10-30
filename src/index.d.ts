@@ -17,6 +17,7 @@ export { SplatLoader } from "./loaders/SplatLoader.js";
 export {
   RadStreamScheduler,
   type RadStreamSchedulerOptions,
+  type RadStreamSourceSettings,
   type RadStreamStats,
 } from "./loaders/stream/rad-stream/RadStreamScheduler.js";
 export type { RadStreamSourceOptions } from "./loaders/stream/rad-stream/RadStreamLoader.js";
@@ -34,6 +35,7 @@ export type {
 export {
   SogStreamScheduler,
   type SogStreamSchedulerOptions,
+  type SogStreamSourceSettings,
   type SogStreamStats,
 } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
 export type { SogStreamSourceOptions } from "./loaders/stream/sog-stream/SogStreamLoader.js";

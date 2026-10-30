@@ -11,8 +11,10 @@ export type RadStreamSchedulerOptions = RadStreamLoaderOptions &
     /** Estimated GPU byte budget for resident streaming data. Default: 1 GiB. */
     maxResidentGpuBytes?: number;
   };
+/** An input's settings that can change after creation. */
+export type RadStreamSourceSettings = { transform: THREE.Matrix4 };
 export type RadStreamStats = StreamStats & {
-  /** Resident page limit derived from the smaller CPU/GPU allowance. */
+  /** Resident page limit within both memory budgets; storage is allocated on demand. */
   pageBudget: number;
   lodTimeMs: number;
 };
@@ -36,10 +38,9 @@ export declare class RadStreamScheduler {
   private readonly streamCameras;
   private readonly pages;
   private readonly pools;
-  private readonly bounds;
   private readonly matrix;
   private meta?;
-  private sources;
+  private readonly inputs;
   private pageBudget;
   private rootPages;
   private disposed;
@@ -58,6 +59,14 @@ export declare class RadStreamScheduler {
   private resolveFirst;
   private rejectFirst;
   constructor(options: RadStreamSchedulerOptions);
+  /** An input's current settings; inputs keep their creation order. */
+  getSourceSettings(index: number): RadStreamSourceSettings;
+  /** Change an input's transform; loaded data is kept. */
+  setSourceSettings(
+    index: number,
+    settings: Partial<RadStreamSourceSettings>,
+  ): void;
+  private input;
   /** Target selected-node budget. Assigning a new value requests LOD selection. */
   get splatBudget(): number;
   set splatBudget(value: number);
@@ -116,6 +125,8 @@ export declare class RadStreamScheduler {
   private pump;
   private loadPage;
   private setInitialBounds;
+  /** One input's records in this pool, with its own transform. */
+  private createView;
   private findSlot;
   private reservePages;
   private uploadPages;
