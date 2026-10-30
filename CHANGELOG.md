@@ -20,6 +20,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - RAD streaming caches and copies SH codebooks in a background worker, avoiding large main-thread copies when page decoders switch inputs.
 - Streamed SOG reduces oversized regions toward each input's own median region size when measuring LOD distance.
 - RAD and Streamed SOG streaming use less CPU memory for loaded detail.
+- Sorted Splats draw faster on the `WebGPURenderer` WebGL2 fallback, now matching `WebGLRenderer` on Apple GPUs; native WebGPU also draws them slightly faster. Rendered output is unchanged.
+- Node Splat materials now ignore `GaussianSplatRenderer.material.opacity`, matching the classic WebGL path. Use `SplatMesh.opacity` to control model opacity.
 
 ### Fixed
 

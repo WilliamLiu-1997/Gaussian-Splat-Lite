@@ -316,7 +316,7 @@ const evaluateSH4 = N.Fn(([previous, first, second, direction]) => {
 });
 export function createGenerateProgram({ uniforms }) {
   const bindUniform = (name, type) => uniformBinding(uniforms, name, type);
-  const bindTexture = (name) => textureBinding(uniforms, name);
+  const bindTexture = (name) => textureBinding(uniforms, name, true);
   const targetCount = bindUniform("targetCount", "uint");
   const stochasticSeedBase = bindUniform("stochasticSeedBase", "uint");
   const sourceSplats = bindTexture("sourceSplats");

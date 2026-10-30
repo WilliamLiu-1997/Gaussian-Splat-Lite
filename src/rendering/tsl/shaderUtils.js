@@ -1,4 +1,5 @@
 import * as N from "three/tsl";
+import { TextureNode } from "three/webgpu";
 import {
   SPLAT_TEX_HEIGHT_BITS,
   SPLAT_TEX_WIDTH_BITS,
@@ -8,21 +9,35 @@ const SPLAT_TEX_LAYER_BITS = SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;
 const SPLAT_TEX_WIDTH_MASK = (1 << SPLAT_TEX_WIDTH_BITS) - 1;
 const SPLAT_TEX_HEIGHT_MASK = (1 << SPLAT_TEX_HEIGHT_BITS) - 1;
 export const E = Math.E;
-/** Texture loads without a sampler, preserving the texture's integer format. */
+// Data textures use raw texel coordinates on both backends. The constructor
+// also disables UV transforms on the clones made by load() and depth().
+class RawTextureNode extends TextureNode {
+  constructor(...args) {
+    super(...args);
+    this.updateMatrix = false;
+  }
+  setupUV(_builder, uvNode) {
+    return uvNode;
+  }
+}
+/** Integer data texel loads without image UV transforms or backend Y flips. */
 export function uintTexture(texture) {
-  return N.texture(texture).setSampler(false);
+  return N.nodeObject(new RawTextureNode(texture)).setSampler(false);
 }
 export function uniformBinding(uniforms, name, type) {
   return N.uniform(uniforms[name].value, type).onObjectUpdate(
     () => uniforms[name].value,
   );
 }
-export function textureBinding(uniforms, name) {
+export function textureBinding(uniforms, name, rawCoordinates = false) {
   const getTexture = () => uniforms[name].value;
+  // Accumulator render targets retain Three's backend coordinate conversion.
+  const binding = rawCoordinates
+    ? uintTexture(getTexture())
+    : N.uniformTexture(getTexture()).setSampler(false);
   // Dynamic bindings stay distinct even while they share a texture.
-  return N.uniformTexture(getTexture())
-    .setSampler(false)
-    .onObjectUpdate(getTexture);
+  binding.mergeable = false;
+  return binding.onObjectUpdate(getTexture);
 }
 export function load2D(binding, coord) {
   const texel = binding.load(coord);

@@ -14,6 +14,15 @@ import {
 } from "./shaderUtils.js";
 import { stochasticCoverage } from "./stochasticCoverage.js";
 import { splatViewUniforms } from "./viewUniforms.js";
+/**
+ * Splat colors and alpha are never negative, so the output skips
+ * NodeMaterial's clamp to zero: one max per channel and fragment.
+ */
+class UnclampedNodeMaterial extends NodeMaterial {
+  setupOutput(builder) {
+    return super.setupOutput(builder, N.diffuseColor);
+  }
+}
 const stochasticHash = N.Fn(([seed]) => {
   const value = N.uint(seed).toVar();
   value.bitXorAssign(value.shiftRight(16));
@@ -27,7 +36,7 @@ const stochasticHash = N.Fn(([seed]) => {
   type: "uint",
   inputs: [{ name: "seed", type: "uint" }],
 });
-function createSplatFragment(minAlpha, edgeFade, stochasticNoise, coverage) {
+function createSplatFragment(fragmentParams, stochasticNoise, coverage) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
   // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
   const vSplat = N.varyingProperty("uvec4", "gslSplat");
@@ -54,10 +63,10 @@ function createSplatFragment(minAlpha, edgeFade, stochasticNoise, coverage) {
       );
       fade.assign(N.unpackHalf2x16(vSplat.w).x);
     }).Else(() => {
-      fade.assign(peakAlpha.mul(edgeFade.x).sub(edgeFade.y).max(0));
+      fade.assign(peakAlpha.mul(fragmentParams.x).sub(fragmentParams.y).max(0));
     });
     const alpha = peakAlpha.add(fade).mul(kernelAlpha).sub(fade).toVar();
-    alpha.lessThan(minAlpha).discard();
+    alpha.lessThan(fragmentParams.z).discard();
     if (stochasticNoise && vStochasticOffset) {
       // Stagger blocks per Splat, then vary their spatial offset quadratically.
       // The offset stays fixed over time, preserving each pixel's STBN sequence.
@@ -153,8 +162,20 @@ export function createSplatNodeMaterial({
   depthWrite,
   stochastic,
 }) {
-  const minAlpha = uniformBinding(uniforms, "minAlpha", "float");
-  const edgeFade = uniformBinding(uniforms, "edgeFade", "vec2");
+  // Pack edge fade and minAlpha into one vec4. ANGLE on Metal turns separate
+  // members of the uniform block, read per fragment, into markedly slower code.
+  const fragmentParamsValue = new THREE.Vector4();
+  const fragmentParams = N.uniform(fragmentParamsValue, "vec4").onObjectUpdate(
+    () => {
+      const edgeFade = uniforms.edgeFade.value;
+      return fragmentParamsValue.set(
+        edgeFade.x,
+        edgeFade.y,
+        uniforms.minAlpha.value,
+        0,
+      );
+    },
+  );
   const encodeLinear = uniformBinding(uniforms, "encodeLinear", "bool");
   const stochasticSample = stochastic
     ? uniformBinding(uniforms, "stochasticSample", "uint")
@@ -168,10 +189,10 @@ export function createSplatNodeMaterial({
         seeds: stochastic ? textureBinding(uniforms, "stochasticSeeds") : null,
       };
   const stochasticNoise = stochastic
-    ? textureBinding(uniforms, "stochasticNoise")
+    ? textureBinding(uniforms, "stochasticNoise", true)
     : null;
   const fragment = (coverage) =>
-    createSplatFragment(minAlpha, edgeFade, stochasticNoise, coverage);
+    createSplatFragment(fragmentParams, stochasticNoise, coverage);
   const { vSplat, vSplatUv, vStochasticOffset, fragmentNode } = fragment();
   function buildVertex(builder) {
     const camera = builder.camera;
@@ -266,10 +287,12 @@ export function createSplatNodeMaterial({
     });
     return clipPosition;
   }
-  const material = Object.assign(new NodeMaterial(), {
+  const material = Object.assign(new UnclampedNodeMaterial(), {
     uniforms,
     vertexNode: N.Fn(buildVertex)(),
     colorNode: fragmentNode,
+    // SplatMesh.opacity is applied during generation, as in the WebGL material.
+    opacityNode: N.float(1),
     premultipliedAlpha,
     transparent,
     depthTest,

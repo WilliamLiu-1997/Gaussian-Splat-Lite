@@ -13,7 +13,7 @@ export type UniformType =
   | "mat3"
   | "mat4";
 export declare const E: number;
-/** Texture loads without a sampler, preserving the texture's integer format. */
+/** Integer data texel loads without image UV transforms or backend Y flips. */
 export declare function uintTexture(
   texture: THREE.Texture,
 ): TextureNode<"uvec4">;
@@ -25,6 +25,7 @@ export declare function uniformBinding<Type extends UniformType>(
 export declare function textureBinding(
   uniforms: Uniforms,
   name: string,
+  rawCoordinates?: boolean,
 ): TextureNode<"uvec4">;
 export declare function load2D<T extends TextureNode<unknown>>(
   binding: T,
