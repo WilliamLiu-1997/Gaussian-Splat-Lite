@@ -1,7 +1,61 @@
-import { FloatType, REVISION } from "three";
+import {
+  AlwaysDepth,
+  EqualDepth,
+  FloatType,
+  NeverDepth,
+  NotEqualDepth,
+  REVISION,
+} from "three";
 import { TextureNode } from "three/webgpu";
 const patchedRenderers = new WeakSet();
 let textureNodesPatched = false;
+function patchDepthFunctions(renderer) {
+  // Backport https://github.com/mrdoob/three.js/pull/35264. Cancel r186's
+  // incorrect swaps; only Less/Greater comparisons depend on depth direction.
+  const swaps = {
+    [NeverDepth]: AlwaysDepth,
+    [AlwaysDepth]: NeverDepth,
+    [EqualDepth]: NotEqualDepth,
+    [NotEqualDepth]: EqualDepth,
+  };
+  if (renderer.isWebGLRenderer) {
+    const depth = renderer.state.buffers.depth;
+    const setFunc = depth.setFunc;
+    depth.setFunc = function (func) {
+      return setFunc.call(
+        this,
+        this.getReversed() ? (swaps[func] ?? func) : func,
+      );
+    };
+  } else if (renderer.backend.isWebGLBackend) {
+    const state = renderer.backend.state;
+    const setDepthFunc = state.setDepthFunc;
+    state.setDepthFunc = function (func) {
+      return setDepthFunc.call(
+        this,
+        this.currentDepthReversed ? (swaps[func] ?? func) : func,
+      );
+    };
+  } else {
+    const utils = renderer.backend.pipelineUtils;
+    const getDepthCompare = utils._getDepthCompare;
+    utils._getDepthCompare = function (material) {
+      if (material.depthTest !== false) {
+        switch (material.depthFunc) {
+          case NeverDepth:
+            return "never";
+          case AlwaysDepth:
+            return "always";
+          case EqualDepth:
+            return "equal";
+          case NotEqualDepth:
+            return "not-equal";
+        }
+      }
+      return getDepthCompare.call(this, material);
+    };
+  }
+}
 function patchTextureNodes() {
   if (textureNodesPatched) return;
   const prototype = TextureNode.prototype;
@@ -317,20 +371,24 @@ function patchReadback(backend) {
 /** Apply r186 compatibility fixes to an initialized renderer once. */
 export function applyThreeR186Patch(renderer) {
   if (REVISION !== "186" || patchedRenderers.has(renderer)) return;
-  if (!renderer._attributes) {
+  const classic = renderer.isWebGLRenderer === true;
+  if (!classic && !renderer._attributes) {
     throw new Error(
       "Initialize the renderer before applying the Three.js r186 patch",
     );
   }
-  patchTextureNodes();
-  patchAttributeDisposal(renderer._attributes);
-  patchStorageReferences(renderer._bindings);
-  patchDefaultDepth(renderer, renderer._textures);
-  if (renderer.backend.isWebGLBackend) {
-    patchWebGL(renderer, renderer.backend);
-  } else {
-    patchDepthViews(renderer.backend);
-    patchReadback(renderer.backend);
+  patchDepthFunctions(renderer);
+  if (!classic) {
+    patchTextureNodes();
+    patchAttributeDisposal(renderer._attributes);
+    patchStorageReferences(renderer._bindings);
+    patchDefaultDepth(renderer, renderer._textures);
+    if (renderer.backend.isWebGLBackend) {
+      patchWebGL(renderer, renderer.backend);
+    } else {
+      patchDepthViews(renderer.backend);
+      patchReadback(renderer.backend);
+    }
   }
   patchedRenderers.add(renderer);
 }

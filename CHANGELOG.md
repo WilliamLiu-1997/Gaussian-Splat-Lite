@@ -19,6 +19,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Streamed SOG reduces oversized regions toward each input's own median region size when measuring LOD distance.
 - RAD and Streamed SOG streaming use less CPU memory for loaded detail.
 
+### Fixed
+
+- Backported [Three.js #35264](https://github.com/mrdoob/three.js/pull/35264) to the automatic r186 compatibility patch for WebGPU, WebGL2, and the WebGL2 fallback. Reversed depth preserves `AlwaysDepth`, `NeverDepth`, `EqualDepth`, and `NotEqualDepth`; capture and neural denoising now use `AlwaysDepth` directly.
+
 ## [1.5.4] - 2026-10-29
 
 ### Changed

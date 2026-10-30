@@ -38,7 +38,7 @@ export class NeuralDenoiseXR {
     this.mode = mode;
     this.msaa = msaa;
     this.nodeRenderer = isWebGPURenderer(renderer);
-    if (this.nodeRenderer) applyThreeR186Patch(renderer);
+    applyThreeR186Patch(renderer);
     this.onSessionEnd = () => this.disposeViews();
     renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }

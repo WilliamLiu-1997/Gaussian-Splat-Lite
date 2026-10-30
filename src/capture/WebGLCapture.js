@@ -101,11 +101,6 @@ export class WebGLCapture {
       renderer.setRenderTarget(target);
       renderer.render(scene, camera);
       renderer.setRenderTarget(output, face, mip);
-      // Three also reverses AlwaysDepth/NeverDepth when reversing depth. Read
-      // its live state: resetState() clears it while the capability stays set.
-      material.depthFunc = renderer.state.buffers.depth.getReversed()
-        ? THREE.NeverDepth
-        : THREE.AlwaysDepth;
       renderer.render(this.quad, this.camera);
     } finally {
       renderer.setRenderTarget(output, face, mip);

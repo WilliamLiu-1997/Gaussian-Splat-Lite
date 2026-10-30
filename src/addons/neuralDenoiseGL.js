@@ -6,7 +6,6 @@ import {
   LinearFilter,
   Matrix4,
   NearestFilter,
-  NeverDepth,
   NoBlending,
   RGBAFormat,
   RGFormat,
@@ -227,6 +226,7 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
     material.name = `NeuralDenoise.${pass.name}`;
     material.blending = NoBlending;
     material.depthWrite = material.depthTest = shader.depth;
+    material.depthFunc = AlwaysDepth;
     material.toneMapped = false;
     return { material, uniforms };
   }
@@ -283,13 +283,6 @@ export class WebGLDenoisePasses extends NeuralDenoisePasses {
         draw.uniforms[name].value = inputs[i].texture;
       });
       draw.uniforms.ndTargetSize.value.set(target.width, target.height);
-      draw.material.depthFunc = (
-        this.nodeRenderer
-          ? renderer.reversedDepthBuffer
-          : renderer.capabilities.reversedDepthBuffer
-      )
-        ? NeverDepth
-        : AlwaysDepth;
       renderer.setRenderTarget(target);
       this.quad.material = draw.material;
       this.quad.render(renderer);

@@ -17,6 +17,7 @@ export class WebGPUCapture {
     this.storageColorSpace = "";
     this.toneMapping = null;
     this.material.blending = THREE.NoBlending;
+    this.material.depthFunc = THREE.AlwaysDepth;
     this.material.toneMapped = false;
     this.material.depthNode = N.texture(this.depthTexture).load(
       N.ivec2(N.screenCoordinate.xy),
@@ -105,9 +106,6 @@ export class WebGPUCapture {
     }
     material.depthTest = output.depthBuffer;
     material.depthWrite = output.depthBuffer;
-    material.depthFunc = renderer.reversedDepthBuffer
-      ? THREE.NeverDepth
-      : THREE.AlwaysDepth;
     try {
       renderer.setRenderTarget(target);
       renderer.render(scene, camera);

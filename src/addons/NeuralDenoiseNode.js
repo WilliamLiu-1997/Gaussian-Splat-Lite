@@ -154,6 +154,7 @@ export class NeuralDenoiseNode extends Node {
     }
     const backend = renderer.backend;
     if (this.passes === null) {
+      applyThreeR186Patch(renderer);
       const model = {
         ...neuralDenoiseModels[this.mode],
         stabilizeNoise: !this.msaa,

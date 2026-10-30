@@ -56,8 +56,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       throw new Error("renderer is required in GaussianSplatRenderer options");
     }
     assertSupportedRenderer(options.renderer);
-    if (isWebGPURenderer(options.renderer))
-      applyThreeR186Patch(options.renderer);
+    applyThreeR186Patch(options.renderer);
     const uniforms = GaussianSplatRenderer.makeUniforms();
     const premultipliedAlpha = options.premultipliedAlpha ?? true;
     const stochastic = options.stochastic ?? false;
