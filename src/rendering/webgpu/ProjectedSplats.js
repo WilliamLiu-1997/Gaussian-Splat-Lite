@@ -285,11 +285,9 @@ export class ProjectedSplats {
       .toReadOnly()
       .element(0);
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
-    const rgba = N.vec4(0).toVar();
+    const packedSplat = N.uvec4(0).toVar();
     const splatUv = N.vec2(0).toVar();
     const stochasticSeed = stochastic ? N.uint(0).toVar() : undefined;
-    const supportRadiusSquared = N.float(0).toVar();
-    const kernelPower = N.float(0).toVar();
     const view = splatViewportUniforms(this.uniforms, camera);
     const projectionMatrix = N.cameraProjectionMatrix;
     const centerRange = uniformBinding(this.uniforms, "clipXY", "float")
@@ -335,26 +333,26 @@ export class ProjectedSplats {
         projectionMatrix,
       );
       clipPosition.assign(projected.clipPosition);
-      rgba.assign(projected.rgba);
+      packedSplat.assign(projected.packedSplat);
       splatUv.assign(projected.splatUv);
-      supportRadiusSquared.assign(projected.supportRadiusSquared);
-      kernelPower.assign(projected.kernelPower);
     });
     return {
       clipPosition,
-      rgba,
+      packedSplat,
       splatUv,
       stochasticSeed,
-      supportRadiusSquared,
-      kernelPower,
       viewportOrigin: view.viewportOrigin,
     };
   }
   resizeBuffer(ref, count) {
-    if (ref.value.count === count) return false;
-    const old = ref.value;
-    ref.value = new StorageBufferAttribute(new Uint32Array(count), 1);
-    old.dispose();
+    const attribute = ref.value;
+    if (attribute.count === count) return false;
+    const array = new Uint32Array(count);
+    // Projection slots and draw materials may be idle during a resize. Keep
+    // their shared attribute so none retains the old CPU array.
+    attribute.dispose();
+    attribute.array = array;
+    attribute.count = count;
     return true;
   }
   resize(count, views, shrink = false) {

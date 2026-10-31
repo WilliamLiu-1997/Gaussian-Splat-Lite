@@ -22,6 +22,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - RAD and Streamed SOG streaming use less CPU memory for loaded detail.
 - Sorted Splats draw faster on the `WebGPURenderer` WebGL2 fallback, now matching `WebGLRenderer` on Apple GPUs; native WebGPU also draws them slightly faster. Rendered output is unchanged.
 - Node Splat materials now ignore `GaussianSplatRenderer.material.opacity`, matching the classic WebGL path. Use `SplatMesh.opacity` to control model opacity.
+- Drawing Splats on native WebGPU does slightly less work per vertex. Rendered output is unchanged.
 
 ### Fixed
 

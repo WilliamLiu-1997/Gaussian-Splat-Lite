@@ -4,14 +4,11 @@ import type { NodeMaterial, TextureNode } from "three/webgpu";
 import type { Uniforms } from "../uniforms.js";
 export type ProjectedVertexData = {
   clipPosition: Node<"vec4">;
-  /** Source color space; this material applies encodeLinear. */
-  rgba: Node<"vec4">;
+  /** Half RGB/kernel power and float32 alpha/squared support radius. */
+  packedSplat: Node<"uvec4">;
   splatUv: Node<"vec2">;
   /** Stochastic variant only. */
   stochasticSeed?: Node<"uint">;
-  /** A wide kernel's low 16 bits hold its edge fade as a half. */
-  supportRadiusSquared: Node<"float">;
-  kernelPower: Node<"float">;
   viewportOrigin: Node<"vec2">;
 };
 export type SplatNodeMaterial = NodeMaterial & {

@@ -489,10 +489,14 @@ export class WebGPURadixSort {
       .setName(name);
   }
   replaceBuffer(buffer, count) {
-    if (buffer.value.count === count) return;
-    const previous = buffer.value;
-    buffer.value = makeBuffer(count);
-    previous.dispose();
+    const attribute = buffer.value;
+    if (attribute.count === count) return;
+    const array = new Uint32Array(count);
+    // Idle sort passes keep this attribute. Reuse it so they release the old
+    // CPU array too; dispose makes Three recreate the GPU buffer and bindings.
+    attribute.dispose();
+    attribute.array = array;
+    attribute.count = count;
   }
   createPrefixLevels(itemCount, counts) {
     let items = this.blockSums;

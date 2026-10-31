@@ -38,7 +38,8 @@ const stochasticHash = N.Fn(([seed]) => {
 });
 function createSplatFragment(fragmentParams, stochasticNoise, coverage) {
   // Per-Splat constants share one flat varying: RGB and kernel power as
-  // halves, alpha and squared support radius as float32 bits. See packSplatVarying.
+  // halves, alpha and squared support radius as float32 bits. See
+  // packSplatVarying and ProjectionCodec.
   const vSplat = N.varyingProperty("uvec4", "gslSplat");
   const vSplatUv = N.varyingProperty("vec2", "gslSplatUv");
   // Atlas offset: x in bits 0-4, y in 5-9, time in 10-14. See stochasticTileOffset.
@@ -196,6 +197,36 @@ export function createSplatNodeMaterial({
   const { vSplat, vSplatUv, vStochasticOffset, fragmentNode } = fragment();
   function buildVertex(builder) {
     const camera = builder.camera;
+    if (vertexData) {
+      const data = vertexData(camera, stochastic);
+      const packed = data.packedSplat.toVar();
+      // Keep cached half RGB and float32 alpha/radius bits intact. Only color
+      // conversion needs to unpack RGB; ordinary draws forward the packed data.
+      N.If(encodeLinear, () => {
+        const rg = N.unpackHalf2x16(packed.x);
+        const bk = N.unpackHalf2x16(packed.y);
+        const rgb = N.sRGBTransferEOTF(N.vec3(rg, bk.x)).min(65504).toVar();
+        packed.x.assign(N.packHalf2x16(rgb.rg));
+        packed.y.assign(
+          packed.y
+            .bitAnd(N.uint(0xffff0000))
+            .bitOr(N.packHalf2x16(N.vec2(rgb.b, 0))),
+        );
+      });
+      vSplat.assign(packed);
+      vSplatUv.assign(data.splatUv);
+      if (vStochasticOffset && stochasticSample && data.stochasticSeed) {
+        // Coverage uses the same offset across every fragment of this Splat.
+        vStochasticOffset.assign(
+          stochasticTileOffset(
+            data.stochasticSeed,
+            stochasticSample,
+            data.viewportOrigin,
+          ),
+        );
+      }
+      return data.clipPosition;
+    }
     const clipPosition = N.vec4(0, 0, 2, 1).toVar();
     vSplat.assign(N.uvec4(0));
     vSplatUv.assign(N.vec2(0));
@@ -224,10 +255,6 @@ export function createSplatNodeMaterial({
         );
       }
     };
-    if (vertexData) {
-      assignVertexData(vertexData(camera, stochastic));
-      return clipPosition;
-    }
     if (!accumulator || !orderingNode) {
       throw new Error("Accumulator splat drawing requires an ordering texture");
     }
