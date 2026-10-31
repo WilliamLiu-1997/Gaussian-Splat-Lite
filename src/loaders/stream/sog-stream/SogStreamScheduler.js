@@ -18,11 +18,10 @@ import {
   positiveInteger,
   streamRetryAt,
   streamSettings,
-  streamSources,
 } from "../streamOptions.js";
 import { SogStreamBatch } from "./SogStreamBatch.js";
 import { SogStreamLoader } from "./SogStreamLoader.js";
-import { SOG_LOD_STRIDE, readSogLodLeaf, resolveSogLod } from "./sogLod.js";
+import { readSogLodLeaf, resolveSogLod } from "./sogLod.js";
 import { captureSogView, getSogViewKey } from "./sogVisibility.js";
 const EMPTY_SELECTION = new Uint32Array(0);
 function* retryDeadlines(chunks) {
@@ -43,9 +42,23 @@ function checkSourceLod({ lodBaseDistance, lodMultiplier }) {
   if (lodBaseDistance !== undefined) checkLodBaseDistance(lodBaseDistance);
   if (lodMultiplier !== undefined) checkLodMultiplier(lodMultiplier);
 }
+function sourceSettings(source) {
+  const settings = {
+    transform: checkStreamTransform(
+      source.transform ?? new THREE.Matrix4(),
+    ).clone(),
+    environment: source.environment !== false,
+    lodBaseDistance: source.lodBaseDistance,
+    lodMultiplier: source.lodMultiplier,
+  };
+  checkSourceLod(settings);
+  return settings;
+}
 /** Camera-driven Streamed SOG loading with per-chunk sources and region fades. */
 export class SogStreamScheduler {
-  constructor(options) {
+  constructor(options = {}) {
+    if (options.sources !== undefined)
+      throw new Error("Use addSource() to add SOG inputs after construction");
     this.abort = new AbortController();
     this.streamCameras = new StreamCameras();
     this.lodLeaves = new Map();
@@ -53,7 +66,9 @@ export class SogStreamScheduler {
     this.selecting = false;
     this.refinementStopped = false;
     this.selection = EMPTY_SELECTION;
-    this.chunks = [];
+    this.sources = new Map();
+    this.nextSourceId = 0;
+    this.chunks = new Map();
     this.environments = [];
     /** Chunks with a batch, cached source or in-flight load. */
     this.activeChunks = new Set();
@@ -64,7 +79,7 @@ export class SogStreamScheduler {
     this.shown = true;
     this.disposed = false;
     this.retryTimer = new RetryTimer(() => this.changed());
-    this.options = { ...options };
+    this.options = { onChange: options.onChange, onError: options.onError };
     this.group = new THREE.Group();
     this.uploads = new PendingUploads(this.group);
     const settings = streamSettings(options);
@@ -75,54 +90,101 @@ export class SogStreamScheduler {
     this.lodMultiplier = options.lodMultiplier ?? 2;
     this.lodBehindPenalty = options.lodBehindPenalty ?? 4;
     this.lodDistanceShrink = options.lodDistanceShrink ?? 0.75;
-    // Inputs are fixed at creation; setSourceSettings() changes their settings.
-    this.sourceSettings = streamSources(options).map((source) => {
-      const settings = {
-        transform: checkStreamTransform(
-          source.transform ?? new THREE.Matrix4(),
-        ).clone(),
-        environment: source.environment !== false,
-        lodBaseDistance: source.lodBaseDistance,
-        lodMultiplier: source.lodMultiplier,
-      };
-      checkSourceLod(settings);
-      return settings;
-    });
     this.sourceLodVersion = 0;
     this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
     this.maxConcurrentLoads = settings.maxConcurrentLoads;
-    this.loader = new SogStreamLoader(
-      this.options,
-      this.maxConcurrentLoads,
-      this.maxSh,
-      () => this.changed(),
+    this.loader = new SogStreamLoader(this.maxConcurrentLoads, this.maxSh, () =>
+      this.changed(),
     );
     this.firstRenderable = new Promise((resolve, reject) => {
       this.resolveFirst = resolve;
       this.rejectFirst = reject;
     });
-    this.initialized = this.initialize().catch((error) => {
-      this.rejectFirst(error);
-      this.loader.dispose();
-      throw error;
-    });
-    // Both readiness promises are optional to observe; errors remain available
-    // to callers awaiting them and chunk failures go through onError.
-    void this.initialized.catch(() => {});
+    // Readiness is optional to observe; failures also go through onError.
     void this.firstRenderable.catch(() => {});
   }
-  /** An input's current settings; inputs keep their creation order. */
-  getSourceSettings(index) {
-    const settings = this.sourceSetting(index);
+  /** Current source IDs in insertion order, including pending additions. */
+  get sourceIds() {
+    return [...this.sources.keys()];
+  }
+  /** Add an independent input; resolves to its stable ID once metadata is ready. */
+  addSource(options) {
+    this.abort.signal.throwIfAborted();
+    if (this.refinementStopped)
+      throw new Error("SOG detail selection has stopped");
+    if (this.nextSourceId > 0xffffffff)
+      throw new Error("SOG source ID capacity exceeded");
+    const settings = sourceSettings(options);
+    const source = {
+      id: this.nextSourceId++,
+      url: options.url,
+      settings,
+      controller: new AbortController(),
+      chunks: [],
+    };
+    this.sources.set(source.id, source);
+    const ready = this.initializeSource(source, options);
+    void ready.catch(() => {});
+    return ready;
+  }
+  /** Remove only this input, canceling its pending work and releasing its data. */
+  removeSource(id) {
+    const source = this.sources.get(id);
+    if (!source) return false;
+    this.sources.delete(id);
+    source.controller.abort();
+    this.loader.removeSource(id);
+    const metadata = source.metadata;
+    if (metadata) {
+      const { leafBase, leafOffsets, environment } = metadata;
+      const leafEnd = leafBase + leafOffsets.length - 1;
+      for (const [leafId, leaf] of this.leaves) {
+        if (
+          (leafId < leafBase || leafId >= leafEnd) &&
+          (environment < 0 || leafId !== -1 - environment)
+        )
+          continue;
+        leaf.pending = undefined;
+        if (leaf.current) this.releaseRegion(leaf.current);
+        if (leaf.outgoing) this.releaseRegion(leaf.outgoing);
+        this.leaves.delete(leafId);
+      }
+      for (const leafId of this.lodLeaves.keys())
+        if (leafId >= leafBase && leafId < leafEnd)
+          this.lodLeaves.delete(leafId);
+    }
+    for (const chunk of source.chunks) {
+      chunk.controller?.abort();
+      chunk.data?.dispose();
+      chunk.data = undefined;
+      this.wanted.delete(chunk);
+      this.activeChunks.delete(chunk);
+      this.chunks.delete(chunk.index);
+    }
+    this.selection = this.selection.filter(
+      (_, offset, selection) => selection[offset - (offset % 3)] !== id,
+    );
+    if (!this.selection.length) this.selection = EMPTY_SELECTION;
+    this.sourceLodVersion++;
+    this.lastRequestedKey = "";
+    this.updateEnvironments();
+    this.retryTimer.update(retryDeadlines(this.wanted));
+    void this.requestSelection();
+    this.changed();
+    return true;
+  }
+  /** A source's current settings; IDs are never renumbered or reused. */
+  getSourceSettings(id) {
+    const settings = this.sourceSetting(id);
     return { ...settings, transform: settings.transform.clone() };
   }
   /**
    * Change an input's settings; omitted keys keep their values, and undefined
    * LOD settings follow the scheduler defaults. Loaded data is kept.
    */
-  setSourceSettings(index, settings) {
-    const source = this.sourceSetting(index);
+  setSourceSettings(id, settings) {
+    const source = this.sourceSetting(id);
     // Only LOD settings use undefined to follow the scheduler's values.
     const { transform = source.transform, environment = source.environment } =
       settings;
@@ -133,7 +195,7 @@ export class SogStreamScheduler {
     if (!source.transform.equals(next.transform)) {
       source.transform.copy(next.transform);
       for (const chunk of this.activeChunks) {
-        if (!chunk.batch || chunk.source !== index) continue;
+        if (!chunk.batch || chunk.source !== id) continue;
         chunk.batch.matrix.copy(source.transform);
         chunk.batch.matrixWorldNeedsUpdate = true;
       }
@@ -151,7 +213,8 @@ export class SogStreamScheduler {
     }
     if (source.environment !== (next.environment !== false)) {
       source.environment = next.environment !== false;
-      if (this.manifest) this.updateEnvironments();
+      this.sourceLodVersion++;
+      this.updateEnvironments();
       changed = true;
     }
     if (!changed) return;
@@ -160,10 +223,15 @@ export class SogStreamScheduler {
     void this.requestSelection();
     this.changed();
   }
-  sourceSetting(index) {
-    const settings = this.sourceSettings[index];
-    if (!settings) throw new Error(`SOG source index ${index} is out of range`);
-    return settings;
+  sourceSetting(id) {
+    const source = this.sources.get(id);
+    if (!source) throw new Error(`Unknown SOG source ID ${id}`);
+    return source.settings;
+  }
+  get hasLods() {
+    for (const source of this.sources.values())
+      if (source.metadata?.lods.length) return true;
+    return false;
   }
   /** Visible-point budget, including the environment. Reassign to reselect LODs. */
   get splatBudget() {
@@ -231,30 +299,33 @@ export class SogStreamScheduler {
   }
   get stats() {
     const { retainedIndexBytes, ...loaderStats } = this.loader.stats;
-    const manifest = this.manifest;
     const stats = {
       visibleSplats: 0,
       visibleRegions: 0,
       visibleMeshes: 0,
       residentMeshes: 0,
       residentChunks: 0,
-      residentCpuBytes:
-        retainedIndexBytes +
-        this.selection.byteLength +
-        (manifest
-          ? manifest.sourceBounds.byteLength +
-            manifest.leafOffsets.byteLength +
-            manifest.lods.byteLength +
-            manifest.counts.byteLength +
-            manifest.sourceIndices.byteLength +
-            manifest.environments.byteLength
-          : 0),
+      residentCpuBytes: retainedIndexBytes + this.selection.byteLength,
       residentGpuBytes: 0,
       pendingBytes: 0,
       loadingChunks: 0,
-      loadProgress: manifest ? 1 : 0,
+      loadProgress: 1,
       ...loaderStats,
     };
+    let pendingSources = 0;
+    for (const { metadata } of this.sources.values()) {
+      if (!metadata) {
+        pendingSources++;
+        continue;
+      }
+      stats.residentCpuBytes +=
+        metadata.bounds.byteLength +
+        metadata.leafOffsets.byteLength +
+        metadata.lods.byteLength +
+        metadata.counts.byteLength +
+        metadata.batchStarts.byteLength +
+        metadata.batchCapacities.byteLength;
+    }
     for (const { batch, data, controller } of this.activeChunks) {
       if (batch) {
         stats.residentMeshes++;
@@ -279,12 +350,12 @@ export class SogStreamScheduler {
           stats.visibleRegions++;
       }
     }
-    if (manifest && this.shown) {
-      let targetRegions = this.selection.length / 2;
+    if (this.shown) {
+      let targetRegions = this.selection.length / 3 + pendingSources;
       let readyRegions = 0;
-      for (let offset = 0; offset < this.selection.length; offset += 2) {
-        const id = this.selection[offset];
-        const target = this.lodLeaves.get(id).lods[this.selection[offset + 1]];
+      for (let offset = 0; offset < this.selection.length; offset += 3) {
+        const id = this.selection[offset + 1];
+        const target = this.lodLeaves.get(id).lods[this.selection[offset + 2]];
         if (this.leaves.get(id)?.current?.range === target) readyRegions++;
       }
       for (const chunk of this.environments) {
@@ -293,7 +364,7 @@ export class SogStreamScheduler {
         if (this.leaves.get(-1 - chunk.index)?.current) readyRegions++;
       }
       stats.loadProgress =
-        manifest.lods.length && this.selection === EMPTY_SELECTION
+        this.hasLods && this.selection === EMPTY_SELECTION
           ? 0
           : targetRegions
             ? readyRegions / targetRegions
@@ -302,63 +373,71 @@ export class SogStreamScheduler {
     stats.residentBytes = stats.residentCpuBytes + stats.residentGpuBytes;
     return stats;
   }
-  /** Group-local bounds from the index; available after initialized resolves. */
+  /** Group-local bounds of inputs whose addSource() metadata is ready. */
   getBoundingBox() {
     const box = new THREE.Box3();
-    if (!this.manifest) return box;
     const bound = new THREE.Box3();
-    this.sourceSettings.forEach(({ transform }, index) => {
-      bound.min.fromArray(this.manifest.sourceBounds, index * 6);
-      bound.max.fromArray(this.manifest.sourceBounds, index * 6 + 3);
-      box.union(bound.applyMatrix4(transform));
-    });
+    for (const { metadata, settings } of this.sources.values()) {
+      if (!metadata) continue;
+      bound.min.fromArray(metadata.bounds);
+      bound.max.fromArray(metadata.bounds, 3);
+      box.union(bound.applyMatrix4(settings.transform));
+    }
     return box;
   }
-  async initialize() {
-    const manifest = await this.loader.initialize(this.abort.signal);
-    this.abort.signal.throwIfAborted();
-    this.manifest = manifest;
-    this.chunks = manifest.urls.map((url, index) => ({
-      url,
-      index,
-      source: manifest.sourceIndices[index],
-      count: manifest.counts[index],
-      // Stable slots keep a chunk together regardless of region arrival order.
-      batchSlots: new Map(),
-      batchCapacity: 0,
-      failures: 0,
-      retryAt: 0,
-    }));
-    for (
-      let offset = 0;
-      offset < manifest.lods.length;
-      offset += SOG_LOD_STRIDE
-    ) {
-      if (manifest.lods[offset + 3] === 0) continue;
-      this.addBatchRange(
-        this.chunks[manifest.lods[offset + 1]],
-        manifest.lods[offset + 2],
-        manifest.lods[offset + 3],
+  async initializeSource(source, options) {
+    const { id, controller } = source;
+    try {
+      const metadata = await this.loader.addSource(
+        id,
+        options,
+        controller.signal,
       );
+      controller.signal.throwIfAborted();
+      source.metadata = metadata;
+      source.chunks = metadata.urls.map((url, local) => {
+        const index = metadata.fileBase + local;
+        const chunk = {
+          url,
+          index,
+          source: id,
+          count: metadata.counts[local],
+          environment: index === metadata.environment,
+          batchCapacity: metadata.batchCapacities[local],
+          failures: 0,
+          retryAt: 0,
+        };
+        this.chunks.set(index, chunk);
+        return chunk;
+      });
+      this.sourceLodVersion++;
+      this.lastRequestedKey = "";
+      this.updateEnvironments();
+      void this.requestSelection();
+      this.changed();
+      // onChange may remove this source or dispose the scheduler.
+      controller.signal.throwIfAborted();
+      return id;
+    } catch (error) {
+      const failed = !controller.signal.aborted && !this.disposed;
+      if (failed && this.sources.size === 1) this.rejectFirst(error);
+      this.removeSource(id);
+      if (failed && !this.refinementStopped) this.failed(error, options.url);
+      throw error;
     }
-    for (const index of manifest.environments)
-      if (index >= 0) this.chunks[index].environment = true;
-    this.updateEnvironments();
-    this.changed();
-    return this;
   }
   /** Environment chunks of the inputs that enable theirs. */
   updateEnvironments() {
     this.environments = [];
-    this.sourceSettings.forEach((input, source) => {
-      const index = this.manifest.environments[source];
-      if (input.environment && index >= 0)
-        this.environments.push(this.chunks[index]);
-    });
-    if (
-      !this.manifest.lods.length &&
-      this.environments.every((chunk) => chunk.count === 0)
-    )
+    for (const { settings, metadata } of this.sources.values()) {
+      if (settings.environment && metadata && metadata.environment >= 0)
+        this.environments.push(this.chunks.get(metadata.environment));
+    }
+    this.resolveIfEmpty();
+  }
+  resolveIfEmpty() {
+    for (const source of this.sources.values()) if (!source.metadata) return;
+    if (!this.hasLods && this.environments.every((chunk) => chunk.count === 0))
       this.resolveFirst(this);
   }
   /** Cameras that select detail, in registration order. */
@@ -388,7 +467,6 @@ export class SogStreamScheduler {
   update() {
     if (this.disposed) return false;
     const cameras = this.streamCameras.seeing(this.group.layers);
-    if (!this.manifest) return false;
     for (const chunk of this.activeChunks) {
       this.pruneChunk(chunk);
       if (chunk.batch) chunk.batch.layers.mask = this.group.layers.mask;
@@ -436,7 +514,7 @@ export class SogStreamScheduler {
       this.refinementStopped ||
       !this.shown ||
       this.selecting ||
-      !this.manifest?.lods.length ||
+      !this.hasLods ||
       !view
     )
       return;
@@ -461,11 +539,15 @@ export class SogStreamScheduler {
     this.selecting = true;
     let accepted = false;
     try {
+      const sources = [...this.sources.values()].filter(
+        (source) => source.metadata,
+      );
       const selection = await this.loader.selectLod({
         view,
         budget,
         splatBudgetMode,
-        sources: this.sourceSettings.map((input) => ({
+        sources: sources.map(({ id, settings: input }) => ({
+          id,
           lodBaseDistance: input.lodBaseDistance ?? lodBaseDistance,
           lodMultiplier: input.lodMultiplier ?? lodMultiplier,
           transform: input.transform.elements,
@@ -497,7 +579,8 @@ export class SogStreamScheduler {
       accepted = true;
       this.changed();
     } catch (error) {
-      this.stopRefinement(error);
+      if (sourceLodVersion === this.sourceLodVersion)
+        this.stopRefinement(error);
     } finally {
       this.selecting = false;
       // Check completed decisions before camera motion starts another one.
@@ -525,7 +608,7 @@ export class SogStreamScheduler {
       leaf.target = range;
       selected.push(leaf);
       if (leaf.current?.range !== range)
-        this.wanted.add(this.chunks[range.file]);
+        this.wanted.add(this.chunks.get(range.file));
     };
     if (this.shown)
       for (const chunk of this.environments) {
@@ -538,25 +621,34 @@ export class SogStreamScheduler {
     for (
       let offset = 0;
       this.shown && offset < this.selection.length;
-      offset += 2
+      offset += 3
     ) {
-      const id = this.selection[offset];
+      const sourceId = this.selection[offset];
+      const id = this.selection[offset + 1];
       let leaf = this.lodLeaves.get(id);
       if (!leaf) {
-        leaf = readSogLodLeaf(this.manifest, id);
+        const metadata = this.sources.get(sourceId).metadata;
+        const local = id - metadata.leafBase;
+        leaf = readSogLodLeaf(metadata, local);
+        leaf.id = id;
+        let record = metadata.leafOffsets[local];
+        for (const range of leaf.lods) {
+          range.leaf = id;
+          range.batchStart = metadata.batchStarts[record++];
+        }
         this.lodLeaves.set(id, leaf);
       }
-      const target = leaf.lods[this.selection[offset + 1]];
+      const target = leaf.lods[this.selection[offset + 2]];
       const state = this.leafState(leaf.id);
       const { range, load, refinement } = resolveSogLod(
         leaf,
         target,
         state.current?.range,
-        (lod) => this.chunks[lod.file].data?.alive === true,
+        (lod) => this.chunks.get(lod.file).data?.alive === true,
       );
       if (range) show(range);
       if (load) {
-        const chunk = this.chunks[load.file];
+        const chunk = this.chunks.get(load.file);
         if (range && refinement) refinements.push([state, chunk]);
         else this.wanted.add(chunk);
       }
@@ -607,7 +699,7 @@ export class SogStreamScheduler {
       )
         continue;
       const { data, chunk } = pending;
-      const start = chunk.batchSlots.get(range.offset);
+      const start = range.batchStart;
       if (start === undefined) throw new Error("Missing chunk region slot");
       let batch = chunk.batch;
       const numSh = getSplatShDegree(data.extra);
@@ -635,7 +727,7 @@ export class SogStreamScheduler {
           },
         );
         batch.matrixAutoUpdate = false;
-        batch.matrix.copy(this.sourceSettings[chunk.source].transform);
+        batch.matrix.copy(this.sourceSetting(chunk.source).transform);
         batch.matrixWorldNeedsUpdate = true;
         batch.source.uploadQueue = this.uploads;
         batch.name = chunk.environment
@@ -661,7 +753,7 @@ export class SogStreamScheduler {
     for (const leaf of selected) {
       const range = leaf.target;
       if (!range || leaf.current?.range === range || leaf.pending) continue;
-      const chunk = this.chunks[range.file];
+      const chunk = this.chunks.get(range.file);
       const source = chunk.data;
       if (!source?.alive || now < chunk.retryAt) continue;
       const bytes = getSplatTextureBytes(range.count, source.info.numSh);
@@ -673,11 +765,6 @@ export class SogStreamScheduler {
     }
     for (const [chunk, { source, regions }] of batches)
       void this.extract(chunk, source, regions);
-  }
-  addBatchRange(chunk, offset, count) {
-    if (!count || chunk.batchSlots.has(offset)) return;
-    chunk.batchSlots.set(offset, chunk.batchCapacity);
-    chunk.batchCapacity += sogBatchAllocationSize(count);
   }
   fadeRegion(region, visible, now) {
     const to = visible ? 1 : 0;
@@ -734,7 +821,11 @@ export class SogStreamScheduler {
         const leaf = this.leaves.get(pending.range.leaf);
         if (leaf?.pending === pending) leaf.pending = undefined;
       }
-      if (!this.disposed && !this.refinementStopped) {
+      if (
+        !this.disposed &&
+        !this.refinementStopped &&
+        this.chunks.has(chunk.index)
+      ) {
         chunk.error = error;
         chunk.retryAt = streamRetryAt(error, chunk.failures++);
         if (!source.alive) {
@@ -756,7 +847,7 @@ export class SogStreamScheduler {
     for (const [id, leaf] of this.leaves) {
       const { current, outgoing, pending } = leaf;
       if (pending) referenced.add(pending.chunk);
-      if (outgoing) referenced.add(this.chunks[outgoing.range.file]);
+      if (outgoing) referenced.add(this.chunks.get(outgoing.range.file));
       if (current) {
         if (
           leaf.target ||
@@ -765,7 +856,7 @@ export class SogStreamScheduler {
           outgoing
         ) {
           current.expiresAt = undefined;
-          referenced.add(this.chunks[current.range.file]);
+          referenced.add(this.chunks.get(current.range.file));
         } else {
           current.expiresAt ??= now + this.cooldownMs;
           if (allowRelease && now >= current.expiresAt)
@@ -820,7 +911,7 @@ export class SogStreamScheduler {
         );
       if (chunk.environment) {
         chunk.count = decoded.info.numSplats;
-        this.addBatchRange(chunk, 0, chunk.count);
+        chunk.batchCapacity = sogBatchAllocationSize(chunk.count);
         chunk.environmentRange = chunk.count
           ? {
               leaf: -1 - chunk.index,
@@ -828,6 +919,7 @@ export class SogStreamScheduler {
               file: chunk.index,
               offset: 0,
               count: chunk.count,
+              batchStart: 0,
             }
           : undefined;
       } else if (decoded.info.numSplats !== chunk.count) {
@@ -840,12 +932,7 @@ export class SogStreamScheduler {
       chunk.expiresAt = undefined;
       chunk.failures = 0;
       chunk.retryAt = 0;
-      if (
-        chunk.environment &&
-        this.environments.every((environment) => environment.count === 0) &&
-        !this.manifest?.lods.length
-      )
-        this.resolveFirst(this);
+      if (chunk.environment) this.resolveIfEmpty();
     } catch (error) {
       if (!controller.signal.aborted && !this.disposed) {
         chunk.error = error;
@@ -885,11 +972,9 @@ export class SogStreamScheduler {
     notifyStreamError(this.options, error, url);
   }
   rejectFirstIfUnavailable(error) {
-    if (
-      this.selecting ||
-      (this.manifest?.lods.length && this.selection === EMPTY_SELECTION)
-    )
+    if (this.selecting || (this.hasLods && this.selection === EMPTY_SELECTION))
       return;
+    for (const source of this.sources.values()) if (!source.metadata) return;
     // A failed refinement does not invalidate already renderable coverage.
     if ([...this.leaves.values()].some((leaf) => leaf.current || leaf.pending))
       return;
@@ -914,7 +999,7 @@ export class SogStreamScheduler {
     }
     this.loader.dispose();
     this.rejectFirst(error);
-    this.failed(error, this.options.sources[0].url);
+    this.failed(error, this.sources.values().next().value?.url ?? "");
     this.changed();
   }
   dispose() {
@@ -923,6 +1008,7 @@ export class SogStreamScheduler {
     this.retryTimer.dispose();
     this.abort.abort();
     this.rejectFirst(this.abort.signal.reason);
+    for (const source of this.sources.values()) source.controller.abort();
     this.loader.dispose();
     for (const chunk of this.activeChunks) {
       chunk.controller?.abort();
@@ -936,10 +1022,10 @@ export class SogStreamScheduler {
     this.leaves.clear();
     this.fades.clear();
     this.wanted.clear();
-    this.chunks = [];
+    this.chunks.clear();
     this.activeChunks.clear();
     this.environments = [];
-    this.manifest = undefined;
+    this.sources.clear();
     this.lodLeaves.clear();
     this.view = undefined;
     this.selection = EMPTY_SELECTION;

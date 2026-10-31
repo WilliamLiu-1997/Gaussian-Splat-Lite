@@ -1,10 +1,9 @@
 import { DefaultLoadingManager } from "three";
 import { WorkerTerminatedError } from "../../../runtime/WorkerRpc.js";
-import { abortable } from "../../../runtime/abort.js";
+import { abortable, linkedAbortController } from "../../../runtime/abort.js";
 import { getAssetBaseUrl } from "../../assetUrl.js";
 import { joinBytes, readResponse, requestOptions } from "../../source.js";
 import { StreamWorkerPool } from "../StreamWorkerPool.js";
-import { streamSources } from "../streamOptions.js";
 import { SogStreamWorker } from "./SogStreamWorker.js";
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */
 export class SogChunkSource {
@@ -33,13 +32,10 @@ export class SogChunkSource {
 }
 /** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */
 export class SogStreamLoader {
-  constructor(options, maxConcurrentLoads, maxSh, onChange) {
+  constructor(maxConcurrentLoads, maxSh, onChange) {
     this.maxSh = maxSh;
     this.controller = new AbortController();
-    this.sources = streamSources(options).map((options) => ({
-      options: { ...options },
-      baseUrl: "",
-    }));
+    this.sources = new Map();
     this.downloadedBytes = 0;
     this.retainedIndexBytes = 0;
     this.pool = new StreamWorkerPool(
@@ -60,28 +56,38 @@ export class SogStreamLoader {
     this.controller.signal.throwIfAborted();
     if (this.lodWorker.disposed) throw new Error("SOG LOD worker terminated");
   }
-  initialize(signal) {
-    signal?.throwIfAborted();
+  async addSource(id, options, signal) {
     this.assertActive();
-    this.initialization ??= this.readIndices().catch((error) => {
-      this.dispose();
+    const input = { options: { ...options }, baseUrl: "", indexBytes: 0 };
+    this.sources.set(id, input);
+    const request = linkedAbortController(this.controller.signal, signal);
+    try {
+      const index = await abortable(
+        this.readIndex(id, input, request.signal),
+        request.signal,
+      );
+      request.signal.throwIfAborted();
+      input.indexBytes = index.retainedIndexBytes;
+      this.retainedIndexBytes += input.indexBytes;
+      return index;
+    } catch (error) {
+      this.removeSource(id);
       throw error;
-    });
-    return abortable(this.initialization, signal);
+    } finally {
+      request.cleanup();
+    }
   }
-  async readIndices() {
-    for (const input of this.sources) await this.readIndex(input);
-    const { retainedIndexBytes, ...index } = await this.lodWorker.call(
-      "initializeSogIndex",
-      undefined,
-    );
-    this.assertActive();
-    this.retainedIndexBytes = retainedIndexBytes;
-    return index;
+  removeSource(id) {
+    const input = this.sources.get(id);
+    if (!input) return;
+    this.sources.delete(id);
+    this.retainedIndexBytes -= input.indexBytes;
+    if (!this.lodWorker.disposed)
+      void this.lodWorker.call("releaseSogIndex", { id }).catch(() => {});
   }
-  async readIndex(input) {
+  async readIndex(id, input, signal) {
     const { options } = input;
-    const signal = this.controller.signal;
+    signal.throwIfAborted();
     const manager = options.manager ?? DefaultLoadingManager;
     const resolveBase =
       typeof document === "undefined" ? undefined : document.baseURI;
@@ -102,12 +108,16 @@ export class SogStreamLoader {
         },
         signal,
       );
+      signal.throwIfAborted();
       const bytes = new Uint8Array(joinBytes(chunks, size)).buffer;
-      await this.lodWorker.call("parseSogIndex", {
+      const index = await this.lodWorker.call("parseSogIndex", {
+        id,
         bytes,
         baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
       });
       this.assertActive();
+      signal.throwIfAborted();
+      return index;
     } catch (error) {
       manager.itemError(url);
       throw error;
@@ -119,9 +129,9 @@ export class SogStreamLoader {
     this.assertActive();
     return this.lodWorker.call("selectSogLod", request);
   }
-  async load(sourceIndex, url, count, signal) {
+  async load(sourceId, url, count, signal) {
     this.assertActive();
-    const { options, baseUrl } = this.sources[sourceIndex];
+    const { options, baseUrl } = this.sources.get(sourceId);
     const manager = options.manager ?? DefaultLoadingManager;
     return this.pool.run(
       {
@@ -192,7 +202,7 @@ export class SogStreamLoader {
     );
     this.pool.dispose(this.controller.signal.reason);
     this.lodWorker.dispose(this.controller.signal.reason);
-    this.initialization = undefined;
+    this.sources.clear();
     this.retainedIndexBytes = 0;
   }
 }

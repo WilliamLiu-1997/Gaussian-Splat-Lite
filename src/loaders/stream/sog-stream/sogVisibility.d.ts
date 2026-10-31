@@ -9,7 +9,9 @@ export type SogView = {
   cameras: SogCamera[];
   shown: boolean;
 };
-export type SogLodRequest = SogLodOptions & {
+export type SogLodRequest = Omit<SogLodOptions, "sources"> & {
+  /** Each input's stable ID and current LOD settings. */
+  sources: (SogLodOptions["sources"][number] & { id: number })[];
   view: SogView;
   lodBehindPenalty: number;
   lodDistanceShrink: number;

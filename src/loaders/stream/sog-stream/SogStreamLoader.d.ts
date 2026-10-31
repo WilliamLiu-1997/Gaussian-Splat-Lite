@@ -18,20 +18,20 @@ export type SogStreamSourceOptions = StreamRequestOptions & {
   /** Returns owned Splats; the loader restores their decoded record order before slicing. */
   loadChunk?: (url: string, signal: AbortSignal) => Promise<Splats>;
 };
-export type SogStreamLoaderOptions = {
-  /** Nonempty list of inputs, fixed at creation. */
-  sources: readonly SogStreamSourceOptions[];
-};
-export type SogStreamMetadata = Omit<
+export type SogStreamMetadata = Pick<
   SogLodIndex,
-  "bounds" | "leafBounds" | "lodLevels"
+  "bounds" | "urls" | "counts" | "leafOffsets" | "lods"
 > & {
-  /** Input index for each chunk, including environments. */
-  sourceIndices: Uint32Array;
-  /** Six bounds values per input, in its own coordinates. */
-  sourceBounds: Float64Array;
-  /** Each input's environment chunk, or -1. */
-  environments: Int32Array;
+  /** Stable global leaf and chunk offsets, never reused after removal. */
+  leafBase: number;
+  fileBase: number;
+  /** Global environment chunk ID, or -1. */
+  environment: number;
+  /** Stable batch slot per LOD record, prepared in the worker. */
+  batchStarts: Float64Array;
+  /** Aligned batch capacity per local chunk; environments are sized on load. */
+  batchCapacities: Float64Array;
+  retainedIndexBytes: number;
 };
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */
 export declare class SogChunkSource {
@@ -61,28 +61,26 @@ export declare class SogStreamLoader {
   private readonly lodWorker;
   private readonly pool;
   private readonly controller;
-  private initialization?;
   private readonly sources;
   private downloadedBytes;
   private retainedIndexBytes;
-  constructor(
-    options: SogStreamLoaderOptions,
-    maxConcurrentLoads: number,
-    maxSh: number,
-    onChange: () => void,
-  );
+  constructor(maxConcurrentLoads: number, maxSh: number, onChange: () => void);
   get stats(): {
     downloadedBytes: number;
     peakWasmMemoryBytes: number;
     retainedIndexBytes: number;
   };
   private assertActive;
-  initialize(signal?: AbortSignal): Promise<SogStreamMetadata>;
-  private readIndices;
+  addSource(
+    id: number,
+    options: SogStreamSourceOptions,
+    signal: AbortSignal,
+  ): Promise<SogStreamMetadata>;
+  removeSource(id: number): void;
   private readIndex;
   selectLod(request: SogLodRequest): Promise<Uint32Array>;
   load(
-    sourceIndex: number,
+    sourceId: number,
     url: string,
     count: number,
     signal: AbortSignal,

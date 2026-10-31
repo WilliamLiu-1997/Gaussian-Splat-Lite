@@ -8,12 +8,11 @@ Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarse
 import { SogStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new SogStreamScheduler({
-  sources: [{ url: "/scene/lod-meta.json" }],
   splatBudget: 3_000_000,
 });
 scene.add(streaming.group);
 streaming.setCamera(camera);
-await streaming.initialized;
+const sourceId = await streaming.addSource({ url: "/scene/lod-meta.json" });
 
 renderer.setAnimationLoop(() => {
   streaming.update();
@@ -23,54 +22,78 @@ renderer.setAnimationLoop(() => {
 // Keep updating and rendering while waiting for the first data.
 await streaming.firstRenderable;
 
-// When removing the model:
+// Remove this input while keeping the scheduler available:
+// streaming.removeSource(sourceId);
+
+// When finished with the scheduler:
 // streaming.dispose();
 // streaming.group.removeFromParent();
 ```
 
-The three steps that matter:
+To display a streamed scene:
 
 1. Add `streaming.group` to the scene. Move, rotate, scale, or hide the scene through this group.
 2. Register the camera.
-3. Call `streaming.update()` before every render.
+3. Add each input with `streaming.addSource(options)`.
+4. Call `streaming.update()` before every render.
 
 Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only. Read a hit with `hit.object.splats.getSplat(hit.index)` before the streaming selection updates.
 
 ## Multiple inputs
 
-Supply every input through the nonempty `sources` array, including when loading a single model. Add entries to load several Streamed SOG inputs together:
+Create an empty scheduler, then add inputs individually or concurrently:
 
 ```js
 const streaming = new SogStreamScheduler({
-  sources: [
-    { url: "/scene/buildings/lod-meta.json", lodBaseDistance: 100 },
-    {
-      url: "/scene/landscape/lod-meta.json",
-      environment: false,
-      lodBaseDistance: 20,
-      lodMultiplier: 3,
-    },
-  ],
   splatBudget: 3_000_000,
   maxConcurrentLoads: 4,
 });
+const [buildingsId, landscapeId] = await Promise.all([
+  streaming.addSource({
+    url: "/scene/buildings/lod-meta.json",
+    lodBaseDistance: 100,
+  }),
+  streaming.addSource({
+    url: "/scene/landscape/lod-meta.json",
+    environment: false,
+    lodBaseDistance: 20,
+    lodMultiplier: 3,
+  }),
+]);
 ```
 
-Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. The inputs share one detail selection, splat budget, budget mode, and loading concurrency, while `lodBaseDistance` and `lodMultiplier` can differ per input; omitted ones follow the scheduler's values. Set an input's `environment` to `false` to skip its environment. Enabled environments share the splat budget with all inputs' detail.
+Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. The inputs share one detail selection, splat budget, budget mode, and chunk loading concurrency, while `lodBaseDistance` and `lodMultiplier` can differ per input; omitted ones follow the scheduler's values. Set an input's `environment` to `false` to skip its environment. Enabled environments share the splat budget with all inputs' detail.
 
-Each entry supplies its own `url`, `loadChunk`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
+Each `addSource()` call supplies its own `url`, `loadChunk`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
 
-The inputs are fixed at creation. Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` with `setSourceSettings(index, settings)`, where `index` follows the order of `sources`. Omitted keys keep their values, and `undefined` returns a LOD setting to the scheduler's value. Loaded data is kept. `getSourceSettings(index)` returns a copy of the current settings.
+Each input has a stable numeric ID, assigned in addition order starting at `0`. Read the current IDs through `sourceIds`; deleting an input never renumbers other IDs, and IDs are never reused within a scheduler.
+
+Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` with `setSourceSettings(id, settings)`. Omitted keys keep their values, and `undefined` returns a LOD setting to the scheduler's value. Loaded data is kept. `getSourceSettings(id)` returns a copy of the current settings. Both methods throw for an unknown or removed ID.
 
 ```js
-streaming.setSourceSettings(1, {
+streaming.setSourceSettings(landscapeId, {
   transform: new THREE.Matrix4().makeTranslation(60, 0, 0),
   environment: true,
   lodBaseDistance: undefined,
 });
 ```
 
-`initialized` waits for every input's metadata. `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene.
+Add or remove individual inputs at runtime:
+
+```js
+const buildingId = await streaming.addSource({
+  url: "/scene/new-building/lod-meta.json",
+  transform: new THREE.Matrix4().makeTranslation(120, 0, 0),
+});
+
+streaming.removeSource(buildingId); // Returns true; false if already absent.
+```
+
+`addSource()` resolves to the source ID when metadata is ready; other inputs keep displaying their loaded data. A failed addition rejects its promise, calls `onError`, and removes only that input. Call `addSource()` again to retry.
+
+`removeSource(id)` immediately removes that input, cancels its requests, and releases its data. `sourceIds` includes pending additions; removing one rejects its promise with `AbortError`. An empty scheduler accepts new additions.
+
+`firstRenderable` stays pending after construction until data is displayed or additions/removals leave an empty scene. It does not wait for every input or reset for later additions. Keep updating and rendering while waiting. Await `addSource()` for metadata; there is no `initialized` promise.
 
 ## Cameras
 
@@ -86,7 +109,6 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `sources` | Required | Nonempty array of inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
 | `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
 | `splatBudgetMode` | `"target"` | `"target"` scales all inputs' distance bands together to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
@@ -96,11 +118,11 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `lodDistanceShrink` | `0.75` | Fraction of a region's excess half-size above its input's median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
-| `maxConcurrentLoads` | `4` | Maximum number of loads in progress at the same time |
+| `maxConcurrentLoads` | `4` | Maximum number of chunk downloads/decodes in progress at the same time; input metadata loads independently |
 | `onChange` | — | Called when the scene needs a redraw |
 | `onError` | Logs to the console | Called when loading fails: `(error, url)` |
 
-Each `sources` entry accepts:
+Each `addSource(options)` call accepts:
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -125,14 +147,16 @@ Each `sources` entry accepts:
 | `lodMultiplier` | Change the default spacing between LOD levels without reloading; inputs with their own value keep it |
 | `lodBehindPenalty` | Change how strongly detail behind the camera is reduced, in both modes, without reloading |
 | `lodDistanceShrink` | Change the distance correction for oversized regions, in both modes, without reloading |
-| `initialized` | Resolves when the index is loaded; rejects for invalid input |
-| `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep updating and rendering while you wait |
+| `firstRenderable` | Readiness promise; see [Multiple inputs](#multiple-inputs) for its lifetime and [Error recovery](#error-recovery) for failures |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |
-| `setSourceSettings(index, settings)` / `getSourceSettings(index)` | Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` without reloading, or read a copy of its settings |
+| `sourceIds` | Snapshot of the current source IDs in insertion order, including pending additions |
+| `addSource(options)` | Add an input; returns a promise of its stable ID when metadata is ready |
+| `removeSource(id)` | Immediately cancel and release one input; returns whether it existed |
+| `setSourceSettings(id, settings)` / `getSourceSettings(id)` | Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` without reloading, or read a copy of its settings |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
-| `getBoundingBox()` | Box around the scene, in the group's coordinates; available once `initialized` resolves |
+| `getBoundingBox()` | Box around the scene in the group's coordinates; includes each input once its `addSource()` promise resolves |
 | `stats` | Visible Splats, loading progress, and estimated CPU/GPU cache sizes (`residentCpuBytes` / `residentGpuBytes`) |
-| `dispose()` | Stop loading and release the scene. Pending `initialized` and `firstRenderable` promises reject with `AbortError` |
+| `dispose()` | Stop loading and release the scene. Pending readiness and addition promises reject with `AbortError` |
 
 ### On-demand rendering
 

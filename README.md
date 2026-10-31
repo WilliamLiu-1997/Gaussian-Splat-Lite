@@ -142,16 +142,29 @@ await streaming.firstRenderable;
 // streaming.group.removeFromParent();
 ```
 
-For streamed SOG, use this constructor. Register the camera with `setCamera(camera)` and call `streaming.update()` before rendering each frame; SOG detail follows distance, so it needs no resolution. The group and readiness lifecycle are the same:
+For streamed SOG, create an empty scheduler and add each input with `addSource()`. Its promise waits for that input's metadata. Register the camera and update before rendering each frame; SOG detail follows distance, so it needs no resolution:
 
 ```js
 import { SogStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new SogStreamScheduler({
-  sources: [{ url: "/assets/scene/lod-meta.json" }],
   splatBudget: 3_000_000,
   fadeDurationMs: 200, // Smooth LOD transitions (default).
 });
+scene.add(streaming.group);
+streaming.setCamera(camera);
+const sourceId = await streaming.addSource({
+  url: "/assets/scene/lod-meta.json",
+});
+
+renderer.setAnimationLoop(() => {
+  streaming.update();
+  renderer.render(scene, camera);
+});
+await streaming.firstRenderable;
+
+// Remove one input without rebuilding the scheduler:
+// streaming.removeSource(sourceId);
 ```
 
 ## Documentation

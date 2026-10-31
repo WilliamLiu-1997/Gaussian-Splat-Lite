@@ -1,23 +1,19 @@
 import type * as THREE from "three";
 import type { StreamSchedulerOptions, StreamStats } from "../streamOptions.js";
-import type {
-  SogStreamLoaderOptions,
-  SogStreamSourceOptions,
-} from "./SogStreamLoader.js";
+import type { SogStreamSourceOptions } from "./SogStreamLoader.js";
 import type { SogBudgetMode } from "./sogLod.js";
-export type SogStreamSchedulerOptions = SogStreamLoaderOptions &
-  StreamSchedulerOptions & {
-    /** Defaults to "target". "limit" caps detail at the configured distance bands. */
-    splatBudgetMode?: SogBudgetMode;
-    /** Default base LOD distance in world units; defaults to 100. In "target" mode it only sets inputs' relative detail. Must be finite and positive. */
-    lodBaseDistance?: number;
-    /** Distance multiplier between LOD levels in both modes; defaults to 2. Must be finite and at least 1. */
-    lodMultiplier?: number;
-    /** Effective distance multiplier directly behind a camera; defaults to 4. Must be finite and at least 1. */
-    lodBehindPenalty?: number;
-    /** Shrinks oversized regions toward their median size for LOD distance only; defaults to 0.75. Must be between 0 and 1. */
-    lodDistanceShrink?: number;
-  };
+export type SogStreamSchedulerOptions = StreamSchedulerOptions & {
+  /** Defaults to "target". "limit" caps detail at the configured distance bands. */
+  splatBudgetMode?: SogBudgetMode;
+  /** Default base LOD distance in world units; defaults to 100. In "target" mode it only sets inputs' relative detail. Must be finite and positive. */
+  lodBaseDistance?: number;
+  /** Distance multiplier between LOD levels in both modes; defaults to 2. Must be finite and at least 1. */
+  lodMultiplier?: number;
+  /** Effective distance multiplier directly behind a camera; defaults to 4. Must be finite and at least 1. */
+  lodBehindPenalty?: number;
+  /** Shrinks oversized regions toward their median size for LOD distance only; defaults to 0.75. Must be between 0 and 1. */
+  lodDistanceShrink?: number;
+};
 export type SogStreamStats = StreamStats & {
   visibleRegions: number;
 };
@@ -30,7 +26,7 @@ export type SogStreamSourceSettings = Required<
 export declare class SogStreamScheduler {
   readonly group: THREE.Group;
   private readonly uploads;
-  readonly initialized: Promise<this>;
+  /** Waits for data added after construction, or an empty scene after an addition/removal. */
   readonly firstRenderable: Promise<this>;
   readonly cooldownMs: number;
   readonly fadeDurationMs: number;
@@ -42,13 +38,13 @@ export declare class SogStreamScheduler {
   private _lodMultiplier;
   private _lodBehindPenalty;
   private _lodDistanceShrink;
-  private readonly sourceSettings;
+  private readonly sources;
+  private nextSourceId;
   private sourceLodVersion;
   private readonly options;
   private readonly loader;
   private readonly abort;
   private readonly streamCameras;
-  private manifest?;
   private readonly lodLeaves;
   private view?;
   private lastRequestedKey;
@@ -66,18 +62,26 @@ export declare class SogStreamScheduler {
   private disposed;
   private resolveFirst;
   private rejectFirst;
-  constructor(options: SogStreamSchedulerOptions);
-  /** An input's current settings; inputs keep their creation order. */
-  getSourceSettings(index: number): SogStreamSourceSettings;
+  /** Creates an empty scheduler. Add inputs with addSource(). */
+  constructor(options?: SogStreamSchedulerOptions);
+  /** Current source IDs in insertion order, including pending additions. */
+  get sourceIds(): readonly number[];
+  /** Resolves to a stable source ID when its metadata is ready. Does not wait for rendered data. */
+  addSource(options: SogStreamSourceOptions): Promise<number>;
+  /** Cancel and release this input immediately. Returns false if the ID is absent. */
+  removeSource(id: number): boolean;
+  /** A source's current settings; IDs are never renumbered or reused. */
+  getSourceSettings(id: number): SogStreamSourceSettings;
   /**
    * Change an input's settings; omitted keys keep their values, and undefined
    * LOD settings follow the scheduler defaults. Loaded data is kept.
    */
   setSourceSettings(
-    index: number,
+    id: number,
     settings: Partial<SogStreamSourceSettings>,
   ): void;
   private sourceSetting;
+  private get hasLods();
   /** Visible-point budget, including the environment. Reassign to reselect LODs. */
   get splatBudget(): number;
   set splatBudget(value: number);
@@ -99,11 +103,12 @@ export declare class SogStreamScheduler {
   get lodDistanceShrink(): number;
   set lodDistanceShrink(value: number);
   get stats(): SogStreamStats;
-  /** Group-local bounds from the index; available after initialized resolves. */
+  /** Group-local bounds of inputs whose addSource() metadata is ready. */
   getBoundingBox(): THREE.Box3;
-  private initialize;
+  private initializeSource;
   /** Environment chunks of the inputs that enable theirs. */
   private updateEnvironments;
+  private resolveIfEmpty;
   /** Cameras that select detail, in registration order. */
   get cameras(): readonly THREE.Camera[];
   hasCamera(camera: THREE.Camera): boolean;
@@ -129,7 +134,6 @@ export declare class SogStreamScheduler {
   private updateRegionVisibility;
   private attachPendingRegions;
   private queueExtractions;
-  private addBatchRange;
   private fadeRegion;
   private updateFades;
   private extract;

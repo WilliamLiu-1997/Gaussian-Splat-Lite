@@ -689,7 +689,6 @@ async function initializeModel(
 
   if (sogStream) {
     model.stream = new SogStreamScheduler({
-      sources: [{ url, manager }],
       ...streamOptions,
       splatBudgetMode: optionsPanel.getValue("splatBudgetMode"),
       lodBaseDistance: optionsPanel.getValue("lodBaseDistance"),
@@ -697,6 +696,7 @@ async function initializeModel(
     });
     model.stream.setCamera(camera);
     model.splat = model.stream.group;
+    await model.stream.addSource({ url, manager });
   } else {
     model.splat = new SplatMesh({
       ...source,
@@ -712,8 +712,8 @@ async function initializeModel(
         );
       },
     });
+    await model.splat.initialized;
   }
-  await (model.stream ?? model.splat).initialized;
 }
 
 async function loadFile(

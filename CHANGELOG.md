@@ -11,12 +11,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - RAD and SOG streaming inputs accept a `transform` (`THREE.Matrix4`) that places each model in the scheduler's group, including several instances of the same URL. `setSourceSettings()` moves an input without reloading its data.
 - Streamed SOG inputs accept their own `lodBaseDistance` and `lodMultiplier`. `setSourceSettings()` also changes an input's LOD settings and `environment` at runtime.
+- Streamed SOG supports `addSource()` and `removeSource()` with stable source IDs, preserving other inputs' loaded data. `sourceIds` lists the current IDs, which also identify inputs for `setSourceSettings()` and `getSourceSettings()`.
 
 ### Changed
 
 - **Breaking:** Raised the minimum Three.js version to r187 and removed the r186 runtime compatibility patch.
 - Neural denoising uses a depth-only render target when exposing depth on the WebGL2 fallback, reducing GPU texture memory.
-- **Breaking:** RAD and SOG streaming require a nonempty `sources` array, even for a single input. Put `url`/`file`/`fileBytes`, loading options and `transform` inside each source; top-level loading options are no longer inherited.
+- **Breaking:** RAD streaming requires a nonempty `sources` array, even for a single input. Put `url`/`file`/`fileBytes`, loading options and `transform` inside each source; top-level loading options are no longer inherited.
+- **Breaking:** Streamed SOG schedulers always start empty and no longer accept constructor `sources` or expose `initialized`. Add each input with `await streaming.addSource(options)` to wait for its metadata. `firstRenderable` waits for data added after construction.
 - RAD streaming caches and copies SH codebooks in a background worker, avoiding large main-thread copies when page decoders switch inputs.
 - Streamed SOG reduces oversized regions toward each input's own median region size when measuring LOD distance.
 - RAD and Streamed SOG streaming use less CPU memory for loaded detail.
