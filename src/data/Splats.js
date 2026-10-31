@@ -11,7 +11,7 @@ import {
   getSplatShDegree,
   resetSplatBounds,
 } from "./splatData.js";
-import { getTextureSize } from "./textureLayout.js";
+import { disposeDataTexture, getTextureSize } from "./textureLayout.js";
 import { decodeSplat } from "./unpack.js";
 function validateInitializationInputs(options) {
   if ("splatArrays" in options)
@@ -169,7 +169,7 @@ export class Splats {
   disposeTextures() {
     this.disposeMainTextures();
     for (const texture of Object.values(this.shTextures)) {
-      texture?.dispose();
+      if (texture) disposeDataTexture(texture);
     }
     this.shTextures = {};
   }
@@ -324,7 +324,7 @@ export class Splats {
   disposeMainTextures() {
     for (const texture of this.textures) {
       if (texture !== Splats.emptyTexture) {
-        texture.dispose();
+        disposeDataTexture(texture);
       }
     }
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];

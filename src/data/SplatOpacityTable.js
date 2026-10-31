@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "./defines.js";
+import { disposeDataTexture } from "./textureLayout.js";
 const GROUP_LAYER_SIZE = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
 /** Source blocks hold group IDs; a small float32 table holds their opacities. */
 export class SplatOpacityTable {
@@ -93,7 +94,7 @@ export class SplatOpacityTable {
       const values = new Float32Array(this.values.length * 2);
       values.set(this.values);
       this.values = values;
-      this.valueTexture.dispose();
+      disposeDataTexture(this.valueTexture);
       this.valueTexture = this.createValueTexture();
     }
     this.ranges.set(group, { first, last, refs: last - first });
@@ -144,10 +145,8 @@ export class SplatOpacityTable {
     return this.valueTexture;
   }
   dispose() {
-    this.blockTexture.dispose();
-    this.valueTexture.dispose();
-    this.blockTexture.image.data = new Uint32Array(0);
-    this.valueTexture.image.data = new Uint32Array(0);
+    disposeDataTexture(this.blockTexture);
+    disposeDataTexture(this.valueTexture);
     this.blocks = new Uint32Array(0);
     this.values = new Float32Array(0);
     this.dirtyLayers = new Uint8Array(0);

@@ -4,6 +4,11 @@ import {
   SPLAT_TEX_MIN_HEIGHT,
   SPLAT_TEX_WIDTH,
 } from "./defines.js";
+/** Permanently release an owned data texture, including CPU data retained by cached bindings. */
+export function disposeDataTexture(texture) {
+  texture.dispose();
+  texture.image.data = null;
+}
 // Keep rows compact for small sources and power-of-two layers for large ones.
 // 256 layers is the WebGL2 minimum; larger devices need no special layout.
 export function getTextureSize(numSplats, maxLayers = 256) {

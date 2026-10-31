@@ -4,7 +4,7 @@ import { Splats } from "./Splats.js";
 import { SPLAT_BOUNDS_BLOCK_SIZE, SPLAT_TEX_WIDTH } from "./defines.js";
 import { decodeShRgbToArray } from "./splatCodec.js";
 import { SH_ARRAY_COUNTS, SH_KEYS } from "./splatData.js";
-import { getTextureSize } from "./textureLayout.js";
+import { disposeDataTexture, getTextureSize } from "./textureLayout.js";
 import { decodeSplat } from "./unpack.js";
 function makeTexture(data, width, height, depth) {
   const texture = new THREE.DataArrayTexture(data, width, height, depth);
@@ -98,7 +98,7 @@ export class IndexedSplats extends Splats {
       const capacity = layout.maxSplats * 4;
       if (capacity !== this.sourceIndices.length) {
         if (this.indexTexture !== Splats.emptyTexture)
-          this.indexTexture.dispose();
+          disposeDataTexture(this.indexTexture);
         this.sourceIndices = new Uint32Array(capacity);
         this.indexTexture = makeTexture(
           this.sourceIndices,
@@ -386,14 +386,15 @@ export class IndexedSplats extends Splats {
   dispose() {
     if (this.disposed) return;
     super.dispose();
-    if (this.indexTexture !== Splats.emptyTexture) this.indexTexture.dispose();
+    if (this.indexTexture !== Splats.emptyTexture)
+      disposeDataTexture(this.indexTexture);
     if (this.storage) {
       // Shared records, opacity groups and bounds stay with the storage.
       this.storage = undefined;
       this.spatialChunks = new Map();
     } else {
       this.uploadQueue?.delete(this);
-      for (const texture of this.sourceTextures) texture.dispose();
+      for (const texture of this.sourceTextures) disposeDataTexture(texture);
       this.opacities.dispose();
       this.spatialChunks.clear();
     }

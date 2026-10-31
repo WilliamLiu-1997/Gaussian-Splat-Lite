@@ -13,6 +13,9 @@ import { ProjectionCache, getProjectionCacheSize } from "./ProjectionCache.js";
 import { createProjectionKernel } from "./ProjectionKernel.js";
 import { RADIX_SORT_MODE_IDS, WebGPURadixSort } from "./RadixSort.js";
 const PROJECT_SLOTS = 8;
+const emptyGenerateTextures = Object.entries(makeGenerateUniforms()).filter(
+  ([, uniform]) => uniform.value?.isTexture,
+);
 function buffer(name) {
   return { value: new StorageBufferAttribute(new Uint32Array(1), 1), name };
 }
@@ -253,12 +256,9 @@ export class ProjectedSplats {
     const refresh = new Set(resized || seedsResized ? this.nodes : []);
     // Idle slots must release source textures of removed models. The next
     // dispatch fills active slots again; compiled shader graphs stay intact.
-    const textures = Object.entries(makeGenerateUniforms()).filter(
-      ([, uniform]) => uniform.value?.isTexture,
-    );
     for (const { slots } of this.slotSets.values()) {
       for (const { uniforms, node } of slots) {
-        for (const [name, { value }] of textures) {
+        for (const [name, { value }] of emptyGenerateTextures) {
           if (uniforms[name].value !== value) {
             uniforms[name].value = value;
             refresh.add(node);
@@ -545,7 +545,14 @@ export class ProjectedSplats {
         slotCount = 0;
       }
       const slot = slots[slotCount++];
-      if (drawn) accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
+      if (drawn) {
+        accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
+      } else {
+        // Three prepares bindings even when targetCount is zero. A reused
+        // slot must not bind textures whose source has already been disposed.
+        for (const [name, { value }] of emptyGenerateTextures)
+          slot.uniforms[name].value = value;
+      }
       slot.uniforms.targetBase.value = base;
       // Hidden meshes read no source data; each Splat fails visibility.
       slot.uniforms.targetCount.value = drawn ? count : 0;
