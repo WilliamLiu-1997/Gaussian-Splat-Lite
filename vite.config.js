@@ -61,6 +61,7 @@ export default defineConfig(({ mode }) => {
         treeshake: "smallest",
       },
       plugins: () => [
+        arraybuffer(),
         {
           name: "omit-worker-sourcemaps",
           generateBundle(_options, bundle) {

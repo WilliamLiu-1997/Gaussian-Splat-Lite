@@ -42,6 +42,7 @@ export default defineConfig({
       treeshake: "smallest",
     },
     plugins: () => [
+      arraybuffer(),
       glsl({
         include: ["**/*.glsl"],
       }),
