@@ -120,7 +120,7 @@ export declare class RadStreamScheduler {
   /** Resident bytes of the pools that hold every input's root page. */
   private rootPoolBytes;
   private updatePageBudget;
-  private resolveIfEmpty;
+  private checkFirstRenderable;
   /**
    * Call before rendering. Registered cameras share one cut at the greatest
    * detail any of them needs.

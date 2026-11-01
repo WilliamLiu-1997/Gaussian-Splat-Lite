@@ -35,6 +35,7 @@ export type RadStreamSourceMetadata = {
 export declare class RadStreamLoader {
   private readonly maxSh;
   private readonly onRegistrationSettled;
+  private readonly onWorkerError;
   private readonly sources;
   private readonly lodWorker;
   private readonly preparationWorker;
@@ -50,6 +51,7 @@ export declare class RadStreamLoader {
     maxConcurrentLoads: number,
     maxSh: number,
     onRegistrationSettled: () => void,
+    onWorkerError: (error: unknown) => void,
   );
   get stats(): {
     cachedBytes: number;
@@ -61,8 +63,6 @@ export declare class RadStreamLoader {
   };
   /** Reserve per-input packed codebooks and each worker's current decoder. */
   get residentCpuOverheadBytes(): number;
-  get selectionWorkerLost(): boolean;
-  private assertActive;
   addSource(
     id: number,
     options: RadStreamSourceOptions,

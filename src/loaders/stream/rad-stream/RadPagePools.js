@@ -85,9 +85,9 @@ function planConsolidation(pools, inUse, canMove) {
  * then a new pool within the resident budgets, or the slot of the least
  * recently used page not in use.
  * Unused pages expire after a cooldown, and empty pools are released.
- * Allocation failures can consolidate pools of the same degree. The scheduler
- * identifies pages in use, releases pages and rebuilds views after moves;
- * selection refers to pages, never to slots.
+ * Allocation failures and increased codebook overhead can consolidate pools
+ * of the same degree. The scheduler identifies pages in use, releases pages
+ * and rebuilds views after moves; selection refers to pages, never to slots.
  */
 export class RadPagePools {
   constructor(scheduler) {
@@ -103,6 +103,19 @@ export class RadPagePools {
   /** Pool work pauses reservation, expiry and consolidation. */
   get busy() {
     return !!(this.allocation || this.merge);
+  }
+  /** New inputs can increase CPU overhead without allocating another pool. */
+  get overBudget() {
+    const { scheduler } = this;
+    let cpu = scheduler.loader.residentCpuOverheadBytes;
+    let gpu = 0;
+    for (const pool of this.pools) {
+      cpu += pool.residentBytes.cpu;
+      gpu += pool.residentBytes.gpu;
+    }
+    return (
+      cpu > scheduler.maxResidentCpuBytes || gpu > scheduler.maxResidentGpuBytes
+    );
   }
   /** Storage being allocated or moved, outside the resident statistics. */
   get pendingBytes() {
@@ -290,27 +303,36 @@ export class RadPagePools {
       scheduler.releasePage(page);
       changed = true;
     }
-    return this.releaseEmpty() || changed;
+    changed = this.releaseEmpty() || changed;
+    // Budget pressure cannot wait for a stable camera revision. Consolidation
+    // still protects the displayed cut, wanted pages and worker snapshots.
+    if (this.overBudget) changed = this.consolidate() || changed;
+    return changed;
   }
   /**
-   * Free capacity after page reservation fails; see planConsolidation. Call
-   * only without pending pool work. Copies advance within the upload budget
-   * and publish together without renewing cache expiry.
+   * Free a pool after reservation fails or CPU overhead grows. Wait for pool
+   * work and selection snapshots; fades permit drops but not moves. Copies
+   * advance within the upload budget and publish without renewing cache expiry.
    */
-  consolidate(canMove) {
+  consolidate() {
+    const { scheduler } = this;
+    if (
+      this.busy ||
+      scheduler.traversal ||
+      scheduler.preparation ||
+      scheduler.refinementStopped
+    )
+      return false;
     // Releasing an empty pool frees capacity without copying.
-    if (this.releaseEmpty()) return;
+    if (this.releaseEmpty()) return true;
     const plan = planConsolidation(
       this.pools,
       (page) => this.inUse(page),
-      canMove,
+      !scheduler.displayed?.transition,
     );
-    if (!plan) return;
+    if (!plan) return false;
     for (const page of plan.drops) this.scheduler.releasePage(page);
-    if (!plan.moves.length) {
-      this.releaseEmpty();
-      return;
-    }
+    if (!plan.moves.length) return this.releaseEmpty();
     const merge = {
       from: plan.from,
       pools: plan.pools,
@@ -322,6 +344,7 @@ export class RadPagePools {
     };
     this.merge = merge;
     void this.prepareMerge(merge);
+    return true;
   }
   /** Prepare the displayed cut for the affected pools as if moves were published. */
   async prepareMerge(merge) {
@@ -341,7 +364,11 @@ export class RadPagePools {
     } catch (error) {
       if (!merge.cancelled) scheduler.stopRefinement(error);
     } finally {
-      if (merge.cancelled) this.merge = undefined;
+      if (merge.cancelled) {
+        this.merge = undefined;
+        // The last input may be gone, so update() need not run cleanup again.
+        this.releaseEmpty();
+      }
       scheduler.changed();
     }
   }

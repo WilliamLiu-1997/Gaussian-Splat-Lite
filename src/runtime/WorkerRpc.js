@@ -96,6 +96,6 @@ export class WorkerRpc {
     for (const message of messages) {
       message.reject(reason);
     }
-    this.onDispose?.();
+    this.onDispose?.(reason);
   }
 }

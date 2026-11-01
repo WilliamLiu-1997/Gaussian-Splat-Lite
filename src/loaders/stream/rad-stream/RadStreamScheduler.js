@@ -76,8 +76,11 @@ export class RadStreamScheduler {
       options.maxResidentGpuBytes ?? 1024 * 1024 * 1024,
       "maxResidentGpuBytes",
     );
-    this.loader = new RadStreamLoader(this.maxConcurrentLoads, this.maxSh, () =>
-      this.changed(),
+    this.loader = new RadStreamLoader(
+      this.maxConcurrentLoads,
+      this.maxSh,
+      () => this.changed(),
+      (error) => this.stopRefinement(error),
     );
     this.firstRenderable = new Promise((resolve, reject) => {
       this.resolveFirst = resolve;
@@ -133,7 +136,7 @@ export class RadStreamScheduler {
     if (!this.rootPages.size) this.displayed = undefined;
     this.revision++;
     this.pools.releaseEmpty();
-    this.resolveIfEmpty();
+    this.checkFirstRenderable();
     this.scheduleRetry();
     void this.requestSelection();
     this.changed();
@@ -337,7 +340,7 @@ export class RadStreamScheduler {
       this.sourceRevision++;
       this.invalidatePendingSelection();
       this.revision++;
-      this.resolveIfEmpty();
+      this.checkFirstRenderable();
       this.pump();
       this.changed();
       controller.signal.throwIfAborted();
@@ -397,12 +400,13 @@ export class RadStreamScheduler {
       ),
     );
   }
-  resolveIfEmpty() {
-    if (
-      !this.rootPages.size &&
-      [...this.inputs.values()].every((input) => input.metadata)
-    )
-      this.resolveFirst(this);
+  checkFirstRenderable() {
+    // Pending metadata may still introduce a root that can load successfully.
+    for (const input of this.inputs.values()) if (!input.metadata) return;
+    const roots = [...this.rootPages];
+    if (!roots.length) this.resolveFirst(this);
+    else if (roots.every((page) => page.retryAt === Number.POSITIVE_INFINITY))
+      this.rejectFirst(roots[0].error);
   }
   /**
    * Call before rendering. Registered cameras share one cut at the greatest
@@ -499,9 +503,14 @@ export class RadStreamScheduler {
           this.applySelection(preparation.result, preparation.pools, now) ||
           changed;
     }
+    // Reclaim over-budget pools before another cut starts preparing or fading.
+    // Keep expired caches until a pending view/budget decision can reuse them.
+    const allowRelease = !shown || this.lastRequestedRevision === this.revision;
+    changed = this.pools.releaseUnused(now, allowRelease) || changed;
     // Keep drawing the old cut until its replacement is prepared.
     if (
       this.ready &&
+      !this.pools.busy &&
       !this.preparation &&
       !this.displayed?.transition &&
       this.selectionPagesReady(this.ready.selection)
@@ -515,9 +524,6 @@ export class RadStreamScheduler {
           changed;
       if (reselect) this.revision++;
     }
-    // Keep expired caches until a pending view/budget decision can reuse them.
-    const allowRelease = !shown || this.lastRequestedRevision === this.revision;
-    changed = this.pools.releaseUnused(now, allowRelease) || changed;
     if (shown) {
       void this.requestSelection();
       this.pump();
@@ -536,6 +542,8 @@ export class RadStreamScheduler {
       this.refinementStopped ||
       !this.shown ||
       this.traversal ||
+      // Let the waiting cut and budget reclamation run before pinning more pages.
+      (this.ready && this.pools.overBudget) ||
       !this.rootPages.size ||
       !this.views.length ||
       this.lastRequestedRevision === this.revision
@@ -728,16 +736,16 @@ export class RadStreamScheduler {
       if (this.preparation !== preparation) return;
       if (preparation.cancelled) {
         this.preparation = undefined;
-        this.pools.releaseUnused(performance.now(), true);
       } else preparation.result = result;
     } catch (error) {
       if (this.disposed || this.preparation !== preparation) return;
       this.preparation = undefined;
       this.lastRequestedRevision = -1;
-      if (!preparation?.cancelled) {
-        this.stopRefinement(error);
-      }
+      if (!preparation?.cancelled) this.stopRefinement(error);
     }
+    // A cancelled task releases its pool pins on either success or failure.
+    if (preparation?.cancelled)
+      this.pools.releaseUnused(performance.now(), true);
     this.changed();
   }
   applySelection(prepared, pools, now) {
@@ -910,15 +918,10 @@ export class RadStreamScheduler {
       this.revision++;
     } catch (error) {
       if (active()) {
-        if (this.loader.selectionWorkerLost) return this.stopRefinement(error);
         if (registration) this.releasePage(page);
+        page.error = error;
         page.retryAt = streamRetryAt(error, page.failures++);
-        if (
-          [...this.rootPages].every(
-            (page) => page.retryAt === Number.POSITIVE_INFINITY,
-          )
-        )
-          this.rejectFirst(error);
+        this.checkFirstRenderable();
         this.failed(error, page);
       }
     } finally {
@@ -961,16 +964,8 @@ export class RadStreamScheduler {
       const storage = page?.storage;
       if (storage?.phase !== "decoded" || storage.slot !== undefined) continue;
       if (!this.pools.reserve(page)) {
-        // Reclaim capacity only when no slot is free and no new pool fits.
-        // Worker snapshots pin pages; fades permit eviction but not moves
-        // that rebuild views.
-        if (
-          !this.pools.busy &&
-          !this.traversal &&
-          !this.preparation &&
-          !this.refinementStopped
-        )
-          this.pools.consolidate(!this.displayed?.transition);
+        // Reclaim capacity when no slot is free and no new pool fits.
+        this.pools.consolidate();
         return;
       }
       if (!page.registration) this.revision++;
@@ -1016,6 +1011,8 @@ export class RadStreamScheduler {
     this.loader.dispose();
     for (const page of this.pages.values())
       if (page.storage?.phase === "decoded") this.releasePage(page);
+    // No future update is guaranteed after the last source was removed.
+    this.pools.releaseEmpty();
     this.rejectFirst(error);
     this.failed(error);
     this.changed();

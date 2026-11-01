@@ -7,18 +7,23 @@ import { RadStreamWorker } from "./RadStreamWorker.js";
 import CodebookWorker from "./codebookWorker.js?worker&inline";
 /** Separate traversal and display preparation workers, plus bounded page decoders. */
 export class RadStreamLoader {
-  constructor(maxConcurrentLoads, maxSh, onRegistrationSettled) {
+  constructor(maxConcurrentLoads, maxSh, onRegistrationSettled, onWorkerError) {
     this.maxSh = maxSh;
     this.onRegistrationSettled = onRegistrationSettled;
     this.decoderReady = new WeakMap();
     this.controller = new AbortController();
+    // Shared workers own persistent state. Their loss is global, even when
+    // the pending task was cancelled or no task is awaiting a reply.
+    this.onWorkerError = (error) => {
+      if (!this.controller.signal.aborted) onWorkerError(error);
+    };
     this.pendingRegistrationBytes = 0;
     this.selectionBytes = 0;
     this.preparationBytes = 0;
     this.sources = new Map();
     this.downloadedBytes = 0;
-    this.lodWorker = new RadStreamWorker();
-    this.preparationWorker = new RadStreamWorker();
+    this.lodWorker = new RadStreamWorker(this.onWorkerError);
+    this.preparationWorker = new RadStreamWorker(this.onWorkerError);
     this.pool = new StreamWorkerPool(
       () => new RadStreamWorker(),
       maxConcurrentLoads,
@@ -67,24 +72,8 @@ export class RadStreamLoader {
     }
     return bytes + codebookBytes * this.pool.concurrency;
   }
-  get selectionWorkerLost() {
-    return (
-      (this.lodWorker.disposed ||
-        this.preparationWorker.disposed ||
-        this.codebookWorker?.disposed === true) &&
-      !this.controller.signal.aborted
-    );
-  }
-  assertActive() {
-    this.controller.signal.throwIfAborted();
-    if (this.lodWorker.disposed) throw new Error("RAD LOD worker terminated");
-    if (this.preparationWorker.disposed)
-      throw new Error("RAD preparation worker terminated");
-    if (this.codebookWorker?.disposed)
-      throw new Error("RAD codebook worker terminated");
-  }
   async addSource(id, options, signal) {
-    this.assertActive();
+    this.controller.signal.throwIfAborted();
     const input = {
       id,
       source: new RadSource({
@@ -119,7 +108,7 @@ export class RadStreamLoader {
         source: input.id,
       }),
     ]);
-    this.assertActive();
+    this.controller.signal.throwIfAborted();
     signal.throwIfAborted();
     const { header } = result;
     input.metadata = result;
@@ -157,7 +146,7 @@ export class RadStreamLoader {
   }
   async loadChunk(sourceId, index, signal) {
     signal?.throwIfAborted();
-    this.assertActive();
+    this.controller.signal.throwIfAborted();
     // The scheduler owns each page's load and requests roots before children.
     const input = this.sources.get(sourceId);
     const { metadata, source } = input;
@@ -170,7 +159,7 @@ export class RadStreamLoader {
           worker.call("cancelRadLoad", { generation }),
       },
       async ({ worker, id: generation, signal, start, progress }) => {
-        this.assertActive();
+        this.controller.signal.throwIfAborted();
         let ready = this.decoderReady.get(worker);
         // A decoder created before its input's root succeeded lacks codebooks.
         if (
@@ -186,7 +175,7 @@ export class RadStreamLoader {
                 })
               : undefined;
             signal.throwIfAborted();
-            this.assertActive();
+            this.controller.signal.throwIfAborted();
             await worker.call("initializeRadDecoder", {
               header,
               maxSh: this.maxSh,
@@ -212,7 +201,7 @@ export class RadStreamLoader {
           throw error;
         }
         signal.throwIfAborted();
-        this.assertActive();
+        this.controller.signal.throwIfAborted();
         if (typeof request.input === "string") start(request.input);
         const result = await worker.call(
           "loadRadChunk",
@@ -221,7 +210,7 @@ export class RadStreamLoader {
             onStatus: (status) => progress(status.loaded),
           },
         );
-        this.assertActive();
+        this.controller.signal.throwIfAborted();
         signal.throwIfAborted();
         try {
           source.acceptChunkResponse(request, result.state);
@@ -231,7 +220,10 @@ export class RadStreamLoader {
           throw error;
         }
         if (result.codebooks) {
-          this.codebookWorker ??= new WorkerRpc(new CodebookWorker());
+          this.codebookWorker ??= new WorkerRpc(
+            new CodebookWorker(),
+            this.onWorkerError,
+          );
           input.codebookBytes = result.codebooks.reduce(
             (bytes, codes) => bytes + (codes?.byteLength ?? 0),
             0,
@@ -244,7 +236,7 @@ export class RadStreamLoader {
           ready.codebooksReady = input.codebooksReady;
           await input.codebooksReady;
           signal.throwIfAborted();
-          this.assertActive();
+          this.controller.signal.throwIfAborted();
         }
         // Uploads can start immediately; selection waits for both registrations.
         const registration = this.registerChunk(
@@ -311,9 +303,9 @@ export class RadStreamLoader {
   }
   /** Await a worker reply that is discarded once the loader is disposed. */
   async call(worker, name, args) {
-    this.assertActive();
+    this.controller.signal.throwIfAborted();
     const result = await worker.call(name, args);
-    this.assertActive();
+    this.controller.signal.throwIfAborted();
     return result;
   }
   /** Request without waiting; a live reply may report retained bytes. */

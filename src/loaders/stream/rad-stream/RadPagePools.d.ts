@@ -32,9 +32,9 @@ type RadPagePool = {
  * then a new pool within the resident budgets, or the slot of the least
  * recently used page not in use.
  * Unused pages expire after a cooldown, and empty pools are released.
- * Allocation failures can consolidate pools of the same degree. The scheduler
- * identifies pages in use, releases pages and rebuilds views after moves;
- * selection refers to pages, never to slots.
+ * Allocation failures and increased codebook overhead can consolidate pools
+ * of the same degree. The scheduler identifies pages in use, releases pages
+ * and rebuilds views after moves; selection refers to pages, never to slots.
  */
 export declare class RadPagePools {
   private readonly scheduler;
@@ -46,6 +46,8 @@ export declare class RadPagePools {
   has(pool: RadPagePool): boolean;
   /** Pool work pauses reservation, expiry and consolidation. */
   get busy(): boolean;
+  /** New inputs can increase CPU overhead without allocating another pool. */
+  get overBudget(): boolean;
   /** Storage being allocated or moved, outside the resident statistics. */
   get pendingBytes(): number;
   get pendingGpuBytes(): number;
@@ -80,12 +82,11 @@ export declare class RadPagePools {
    */
   releaseUnused(now: number, allowRelease: boolean): boolean;
   /**
-   * Free capacity after page reservation fails by consolidating pages of one
-   * SH degree, dropping only the oldest unused pages needed. Call only without
-   * pending pool work. Copies advance within the upload budget
-   * and publish together without renewing cache expiry.
+   * Free a pool after reservation fails or CPU overhead grows. Wait for pool
+   * work and selection snapshots; fades permit drops but not moves. Copies
+   * advance within the upload budget and publish without renewing cache expiry.
    */
-  consolidate(canMove: boolean): void;
+  consolidate(): boolean;
   /** Prepare the displayed cut for the affected pools as if moves were published. */
   private prepareMerge;
   /**

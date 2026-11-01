@@ -20,7 +20,7 @@ export declare class WorkerRpc<
   peakWasmMemoryBytes: number;
   disposed: boolean;
   static currentId: number;
-  constructor(worker: Worker, onDispose?: (() => void) | undefined);
+  constructor(worker: Worker, onDispose?: (reason: unknown) => void);
   onMessage(event: MessageEvent): void;
   call<Name extends keyof Handlers>(
     name: Name,
