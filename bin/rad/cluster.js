@@ -9,7 +9,7 @@ import { SH_DIMS } from "./splats.js";
 import { PAGE_BYTES, PagedArray } from "./storage.js";
 
 // Maximum entries for each retained SH degree, excluding the base color.
-const MAX_CODES = [0, 65536, 174763, 327680];
+const MAX_CODES = [0, 262144, 262144, 262144];
 // Training reads SAMPLE_SHARE of the splats, and at least SAMPLES_PER_CODE
 // per entry; larger models train on a sample by weight, and only the final
 // assignment reads all. Entries start at evenly spaced training splats.
@@ -606,7 +606,7 @@ class Grouper {
   }
 }
 
-// Clusters SH into up to 65,536/174,763/327,680 entries for SH1/SH2/SH3
+// Clusters SH into up to 262144 entries for SH1/SH2/SH3
 // with weighted k-means as Spark does: entries start at evenly spaced splats,
 // each of `iterations` moves them to the weighted mean of their splats, an
 // entry without any stays, and a final pass labels each splat with its

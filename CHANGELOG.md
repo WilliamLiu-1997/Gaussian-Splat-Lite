@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `gsl-build-lod` uses a uniform SH codebook limit of 262144 entries for SH1, SH2 and SH3.
 - **Breaking:** Raised the minimum Three.js version to r187 and removed the r186 runtime compatibility patch.
 - Neural denoising uses a depth-only render target when exposing depth on the WebGL2 fallback, reducing GPU texture memory.
 - **Breaking:** RAD and Streamed SOG schedulers always start empty and no longer accept constructor `sources` or expose `initialized`. Add each input with `await streaming.addSource(options)` to wait for its metadata. `firstRenderable` waits for data added after construction.
