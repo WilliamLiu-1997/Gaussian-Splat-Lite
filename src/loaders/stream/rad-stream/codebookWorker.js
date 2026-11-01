@@ -13,6 +13,8 @@ self.onmessage = ({ data: { id, name, args } }) => {
       const codebooks = cache.get(args.source);
       if (!codebooks) throw new Error("RAD codebook unavailable");
       result = codebooks.map((codes) => codes?.slice());
+    } else if (name === "delete") {
+      cache.delete(args.source);
     } else {
       throw new Error(`Unknown RAD codebook request: ${name}`);
     }

@@ -27,7 +27,11 @@ export class WorkerRpc {
     }).catch((error) => this.dispose(error));
   }
   onMessage(event) {
-    const { id, result, error, fatal, status, wasmMemoryBytes } = event.data;
+    const { id, result, error, errorName, fatal, status, wasmMemoryBytes } =
+      event.data;
+    // Structured cloning replaces custom Error names with "Error".
+    if (errorName !== undefined && error.name !== errorName)
+      error.name = errorName;
     const promise = this.messages[id];
     if (fatal) {
       // Every pending call failed with this instance, not a transient transport

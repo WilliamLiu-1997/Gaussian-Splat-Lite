@@ -661,6 +661,8 @@ async function initializeModel(
     splatBudget: optionsPanel.getValue("splatBudget"),
     onChange: requestRender,
     onError: (error, chunkUrl) => {
+      // A RAD file without LOD falls back to ordinary loading below.
+      if (error?.name === "RadLodRequiredError") return;
       console.error("Streaming chunk failed", chunkUrl, error);
       if (loadId !== activeLoad) return;
       const detail = error instanceof Error ? error.message : String(error);
@@ -669,14 +671,13 @@ async function initializeModel(
   };
   if (fileType === SplatFileType.RAD) {
     model.stream = new RadStreamScheduler({
-      sources: [{ ...source, manager }],
       ...streamOptions,
       maxResidentCpuBytes: optionsPanel.getValue("maxResidentCpuBytes"),
       maxResidentGpuBytes: optionsPanel.getValue("maxResidentGpuBytes"),
     });
     model.stream.setCamera(camera);
     try {
-      await model.stream.initialized;
+      await model.stream.addSource({ ...source, manager });
       model.splat = model.stream.group;
       return;
     } catch (error) {

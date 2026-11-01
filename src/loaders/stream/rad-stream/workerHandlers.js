@@ -1,11 +1,16 @@
 import { RadDecoder, RadLodTree, decode_rad_header } from "gaussian-splat-rs";
-import { SPLAT_BOUNDS_BLOCK_SIZE } from "../../../data/defines.js";
+import {
+  RAD_PAGE_SIZE,
+  RAD_POOL_PAGE_COUNT,
+  SPLAT_BOUNDS_BLOCK_SIZE,
+} from "../../../data/defines.js";
+import { createSplatTextureArrays } from "../../../data/splatData.js";
 import { wasmCall } from "../../../runtime/wasmCall.js";
 import { invertSplatOrder, reorderSplats } from "../../morton.js";
 import { RadSource } from "../../rad/RadSource.js";
 import { getRadChunkSpan, unpackRadChunk } from "../../rad/radFormat.js";
 import { RadSelectionState } from "./RadSelectionState.js";
-import { prepareRadSelection } from "./prepareRadSelection.js";
+import { prepareRadMerge, prepareRadSelection } from "./prepareRadSelection.js";
 /**
  * Column-major a × b, summed in Matrix4.multiplyMatrices order. Loading Three
  * here would delay every RAD worker's startup.
@@ -21,61 +26,79 @@ function multiplyMatrices(a, b, target, offset) {
 }
 /** Workers own LOD traversal, display preparation, or a persistent page decoder. */
 export function createRadStreamHandlers() {
-  let header;
+  // Page decoders keep only their current input's header.
+  let decoderHeader;
   let decoder;
   let lod;
+  const sources = new Map();
   const chunks = new Map();
   let chunkBytes = 0;
   const selections = new RadSelectionState();
   const loads = new Map();
   return {
+    allocateRadStorage({ numSh }) {
+      return createSplatTextureArrays(
+        RAD_POOL_PAGE_COUNT * RAD_PAGE_SIZE,
+        numSh,
+      );
+    },
     prepareRadSelection(request) {
       return prepareRadSelection(request, chunks);
     },
-    initializeRad({ bytes, maxSh }) {
-      const headers = bytes.map((bytes) => {
-        const value = wasmCall(() => decode_rad_header(bytes));
-        if (!value) throw new Error("RAD: truncated header");
-        return value;
-      });
-      // Explicit chunk spans; chunkSize only speeds up the first input's lookups.
-      const meta = {
-        count: 0,
-        lodTree: true,
-        maxSh: 0,
-        chunkSize: headers.find(({ meta }) => meta.count)?.meta.chunkSize,
-        chunks: [],
-      };
-      const roots = [];
-      lod = wasmCall(() => new RadLodTree());
-      for (let source = 0; source < headers.length; source++) {
-        const value = headers[source];
-        wasmCall(() => lod.add_source(JSON.stringify(value.meta)));
-        meta.maxSh = Math.max(meta.maxSh, value.meta.maxSh ?? 0);
-        if (value.meta.count) {
-          roots.push(meta.chunks.length);
-          meta.lodTree &&= !!value.meta.lodTree;
-        }
-        value.meta.chunks.forEach((chunk, index) => {
-          const span = getRadChunkSpan(value.meta, index);
-          meta.chunks.push({
-            ...chunk,
-            base: meta.count + span.base,
-            count: span.count,
-            source,
-          });
-        });
-        meta.count += value.meta.count;
+    snapshotRadSelection({ id }) {
+      return selections.snapshot(id);
+    },
+    prepareRadMerge(request) {
+      return prepareRadMerge(request, chunks);
+    },
+    addRadSource({ id, bytes }) {
+      const header = wasmCall(() => decode_rad_header(bytes));
+      if (!header) throw new Error("RAD: truncated header");
+      if (header.meta.count && !header.meta.lodTree) {
+        const error = new Error(
+          "RAD streaming requires a LOD tree; load this file with SplatMesh instead",
+        );
+        error.name = "RadLodRequiredError";
+        throw error;
       }
-      meta.maxSh = Math.min(meta.maxSh, maxSh);
-      header = { meta };
-      return { meta, headers, roots };
+      header.meta.chunks.forEach((chunk, index) => {
+        const span = getRadChunkSpan(header.meta, index);
+        if (span.count > RAD_PAGE_SIZE)
+          throw new Error(
+            "RAD streaming chunk exceeds the 65,536-splat page limit",
+          );
+        // Normalize once in the worker; the main thread retains this source's header.
+        chunk.base = span.base;
+        chunk.count = span.count;
+      });
+      lod ??= wasmCall(() => new RadLodTree());
+      wasmCall(() => lod.add_source(id, JSON.stringify(header.meta)));
+      sources.set(id, header.meta);
+      return { header };
+    },
+    removeRadSource({ id }) {
+      if (sources.delete(id)) {
+        wasmCall(() => lod.remove_source(id));
+        selections.removeSource(id);
+      }
+      return selections.byteLength;
+    },
+    addRadSelectionSource({ source }) {
+      chunks.set(source, new Map());
+    },
+    removeRadSelectionSource({ source }) {
+      const pages = chunks.get(source);
+      if (pages) {
+        for (const chunk of pages.values()) chunkBytes -= chunk.bytes;
+        chunks.delete(source);
+      }
+      return chunkBytes;
     },
     initializeRadDecoder({ header: value, maxSh, codebooks }) {
       decoder?.free();
-      header = value;
+      decoderHeader = value;
       decoder = wasmCall(
-        () => new RadDecoder(JSON.stringify(header.meta), maxSh),
+        () => new RadDecoder(JSON.stringify(decoderHeader.meta), maxSh),
       );
       if (codebooks)
         wasmCall(() =>
@@ -104,7 +127,7 @@ export function createRadStreamHandlers() {
         const decoded = unpackRadChunk(
           wasmCall(() => decoder.decode_chunk(bytes)),
         );
-        const span = getRadChunkSpan(header.meta, index);
+        const span = getRadChunkSpan(decoderHeader.meta, index);
         // Rust matches the count to its directory entry; verify the requested page.
         if (decoded.base !== span.base)
           throw new Error(
@@ -113,7 +136,7 @@ export function createRadStreamHandlers() {
         const { lodRadii: radii, childStart, childCount } = decoded;
         if (!childStart || !childCount || radii?.length !== decoded.numSplats)
           throw new Error("RAD: decoded LOD arrays are missing or incomplete");
-        if (index === 0 && header.meta.count > 1 && !childCount[0])
+        if (index === 0 && decoderHeader.meta.count > 1 && !childCount[0])
           throw new Error(
             "RAD: streaming requires a root at index 0 with child nodes",
           );
@@ -150,7 +173,7 @@ export function createRadStreamHandlers() {
         };
         // The input owns this packed cache independently of worker decoders.
         const codebooks =
-          index === 0 && header.meta.shCodeCount && data.extra.shBlock0
+          index === 0 && decoderHeader.meta.shCodeCount && data.extra.shBlock0
             ? wasmCall(() => decoder.get_codebooks())
             : undefined;
         return { data, tree, state, codebooks };
@@ -162,9 +185,11 @@ export function createRadStreamHandlers() {
     cancelRadLoad({ generation }) {
       loads.get(generation)?.abort();
     },
-    retainRadChunk({ index, generation, tree }) {
+    retainRadChunk({ index, generation, source, tree }) {
+      if (!sources.has(source)) return;
       wasmCall(() =>
         lod.retain_chunk(
+          source,
           index,
           generation,
           tree.centers,
@@ -174,8 +199,10 @@ export function createRadStreamHandlers() {
         ),
       );
     },
-    retainRadSelectionChunk({ index, generation, chunk }) {
-      const previous = chunks.get(index);
+    retainRadSelectionChunk({ index, generation, source, chunk }) {
+      const pages = chunks.get(source);
+      if (!pages) return chunkBytes;
+      const previous = pages.get(index);
       if (previous && previous.generation > generation) return chunkBytes;
       if (
         chunk.boundsBlocks.length !==
@@ -184,7 +211,7 @@ export function createRadStreamHandlers() {
         throw new Error("Incomplete RAD bounds blocks");
       const bytes =
         chunk.sourceToStorage.byteLength + chunk.boundsBlocks.byteLength;
-      chunks.set(index, { ...chunk, generation, bytes });
+      pages.set(index, { ...chunk, generation, bytes });
       chunkBytes += bytes - (previous?.bytes ?? 0);
       return chunkBytes;
     },
@@ -192,41 +219,58 @@ export function createRadStreamHandlers() {
       // 16 model-view values, pixel scale, projection type, 8 X/Y projection values.
       const stride = 26;
       const views = new Float64Array(
-        request.views.length * request.transforms.length * stride,
+        request.views.length * request.sources.length * stride,
       );
+      const sourceIds = new Uint32Array(request.sources.length);
+      const sourceSh = new Uint8Array(request.sources.length);
+      const pageBytes = new Float64Array(request.sources.length * 2);
+      let count = 0;
       // Each input's views include its model-to-group transform.
-      request.transforms.forEach((transform, source) => {
-        request.views.forEach((view, index) => {
-          const offset = (source * request.views.length + index) * stride;
-          multiplyMatrices(view.viewFromObject, transform, views, offset);
-          views[offset + 16] = view.pixelScale;
-          views[offset + 17] = Number(view.orthographic);
-          views.set(view.projectionRows, offset + 18);
-        });
-      });
+      request.sources.forEach(
+        ({ id, numSh, transform, pageCpuBytes, pageGpuBytes }, source) => {
+          sourceIds[source] = id;
+          sourceSh[source] = numSh;
+          count += sources.get(id).count;
+          pageBytes.set([pageCpuBytes, pageGpuBytes], source * 2);
+          request.views.forEach((view, index) => {
+            const offset = (source * request.views.length + index) * stride;
+            multiplyMatrices(view.viewFromObject, transform, views, offset);
+            views[offset + 16] = view.pixelScale;
+            views[offset + 17] = Number(view.orthographic);
+            views.set(view.projectionRows, offset + 18);
+          });
+        },
+      );
       const selected = wasmCall(() =>
         lod.select(
           views,
+          sourceIds,
+          sourceSh,
+          pageBytes,
           Uint32Array.from(request.residentChunks),
-          Math.min(request.splatBudget, header.meta.count || 1),
+          Math.min(request.splatBudget, count || 1, 0xffffffff),
           request.pixelThreshold,
-          request.pageBudget,
+          request.maxResidentCpuBytes,
+          request.maxResidentGpuBytes,
           request.splatBudgetTolerance,
         ),
       );
-      return selections.prepare(header.meta, selected, request);
+      return selections.prepare(sources, selected, request);
     },
-    releaseRadChunk({ index, generation }) {
-      wasmCall(() => lod.release_chunk(index, generation));
+    releaseRadChunk({ index, generation, source }) {
+      if (!sources.has(source)) return;
+      wasmCall(() => lod.release_chunk(source, index, generation));
     },
-    releaseRadSelectionChunk({ index, generation }) {
-      const previous = chunks.get(index);
+    releaseRadSelectionChunk({ index, generation, source }) {
+      const pages = chunks.get(source);
+      if (!pages) return chunkBytes;
+      const previous = pages.get(index);
       if (
         previous &&
         (generation === undefined || previous.generation === generation)
       ) {
         chunkBytes -= previous.bytes;
-        chunks.delete(index);
+        pages.delete(index);
       }
       return chunkBytes;
     },

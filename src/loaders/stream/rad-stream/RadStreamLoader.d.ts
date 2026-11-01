@@ -3,15 +3,16 @@ import type { RadSourceOptions } from "../../rad/RadSource.js";
 import type {
   RadChunkRange,
   RadHeader,
-  RadMeta,
   RadStreamChunk,
 } from "../../rad/radFormat.js";
 import type { RadSelectionRequest } from "./RadSelectionState.js";
 import type {
   RadSelectionPreparation,
+  prepareRadMerge,
   prepareRadSelection,
 } from "./prepareRadSelection.js";
 import type { RadStreamSelection } from "./radFade.js";
+import type { RadSourceCut } from "./radLod.js";
 export type RadStreamSourceOptions = Pick<
   RadSourceOptions,
   | "url"
@@ -25,18 +26,10 @@ export type RadStreamSourceOptions = Pick<
   /** Model-to-group transform; identity when omitted. Change with setSourceSettings(). */
   transform?: Matrix4;
 };
-export type RadStreamLoaderOptions = {
-  /** Nonempty list of inputs, fixed at creation. */
-  sources: readonly RadStreamSourceOptions[];
-};
-/** Combined directory; each chunk has an explicit span and its input index. */
-export type RadStreamMetadata = Pick<
-  RadMeta,
-  "count" | "lodTree" | "chunkSize"
-> & {
-  /** Highest input SH degree, capped by the scheduler's storage limit. */
-  maxSh: number;
-  chunks: (RadChunkRange & { base: number; count: number; source: number })[];
+export type RadStreamSourceMetadata = {
+  header: RadHeader & {
+    meta: { chunks: (RadChunkRange & { base: number; count: number })[] };
+  };
 };
 /** Separate traversal and display preparation workers, plus bounded page decoders. */
 export declare class RadStreamLoader {
@@ -49,13 +42,11 @@ export declare class RadStreamLoader {
   private readonly pool;
   private readonly decoderReady;
   private readonly controller;
-  private initialization?;
-  private meta?;
+  private downloadedBytes;
   readonly pendingRegistrationBytes: number;
   private selectionBytes;
   private preparationBytes;
   constructor(
-    options: RadStreamLoaderOptions,
     maxConcurrentLoads: number,
     maxSh: number,
     onRegistrationSettled: () => void,
@@ -72,24 +63,34 @@ export declare class RadStreamLoader {
   get residentCpuOverheadBytes(): number;
   get selectionWorkerLost(): boolean;
   private assertActive;
-  initialize(signal?: AbortSignal): Promise<{
-    meta: RadStreamMetadata;
-    /** Input headers, in source order. */
-    headers: RadHeader[];
-    /** Root chunk of each nonempty input. */
-    roots: number[];
-  }>;
-  private readHeaders;
+  addSource(
+    id: number,
+    options: RadStreamSourceOptions,
+    signal?: AbortSignal,
+  ): Promise<RadStreamSourceMetadata>;
+  removeSource(id: number): void;
+  private readSource;
   loadChunk(
+    sourceId: number,
     index: number,
     signal?: AbortSignal,
   ): Promise<{ data: RadStreamChunk; registration: Promise<void> }>;
   private registerChunk;
-  getChunkUrl(index: number): string;
+  getChunkUrl(sourceId: number, index: number): string;
+  /** Await a worker reply that is discarded once the loader is disposed. */
+  private call;
+  /** Request without waiting; a live reply may report retained bytes. */
+  private send;
   selectLod(request: RadSelectionRequest): Promise<RadStreamSelection>;
   prepareSelection(
     request: Parameters<typeof prepareRadSelection>[0],
   ): Promise<RadSelectionPreparation>;
-  releaseChunk(index: number, generation?: number): void;
+  snapshotSelection(id: number): Promise<RadSourceCut[]>;
+  prepareMerge(
+    request: Parameters<typeof prepareRadMerge>[0],
+  ): Promise<ReturnType<typeof prepareRadMerge>>;
+  /** Allocate a fixed eight-page pool off the main thread. */
+  allocateStorage(numSh: number): Promise<Uint32Array<ArrayBuffer>[]>;
+  releaseChunk(index: number, source: number, generation?: number): void;
   dispose(): void;
 }

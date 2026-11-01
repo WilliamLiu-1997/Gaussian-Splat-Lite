@@ -2,10 +2,11 @@ import { IndexedSplats } from "./IndexedSplats.js";
 import type { ReorderedSplatResult } from "./defines.js";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 export type RadPagedSplatsOptions = {
-  pageCount: number;
   numSh: number;
+  /** Internal: attach packed textures after their arrays are ready. */
+  deferAllocation?: boolean;
 };
-/** Page ranges in a sorted, file-global cut; used only by RAD streaming. */
+/** Page ranges in a sorted, source-local cut; used only by RAD streaming. */
 export type RadSelectionRange = {
   start: number;
   end: number;
@@ -39,7 +40,7 @@ export type RadPreparedSelection = {
   dirtyLayers: Uint8Array;
   fadeKinds: number;
 };
-/** Shared 65,536-record RAD slots, one page per texture array layer. */
+/** Eight shared 65,536-record RAD slots, one page per texture array layer. */
 export declare class RadPagedSplats extends IndexedSplats {
   readonly pageCount: number;
   private selectedPages;
@@ -50,6 +51,8 @@ export declare class RadPagedSplats extends IndexedSplats {
   /** Copies data and zeros SH above numSh; callers retain the packed buffers. */
   writePage(slot: number, data: ReorderedSplatResult, numSh?: number): void;
   releasePage(slot: number): void;
+  /** Copy a resident page into a free slot in one pass. */
+  copyPage(source: RadPagedSplats, previous: number, slot: number): void;
   /** Remove the displayed cut when its scheduler becomes hidden. */
   clearSelection(): void;
   /** Never transfer live texture storage to the preparation worker. */

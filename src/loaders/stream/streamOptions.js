@@ -1,11 +1,4 @@
 import { retryDelay } from "../../runtime/retry.js";
-/** Inputs are supplied only through a nonempty sources list. */
-export function streamSources(options) {
-  const { sources } = options;
-  if (!Array.isArray(sources) || !sources.length)
-    throw new Error("sources must be a nonempty array");
-  return sources;
-}
 /** Validate an input's model-to-group transform. */
 export function checkStreamTransform(transform) {
   if (

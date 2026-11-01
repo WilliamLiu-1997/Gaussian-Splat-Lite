@@ -12,6 +12,8 @@ type IndexedSplatsOptions =
       numSh: number;
       blockBits: number;
       packedOpacityGroups?: boolean;
+      /** Internal: attach packed textures after their arrays are ready. */
+      deferAllocation?: boolean;
       storage?: never;
     }
   | {
@@ -44,12 +46,17 @@ export declare abstract class IndexedSplats extends Splats {
   private spatialBoundsBytes;
   private storage?;
   constructor(options: IndexedSplatsOptions);
+  /** Create one packed texture from its array, which may come from a worker. */
+  allocateTexture(array: Uint32Array): THREE.DataArrayTexture;
   protected assertLive(): void;
   initialize(options?: SplatsOptions): Promise<Splats>;
   /** Range-based sources can materialize their visible map lazily. */
   protected ensureIndices(): void;
   /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
-  protected prepareIndices(count: number): Uint32Array<ArrayBuffer>;
+  protected prepareIndices(
+    count: number,
+    maxCapacity?: number,
+  ): Uint32Array<ArrayBuffer>;
   /** Copies packed records. Input buffers remain caller-owned for both formats. */
   protected writeRecords(
     start: number,

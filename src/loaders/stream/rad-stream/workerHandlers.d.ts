@@ -4,23 +4,31 @@ import type {
   RadSelectionReply,
   RadSelectionRequest,
 } from "./RadSelectionState.js";
-import type { RadStreamMetadata } from "./RadStreamLoader.js";
+import type { RadStreamSourceMetadata } from "./RadStreamLoader.js";
 import type {
   RadSelectionChunk,
   RadSelectionPreparation,
+  prepareRadMerge,
   prepareRadSelection,
 } from "./prepareRadSelection.js";
-import type { RadLodChunk } from "./radLod.js";
+import type { RadLodChunk, RadSourceCut } from "./radLod.js";
 /** Workers own LOD traversal, display preparation, or a persistent page decoder. */
 export declare function createRadStreamHandlers(): {
+  allocateRadStorage(request: { numSh: number }): Uint32Array<ArrayBuffer>[];
   prepareRadSelection(
     request: Parameters<typeof prepareRadSelection>[0],
   ): RadSelectionPreparation;
-  initializeRad(request: { bytes: Uint8Array[]; maxSh: number }): {
-    meta: RadStreamMetadata;
-    headers: RadHeader[];
-    roots: number[];
-  };
+  snapshotRadSelection(request: { id: number }): RadSourceCut[];
+  prepareRadMerge(
+    request: Parameters<typeof prepareRadMerge>[0],
+  ): ReturnType<typeof prepareRadMerge>;
+  addRadSource(request: {
+    id: number;
+    bytes: Uint8Array;
+  }): RadStreamSourceMetadata;
+  removeRadSource(request: { id: number }): number;
+  addRadSelectionSource(request: { source: number }): void;
+  removeRadSelectionSource(request: { source: number }): number;
   initializeRadDecoder(request: {
     header: RadHeader;
     maxSh: number;
@@ -47,20 +55,24 @@ export declare function createRadStreamHandlers(): {
   retainRadChunk(request: {
     index: number;
     generation: number;
+    source: number;
     tree: Omit<RadLodChunk, keyof RadSelectionChunk>;
   }): void;
   retainRadSelectionChunk(request: {
     index: number;
     generation: number;
+    source: number;
     chunk: RadSelectionChunk;
   }): number;
   selectRadLod(request: RadSelectionRequest): RadSelectionReply;
   releaseRadChunk(request: {
     index: number;
     generation?: number;
+    source: number;
   }): void;
   releaseRadSelectionChunk(request: {
     index: number;
     generation?: number;
+    source: number;
   }): number;
 };

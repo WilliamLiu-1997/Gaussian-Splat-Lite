@@ -1,5 +1,6 @@
 import {
   RAD_PAGE_SIZE,
+  RAD_POOL_PAGE_COUNT,
   SPLAT_BOUNDS_BLOCK_SIZE,
 } from "../../../data/defines.js";
 import { getSplatTextureBytes } from "../../../data/splatData.js";
@@ -18,9 +19,14 @@ export function radPageCosts(numSh) {
     pending: RAD_PAGE_SIZE * (splatBytes + 26) + boundsBlocks * 80,
   };
 }
+/** Resident bytes of the whole eight-page pools that hold this many pages. */
+export function radPoolBytes(costs, pages = RAD_POOL_PAGE_COUNT) {
+  const slots = Math.ceil(pages / RAD_POOL_PAGE_COUNT) * RAD_POOL_PAGE_COUNT;
+  return { cpu: slots * costs.cpu, gpu: slots * costs.gpu };
+}
 /** Resolve validated LOD indices without assuming that chunks are 64K records. */
 export function radChunkIndex(meta, index) {
-  const size = meta.chunkSize ?? meta.count;
+  const size = RAD_PAGE_SIZE;
   const candidate = Math.floor(index / size);
   if (candidate < meta.chunks.length) {
     const range = meta.chunks[candidate];

@@ -10,7 +10,6 @@ To convert your own models, see [Building RAD files](BuildRad.md).
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new RadStreamScheduler({
-  sources: [{ url: "/models/scene.rad" }],
   splatBudget: 3_000_000,
   splatBudgetTolerance: 0.1, // Allow up to 10% extra Splats; 0 forbids overshoot.
   maxResidentCpuBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
@@ -19,7 +18,7 @@ const streaming = new RadStreamScheduler({
 scene.add(streaming.group);
 streaming.setCamera(camera);
 streaming.setResolutionFromRenderer(camera, renderer); // Again after resizing.
-await streaming.initialized;
+const sourceId = await streaming.addSource({ url: "/models/scene.rad" });
 
 renderer.setAnimationLoop(() => {
   streaming.update();
@@ -44,38 +43,40 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 ## Multiple inputs
 
-Supply every input through the nonempty `sources` array, including when loading a single model. Add entries to load several RAD inputs together:
+Schedulers start empty. Add and remove inputs at any time:
 
 ```js
 const streaming = new RadStreamScheduler({
-  sources: [
-    { url: "/models/building.rad" },
-    {
-      url: "/models/building.rad",
-      transform: new THREE.Matrix4().makeTranslation(40, 0, 0),
-    },
-    { url: "/models/landscape.rad" },
-  ],
   splatBudget: 3_000_000,
   maxConcurrentLoads: 4,
 });
+const building = await streaming.addSource({ url: "/models/building.rad" });
+const secondBuilding = await streaming.addSource({
+  url: "/models/building.rad",
+  transform: new THREE.Matrix4().makeTranslation(40, 0, 0),
+});
+const landscape = await streaming.addSource({ url: "/models/landscape.rad" });
+
+streaming.removeSource(secondBuilding);
 ```
 
-Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Inputs with different SH degrees all use the memory of the highest one, up to `maxSh`.
+Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. Detail is chosen across the combined scene, and the inputs share the splat budget, loading concurrency, and both memory budgets. Each input retains its own SH degree, capped by `maxSh`, and uses memory according to that degree.
 
-Each entry supplies one of `url`, `file`, or `fileBytes`, and its own `resolveFile`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
+Each addition supplies one of `url`, `file`, or `fileBytes`, and its own `resolveFile`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
 
-The inputs are fixed at creation. Move an input with `setSourceSettings(index, { transform })`, where `index` follows the order of `sources`; its loaded data is kept. `getSourceSettings(index)` returns a copy of the current settings.
+`addSource()` resolves to a stable ID when that input's metadata is ready. IDs are never renumbered or reused; `sourceIds` lists current IDs in insertion order, including pending additions. `removeSource(id)` immediately removes the input, cancels its pending work and returns whether it existed. Other inputs keep their loaded data and remain visible.
+
+Move an input with `setSourceSettings(id, { transform })`; its loaded data is kept. `getSourceSettings(id)` returns a copy of the current settings.
 
 ```js
-streaming.setSourceSettings(1, {
+streaming.setSourceSettings(building, {
   transform: new THREE.Matrix4().makeTranslation(60, 0, 0),
 });
 ```
 
 SH codebooks are cached and copied in a background worker. Page decoders reuse their current input's codebook; switching inputs transfers a worker-created copy without copying the codebook on the main thread. The cache remains included in the CPU memory budget.
 
-`initialized` waits for every input's metadata. `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene. `splatBudget` and both memory budgets must be large enough to hold the coarsest detail of every nonempty input.
+`firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene. `splatBudget` and both memory budgets must be large enough to hold the coarsest detail of every nonempty input.
 
 ## Cameras and resolution
 
@@ -109,7 +110,6 @@ renderer.setAnimationLoop(() => {
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `sources` | Required | Nonempty array of inputs sharing this scheduler; see [Multiple inputs](#multiple-inputs) |
 | `splatBudget` | `3_000_000` | Target number of Splats. Higher values show more detail and use more memory |
 | `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
 | `splatBudgetTolerance` | `0.1` | Allowed fractional overshoot of `splatBudget`. `0.1` allows up to 10% extra Splats; `0` keeps each new selection within `splatBudget`. Must be finite and nonnegative |
@@ -121,7 +121,7 @@ renderer.setAnimationLoop(() => {
 | `onChange` | — | Called when the scene needs a redraw |
 | `onError` | Logs to the console | Called when loading fails: `(error, url)` |
 
-Each `sources` entry accepts:
+Each `addSource()` call accepts:
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -133,7 +133,9 @@ Each `sources` entry accepts:
 
 Detail already on screen stays visible while its replacement loads, if both memory budgets allow. At the limit, the scene may temporarily show less detail. During a fade, old and new detail overlap, so the visible count can briefly exceed the selection limit. Use both `splatBudgetTolerance: 0` and `fadeDurationMs: 0` to keep new selections and their transitions within `splatBudget`.
 
-Memory is allocated as detail loads, up to the configured budgets. Unused detail is released after `cooldownMs`, including while hidden, and loads again when needed. Memory shared with detail still in use is retained until that detail is also released. Increasing the budgets allows more detail to stay ready without allocating the full allowance upfront. `stats.pageBudget` reports how many pages can be resident at once, not how many are currently allocated.
+Memory is allocated in fixed increments as detail loads, up to the configured budgets. Unused detail is released after `cooldownMs`, including while hidden, and loads again when needed. Empty storage is released as unused detail expires. Remaining capacity is consolidated only when new detail cannot otherwise fit within the memory budgets. Some spare capacity can remain allocated, and a budget may not be fully usable. Increasing the budgets allows more detail to stay ready without allocating the full allowance upfront. `stats.pageBudget` reports an upper bound on resident pages; the actual limit depends on the inputs' SH degrees. `allocatedPages` and `freePages` report allocated page slots and how many are currently unoccupied.
+
+Existing detail remains visible while unused capacity is reclaimed. `stats.pendingBytes` includes temporary preparation data, and `stats.pendingGpuBytes` reports new storage awaiting initialization.
 
 ## Properties and methods
 
@@ -143,16 +145,18 @@ Memory is allocated as detail loads, up to the configured budgets. Unused detail
 | `splatBudget` | Change it at any time to adjust detail, even while the camera is still. Must be a positive integer |
 | `maxSh` | Read-only SH decoding and storage limit chosen at creation |
 | `splatBudgetTolerance` | Change the allowed overshoot at any time without reloading. `0` forbids overshoot |
-| `initialized` | Resolves when the scene is set up; rejects for invalid or unsupported files |
+| `addSource(options)` | Add an input; resolves to its stable ID once metadata is ready. Rejects for invalid or unsupported files |
+| `removeSource(id)` | Cancel and release one input immediately; returns whether it existed |
+| `sourceIds` | Current source IDs in insertion order, including pending additions |
 | `firstRenderable` | Resolves when the first data is on screen, or the scene is empty; rejects if the first data cannot be loaded. Keep updating and rendering while you wait |
 | `setCamera(camera)` / `deleteCamera(camera)` | Add or remove a camera that chooses detail. `hasCamera(camera)` and `cameras` report the registered ones |
 | `setResolution(camera, width, height)` | Set a registered camera's size in CSS pixels; also accepts a `THREE.Vector2` |
 | `setResolutionFromRenderer(camera, renderer)` | Set a registered camera's size from `renderer.getSize()` |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
-| `setSourceSettings(index, settings)` / `getSourceSettings(index)` | Change an input's `transform` without reloading, or read a copy of its settings |
+| `setSourceSettings(id, settings)` / `getSourceSettings(id)` | Change an input's `transform` without reloading, or read a copy of its settings |
 | `getBoundingBox()` | Approximate box around the scene, in the group's coordinates; empty until the first data loads |
 | `stats` | Visible Splats, loading progress, and estimated CPU/GPU cache sizes (`residentCpuBytes` / `residentGpuBytes`) |
-| `dispose()` | Stop loading and release the scene. Pending `initialized` and `firstRenderable` promises reject with `AbortError` |
+| `dispose()` | Stop loading and release the scene. Pending additions and `firstRenderable` reject with `AbortError` |
 
 ### On-demand rendering
 

@@ -90,9 +90,8 @@ Host all files together in the same directory and load the `.rad` file. A single
 ```js
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
-const streaming = new RadStreamScheduler({
-  sources: [{ url: "/models/scene-lod.rad" }],
-});
+const streaming = new RadStreamScheduler();
+await streaming.addSource({ url: "/models/scene-lod.rad" });
 ```
 
 See [RadStreamScheduler](RadStreamScheduler.md) for the complete loading and display example.

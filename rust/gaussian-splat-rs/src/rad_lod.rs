@@ -5,7 +5,9 @@ use std::ops::Range;
 
 use anyhow::{ensure, Context, Result};
 use gaussian_splat_lib::rad::RadMeta;
-use js_sys::{Float32Array, Float64Array, Object, Reflect, Uint16Array, Uint32Array};
+use js_sys::{
+    Array, Float32Array, Float64Array, Object, Reflect, Uint16Array, Uint32Array, Uint8Array,
+};
 use wasm_bindgen::prelude::*;
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
@@ -24,7 +26,6 @@ struct Tree {
 struct Page {
     base: u32,
     count: u32,
-    source: usize,
     tree: Option<Tree>,
     seen: Vec<u64>,
     // Nodes replaced by children during the current traversal.
@@ -35,8 +36,44 @@ struct Page {
 }
 
 struct Source {
-    base: u32,
+    id: u32,
     count: u32,
+    chunk_size: u32,
+    pages: Vec<Page>,
+    indices: Vec<u32>,
+    views: Range<usize>,
+    pool_group: usize,
+}
+
+impl Source {
+    // Nonempty child ranges are validated when their page is registered.
+    fn page_index(&self, index: u32) -> usize {
+        let candidate = (index / self.chunk_size) as usize;
+        if let Some(page) = self.pages.get(candidate) {
+            if index >= page.base && index - page.base < page.count {
+                return candidate;
+            }
+        }
+        // Metadata validation guarantees contiguous, ordered spans.
+        self.pages.partition_point(|page| page.base <= index) - 1
+    }
+}
+
+// Keep RAD_POOL_PAGE_COUNT in src/data/defines.js in sync.
+const POOL_PAGE_COUNT: usize = 8;
+
+// Inputs of one stored SH degree share pools and page costs.
+struct PoolBudget {
+    sh: u8,
+    page_bytes: [f64; 2],
+    pages: usize,
+}
+
+impl PoolBudget {
+    fn additional_capacity(&self, pages: usize) -> usize {
+        ((self.pages + pages).div_ceil(POOL_PAGE_COUNT) - self.pages.div_ceil(POOL_PAGE_COUNT))
+            * POOL_PAGE_COUNT
+    }
 }
 
 fn insert(bits: &mut [u64], index: usize) {
@@ -61,6 +98,7 @@ fn visit_range(bits: &mut [u64], range: Range<usize>) -> Result<()> {
 }
 
 struct Candidate {
+    source_index: usize,
     index: u32,
     // Reject unaffordable refinements without looking up their tree page.
     child_count: u32,
@@ -201,16 +239,15 @@ fn projected_size(tree: &Tree, local: usize, views: &[View]) -> f64 {
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct RadLodTree {
-    count: u32,
-    chunk_size: u32,
-    pages: Vec<Page>,
     roots: Vec<usize>,
     sources: Vec<Source>,
+    pool_budgets: Vec<PoolBudget>,
     stack: Vec<Candidate>,
     frontier: Vec<Candidate>,
-    indices: Vec<u32>,
     wanted: Vec<u32>,
     touched: Vec<u32>,
+    reserved_bytes: [f64; 2],
+    memory_limits: [f64; 2],
 }
 
 #[wasm_bindgen]
@@ -220,21 +257,18 @@ impl RadLodTree {
         Self::default()
     }
 
-    /// Append an input; its pages share the pool and follow previous inputs' pages.
-    pub fn add_source(&mut self, meta_json: &str) -> Result<(), JsValue> {
+    /// Keep each source's chunk and splat addresses local to its own directory.
+    pub fn add_source(&mut self, id: u32, meta_json: &str) -> Result<(), JsValue> {
         let meta = RadMeta::from_json(meta_json).map_err(js_error)?;
-        let count = self
-            .count
-            .checked_add(meta.count as u32)
-            .context("Combined RAD splat count exceeds u32 index limit")
-            .map_err(js_error)?;
+        if self.sources.iter().any(|source| source.id == id) {
+            return Err(js_error("RAD source already exists"));
+        }
         let pages = (0..meta.chunks.len())
             .map(|index| {
                 let (base, count) = meta.chunk_bounds(index)?;
                 Ok(Page {
-                    base: self.count + base,
+                    base,
                     count,
-                    source: self.sources.len(),
                     tree: None,
                     seen: Vec::new(),
                     refined: Vec::new(),
@@ -245,25 +279,27 @@ impl RadLodTree {
             })
             .collect::<Result<Vec<_>>>()
             .map_err(js_error)?;
-        if meta.count > 0 {
-            self.roots.push(self.pages.len());
-            // Later inputs fall back to page_index's binary search.
-            if self.count == 0 {
-                self.chunk_size = meta.chunk_size.unwrap_or(meta.count as u32);
-            }
-        }
         self.sources.push(Source {
-            base: self.count,
+            id,
             count: meta.count as u32,
+            chunk_size: meta.chunk_size.unwrap_or(meta.count as u32),
+            pages,
+            indices: Vec::new(),
+            views: 0..0,
+            pool_group: 0,
         });
-        self.count = count;
-        self.pages.extend(pages);
         Ok(())
+    }
+
+    /// Drop the entire local directory without changing any surviving address.
+    pub fn remove_source(&mut self, id: u32) {
+        self.sources.retain(|source| source.id != id);
     }
 
     #[allow(clippy::too_many_arguments)] // Copy each transferred tree array once.
     pub fn retain_chunk(
         &mut self,
+        source_id: u32,
         index: u32,
         generation: f64,
         centers: Float32Array,
@@ -271,7 +307,11 @@ impl RadLodTree {
         child_start: Uint32Array,
         child_count: Uint16Array,
     ) -> Result<(), JsValue> {
-        let page = self
+        let Some(source_index) = self.source_index(source_id) else {
+            return Ok(());
+        };
+        let source = &mut self.sources[source_index];
+        let page = source
             .pages
             .get_mut(index as usize)
             .context("RAD chunk index out of bounds")
@@ -307,14 +347,10 @@ impl RadLodTree {
                 .rposition(|&count| count != 0)
                 .map_or(0, |index| index + 1),
         );
-        let mut child_start = child_start.to_vec();
-        let source = &self.sources[page.source];
-        for (start, &count) in child_start.iter_mut().zip(&child_count) {
-            if count != 0 {
-                if u64::from(*start) + u64::from(count) > u64::from(source.count) {
-                    return Err(js_error("RAD child range is out of bounds"));
-                }
-                *start += source.base;
+        let child_start = child_start.to_vec();
+        for (&start, &count) in child_start.iter().zip(&child_count) {
+            if count != 0 && u64::from(start) + u64::from(count) > u64::from(source.count) {
+                return Err(js_error("RAD child range is out of bounds"));
             }
         }
         page.tree = Some(Tree {
@@ -327,8 +363,11 @@ impl RadLodTree {
         Ok(())
     }
 
-    pub fn release_chunk(&mut self, index: u32, generation: Option<f64>) {
-        let Some(page) = self.pages.get_mut(index as usize) else {
+    pub fn release_chunk(&mut self, source_id: u32, index: u32, generation: Option<f64>) {
+        let Some(page) = self
+            .source_index(source_id)
+            .and_then(|source_index| self.sources[source_index].pages.get_mut(index as usize))
+        else {
             return;
         };
         if generation.is_none()
@@ -343,25 +382,42 @@ impl RadLodTree {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn select(
         &mut self,
         views: Float64Array,
+        source_ids: Uint32Array,
+        source_sh: Uint8Array,
+        page_bytes: Float64Array,
         resident_chunks: Uint32Array,
         budget: u32,
         threshold: f64,
-        page_budget: u32,
+        cpu_budget: f64,
+        gpu_budget: f64,
         budget_tolerance: f64,
     ) -> Result<JsValue, JsValue> {
         let views = views.to_vec();
+        let source_ids = source_ids.to_vec();
+        let source_sh = source_sh.to_vec();
+        let page_bytes = page_bytes.to_vec();
         if budget == 0
-            || page_budget == 0
+            || !cpu_budget.is_finite()
+            || cpu_budget <= 0.0
+            || !gpu_budget.is_finite()
+            || gpu_budget <= 0.0
             || !budget_tolerance.is_finite()
             || budget_tolerance < 0.0
             || !threshold.is_finite()
             || threshold <= 0.0
             || views.is_empty()
-            || self.sources.is_empty()
-            || !views.len().is_multiple_of(VIEW_VALUES * self.sources.len())
+            || source_ids.is_empty()
+            || !resident_chunks.length().is_multiple_of(2)
+            || source_sh.len() != source_ids.len()
+            || page_bytes.len() != source_ids.len() * 2
+            || page_bytes
+                .iter()
+                .any(|cost| !cost.is_finite() || *cost <= 0.0)
+            || !views.len().is_multiple_of(VIEW_VALUES * source_ids.len())
         {
             return Err(js_error("Invalid RAD LOD request"));
         }
@@ -370,18 +426,60 @@ impl RadLodTree {
             .map(View::prepare)
             .collect::<Result<Vec<_>>>()
             .map_err(js_error)?;
+        self.roots.clear();
+        self.pool_budgets.clear();
+        let view_count = views.len() / source_ids.len();
+        let mut source_indices = Vec::with_capacity(source_ids.len());
+        for (offset, id) in source_ids.into_iter().enumerate() {
+            let sh = source_sh[offset];
+            let group = self
+                .pool_budgets
+                .iter()
+                .position(|pool| pool.sh == sh)
+                .unwrap_or_else(|| {
+                    self.pool_budgets.push(PoolBudget {
+                        sh,
+                        page_bytes: [page_bytes[offset * 2], page_bytes[offset * 2 + 1]],
+                        pages: 0,
+                    });
+                    self.pool_budgets.len() - 1
+                });
+            let index = self
+                .source_index(id)
+                .context("RAD source does not exist")
+                .map_err(js_error)?;
+            source_indices.push(index);
+            let source = &mut self.sources[index];
+            source.views = offset * view_count..(offset + 1) * view_count;
+            source.pool_group = group;
+            if source.count > 0 {
+                self.roots.push(index);
+            }
+        }
+        self.memory_limits = [cpu_budget, gpu_budget];
         self.traverse(
             &views,
             &resident_chunks.to_vec(),
             budget,
             threshold,
-            page_budget as usize,
             budget_tolerance,
         )
         .map_err(js_error)?;
         let result = Object::new();
+        let sources = Array::new();
+        for index in source_indices {
+            let source = &self.sources[index];
+            let cut = Object::new();
+            Reflect::set(&cut, &"source".into(), &source.id.into())?;
+            Reflect::set(
+                &cut,
+                &"indices".into(),
+                &Uint32Array::from(source.indices.as_slice()),
+            )?;
+            sources.push(&cut);
+        }
+        Reflect::set(&result, &"sources".into(), &sources)?;
         for (key, values) in [
-            ("indices", &self.indices),
             ("wantedChunks", &self.wanted),
             ("touchedChunks", &self.touched),
         ] {
@@ -392,37 +490,57 @@ impl RadLodTree {
 }
 
 impl RadLodTree {
-    // Nonempty child ranges are validated when their page is registered.
-    fn page_index(&self, index: u32) -> usize {
-        let candidate = (index / self.chunk_size) as usize;
-        if let Some(page) = self.pages.get(candidate) {
-            if index >= page.base && index - page.base < page.count {
-                return candidate;
+    fn source_index(&self, id: u32) -> Option<usize> {
+        self.sources.iter().position(|source| source.id == id)
+    }
+
+    fn touch(&mut self, source_index: usize, page_index: usize) {
+        if !self.sources[source_index].pages[page_index].touched {
+            self.reserve_page(source_index, page_index);
+            let source = &mut self.sources[source_index];
+            source.pages[page_index].touched = true;
+            self.touched.extend([source.id, page_index as u32]);
+        }
+    }
+
+    // Missing pages are requested in refinement priority order.
+    fn want(&mut self, source_index: usize, page_index: usize) {
+        self.reserve_page(source_index, page_index);
+        let source = &mut self.sources[source_index];
+        let page = &mut source.pages[page_index];
+        if !page.wanted {
+            page.wanted = true;
+            self.wanted.extend([source.id, page_index as u32]);
+        }
+    }
+
+    fn reserve_page(&mut self, source_index: usize, page_index: usize) {
+        let source = &self.sources[source_index];
+        let page = &source.pages[page_index];
+        if !page.touched && !page.wanted {
+            let pool = &mut self.pool_budgets[source.pool_group];
+            let capacity = pool.additional_capacity(1) as f64;
+            for (reserved, cost) in self.reserved_bytes.iter_mut().zip(pool.page_bytes) {
+                *reserved += cost * capacity;
             }
-        }
-        // Metadata validation guarantees contiguous, ordered spans.
-        self.pages.partition_point(|page| page.base <= index) - 1
-    }
-
-    fn touch(&mut self, index: usize) {
-        if !self.pages[index].touched {
-            self.pages[index].touched = true;
-            self.touched.push(index as u32);
+            pool.pages += 1;
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_range(
         &mut self,
+        source_index: usize,
         indices: Range<u32>,
         page_index: usize,
         max_children: u32,
         views: &[View],
         threshold: f64,
     ) -> Result<()> {
-        let page = &mut self.pages[page_index];
+        let source = &mut self.sources[source_index];
+        let page = &mut source.pages[page_index];
         // Each input has its own views, including its model transform.
-        let view_count = views.len() / self.sources.len();
-        let views = &views[page.source * view_count..(page.source + 1) * view_count];
+        let views = &views[source.views.clone()];
         let start = (indices.start - page.base) as usize;
         let end = (indices.end - page.base) as usize;
         visit_range(&mut page.seen, start..end)?;
@@ -439,6 +557,7 @@ impl RadLodTree {
                 continue;
             }
             let candidate = Candidate {
+                source_index,
                 index: page.base + local as u32,
                 child_count: u32::from(count),
                 size,
@@ -455,10 +574,11 @@ impl RadLodTree {
         remaining: &mut u32,
         views: &[View],
         threshold: f64,
-        page_budget: usize,
     ) -> Result<()> {
-        let parent_page = self.page_index(candidate.index);
-        let page = &self.pages[parent_page];
+        let source_index = candidate.source_index;
+        let source = &self.sources[source_index];
+        let parent_page = source.page_index(candidate.index);
+        let page = &source.pages[parent_page];
         let local = (candidate.index - page.base) as usize;
         let tree = page.tree.as_ref().unwrap();
         let start = *tree
@@ -466,27 +586,27 @@ impl RadLodTree {
             .get(local)
             .context("RAD child range is out of bounds")?;
         let end = start + candidate.child_count;
-        let first = self.page_index(start);
-        let last = self.page_index(end - 1);
+        let first = source.page_index(start);
+        let last = source.page_index(end - 1);
         // Claim pages in refinement priority order, including missing pages.
         // Keeping the parent when its children do not fit produces a complete
         // coarser cut and lets the scheduler retire lower-priority old pages.
         let additional = (first..=last)
-            .filter(|&index| !self.pages[index].touched && !self.pages[index].wanted)
+            .filter(|&index| !source.pages[index].touched && !source.pages[index].wanted)
             .count();
-        if self.touched.len() + self.wanted.len() + additional > page_budget {
+        let pool = &self.pool_budgets[source.pool_group];
+        let capacity = pool.additional_capacity(additional) as f64;
+        if (0..2).any(|kind| {
+            self.reserved_bytes[kind] + capacity * pool.page_bytes[kind] > self.memory_limits[kind]
+        }) {
             return Ok(());
         }
         let mut ready = true;
         for index in first..=last {
-            let page = &mut self.pages[index];
-            if page.resident {
-                self.touch(index);
+            if self.sources[source_index].pages[index].resident {
+                self.touch(source_index, index);
             } else {
-                if !page.wanted {
-                    page.wanted = true;
-                    self.wanted.push(index as u32);
-                }
+                self.want(source_index, index);
                 ready = false;
             }
         }
@@ -495,11 +615,21 @@ impl RadLodTree {
         }
         *remaining -= candidate.child_count - 1;
         for child_page in first..=last {
-            let page = &self.pages[child_page];
+            let page = &self.sources[source_index].pages[child_page];
             let children = start.max(page.base)..end.min(page.base + page.count);
-            self.enqueue_range(children, child_page, *remaining + 1, views, threshold)?;
+            self.enqueue_range(
+                source_index,
+                children,
+                child_page,
+                *remaining + 1,
+                views,
+                threshold,
+            )?;
         }
-        insert(&mut self.pages[parent_page].refined, local);
+        insert(
+            &mut self.sources[source_index].pages[parent_page].refined,
+            local,
+        );
         Ok(())
     }
 
@@ -509,51 +639,58 @@ impl RadLodTree {
         resident: &[u32],
         budget: u32,
         threshold: f64,
-        page_budget: usize,
         budget_tolerance: f64,
     ) -> Result<()> {
         self.stack.clear();
         self.frontier.clear();
-        self.indices.clear();
         self.wanted.clear();
         self.touched.clear();
-        for page in &mut self.pages {
-            page.resident = false;
-            page.touched = false;
-            page.wanted = false;
-            page.seen.fill(0);
-            page.refined.fill(0);
+        self.reserved_bytes = [0.0; 2];
+        for source in &mut self.sources {
+            source.indices.clear();
+            for page in &mut source.pages {
+                page.resident = false;
+                page.touched = false;
+                page.wanted = false;
+                page.seen.fill(0);
+                page.refined.fill(0);
+            }
         }
-        for &index in resident {
-            if let Some(page) = self.pages.get_mut(index as usize) {
+        for pair in resident.chunks_exact(2) {
+            if let Some(page) = self
+                .source_index(pair[0])
+                .and_then(|source_index| self.sources[source_index].pages.get_mut(pair[1] as usize))
+            {
                 page.resident = page.tree.is_some();
             }
         }
-        if self.count == 0 {
+        let count: u64 = self
+            .roots
+            .iter()
+            .map(|&index| u64::from(self.sources[index].count))
+            .sum();
+        if count == 0 {
             return Ok(());
         }
         ensure!(
             budget as usize >= self.roots.len(),
             "RAD splat budget must cover every source root"
         );
-        ensure!(
-            page_budget >= self.roots.len(),
-            "RAD memory budgets must cover every source root"
-        );
-        let cap = (budget as f64 * (1.0 + budget_tolerance)).min(self.count as f64) as u32;
+        let cap = (budget as f64 * (1.0 + budget_tolerance)).min(count as f64) as u32;
         let mut remaining = cap - self.roots.len() as u32;
         for root in 0..self.roots.len() {
-            let index = self.roots[root];
-            let page = &mut self.pages[index];
-            if !page.resident {
-                page.wanted = true;
-                self.wanted.push(index as u32);
+            let source_index = self.roots[root];
+            if !self.sources[source_index].pages[0].resident {
+                self.want(source_index, 0);
                 continue;
             }
-            let base = page.base;
-            self.touch(index);
-            self.enqueue_range(base..base + 1, index, remaining + 1, views, threshold)?;
+            self.touch(source_index, 0);
+            self.enqueue_range(source_index, 0..1, 0, remaining + 1, views, threshold)?;
         }
+        ensure!(
+            (0..2).all(|kind| self.reserved_bytes[kind] <= self.memory_limits[kind]),
+            "RAD memory budgets must cover every source root"
+        );
         let mut current = (threshold * 1000.0).min(f64::MAX);
         loop {
             // Finish a threshold round before stopping at the target, but
@@ -572,7 +709,7 @@ impl RadLodTree {
                     self.frontier.push(candidate);
                     continue;
                 }
-                self.refine(candidate, &mut remaining, views, threshold, page_budget)?;
+                self.refine(candidate, &mut remaining, views, threshold)?;
             }
             if self.frontier.is_empty() || current == threshold {
                 break;
@@ -585,14 +722,16 @@ impl RadLodTree {
         }
         // Every seen node remains in the cut unless it was successfully refined.
         // Ordered pages and set bits produce stable source order without sorting.
-        self.indices.reserve((cap - remaining) as usize);
-        for page in &self.pages {
-            for (word, (&seen, &refined)) in page.seen.iter().zip(&page.refined).enumerate() {
-                let mut selected = seen & !refined;
-                while selected != 0 {
-                    self.indices
-                        .push(page.base + word as u32 * 64 + selected.trailing_zeros());
-                    selected &= selected - 1;
+        for source in &mut self.sources {
+            for page in &source.pages {
+                for (word, (&seen, &refined)) in page.seen.iter().zip(&page.refined).enumerate() {
+                    let mut selected = seen & !refined;
+                    while selected != 0 {
+                        source
+                            .indices
+                            .push(page.base + word as u32 * 64 + selected.trailing_zeros());
+                        selected &= selected - 1;
+                    }
                 }
             }
         }

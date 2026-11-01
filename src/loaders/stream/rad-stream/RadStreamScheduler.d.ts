@@ -1,21 +1,26 @@
 import type * as THREE from "three";
 import type { StreamResolutionSource } from "../StreamCameras.js";
 import type { StreamSchedulerOptions, StreamStats } from "../streamOptions.js";
-import type { RadStreamLoaderOptions } from "./RadStreamLoader.js";
-export type RadStreamSchedulerOptions = RadStreamLoaderOptions &
-  StreamSchedulerOptions & {
-    /** Allowed fractional splat budget overshoot. Default: 0.1; 0 forbids overshoot. */
-    splatBudgetTolerance?: number;
-    /** Retained CPU byte budget, excluding pending copies and WASM. Default: 2 GiB. */
-    maxResidentCpuBytes?: number;
-    /** Estimated GPU byte budget for resident streaming data. Default: 1 GiB. */
-    maxResidentGpuBytes?: number;
-  };
+import type { RadStreamSourceOptions } from "./RadStreamLoader.js";
+export type RadStreamSchedulerOptions = StreamSchedulerOptions & {
+  /** Allowed fractional splat budget overshoot. Default: 0.1; 0 forbids overshoot. */
+  splatBudgetTolerance?: number;
+  /** Retained CPU byte budget, excluding pending copies and WASM. Default: 2 GiB. */
+  maxResidentCpuBytes?: number;
+  /** Estimated GPU byte budget for resident streaming data. Default: 1 GiB. */
+  maxResidentGpuBytes?: number;
+};
 /** An input's settings that can change after creation. */
 export type RadStreamSourceSettings = { transform: THREE.Matrix4 };
 export type RadStreamStats = StreamStats & {
-  /** Resident page limit within both memory budgets; storage is allocated on demand. */
+  /** Upper bound on resident pages; capacity is reserved in eight-page pools per SH degree. */
   pageBudget: number;
+  /** Allocated slots, including currently unused ones. */
+  allocatedPages: number;
+  /** Unoccupied allocated slots available for reuse. */
+  freePages: number;
+  /** New GPU storage awaiting initialization, separate from resident statistics. */
+  pendingGpuBytes: number;
   lodTimeMs: number;
 };
 /** Camera-driven RAD tree cuts with crossfades, on-demand pages and cooldown. */
@@ -23,7 +28,6 @@ export declare class RadStreamScheduler {
   private readonly options;
   readonly group: THREE.Group;
   private readonly uploads;
-  readonly initialized: Promise<this>;
   readonly firstRenderable: Promise<this>;
   readonly cooldownMs: number;
   readonly fadeDurationMs: number;
@@ -39,8 +43,9 @@ export declare class RadStreamScheduler {
   private readonly pages;
   private readonly pools;
   private readonly matrix;
-  private meta?;
   private readonly inputs;
+  private nextSourceId;
+  private sourceRevision;
   private pageBudget;
   private rootPages;
   private disposed;
@@ -58,12 +63,19 @@ export declare class RadStreamScheduler {
   private lodTimeMs;
   private resolveFirst;
   private rejectFirst;
-  constructor(options: RadStreamSchedulerOptions);
-  /** An input's current settings; inputs keep their creation order. */
-  getSourceSettings(index: number): RadStreamSourceSettings;
+  /** Creates an empty scheduler. Add inputs with addSource(). */
+  constructor(options?: RadStreamSchedulerOptions);
+  /** Current source IDs in insertion order, including pending additions. */
+  get sourceIds(): readonly number[];
+  /** Resolves to a stable ID when metadata is ready; does not wait for rendered data. */
+  addSource(options: RadStreamSourceOptions): Promise<number>;
+  /** Cancel and release this input immediately. Returns false when absent. */
+  removeSource(id: number): boolean;
+  /** IDs are never renumbered or reused. */
+  getSourceSettings(id: number): RadStreamSourceSettings;
   /** Change an input's transform; loaded data is kept. */
   setSourceSettings(
-    index: number,
+    id: number,
     settings: Partial<RadStreamSourceSettings>,
   ): void;
   private input;
@@ -104,7 +116,11 @@ export declare class RadStreamScheduler {
   get stats(): RadStreamStats;
   /** Group-local root bounds plus selected Gaussian extents; approximate while streaming. */
   getBoundingBox(): THREE.Box3;
-  private initialize;
+  private initializeSource;
+  /** Resident bytes of the pools that hold every input's root page. */
+  private rootPoolBytes;
+  private updatePageBudget;
+  private resolveIfEmpty;
   /**
    * Call before rendering. Registered cameras share one cut at the greatest
    * detail any of them needs.
@@ -112,9 +128,13 @@ export declare class RadStreamScheduler {
   update(): boolean;
   private get selectionBaselineId();
   private requestSelection;
+  private selectionPages;
   private selectionPagesReady;
+  /** Snapshot pool selections for these cuts, locating pages by their storage. */
+  private snapshotPools;
   private prepareSelection;
   private applySelection;
+  private commitPools;
   private invalidatePendingSelection;
   private clearSelectionState;
   /** Worker snapshots and waiting cuts pin pages without renewing cooldown. */
@@ -127,12 +147,11 @@ export declare class RadStreamScheduler {
   private setInitialBounds;
   /** One input's records in this pool, with its own transform. */
   private createView;
-  private findSlot;
+  /** File indices of the displayed cut, for rebuilding views after page moves. */
+  private snapshotDisplayed;
   private reservePages;
-  private uploadPages;
   private releasePage;
   private isPageRequired;
-  private releaseUnused;
   private changed;
   private failed;
   private stopRefinement;

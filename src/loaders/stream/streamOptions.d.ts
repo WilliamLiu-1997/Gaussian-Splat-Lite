@@ -3,10 +3,6 @@ import type { SplatRequestOptions } from "../loadTypes.js";
 export type StreamRequestOptions = SplatRequestOptions & {
   manager?: LoadingManager;
 };
-/** Inputs are supplied only through a nonempty sources list. */
-export declare function streamSources<T>(options: {
-  sources: readonly T[];
-}): readonly T[];
 export type StreamSchedulerOptions = {
   /** Initial Splat budget; update scheduler.splatBudget to change it at runtime. */
   splatBudget?: number;

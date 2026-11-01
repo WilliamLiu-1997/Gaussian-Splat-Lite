@@ -3,7 +3,12 @@ import { SplatOpacityTable } from "./SplatOpacityTable.js";
 import { Splats } from "./Splats.js";
 import { SPLAT_BOUNDS_BLOCK_SIZE, SPLAT_TEX_WIDTH } from "./defines.js";
 import { decodeShRgbToArray } from "./splatCodec.js";
-import { SH_ARRAY_COUNTS, SH_KEYS } from "./splatData.js";
+import {
+  SH_ARRAY_COUNTS,
+  SH_KEYS,
+  createSplatTextureArrays,
+  getSplatTextureCount,
+} from "./splatData.js";
 import { disposeDataTexture, getTextureSize } from "./textureLayout.js";
 import { decodeSplat } from "./unpack.js";
 function makeTexture(data, width, height, depth) {
@@ -25,6 +30,7 @@ export class IndexedSplats extends Splats {
     blockBits,
     packedOpacityGroups = false,
     storage,
+    deferAllocation = false,
   }) {
     // RAD and SOG supply aligned power-of-two layers.
     if (capacity > 0x1_0000_0000)
@@ -49,6 +55,7 @@ export class IndexedSplats extends Splats {
       this.sourceArrays = storage.sourceArrays;
       this.sourceCenters = storage.sourceCenters;
       this.sourceTextures = storage.sourceTextures;
+      this.needsUpdate = true;
       return;
     }
     this.spatialChunks = new Map();
@@ -62,19 +69,25 @@ export class IndexedSplats extends Splats {
       blockBits,
       packedOpacityGroups,
     );
-    this.sourceArrays = Array.from(
-      { length: 2 + SH_ARRAY_COUNTS[numSh] },
-      () => new Uint32Array(capacity * 4),
+    this.sourceArrays = [];
+    this.sourceTextures = [];
+    if (!deferAllocation)
+      for (const array of createSplatTextureArrays(capacity, numSh))
+        this.allocateTexture(array);
+  }
+  /** Create one packed texture from its array, which may come from a worker. */
+  allocateTexture(array) {
+    const texture = makeTexture(
+      array,
+      SPLAT_TEX_WIDTH,
+      this.layerSize / SPLAT_TEX_WIDTH,
+      this.maxSplats / this.layerSize,
     );
-    this.sourceCenters = new Float32Array(this.sourceArrays[0].buffer);
-    this.sourceTextures = this.sourceArrays.map((array) =>
-      makeTexture(
-        array,
-        SPLAT_TEX_WIDTH,
-        layerSize / SPLAT_TEX_WIDTH,
-        capacity / layerSize,
-      ),
-    );
+    this.sourceArrays.push(array);
+    this.sourceTextures.push(texture);
+    if (this.sourceArrays.length === 1)
+      this.sourceCenters = new Float32Array(array.buffer);
+    return texture;
   }
   assertLive() {
     if (this.disposed) throw new Error("Streaming Splat source is disposed");
@@ -88,11 +101,12 @@ export class IndexedSplats extends Splats {
   /** Range-based sources can materialize their visible map lazily. */
   ensureIndices() {}
   /** Reserve index storage and mark it for upload; fill the first count entries synchronously. */
-  prepareIndices(count) {
+  prepareIndices(count, maxCapacity = Number.POSITIVE_INFINITY) {
     this.assertLive();
     if (
       count > this.sourceIndices.length ||
-      count < this.sourceIndices.length / 4
+      count < this.sourceIndices.length / 4 ||
+      this.sourceIndices.length > maxCapacity
     ) {
       const layout = getTextureSize(Math.max(1, Math.ceil(count / 4)), 1);
       const capacity = layout.maxSplats * 4;
@@ -136,7 +150,7 @@ export class IndexedSplats extends Splats {
       ...SH_KEYS.slice(0, SH_ARRAY_COUNTS[numSh]).map((key) => data.extra[key]),
     ];
     if (
-      arrays.length !== 2 + SH_ARRAY_COUNTS[numSh] ||
+      arrays.length !== getSplatTextureCount(numSh) ||
       arrays.some(
         (array) =>
           count > 0 &&

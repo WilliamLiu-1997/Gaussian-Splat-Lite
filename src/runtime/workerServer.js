@@ -49,6 +49,7 @@ export function startWorker(rpcHandlers) {
         {
           id,
           error,
+          errorName: error.name,
           fatal: failure.failed || isMemoryAllocationError(caught),
           wasmMemoryBytes: wasmMemory.buffer.byteLength,
         },

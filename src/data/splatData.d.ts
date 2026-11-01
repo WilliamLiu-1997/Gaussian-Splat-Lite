@@ -16,6 +16,13 @@ export declare function unionSplatBounds(
 ): void;
 export declare function resetSplatBounds(bounds: Float32Array): void;
 export declare function getSplatShDegree(extra: SplatExtra): 0 | 1 | 2 | 3 | 4;
+/** Packed RGBA32UI textures per record: two base textures plus SH blocks. */
+export declare function getSplatTextureCount(numSh: number): number;
+/** Zeroed packed arrays for capacity records, one per texture. */
+export declare function createSplatTextureArrays(
+  capacity: number,
+  numSh: number,
+): Uint32Array<ArrayBuffer>[];
 /** Packed texture storage; capacity includes padding, but excludes sort centers. */
 export declare function getSplatTextureBytes(
   capacity: number,

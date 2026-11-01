@@ -1,9 +1,13 @@
-import type { RadStreamMetadata } from "./RadStreamLoader.js";
 export declare function radPageCosts(numSh: number): {
   cpu: number;
   gpu: number;
   pending: number;
 };
+/** Resident bytes of the whole eight-page pools that hold this many pages. */
+export declare function radPoolBytes(
+  costs: { cpu: number; gpu: number },
+  pages?: number,
+): { cpu: number; gpu: number };
 /** CPU-only page data split between traversal and display preparation workers. */
 export type RadLodChunk = {
   centers: Float32Array;
@@ -26,24 +30,37 @@ export type RadLodView = {
 };
 export type RadLodRequest = {
   views: RadLodView[];
-  /** One model-to-group matrix per input. */
-  transforms: number[][];
+  /** Active inputs, each with its transform and decoded page costs. */
+  sources: {
+    id: number;
+    /** Stored SH degree; inputs of one degree share pools. */
+    numSh: number;
+    transform: number[];
+    pageCpuBytes: number;
+    pageGpuBytes: number;
+  }[];
   splatBudget: number;
   splatBudgetTolerance: number;
-  /** Shared slot limit after accounting for both resident memory budgets. */
-  pageBudget: number;
+  maxResidentCpuBytes: number;
+  maxResidentGpuBytes: number;
   pixelThreshold: number;
+  /** Interleaved source ID / local chunk pairs. */
   residentChunks: number[];
 };
-export type RadLodSelection = {
-  /** Stable file indices. The scheduler maps these to occupied GPU slots. */
+export type RadSourceCut = {
+  source: number;
+  /** Source-local file indices, independent of physical pool slots. */
   indices: Uint32Array;
+};
+export type RadLodSelection = {
+  sources: RadSourceCut[];
+  /** Source ID / local chunk pairs in traversal priority order. */
   wantedChunks: Uint32Array;
-  /** Ancestor and selected pages required by this cut. */
+  /** Ancestor and selected pages, as source ID / local chunk pairs. */
   touchedChunks: Uint32Array;
 };
 /** Resolve validated LOD indices without assuming that chunks are 64K records. */
 export declare function radChunkIndex(
-  meta: RadStreamMetadata,
+  meta: { chunks: { base: number; count: number }[] },
   index: number,
 ): number;

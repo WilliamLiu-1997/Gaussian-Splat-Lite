@@ -1,6 +1,6 @@
-import type { RadStreamMetadata } from "./RadStreamLoader.js";
+import type { RadStreamSourceMetadata } from "./RadStreamLoader.js";
 import type { RadStreamSelection } from "./radFade.js";
-import type { RadLodRequest, RadLodSelection } from "./radLod.js";
+import type { RadLodRequest, RadLodSelection, RadSourceCut } from "./radLod.js";
 export type RadSelectionRequest = RadLodRequest & {
   /** Fade baseline: the preparing cut, or the displayed cut when none is pending. */
   previousId?: number;
@@ -18,8 +18,15 @@ export type RadSelectionReply = RadStreamSelection & {
 export declare class RadSelectionState {
   private readonly cuts;
   private nextId;
+  /** Copy the displayed cut for a physical relocation without changing its ID. */
+  snapshot(id: number): RadSourceCut[];
+  removeSource(source: number): void;
+  get byteLength(): number;
   prepare(
-    meta: RadStreamMetadata,
+    metaBySource: ReadonlyMap<
+      number,
+      RadStreamSourceMetadata["header"]["meta"]
+    >,
     selected: RadLodSelection,
     { previousId, displayedId, readyId, fade }: RadSelectionRequest,
   ): RadSelectionReply;

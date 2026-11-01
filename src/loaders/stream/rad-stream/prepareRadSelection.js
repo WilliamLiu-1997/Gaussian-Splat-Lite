@@ -3,15 +3,54 @@ import {
   SPLAT_BOUNDS_BLOCK_SIZE,
 } from "../../../data/defines.js";
 import { resetSplatBounds, unionSplatBounds } from "../../../data/splatData.js";
+/** Index and fade arrays of cuts sent for preparation. */
+export function selectionIndexBytes(sources = []) {
+  return sources.reduce(
+    (bytes, cut) =>
+      bytes +
+      cut.indices.byteLength +
+      (cut.fade?.indices.byteLength ?? 0) +
+      (cut.fade?.fades.byteLength ?? 0),
+    0,
+  );
+}
+/** Temporary bytes of preparing these cuts for pool snapshots, per cut kept. */
+export function preparationRequestBytes(sources, pools, cutsPerInput) {
+  let bytes = selectionIndexBytes(sources);
+  for (const pool of pools) {
+    const count = pool.ranges.reduce(
+      (sum, range) => sum + range.end - range.start,
+      0,
+    );
+    const inputs = new Set(pool.ranges.map((range) => range.input)).size;
+    bytes +=
+      pool.opacityBlocks.byteLength +
+      pool.opacityBlocks.length * 2 + // One selection bit per source.
+      pool.pageCount * 9 + // Current/final page counts and dirty flags.
+      (count * 4 + inputs * 48) * cutsPerInput; // Indices and bounds per cut.
+  }
+  return bytes;
+}
 /** The scheduler snapshots and pins resident pages before dispatching this work. */
 export function prepareRadSelection({ selection, pools }, chunks) {
-  const { fade, ...target } = selection;
-  const indices = fade?.indices ?? selection.indices;
+  const sources = new Map(selection.sources.map((cut) => [cut.source, cut]));
+  const fade = selection.sources.some((cut) => cut.fade);
   return {
-    selection: target,
-    fade: !!fade,
-    pools: pools.map((pool) => preparePool(indices, fade?.fades, pool, chunks)),
+    selection: {
+      ...selection,
+      sources: selection.sources.map(({ source, indices }) => ({
+        source,
+        indices,
+      })),
+    },
+    fade,
+    pools: pools.map((pool) => preparePool(sources, fade, pool, chunks)),
   };
+}
+/** Rebuild affected views after relocating a settled cut between pools. */
+export function prepareRadMerge({ sources, pools }, chunks) {
+  const cuts = new Map(sources.map((cut) => [cut.source, cut]));
+  return pools.map((pool) => preparePool(cuts, false, pool, chunks));
 }
 function emptyCut() {
   const centerOnlyBoundingBox = new Float32Array(6);
@@ -21,8 +60,8 @@ function emptyCut() {
   return { count: 0, centerOnlyBoundingBox, boundingBox };
 }
 function preparePool(
-  indices,
-  fades,
+  sources,
+  fading,
   { pageCount, opacityBlocks, ranges },
   chunks,
 ) {
@@ -32,7 +71,7 @@ function preparePool(
   // Each opacity word stores sixteen groups, while a selection word holds 32 bits.
   const selectedWords = new Uint32Array(opacityBlocks.length / 2);
   const selectedPages = new Uint32Array(pageCount);
-  const finalSelectedPages = fades ? new Uint32Array(pageCount) : undefined;
+  const finalSelectedPages = fading ? new Uint32Array(pageCount) : undefined;
   const dirtyLayers = new Uint8Array(pageCount);
   // Flags record current (1) and post-fade (2) block membership.
   const blockFlags = new Uint8Array(
@@ -40,12 +79,15 @@ function preparePool(
   );
   let fadeKinds = 0;
   for (const { start, end, slot, chunkIndex, sourceBase, input } of ranges) {
-    const chunk = chunks.get(chunkIndex);
+    const chunk = chunks.get(input)?.get(chunkIndex);
     if (!chunk) throw new Error("RAD selection references a retired chunk");
     const { sourceToStorage: order, boundsBlocks } = chunk;
+    const selection = sources.get(input);
+    const indices = selection.fade?.indices ?? selection.indices;
+    const fades = selection.fade?.fades;
     let cut = cuts.get(input);
     if (!cut) {
-      cut = { ...emptyCut(), final: fades && emptyCut() };
+      cut = { ...emptyCut(), final: fading && emptyCut() };
       cuts.set(input, cut);
     }
     pageCuts[slot] = cut;

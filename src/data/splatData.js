@@ -26,9 +26,20 @@ export function getSplatShDegree(extra) {
   if (!extra.shBlock2 || !extra.shBlock3) return 2;
   return !extra.shBlock4 || !extra.shBlock5 ? 3 : 4;
 }
+/** Packed RGBA32UI textures per record: two base textures plus SH blocks. */
+export function getSplatTextureCount(numSh) {
+  return 2 + SH_ARRAY_COUNTS[numSh];
+}
+/** Zeroed packed arrays for capacity records, one per texture. */
+export function createSplatTextureArrays(capacity, numSh) {
+  return Array.from(
+    { length: getSplatTextureCount(numSh) },
+    () => new Uint32Array(capacity * 4),
+  );
+}
 /** Packed texture storage; capacity includes padding, but excludes sort centers. */
 export function getSplatTextureBytes(capacity, numSh) {
-  return capacity * (2 + SH_ARRAY_COUNTS[numSh]) * 16;
+  return capacity * getSplatTextureCount(numSh) * 16;
 }
 /** Retained CPU arrays, including sort centers and extra attribute buffers. */
 export function getSplatByteLength(data) {

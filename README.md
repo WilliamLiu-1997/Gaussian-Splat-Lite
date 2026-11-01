@@ -114,20 +114,21 @@ This mode produces visible noise. Smooth it with the [experimental neural denois
 
 Use `RadStreamScheduler` for RAD scenes with levels of detail (LOD), or `SogStreamScheduler` for SOG `lod-meta.json` scenes. Both load detail as the camera moves and work on WebGPU and WebGL2.
 
+Both schedulers start empty. Add inputs with `addSource()` and remove them by their stable source ID with `removeSource(id)`. The addition promise waits for metadata, not rendered data.
+
 For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
 
 ```js
 import { RadStreamScheduler } from "gaussian-splat-lite";
 
 const streaming = new RadStreamScheduler({
-  sources: [{ url: "/assets/scene.rad" }],
   splatBudget: 3_000_000,
   fadeDurationMs: 200, // Smooth LOD transitions (default).
 });
 scene.add(streaming.group);
 streaming.setCamera(camera);
 streaming.setResolutionFromRenderer(camera, renderer); // CSS pixels; again after resizing.
-await streaming.initialized;
+const sourceId = await streaming.addSource({ url: "/assets/scene.rad" });
 
 renderer.setAnimationLoop(() => {
   streaming.update();

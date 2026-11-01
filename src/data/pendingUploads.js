@@ -4,7 +4,7 @@
  * so storage reaches the GPU when written rather than on first display.
  */
 export const PENDING_UPLOADS = Symbol("gslPendingUploads");
-const MAX_PENDING_UPLOAD_BYTES = 24 * 1024 * 1024;
+export const MAX_PENDING_UPLOAD_BYTES = 24 * 1024 * 1024;
 /** Upload budget until the scheduler's dirty layers are submitted. */
 export class PendingUploads extends Set {
   constructor(group) {

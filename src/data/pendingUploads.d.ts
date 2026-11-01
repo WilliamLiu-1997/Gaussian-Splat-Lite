@@ -6,6 +6,7 @@ import type { IndexedSplats } from "./IndexedSplats.js";
  * so storage reaches the GPU when written rather than on first display.
  */
 export declare const PENDING_UPLOADS: unique symbol;
+export declare const MAX_PENDING_UPLOAD_BYTES: number;
 /** Upload budget until the scheduler's dirty layers are submitted. */
 export declare class PendingUploads extends Set<IndexedSplats> {
   constructor(group: THREE.Object3D);

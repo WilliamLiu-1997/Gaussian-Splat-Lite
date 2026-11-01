@@ -1,5 +1,5 @@
 import { IndexedSplats } from "./IndexedSplats.js";
-import { RAD_PAGE_SIZE } from "./defines.js";
+import { RAD_PAGE_SIZE, RAD_POOL_PAGE_COUNT } from "./defines.js";
 function lowerBound(values, value) {
   let low = 0;
   let high = values.length;
@@ -10,21 +10,20 @@ function lowerBound(values, value) {
   }
   return low;
 }
-/** Shared 65,536-record RAD slots, one page per texture array layer. */
+/** Eight shared 65,536-record RAD slots, one page per texture array layer. */
 export class RadPagedSplats extends IndexedSplats {
-  constructor({ pageCount, numSh }) {
-    if (!Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 256)
-      throw new Error("Invalid RAD page capacity");
+  constructor({ numSh, deferAllocation = false }) {
     super({
-      capacity: pageCount * RAD_PAGE_SIZE,
+      capacity: RAD_POOL_PAGE_COUNT * RAD_PAGE_SIZE,
       layerSize: RAD_PAGE_SIZE,
       numSh,
       blockBits: 0,
       packedOpacityGroups: true,
+      deferAllocation,
     });
     this.fadeProgress = 1;
     this.fadeKinds = 0;
-    this.pageCount = pageCount;
+    this.pageCount = RAD_POOL_PAGE_COUNT;
     this.selectedPages = new Uint32Array(this.pageCount);
   }
   /** Copies data and zeros SH above numSh; callers retain the packed buffers. */
@@ -35,6 +34,26 @@ export class RadPagedSplats extends IndexedSplats {
   }
   releasePage(slot) {
     this.releaseSpatialBounds(slot * RAD_PAGE_SIZE);
+    this.selectedPages[slot] = 0;
+    if (this.finalSelectedPages) this.finalSelectedPages[slot] = 0;
+  }
+  /** Copy a resident page into a free slot in one pass.
+   * The scheduler publishes its selection only after all copies are uploaded. */
+  copyPage(source, previous, slot) {
+    const start = previous * RAD_PAGE_SIZE;
+    const target = slot * RAD_PAGE_SIZE;
+    const spatial = source.spatialChunks.get(start);
+    this.spatialChunks.set(target, spatial);
+    this.spatialBoundsBytes += spatial.bounds.byteLength;
+    for (const [index, array] of source.sourceArrays.entries()) {
+      this.sourceArrays[index].set(
+        array.subarray(start * 4, (start + RAD_PAGE_SIZE) * 4),
+        target * 4,
+      );
+      this.sourceTextures[index].addLayerUpdate(slot);
+      this.sourceTextures[index].needsUpdate = true;
+    }
+    this.uploadQueue?.add(this);
   }
   /** Remove the displayed cut when its scheduler becomes hidden. */
   clearSelection() {
@@ -134,7 +153,12 @@ export class RadPageView extends IndexedSplats {
   }
   /** Keep record indices and bounds on the same cut. */
   commitCut(cut) {
-    this.prepareIndices(cut.indices.length).set(cut.indices);
+    // Keep index capacity within the pages charged to this input, including
+    // after other inputs reuse its old slots or pages move between pools.
+    this.prepareIndices(
+      cut.indices.length,
+      Math.ceil(cut.indices.length / RAD_PAGE_SIZE) * RAD_PAGE_SIZE,
+    ).set(cut.indices);
     this.centerOnlyBounds = cut.centerOnlyBoundingBox;
     this.bounds = cut.boundingBox;
   }

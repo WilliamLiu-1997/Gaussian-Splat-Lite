@@ -11,15 +11,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - RAD and SOG streaming inputs accept a `transform` (`THREE.Matrix4`) that places each model in the scheduler's group, including several instances of the same URL. `setSourceSettings()` moves an input without reloading its data.
 - Streamed SOG inputs accept their own `lodBaseDistance` and `lodMultiplier`. `setSourceSettings()` also changes an input's LOD settings and `environment` at runtime.
-- Streamed SOG supports `addSource()` and `removeSource()` with stable source IDs, preserving other inputs' loaded data. `sourceIds` lists the current IDs, which also identify inputs for `setSourceSettings()` and `getSourceSettings()`.
+- RAD and Streamed SOG support `addSource()` and `removeSource()` with stable source IDs, preserving other inputs' loaded data. `sourceIds` lists the current IDs, which also identify inputs for `setSourceSettings()` and `getSourceSettings()`.
 
 ### Changed
 
 - **Breaking:** Raised the minimum Three.js version to r187 and removed the r186 runtime compatibility patch.
 - Neural denoising uses a depth-only render target when exposing depth on the WebGL2 fallback, reducing GPU texture memory.
-- **Breaking:** RAD streaming requires a nonempty `sources` array, even for a single input. Put `url`/`file`/`fileBytes`, loading options and `transform` inside each source; top-level loading options are no longer inherited.
-- **Breaking:** Streamed SOG schedulers always start empty and no longer accept constructor `sources` or expose `initialized`. Add each input with `await streaming.addSource(options)` to wait for its metadata. `firstRenderable` waits for data added after construction.
-- RAD streaming caches and copies SH codebooks in a background worker, avoiding large main-thread copies when page decoders switch inputs.
+- **Breaking:** RAD and Streamed SOG schedulers always start empty and no longer accept constructor `sources` or expose `initialized`. Add each input with `await streaming.addSource(options)` to wait for its metadata. `firstRenderable` waits for data added after construction.
+- RAD streaming retains each input's SH degree and consolidates storage only when new detail needs space, while keeping existing detail visible and continuing to load.
+- RAD streaming reduces main-thread work when adding or removing inputs and allocating new storage.
+- RAD streaming moves SH codebook copies off the main thread.
 - Streamed SOG reduces oversized regions toward each input's own median region size when measuring LOD distance.
 - RAD and Streamed SOG streaming use less CPU memory for loaded detail.
 - Sorted Splats draw faster on the `WebGPURenderer` WebGL2 fallback, now matching `WebGLRenderer` on Apple GPUs; native WebGPU also draws them slightly faster. Rendered output is unchanged.
@@ -28,6 +29,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Removing a RAD input during initial loading no longer leaves stale page requests or resolves `firstRenderable` before remaining data is visible.
+- Repeatedly replacing RAD inputs of different sizes no longer accumulates retired directories or exhausts shared directory addresses.
+- RAD index textures shrink with their selected detail so retained capacity stays within the page memory budget.
+- Preserved named Worker errors so the viewer can fall back to ordinary loading for RAD files without LOD.
 - The viewer Inspector reports rendered FPS correctly when animation ticks are skipped with Three.js r187 and resets its timing when reopened.
 - Cube capture keeps its mip chain allocated while rendering the six faces and generates mipmaps only after the last face.
 - Neural denoising restores render-target viewport and scissor settings independently of the canvas pixel ratio.
