@@ -114,7 +114,7 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `splatBudgetMode` | `"target"` | `"target"` scales all inputs' distance bands together to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
-| `lodBehindPenalty` | `4` | Effective distance multiplier directly behind a camera, increasing smoothly from `1` at its sides. With the default LOD multiplier, `4` shifts rear detail by two distance bands. `1` disables directional bias. Must be finite and at least `1` |
+| `lodBehindPenalty` | `5` | Effective distance multiplier directly behind a camera, increasing smoothly from `1` at its sides. `1` disables directional bias. Must be finite and at least `1` |
 | `lodDistanceShrink` | `0.75` | Fraction of a region's excess half-size above its input's median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |

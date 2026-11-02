@@ -35,7 +35,7 @@ export function getSogViewKey(view) {
     .map((camera) => `${camera.modelView.join(",")}/${camera.fovScale}`)
     .join(";");
 }
-/** One input's octree, median region size and stable leaf identities. */
+/** One input's region bounds, median size and stable leaf identities. */
 export class SogVisibility {
   constructor(manifest) {
     this.manifest = manifest;
@@ -85,41 +85,51 @@ export class SogVisibility {
     });
     return cameras;
   }
+  measure(id, cameras, lodBehindPenalty, lodDistanceShrink) {
+    const { leafBounds } = this.manifest;
+    const offset = id * 6;
+    this.bound.min.fromArray(leafBounds, offset);
+    this.bound.max.fromArray(leafBounds, offset + 3);
+    // Only the distance box shrinks; source and rendering bounds stay intact.
+    this.bound
+      .getSize(this.shrink)
+      .multiplyScalar(0.5)
+      .sub(this.typicalHalfSize)
+      .clampScalar(0, Number.POSITIVE_INFINITY)
+      .multiplyScalar(lodDistanceShrink);
+    this.bound.min.add(this.shrink);
+    this.bound.max.sub(this.shrink);
+    // Keep surrounding regions in the budget. Any camera can request finer
+    // detail; only the part of the direction behind that camera is penalized.
+    let distance = Number.POSITIVE_INFINITY;
+    for (const { modelView, cameraPosition, fovScale } of cameras) {
+      this.bound
+        .clampPoint(cameraPosition, this.closest)
+        .applyMatrix4(modelView);
+      // View-space +Z is behind the camera. This equals a smooth angular
+      // distance multiplier, without dividing by zero inside the box.
+      const penalizedDistance =
+        this.closest.length() +
+        Math.max(0, this.closest.z) * (lodBehindPenalty - 1);
+      distance = Math.min(
+        distance,
+        Math.max(penalizedDistance * fovScale, 1e-6),
+      );
+    }
+    return distance;
+  }
   collect({ view, lodBehindPenalty, lodDistanceShrink, transform }) {
     const cameras = this.prepareCameras(view, transform);
     const regions = [];
     const { shown } = view;
     const { leafBounds } = this.manifest;
     for (let id = 0; shown && id < leafBounds.length / 6; id++) {
-      const offset = id * 6;
-      this.bound.min.fromArray(leafBounds, offset);
-      this.bound.max.fromArray(leafBounds, offset + 3);
-      // Only the distance box shrinks; source and rendering bounds stay intact.
-      this.bound
-        .getSize(this.shrink)
-        .multiplyScalar(0.5)
-        .sub(this.typicalHalfSize)
-        .clampScalar(0, Number.POSITIVE_INFINITY)
-        .multiplyScalar(lodDistanceShrink);
-      this.bound.min.add(this.shrink);
-      this.bound.max.sub(this.shrink);
-      // Keep surrounding regions in the budget. Any camera can request finer
-      // detail; only the part of the direction behind that camera is penalized.
-      let distance = Number.POSITIVE_INFINITY;
-      for (const { modelView, cameraPosition, fovScale } of cameras) {
-        this.bound
-          .clampPoint(cameraPosition, this.closest)
-          .applyMatrix4(modelView);
-        // View-space +Z is behind the camera. This equals a smooth angular
-        // distance multiplier, without dividing by zero inside the box.
-        const penalizedDistance =
-          this.closest.length() +
-          Math.max(0, this.closest.z) * (lodBehindPenalty - 1);
-        distance = Math.min(
-          distance,
-          Math.max(penalizedDistance * fovScale, 1e-6),
-        );
-      }
+      const distance = this.measure(
+        id,
+        cameras,
+        lodBehindPenalty,
+        lodDistanceShrink,
+      );
       this.leaves[id] ??= readSogLodLeaf(this.manifest, id);
       regions.push({ leaf: this.leaves[id], distance });
     }

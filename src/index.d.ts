@@ -1,4 +1,11 @@
 export {
+  Lcc2StreamScheduler,
+  type Lcc2StreamSchedulerOptions,
+  type Lcc2StreamSourceOptions,
+  type Lcc2StreamSourceSettings,
+  type Lcc2StreamStats,
+} from "./loaders/stream/lcc2-stream/Lcc2StreamScheduler.js";
+export {
   GaussianSplatRenderer,
   type GaussianSplatRendererOptions,
 } from "./rendering/GaussianSplatRenderer.js";
@@ -38,12 +45,31 @@ export {
   type SogStreamSourceSettings,
   type SogStreamStats,
 } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
+export type { SogStreamSourceOptions } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
+export type { SplatWorker } from "./runtime/SplatWorker.js";
+export { Splats, type SplatsOptions } from "./data/Splats.js";
 export {
-  LccStreamScheduler,
-  type LccStreamSchedulerOptions,
-} from "./loaders/stream/lcc-stream/LccStreamScheduler.js";
+  postDecode,
+  type SplatPostDecodeProgram,
+} from "./loaders/postDecode/program.js";
 export {
-  Lcc2StreamScheduler,
-  type Lcc2StreamSchedulerOptions,
-} from "./loaders/stream/lcc2-stream/Lcc2StreamScheduler.js";
-export type { SceneStreamStats } from "./loaders/stream/scene-stream/SceneStreamScheduler.js";
+  SplatEdit,
+  SplatEditRgbaBlendMode,
+  SplatEditSdf,
+  SplatEditSdfType,
+  SplatEdits,
+  type SplatEditGroup,
+  type SplatEditOptions,
+  type SplatEditSdfColor,
+  type SplatEditSdfOptions,
+} from "./scene/SplatEdit.js";
+export {
+  SplatMesh,
+  type SplatMeshFrameContext,
+  type SplatMeshOptions,
+  type SplatIntersection,
+} from "./scene/SplatMesh.js";
+export { fromHalf, toHalf } from "./utils/index.js";
+export * as utils from "./utils/index.js";
+export { SplatFileType } from "./data/defines.js";
+export * as defines from "./data/defines.js";

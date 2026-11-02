@@ -1,23 +1,26 @@
+import type { ChunkStreamSourceOptions } from "../chunk-stream/ChunkStreamLoader.js";
 import {
-  type SceneStreamOptions,
-  SceneStreamScheduler,
-} from "../scene-stream/SceneStreamScheduler.js";
-export type Lcc2StreamSchedulerOptions = SceneStreamOptions & {
-  /** Default: replace. Verifies 0.0.3 payload-level totals against reversed lodSplats.
-   * leaves bypasses replacement-profile validation and streams spatial leaves only.
-   * Array-valued node data is unsupported in both modes. */
-  refinement?: "replace" | "leaves";
-  /** Per-payload-level replacement distances in scene units, coarse-to-fine descending.
-   * Missing levels do not refine. Omit to refine as far as the splat budget permits. */
-  lodDistances?: number[];
-  /** Relative distance-band margin in [0, 1). Default: 0.15.
-   * Enter at distance <= band * (1 - margin); retain through band * (1 + margin). */
-  lodHysteresis?: number;
+  ChunkStreamScheduler,
+  type ChunkStreamSchedulerOptions,
+  type ChunkStreamSourceSettings,
+  type ChunkStreamStats,
+} from "../chunk-stream/ChunkStreamScheduler.js";
+export type Lcc2StreamSchedulerOptions = Omit<
+  ChunkStreamSchedulerOptions,
+  "lodDistanceShrink"
+> & {
+  /** Shrinks oversized regions for LOD distance only; defaults to 0. Must be between 0 and 1. */
+  lodDistanceShrink?: number;
 };
-/** LCC2 0.0.3 coarse-first replacement with atomic composite branch cuts.
- * Source decoding and atomic replacement overlap use shared CPU/GPU admission.
- * Preflight uses DecompressionStream for gzip SPZ and deflated SOG metadata.
- * Record IDs remain file-relative. No reserved basis transform is applied. */
-export declare class Lcc2StreamScheduler extends SceneStreamScheduler {
-  constructor(options: Lcc2StreamSchedulerOptions);
+export type Lcc2StreamSourceOptions = ChunkStreamSourceOptions;
+export type Lcc2StreamSourceSettings = ChunkStreamSourceSettings;
+export type Lcc2StreamStats = ChunkStreamStats;
+/** Streams LCC2 splat files while retaining complete parent/child coverage. */
+export declare class Lcc2StreamScheduler extends ChunkStreamScheduler {
+  private drawn;
+  /** Creates an empty scheduler; add .lcc2 inputs with addSource(). Distance shrink defaults to 0. */
+  constructor(options?: Lcc2StreamSchedulerOptions);
+  protected isRangeVisible(range: { leaf: number }): boolean;
+  protected selectRegions(): { selected: unknown[]; refinements: unknown[] };
+  dispose(): void;
 }

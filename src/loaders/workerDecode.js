@@ -1,4 +1,3 @@
-import * as wasm from "gaussian-splat-rs";
 import { decode_to_splats } from "gaussian-splat-rs";
 import { abortable } from "../runtime/abort.js";
 import { wasmCall, wasmFree } from "../runtime/wasmCall.js";
@@ -32,18 +31,6 @@ async function decodeInput(args) {
     resolveAsset,
   } = args;
   let { fileBytes } = args;
-  const limits = args.decoderLimits;
-  if (limits && !Reflect.get(wasm, "decoder_budget_supported")?.())
-    throw new Error(
-      "WASM decoder lacks budget guards; rebuild WASM before bounded scene decoding",
-    );
-  if (limits)
-    wasmCall(() =>
-      Reflect.get(wasm, "set_decoder_memory_limit")(limits.maxWasmBytes),
-    );
-  const inputSize = fileBytes?.byteLength ?? file?.size;
-  if (limits && inputSize !== undefined && inputSize > limits.maxInputBytes)
-    throw new Error("Input exceeds decoder maxInputBytes");
   if (
     fileType === "rad" ||
     (!fileType &&
@@ -146,11 +133,132 @@ async function decodeInput(args) {
           new URL(url).origin !== new URL(responseUrl).origin;
         const streamingArgs = {
           expectedSogCount: args.expectedSogCount,
-      decode_to_splats(
-        fileType,
-        pathName ?? url,
-        limits?.maxPoints,
-        limits?.maxDecoderBytes,
-        limits?.maxWasmBytes,
-        args.maxSh,
+          maxSh: args.maxSh,
+          readChunk: async () => pending.shift() ?? readInputChunk(),
+          baseUrl: getAssetBaseUrl(responseUrl) ?? baseUrl,
+          requestHeader: crossOrigin ? undefined : requestHeader,
+          withCredentials: !crossOrigin && withCredentials,
+          sendStatus,
+          resolveAsset,
+          resolveFile: args.resolveFile,
+          signal: args.signal,
+        };
+        return isRadPrefix(sniffed)
+          ? await loadRad({ ...streamingArgs, postDecode: args.postDecode })
+          : await loadSog(streamingArgs);
+      }
+    }
+    args.signal?.throwIfAborted();
+    const activeDecoder = wasmCall(() =>
+      decode_to_splats(fileType, pathName ?? url, args.maxSh),
+    );
+    decoder = activeDecoder;
+    if (expectedInputLength > 0) {
+      wasmCall(() =>
+        activeDecoder.set_expected_input_size(expectedInputLength),
+      );
+    }
+    while (true) {
+      const value = pending.shift() ?? (await readInputChunk());
+      if (!value) break;
+      loaded += value.length;
+      if (expectedInputLength > 0 && loaded > expectedInputLength) {
+        throw new Error(
+          `Input length exceeds the expected ${expectedInputLength} bytes`,
+        );
+      }
+      sendStatus({ loaded, total: streamLength });
+      wasmCall(() => activeDecoder.push(value));
+    }
+    if (expectedInputLength > 0 && loaded !== expectedInputLength) {
+      throw new Error(
+        `Input length mismatch: expected ${expectedInputLength} bytes, received ${loaded}`,
+      );
+    }
+    if (streamLength === 0) {
+      sendStatus({ loaded, total: loaded });
+    }
+    const complete = decoder;
+    decoder = undefined;
+    return wasmCall(() => complete.finish());
+  } catch (error) {
+    await streamReader?.cancel(error).catch(() => {});
+    throw error;
+  } finally {
+    wasmFree(decoder);
+    streamReader?.releaseLock();
+  }
+}
+/** Decode in source order so streamed SOG can extract file ranges first. */
+export async function decodeSplats(args, { sendStatus }) {
+  const decoded = await decodeInput({
+    ...args,
+    sendStatus,
+    resolveAsset: (url) => {
+      const requestId = ++assetRequestId;
+      return abortable(
+        new Promise((resolve) => {
+          assetRequests.set(requestId, resolve);
+          sendStatus({ assetRequest: requestId, url });
+        }),
+        args.signal,
+      ).finally(() => assetRequests.delete(requestId));
+    },
+    resolveFile: args.hasFileResolver
+      ? (filename, signal) => {
+          const requestId = ++assetRequestId;
+          return abortable(
+            new Promise((resolve) => {
+              fileRequests.set(requestId, resolve);
+              sendStatus({ fileRequest: requestId, filename });
+            }),
+            signal,
+          ).finally(() => fileRequests.delete(requestId));
+        }
+      : undefined,
+  });
+  if (args.postDecode)
+    applySplatPostDecode(
+      decoded,
+      args.postDecode,
+      createStageProgress(
+        args.reportProcessingProgress ? sendStatus : undefined,
+        "postDecode",
       ),
+    );
+  return {
+    numSplats: decoded.numSplats,
+    splatArrays: [decoded.splat0, decoded.splat1],
+    sortCenters: decoded.sortCenters,
+    extra: {
+      shBlock0: decoded.shBlock0,
+      shBlock1: decoded.shBlock1,
+      shBlock2: decoded.shBlock2,
+      shBlock3: decoded.shBlock3,
+      shBlock4: decoded.shBlock4,
+      shBlock5: decoded.shBlock5,
+    },
+  };
+}
+export async function loadSplats(args, options) {
+  const data = await decodeSplats(args, options);
+  // Custom SOG loaders return Splats; retain the permutation for range extraction.
+  data.storageOrder = new Uint32Array(data.numSplats);
+  reorderSplats(data, {
+    storageOrder: data.storageOrder,
+    onProgress: createStageProgress(
+      args.reportProcessingProgress ? options.sendStatus : undefined,
+      "optimize",
+    ),
+  });
+  return data;
+}
+let assetRequestId = 0;
+const assetRequests = new Map();
+const fileRequests = new Map();
+export function resolveFile({ requestId, input }) {
+  fileRequests.get(requestId)?.(input);
+}
+export function resolveAsset({ requestId, url }) {
+  assetRequests.get(requestId)?.(url);
+}

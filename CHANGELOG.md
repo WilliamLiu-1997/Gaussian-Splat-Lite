@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added `Lcc2StreamScheduler` for LCC2 scenes with SOG, SPZ, or PLY chunks, camera-driven LOD, shared budgets across inputs, environment loading, and visibility fades. See [LCC2 streaming](docs/Lcc2StreamScheduler.md).
+- The viewer opens LCC2 scenes from an index URL or a local folder containing the index and companion files.
+
 ## [1.6.0] - 2026-11-01
 
 ### Added

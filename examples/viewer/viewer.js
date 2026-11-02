@@ -1,7 +1,6 @@
 import {
   GaussianSplatRenderer,
   Lcc2StreamScheduler,
-  LccStreamScheduler,
   RadStreamScheduler,
   SogStreamScheduler,
   SplatFileType,
@@ -17,7 +16,6 @@ import {
   filesFromDrop,
   modelFromLocalFiles,
   modelFromUrl,
-  sceneTypeFor,
 } from "./modelSource.js";
 import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
@@ -309,17 +307,14 @@ const renderOptionActions = {
   maxResidentCpuBytes: reloadRadStream,
   maxResidentGpuBytes: reloadRadStream,
   splatBudgetMode: (value) => {
-    if (activeStream instanceof SogStreamScheduler)
-      activeStream.splatBudgetMode = value;
+    if (isChunkStream(activeStream)) activeStream.splatBudgetMode = value;
     syncStreamOptions();
   },
   lodBaseDistance: (value) => {
-    if (activeStream instanceof SogStreamScheduler)
-      activeStream.lodBaseDistance = value;
+    if (isChunkStream(activeStream)) activeStream.lodBaseDistance = value;
   },
   lodMultiplier: (value) => {
-    if (activeStream instanceof SogStreamScheduler)
-      activeStream.lodMultiplier = value;
+    if (isChunkStream(activeStream)) activeStream.lodMultiplier = value;
   },
   denoiseEnabled: (value) => {
     denoiseEnabled = value;
@@ -539,17 +534,24 @@ syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
 optionsPanel.reset({ skip: ["rendererBackend"] });
 
+function isChunkStream(stream) {
+  return (
+    stream instanceof SogStreamScheduler ||
+    stream instanceof Lcc2StreamScheduler
+  );
+}
+
 function syncStreamOptions() {
   const isRad = activeStream instanceof RadStreamScheduler;
-  const isSog = activeStream instanceof SogStreamScheduler;
+  const isChunk = isChunkStream(activeStream);
   optionsPanel.setHidden("splatBudget", !activeStream);
   optionsPanel.setHidden("maxResidentCpuBytes", !isRad);
   optionsPanel.setHidden("maxResidentGpuBytes", !isRad);
-  optionsPanel.setHidden("splatBudgetMode", !isSog);
-  optionsPanel.setHidden("lodMultiplier", !isSog);
+  optionsPanel.setHidden("splatBudgetMode", !isChunk);
+  optionsPanel.setHidden("lodMultiplier", !isChunk);
   optionsPanel.setHidden(
     "lodBaseDistance",
-    !isSog || activeStream.splatBudgetMode !== "limit",
+    !isChunk || activeStream.splatBudgetMode !== "limit",
   );
 }
 
@@ -652,10 +654,10 @@ async function initializeModel(
   const fileType = await detectFileType(file, url);
   if (loadId !== activeLoad) return;
   const sogStream = url && file.name.toLowerCase() === "lod-meta.json";
-  const sceneType = sceneTypeFor(file);
-  if (!fileType && !sogStream && !sceneType && !url)
+  const lcc2Stream = url && file.name.toLowerCase().endsWith(".lcc2");
+  if (!fileType && !sogStream && !lcc2Stream && !url)
     throw new Error(
-      "Choose a .ply, .spz, .sog, .rad, .lcc, .lcc2, or SOG meta.json file.",
+      "Choose a .ply, .spz, .sog, .rad, .lcc2, or SOG metadata file.",
     );
 
   const source = {
@@ -694,16 +696,9 @@ async function initializeModel(
     }
   }
 
-  if (sceneType) {
-    if (!url)
-      throw new Error("Select the scene folder with its companion files.");
-    const Scheduler =
-      sceneType === "lcc" ? LccStreamScheduler : Lcc2StreamScheduler;
-    model.stream = new Scheduler({ url, manager, ...streamOptions });
-    model.stream.setCamera(camera);
-    model.splat = model.stream.group;
-  } else if (sogStream) {
-    model.stream = new SogStreamScheduler({
+  if (sogStream || lcc2Stream) {
+    const Scheduler = lcc2Stream ? Lcc2StreamScheduler : SogStreamScheduler;
+    model.stream = new Scheduler({
       ...streamOptions,
       splatBudgetMode: optionsPanel.getValue("splatBudgetMode"),
       lodBaseDistance: optionsPanel.getValue("lodBaseDistance"),
@@ -763,12 +758,7 @@ async function loadFile(
       return;
     }
 
-    applyModelOrientation(
-      model.splat,
-      model.stream instanceof SogStreamScheduler ||
-        model.stream instanceof LccStreamScheduler ||
-        model.stream instanceof Lcc2StreamScheduler,
-    );
+    applyModelOrientation(model.splat, isChunkStream(model.stream));
     activeSplat = model.splat;
     activeStream = model.stream;
     if (activeStream instanceof RadStreamScheduler)
@@ -897,12 +887,7 @@ referenceToggle.addEventListener("click", () => {
 sourceUpAxis.addEventListener("change", (event) => {
   modelUpAxis = event.target.value;
   if (!activeSplat) return;
-  applyModelOrientation(
-    activeSplat,
-    activeStream instanceof SogStreamScheduler ||
-      activeStream instanceof LccStreamScheduler ||
-      activeStream instanceof Lcc2StreamScheduler,
-  );
+  applyModelOrientation(activeSplat, isChunkStream(activeStream));
   requestRender();
 });
 
@@ -947,9 +932,9 @@ window.addEventListener("drop", async (event) => {
       loadLocalFiles(files);
     } else {
       ui.showToast(
-        "Drop a model or a SOG folder containing lod-meta.json and its chunks.",
+        "Drop a model or a scene folder containing lod-meta.json or .lcc2 and its chunks.",
       );
-      ui.setStatus("PLY, SPZ, SOG, and RAD files are supported");
+      ui.setStatus("PLY, SPZ, SOG, RAD, and LCC2 files are supported");
     }
   } catch (error) {
     if (loadId !== activeLoad) return;

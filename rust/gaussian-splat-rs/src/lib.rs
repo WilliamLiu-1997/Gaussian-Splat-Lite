@@ -12,8 +12,6 @@ mod browser;
 #[cfg(not(feature = "cli"))]
 mod decoder;
 #[cfg(not(feature = "cli"))]
-mod lcc;
-#[cfg(not(feature = "cli"))]
 mod morton;
 #[cfg(not(feature = "cli"))]
 mod rad;

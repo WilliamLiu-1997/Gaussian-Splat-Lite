@@ -168,3 +168,7 @@ freely, subject to the following restrictions:
    misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
+
+## LCC2 data organization format
+
+Data Organization Format originated from XGRIDS. The LCC2 reader implements the format described in the [LCC2 White Paper](https://github.com/xgrids/LCC2Whitepaper), including its format terms. XGRIDS retains its rights in the data organization format. This implementation does not modify the on-disk format.
