@@ -27,7 +27,7 @@ await splat.initialized;
 
 Splats are reordered while loading, so their indices differ from the order in the file; see [data rules](Splats.md#data-rules).
 
-For large streamed scenes, use [RadStreamScheduler](RadStreamScheduler.md) or [SogStreamScheduler](SogStreamScheduler.md) instead.
+For large streamed scenes, use [RadStreamScheduler](RadStreamScheduler.md), [SogStreamScheduler](SogStreamScheduler.md), or [Lcc2StreamScheduler](Lcc2StreamScheduler.md).
 
 ## Options
 
