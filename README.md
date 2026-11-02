@@ -8,7 +8,7 @@
 
 **Three.js Gaussian Splatting · WebGPU · Streaming**
 
-High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **WebGPU**/**WebGL2**. Supports PLY, SPZ, Streaming LOD including SOG and RAD.
+High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **WebGPU**/**WebGL2**. Supports PLY, SPZ, SOG, and RAD files, with streaming LOD for RAD, SOG, and LCC2 scenes.
 
 <div align="center">
 
@@ -29,7 +29,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 | Focus | What you get |
 | --- | --- |
 | **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
-| **Large-scene streaming** | Load RAD and SOG detail as the camera moves, with smooth transitions |
+| **Large-scene streaming** | Load RAD, SOG, and LCC2 detail as the camera moves, with smooth transitions |
 | **Stochastic rendering** | Optional transparency mode, with an experimental neural denoiser to smooth it |
 | **Offscreen capture** | Render Splats to images, cube maps, and environment maps for reflections |
 | **SDF edits** | Recolor or hide parts of a model without moving Splats |
@@ -167,6 +167,19 @@ await streaming.firstRenderable;
 // Remove one input without rebuilding the scheduler:
 // streaming.removeSource(sourceId);
 ```
+
+For LCC2, use `Lcc2StreamScheduler` and a `.lcc2` index URL with the same camera and update loop as SOG:
+
+```js
+import { Lcc2StreamScheduler } from "gaussian-splat-lite";
+
+const streaming = new Lcc2StreamScheduler({ splatBudget: 3_000_000 });
+scene.add(streaming.group);
+streaming.setCamera(camera);
+const sourceId = await streaming.addSource({ url: "/assets/scene/meta.lcc2" });
+```
+
+Keep the index and its companion files together. See [LCC2 streaming](docs/Lcc2StreamScheduler.md) for options, multiple inputs, and supported scene data.
 
 ## Documentation
 

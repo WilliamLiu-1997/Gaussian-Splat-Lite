@@ -31,7 +31,7 @@ loader.load(
 
 If you do not need the loader API, `new SplatMesh({ url })` loads a model in one step; see [SplatMesh](SplatMesh.md).
 
-For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md). For SOG `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md).
+For large RAD scenes with levels of detail, use [RadStreamScheduler](RadStreamScheduler.md). For SOG `lod-meta.json` scenes, use [SogStreamScheduler](SogStreamScheduler.md). For `.lcc2` scenes, use [Lcc2StreamScheduler](Lcc2StreamScheduler.md).
 
 ## Cancel loading
 

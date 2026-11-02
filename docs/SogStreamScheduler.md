@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarser surroundings ready as the camera turns. It supports version 1 and older unversioned indexes, on WebGPU and WebGL2. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md).
+Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarser surroundings ready as the camera turns. It supports version 1 and older unversioned indexes, on WebGPU and WebGL2. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md). For a `.lcc2` scene, use [Lcc2StreamScheduler](Lcc2StreamScheduler.md).
 
 ```js
 import { SogStreamScheduler } from "gaussian-splat-lite";
@@ -133,7 +133,7 @@ Each `addSource(options)` call accepts:
 | `lodMultiplier` | Scheduler value | Override the distance multiplier for this input. Must be finite and at least `1` |
 | `manager` | `THREE.DefaultLoadingManager` | Three.js loading manager, including its URL modifiers |
 | `requestHeader` / `withCredentials` | `{}` / `false` | Request settings. Headers and credentials are not sent to files on other origins |
-| `loadChunk` | Built-in loader | Load the scene's files yourself: `(url, signal) => Promise<Splats>` |
+| `loadChunk` | Built-in loader | Load chunk files yourself: `(url, signal) => Promise<Splats>`. The scheduler takes ownership of the returned data |
 
 ## Properties and methods
 
@@ -166,7 +166,7 @@ New data reaches the screen only when you render, so keep rendering while waitin
 
 ## Error recovery
 
-Temporary download failures are retried automatically, waiting longer after each attempt, up to 30 seconds. This covers network errors and HTTP 408, 425, 429, and 5xx responses. Each retry calls `onChange`, so an on-demand render loop resumes loading when the connection returns.
+Temporary chunk download failures are retried automatically, waiting longer after each attempt, up to 30 seconds. This covers network errors and HTTP 408, 425, 429, and 5xx responses. Each retry calls `onChange`, so an on-demand render loop resumes loading when the connection returns.
 
 Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and are not retried. Parts of the scene that are already on screen stay visible when loading more detail fails.
 
