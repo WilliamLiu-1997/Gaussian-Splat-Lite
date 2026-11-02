@@ -1,3 +1,4 @@
+export { Lcc2StreamScheduler } from "./loaders/stream/lcc2-stream/Lcc2StreamScheduler.js";
 export { GaussianSplatRenderer } from "./rendering/GaussianSplatRenderer.js";
 export { NeuralDenoiseNode } from "./addons/NeuralDenoiseNode.js";
 export { NeuralDenoisePass } from "./addons/NeuralDenoisePass.js";

@@ -1,14 +1,14 @@
 import type { SplatResult } from "../../../data/defines.js";
 import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes.js";
-import type { SogStreamMetadata } from "./SogStreamLoader.js";
-import type { SogLodRequest } from "./sogVisibility.js";
-export type SogChunkInfo = {
+import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
+import type { ChunkStreamMetadata } from "./ChunkStreamLoader.js";
+export type ChunkInfo = {
   numSplats: number;
   numSh: number;
   byteLength: number;
 };
 /** LOD workers parse the index once before selection; other workers own chunk caches. */
-export declare function createSogStreamHandlers(
+export declare function createChunkStreamHandlers(
   decodeSplats: (
     args: SplatLoadArgs,
     options: {
@@ -16,7 +16,7 @@ export declare function createSogStreamHandlers(
     },
   ) => Promise<SplatResult>,
 ): {
-  loadSogChunk: (
+  loadChunk: (
     {
       id,
       ...args
@@ -27,8 +27,8 @@ export declare function createSogStreamHandlers(
     options: {
       sendStatus: (data: SplatLoadStatus) => void;
     },
-  ) => Promise<SogChunkInfo>;
-  cacheSogChunk: ({
+  ) => Promise<ChunkInfo>;
+  cacheChunk: ({
     id,
     data,
     maxSh,
@@ -36,8 +36,8 @@ export declare function createSogStreamHandlers(
     id: number;
     data: SplatResult;
     maxSh: number;
-  }) => SogChunkInfo;
-  extractSogRegions: ({
+  }) => ChunkInfo;
+  extractRegions: ({
     id,
     ranges,
   }: {
@@ -47,16 +47,19 @@ export declare function createSogStreamHandlers(
       count: number;
     }[];
   }) => import("../../../data/defines.js").ReorderedSplatResult[];
-  releaseSogChunk: ({
+  releaseChunk: ({
     id,
   }: {
     id: number;
   }) => void;
-  parseSogIndex: (request: {
+  parseIndex: (request: {
     id: number;
     bytes: ArrayBuffer;
     baseUrl: string;
-  }) => SogStreamMetadata;
-  releaseSogIndex: (request: { id: number }) => void;
-  selectSogLod: (request: SogLodRequest) => Uint32Array<ArrayBufferLike>;
+    format?: "sog" | "lcc2";
+  }) => ChunkStreamMetadata;
+  releaseIndex: (request: { id: number }) => void;
+  selectLod: (
+    request: SogLodRequest & { format?: "sog" | "lcc2" },
+  ) => Uint32Array<ArrayBufferLike>;
 };

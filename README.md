@@ -112,9 +112,9 @@ This mode produces visible noise. Smooth it with the [experimental neural denois
 
 ## Streaming large scenes
 
-Use `RadStreamScheduler` for RAD scenes with levels of detail (LOD), or `SogStreamScheduler` for SOG `lod-meta.json` scenes. Both load detail as the camera moves and work on WebGPU and WebGL2.
+Use `RadStreamScheduler` for RAD scenes with levels of detail (LOD), `SogStreamScheduler` for SOG `lod-meta.json` scenes, or `Lcc2StreamScheduler` for `.lcc2` scenes. All three load detail as the camera moves and work on WebGPU and WebGL2.
 
-Both schedulers start empty. Add inputs with `addSource()` and remove them by their stable source ID with `removeSource(id)`. The addition promise waits for metadata, not rendered data.
+All three schedulers start empty. Add inputs with `addSource()` and remove them by their stable source ID with `removeSource(id)`. The addition promise waits for metadata, not rendered data.
 
 For RAD, replace the `SplatMesh` loading and animation loop in the quick start with:
 
@@ -191,6 +191,7 @@ await streaming.firstRenderable;
 - [Building RAD files](docs/BuildRad.md) — Convert models to streamable RAD with quality LOD.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
 - [SogStreamScheduler](docs/SogStreamScheduler.md) — Large SOG scenes with adaptive detail.
+- [Lcc2StreamScheduler](docs/Lcc2StreamScheduler.md) — LCC2 scenes with adaptive detail.
 
 ## Development
 
@@ -202,7 +203,7 @@ npm run build:wasm
 npm run dev
 ```
 
-Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
+Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For LCC2, select or drop the scene folder containing `.lcc2` and its companion files, or load its index URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
 
 See [Contributing](CONTRIBUTING.md#validation) for validation commands. `npm run build` emits ESM, CommonJS, declarations, and source maps in `dist/`.
 

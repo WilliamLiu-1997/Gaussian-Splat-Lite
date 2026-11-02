@@ -7,38 +7,44 @@ import {
 } from "../../../data/splatData.js";
 import { extractSplatRange } from "../../../data/splatRange.js";
 import { reorderSplats, restoreSplatOrder } from "../../morton.js";
+import { parseLcc2Index } from "../lcc2-stream/lcc2Index.js";
+import { selectLcc2Lods } from "../lcc2-stream/lcc2Select.js";
 import {
   SOG_LOD_STRIDE,
   packSogLodIndex,
   parseSogLodManifest,
   selectSogLods,
-} from "./sogLod.js";
-import { SogVisibility } from "./sogVisibility.js";
+} from "../sog-stream/sogLod.js";
+import { SogVisibility } from "../sog-stream/sogVisibility.js";
 /** LOD workers parse the index once before selection; other workers own chunk caches. */
-export function createSogStreamHandlers(decodeSplats) {
-  const sogChunks = new Map();
-  const sogLoads = new Map();
-  // Each input keeps its own octree and median region size for LOD distance.
+export function createChunkStreamHandlers(decodeSplats) {
+  const chunks = new Map();
+  const loads = new Map();
+  // Each input keeps its own bounds and median region size for LOD distance.
   const sources = new Map();
   let nextLeaf = 0;
   let nextFile = 0;
-  function parseSogIndex({ id, bytes, baseUrl }) {
-    const manifest = parseSogLodManifest(
-      JSON.parse(new TextDecoder().decode(bytes)),
-      baseUrl,
-    );
-    // Keep the environment so the scheduler can enable or skip it later.
-    const environment = manifest.environment ? manifest.files.length : -1;
-    if (environment >= 0)
-      manifest.files.push({ url: manifest.environment, count: -1 });
-    const index = packSogLodIndex(manifest);
+  function parseIndex({ id, bytes, baseUrl, format = "sog" }) {
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    let index;
+    let environment;
+    if (format === "lcc2") {
+      index = parseLcc2Index(value, baseUrl);
+      environment = index.environment;
+    } else {
+      const manifest = parseSogLodManifest(value, baseUrl);
+      environment = manifest.environment ? manifest.files.length : -1;
+      if (environment >= 0)
+        manifest.files.push({ url: manifest.environment, count: -1 });
+      index = packSogLodIndex(manifest);
+    }
     const leafBase = nextLeaf;
     const fileBase = nextFile;
     // IDs are never reused, including after removal. Selection uses uint32 IDs.
     const leafEnd = leafBase + index.leafOffsets.length - 1;
     const fileEnd = fileBase + index.urls.length;
     if (leafEnd > 0x100000000 || !Number.isSafeInteger(fileEnd))
-      throw new Error("SOG streaming index capacity exceeded");
+      throw new Error("Streaming index capacity exceeded");
     const lods = index.lods.slice();
     const batchStarts = new Float64Array(lods.length / SOG_LOD_STRIDE);
     const batchCapacities = new Float64Array(index.urls.length);
@@ -59,6 +65,7 @@ export function createSogStreamHandlers(decodeSplats) {
     nextLeaf = leafEnd;
     nextFile = fileEnd;
     return {
+      hasData: index.lods.some((count, i) => i % 4 === 3 && count > 0),
       urls: index.urls,
       counts: index.counts.slice(),
       leafOffsets: index.leafOffsets.slice(),
@@ -69,18 +76,37 @@ export function createSogStreamHandlers(decodeSplats) {
       leafBase,
       fileBase,
       environment: environment < 0 ? -1 : fileBase + environment,
+      ...(index.parents
+        ? {
+            parents: index.parents.slice(),
+            emptyCoverage: index.emptyCoverage.slice(),
+            roots: index.roots.slice(),
+            childOffsets: index.childOffsets.slice(),
+            children: index.children.slice(),
+          }
+        : {}),
       retainedIndexBytes:
         index.bounds.byteLength +
         index.leafBounds.byteLength +
         index.leafOffsets.byteLength +
         index.lods.byteLength +
-        index.counts.byteLength,
+        index.counts.byteLength +
+        (index.parents?.byteLength ?? 0) +
+        (index.emptyCoverage?.byteLength ?? 0) +
+        (index.roots?.byteLength ?? 0) +
+        (index.childOffsets?.byteLength ?? 0) +
+        (index.children?.byteLength ?? 0),
     };
   }
-  function releaseSogIndex({ id }) {
+  function releaseIndex({ id }) {
     sources.delete(id);
   }
-  function selectSogLod(request) {
+  function selectLod(request) {
+    if (request.format === "lcc2")
+      return selectLcc2Lods(
+        request.sources.map(({ id }) => sources.get(id)),
+        request,
+      );
     const regions = [];
     let lodLevels = 0;
     request.sources.forEach(({ id, transform }, source) => {
@@ -110,36 +136,36 @@ export function createSogStreamHandlers(decodeSplats) {
     }
     return result;
   }
-  function cacheSogChunk({ id, data, maxSh }) {
+  function cacheChunk({ id, data, maxSh }) {
     // Custom loaders may return higher SH than this scheduler retains.
     for (const key of SH_KEYS.slice(SH_ARRAY_COUNTS[maxSh]))
       delete data.extra[key];
     // A custom loader may have reordered the whole chunk. Restore file ranges
     // once; each extracted region is reordered independently below.
     restoreSplatOrder(data);
-    sogChunks.set(id, data);
+    chunks.set(id, data);
     return {
       numSplats: data.numSplats,
       numSh: getSplatShDegree(data.extra),
       byteLength: getSplatByteLength(data),
     };
   }
-  async function loadSogChunk({ id, ...args }, options) {
+  async function loadChunk({ id, ...args }, options) {
     const controller = new AbortController();
-    sogLoads.set(id, controller);
+    loads.set(id, controller);
     try {
       const data = await decodeSplats(
         { ...args, signal: controller.signal },
         options,
       );
       controller.signal.throwIfAborted();
-      return cacheSogChunk({ id, data, maxSh: args.maxSh });
+      return cacheChunk({ id, data, maxSh: args.maxSh });
     } finally {
-      sogLoads.delete(id);
+      loads.delete(id);
     }
   }
-  function extractSogRegions({ id, ranges }) {
-    const source = sogChunks.get(id);
+  function extractRegions({ id, ranges }) {
+    const source = chunks.get(id);
     if (!source) throw new Error("Streaming chunk is no longer cached");
     // Fixed batch storage supplies alignment and reads centers from packed XYZ.
     return ranges.map(({ start, count }) => {
@@ -148,17 +174,17 @@ export function createSogStreamHandlers(decodeSplats) {
       return data;
     });
   }
-  function releaseSogChunk({ id }) {
-    sogLoads.get(id)?.abort();
-    sogChunks.delete(id);
+  function releaseChunk({ id }) {
+    loads.get(id)?.abort();
+    chunks.delete(id);
   }
   return {
-    loadSogChunk,
-    cacheSogChunk,
-    extractSogRegions,
-    releaseSogChunk,
-    parseSogIndex,
-    releaseSogIndex,
-    selectSogLod,
+    loadChunk,
+    cacheChunk,
+    extractRegions,
+    releaseChunk,
+    parseIndex,
+    releaseIndex,
+    selectLod,
   };
 }

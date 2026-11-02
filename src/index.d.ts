@@ -1,4 +1,11 @@
 export {
+  Lcc2StreamScheduler,
+  type Lcc2StreamSchedulerOptions,
+  type Lcc2StreamSourceOptions,
+  type Lcc2StreamSourceSettings,
+  type Lcc2StreamStats,
+} from "./loaders/stream/lcc2-stream/Lcc2StreamScheduler.js";
+export {
   GaussianSplatRenderer,
   type GaussianSplatRendererOptions,
 } from "./rendering/GaussianSplatRenderer.js";
@@ -38,7 +45,7 @@ export {
   type SogStreamSourceSettings,
   type SogStreamStats,
 } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
-export type { SogStreamSourceOptions } from "./loaders/stream/sog-stream/SogStreamLoader.js";
+export type { SogStreamSourceOptions } from "./loaders/stream/sog-stream/SogStreamScheduler.js";
 export type { SplatWorker } from "./runtime/SplatWorker.js";
 export { Splats, type SplatsOptions } from "./data/Splats.js";
 export {

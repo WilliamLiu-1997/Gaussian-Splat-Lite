@@ -1,11 +1,11 @@
 import type { Matrix4 } from "three";
 import type { Splats } from "../../../data/Splats.js";
+import type { SogLodIndex } from "../sog-stream/sogLod.js";
+import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
 import type { StreamRequestOptions } from "../streamOptions.js";
-import type { SogStreamWorker } from "./SogStreamWorker.js";
-import type { SogLodIndex } from "./sogLod.js";
-import type { SogLodRequest } from "./sogVisibility.js";
-import type { SogChunkInfo } from "./workerHandlers.js";
-export type SogStreamSourceOptions = StreamRequestOptions & {
+import type { ChunkStreamWorker } from "./ChunkStreamWorker.js";
+import type { ChunkInfo } from "./workerHandlers.js";
+export type ChunkStreamSourceOptions = StreamRequestOptions & {
   url: string;
   /** Model-to-group transform; identity when omitted. Change with setSourceSettings(). */
   transform?: Matrix4;
@@ -18,10 +18,11 @@ export type SogStreamSourceOptions = StreamRequestOptions & {
   /** Returns owned Splats; the loader restores their decoded record order before slicing. */
   loadChunk?: (url: string, signal: AbortSignal) => Promise<Splats>;
 };
-export type SogStreamMetadata = Pick<
+export type ChunkStreamMetadata = Pick<
   SogLodIndex,
   "bounds" | "urls" | "counts" | "leafOffsets" | "lods"
 > & {
+  hasData: boolean;
   /** Stable global leaf and chunk offsets, never reused after removal. */
   leafBase: number;
   fileBase: number;
@@ -32,18 +33,23 @@ export type SogStreamMetadata = Pick<
   /** Aligned batch capacity per local chunk; environments are sized on load. */
   batchCapacities: Float64Array;
   retainedIndexBytes: number;
+  parents?: Int32Array;
+  emptyCoverage?: Uint8Array;
+  roots?: Uint32Array;
+  childOffsets?: Uint32Array;
+  children?: Uint32Array;
 };
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */
-export declare class SogChunkSource {
+export declare class ChunkSource {
   private readonly worker;
   private readonly id;
-  readonly info: SogChunkInfo;
+  readonly info: ChunkInfo;
   private readonly onRelease;
   private released;
   constructor(
-    worker: SogStreamWorker,
+    worker: ChunkStreamWorker,
     id: number,
-    info: SogChunkInfo,
+    info: ChunkInfo,
     onRelease: () => void,
   );
   get alive(): boolean;
@@ -56,7 +62,8 @@ export declare class SogChunkSource {
   dispose(): void;
 }
 /** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */
-export declare class SogStreamLoader {
+export declare class ChunkStreamLoader {
+  private readonly format;
   private readonly maxSh;
   private readonly lodWorker;
   private readonly pool;
@@ -64,7 +71,12 @@ export declare class SogStreamLoader {
   private readonly sources;
   private downloadedBytes;
   private retainedIndexBytes;
-  constructor(maxConcurrentLoads: number, maxSh: number, onChange: () => void);
+  constructor(
+    maxConcurrentLoads: number,
+    maxSh: number,
+    onChange: () => void,
+    format?: "sog" | "lcc2",
+  );
   get stats(): {
     downloadedBytes: number;
     peakWasmMemoryBytes: number;
@@ -73,9 +85,9 @@ export declare class SogStreamLoader {
   private assertActive;
   addSource(
     id: number,
-    options: SogStreamSourceOptions,
+    options: ChunkStreamSourceOptions,
     signal: AbortSignal,
-  ): Promise<SogStreamMetadata>;
+  ): Promise<ChunkStreamMetadata>;
   removeSource(id: number): void;
   private readIndex;
   selectLod(request: SogLodRequest): Promise<Uint32Array>;
@@ -84,6 +96,6 @@ export declare class SogStreamLoader {
     url: string,
     count: number,
     signal: AbortSignal,
-  ): Promise<SogChunkSource>;
+  ): Promise<ChunkSource>;
   dispose(): void;
 }

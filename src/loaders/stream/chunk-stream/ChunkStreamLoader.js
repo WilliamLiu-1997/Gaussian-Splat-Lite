@@ -4,9 +4,9 @@ import { abortable, linkedAbortController } from "../../../runtime/abort.js";
 import { getAssetBaseUrl } from "../../assetUrl.js";
 import { joinBytes, readResponse, requestOptions } from "../../source.js";
 import { StreamWorkerPool } from "../StreamWorkerPool.js";
-import { SogStreamWorker } from "./SogStreamWorker.js";
+import { ChunkStreamWorker } from "./ChunkStreamWorker.js";
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */
-export class SogChunkSource {
+export class ChunkSource {
   constructor(worker, id, info, onRelease) {
     this.worker = worker;
     this.id = id;
@@ -20,29 +20,30 @@ export class SogChunkSource {
   async extract(ranges) {
     if (!this.alive)
       throw new WorkerTerminatedError("Streaming chunk is no longer cached");
-    return this.worker.call("extractSogRegions", { id: this.id, ranges });
+    return this.worker.call("extractRegions", { id: this.id, ranges });
   }
   dispose() {
     if (this.released) return;
     this.released = true;
     if (!this.worker.disposed)
-      void this.worker.call("releaseSogChunk", { id: this.id }).catch(() => {});
+      void this.worker.call("releaseChunk", { id: this.id }).catch(() => {});
     this.onRelease();
   }
 }
 /** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */
-export class SogStreamLoader {
-  constructor(maxConcurrentLoads, maxSh, onChange) {
+export class ChunkStreamLoader {
+  constructor(maxConcurrentLoads, maxSh, onChange, format = "sog") {
+    this.format = format;
     this.maxSh = maxSh;
     this.controller = new AbortController();
     this.sources = new Map();
     this.downloadedBytes = 0;
     this.retainedIndexBytes = 0;
     this.pool = new StreamWorkerPool(
-      () => new SogStreamWorker(() => queueMicrotask(onChange)),
+      () => new ChunkStreamWorker(() => queueMicrotask(onChange)),
       maxConcurrentLoads,
     );
-    this.lodWorker = new SogStreamWorker(() => queueMicrotask(onChange));
+    this.lodWorker = new ChunkStreamWorker(() => queueMicrotask(onChange));
   }
   get stats() {
     return {
@@ -54,7 +55,7 @@ export class SogStreamLoader {
   }
   assertActive() {
     this.controller.signal.throwIfAborted();
-    if (this.lodWorker.disposed) throw new Error("SOG LOD worker terminated");
+    if (this.lodWorker.disposed) throw new Error("Chunk LOD worker terminated");
   }
   async addSource(id, options, signal) {
     this.assertActive();
@@ -83,7 +84,7 @@ export class SogStreamLoader {
     this.sources.delete(id);
     this.retainedIndexBytes -= input.indexBytes;
     if (!this.lodWorker.disposed)
-      void this.lodWorker.call("releaseSogIndex", { id }).catch(() => {});
+      void this.lodWorker.call("releaseIndex", { id }).catch(() => {});
   }
   async readIndex(id, input, signal) {
     const { options } = input;
@@ -110,10 +111,11 @@ export class SogStreamLoader {
       );
       signal.throwIfAborted();
       const bytes = new Uint8Array(joinBytes(chunks, size)).buffer;
-      const index = await this.lodWorker.call("parseSogIndex", {
+      const index = await this.lodWorker.call("parseIndex", {
         id,
         bytes,
         baseUrl: getAssetBaseUrl(response.url || url) ?? resourceUrl,
+        format: this.format,
       });
       this.assertActive();
       signal.throwIfAborted();
@@ -127,7 +129,10 @@ export class SogStreamLoader {
   }
   async selectLod(request) {
     this.assertActive();
-    return this.lodWorker.call("selectSogLod", request);
+    return this.lodWorker.call("selectLod", {
+      ...request,
+      format: this.format,
+    });
   }
   async load(sourceId, url, count, signal) {
     this.assertActive();
@@ -137,7 +142,7 @@ export class SogStreamLoader {
       {
         signal,
         manager,
-        cancel: (worker, id) => worker.call("releaseSogChunk", { id }),
+        cancel: (worker, id) => worker.call("releaseChunk", { id }),
       },
       async ({ worker, id, signal, retain, start, progress }) => {
         this.assertActive();
@@ -146,7 +151,7 @@ export class SogStreamLoader {
           const custom = await options.loadChunk(url, signal);
           try {
             signal.throwIfAborted();
-            info = await worker.call("cacheSogChunk", {
+            info = await worker.call("cacheChunk", {
               id,
               data: custom.takeData(),
               maxSh: this.maxSh,
@@ -164,16 +169,23 @@ export class SogStreamLoader {
             new URL(getAssetBaseUrl(resolved) ?? resourceUrl).origin ===
             new URL(baseUrl).origin;
           info = await worker.call(
-            "loadSogChunk",
+            "loadChunk",
             {
               id,
               url: resolved,
               baseUrl: resourceUrl,
-              fileType: "sog",
+              fileType:
+                this.format === "sog"
+                  ? "sog"
+                  : new URL(resourceUrl).pathname
+                      .split(".")
+                      .pop()
+                      .toLowerCase(),
               maxSh: this.maxSh,
               requestHeader: sameOrigin ? options.requestHeader : undefined,
               withCredentials: sameOrigin && options.withCredentials,
-              expectedSogCount: count < 0 ? undefined : count,
+              expectedSogCount:
+                this.format === "sog" && count >= 0 ? count : undefined,
             },
             {
               onStatus: (data) => {
@@ -191,14 +203,14 @@ export class SogStreamLoader {
         }
         signal.throwIfAborted();
         this.assertActive();
-        return new SogChunkSource(worker, id, info, retain());
+        return new ChunkSource(worker, id, info, retain());
       },
     );
   }
   dispose() {
     if (this.controller.signal.aborted) return;
     this.controller.abort(
-      new DOMException("SOG loader disposed", "AbortError"),
+      new DOMException("Chunk loader disposed", "AbortError"),
     );
     this.pool.dispose(this.controller.signal.reason);
     this.lodWorker.dispose(this.controller.signal.reason);

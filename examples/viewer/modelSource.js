@@ -97,7 +97,9 @@ export function modelFromLocalFiles(selectedFiles) {
         .some((part) => part.startsWith(".")),
   );
   const indexes = files.filter(
-    (entry) => entry.name.toLowerCase() === "lod-meta.json",
+    (entry) =>
+      entry.name.toLowerCase() === "lod-meta.json" ||
+      entry.name.toLowerCase().endsWith(".lcc2"),
   );
   const models = indexes.length
     ? indexes
@@ -111,7 +113,7 @@ export function modelFromLocalFiles(selectedFiles) {
     models[0] ?? files.find((entry) => !/\.(radc|webp)$/i.test(entry.name));
   if (!file) {
     throw new Error(
-      "Include lod-meta.json with SOG chunks, meta.json with SOG images, or the .rad header with RAD chunks.",
+      "Include .lcc2 or lod-meta.json with their chunks, meta.json with SOG images, or the .rad header with RAD chunks.",
     );
   }
   const normalize = (path) => {
@@ -161,7 +163,7 @@ export function modelFromLocalFiles(selectedFiles) {
     let disposed = false;
     const manager = new LoadingManager();
     manager.setURLModifier((value) => {
-      if (disposed) throw new Error("Local SOG source has been disposed");
+      if (disposed) throw new Error("Local streamed source has been disposed");
       const asset = new URL(value, url);
       if (asset.origin !== new URL(baseUrl).origin)
         throw new Error(`Select the companion file: ${value}`);

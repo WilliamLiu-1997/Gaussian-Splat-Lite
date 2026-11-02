@@ -1,5 +1,10 @@
 import type * as THREE from "three";
 import type { SogLodIndex, SogLodOptions } from "./sogLod.js";
+type PreparedCamera = {
+  modelView: THREE.Matrix4;
+  cameraPosition: THREE.Vector3;
+  fovScale: number;
+};
 export type SogCamera = {
   modelView: number[];
   fovScale: number;
@@ -40,7 +45,13 @@ export declare class SogVisibility {
   constructor(
     manifest: Pick<SogLodIndex, "leafBounds" | "leafOffsets" | "lods">,
   );
-  private prepareCameras;
+  prepareCameras(view: SogView, transform: number[]): PreparedCamera[];
+  measure(
+    id: number,
+    cameras: PreparedCamera[],
+    lodBehindPenalty: number,
+    lodDistanceShrink: number,
+  ): number;
   collect(
     request: Pick<
       SogLodRequest,
@@ -48,3 +59,5 @@ export declare class SogVisibility {
     > & { transform: number[] },
   ): Omit<import("./sogLod.js").SogVisibleLeaf, "source">[];
 }
+
+export {};
