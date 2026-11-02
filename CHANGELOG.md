@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-02
+
 ### Added
 
 - Added `Lcc2StreamScheduler` for LCC2 scenes with SOG, SPZ, or PLY chunks, camera-driven LOD, shared budgets across inputs, environment loading, and visibility fades. See [LCC2 streaming](docs/Lcc2StreamScheduler.md).
@@ -770,7 +772,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.4...v1.6.0
 [1.5.4]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.2...v1.5.3
