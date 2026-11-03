@@ -1,4 +1,4 @@
-// Keep one GPU frame in flight and only the latest waiting draw.
+// Keep one GPU frame in flight. WebGL replays only the latest waiting draw.
 export function createFrameGate(renderer, onFirstFrameComplete) {
   const gl = renderer.isWebGPURenderer
     ? (renderer.backend.gl ?? null)
@@ -32,11 +32,11 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
         clearTimeout(pollTimer);
         pollTimer = undefined;
         pendingFrame = undefined;
-      } else if (onReady) {
+      } else if (gl && onReady) {
         // Replace the waiting draw; readiness-only checks leave it intact.
         pendingFrame = onReady;
         // WebGL has no completion promise. Poll only while a draw is waiting.
-        if (gl && pollTimer === undefined) {
+        if (pollTimer === undefined) {
           pollTimer = setTimeout(pollFrame, 0);
         }
       }
@@ -51,20 +51,16 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
         pending = true;
         renderer.backend.device.queue.onSubmittedWorkDone().then(
           () => {
-            // Release before replay: the callback may submit the next frame.
+            // GPU completion is not presentation; draw on the next RAF.
             pending = false;
-            const draw = pendingFrame;
-            pendingFrame = undefined;
             // Give a newly attached WebGPU canvas another draw after its first
             // submission completes, before the viewer settles into idle mode.
             const notify = notifyFirstFrameComplete;
             notifyFirstFrameComplete = undefined;
             notify?.();
-            draw?.();
           },
           (error) => {
             pending = false;
-            pendingFrame = undefined;
             console.error("GPU frame completion failed", error);
           },
         );
