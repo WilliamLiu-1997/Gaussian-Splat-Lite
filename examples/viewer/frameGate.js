@@ -1,11 +1,10 @@
-// WebGPU allows two frames in flight, submitted only from RAF.
-// WebGL keeps one frame in flight and replays only the latest waiting draw.
+// Keep one GPU frame in flight and only the latest waiting draw.
 export function createFrameGate(renderer, onFirstFrameComplete) {
   const gl = renderer.isWebGPURenderer
     ? (renderer.backend.gl ?? null)
     : renderer.getContext();
   let fence = null;
-  let pendingFrames = 0;
+  let pending = false;
   let pendingFrame;
   let pollTimer;
   let notifyFirstFrameComplete = onFirstFrameComplete;
@@ -27,17 +26,17 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
         gl.deleteSync(fence);
         fence = null;
       }
-      const ready = pendingFrames < 2 && fence === null;
+      const ready = !pending && fence === null;
       if (ready) {
         // A RAF draw supersedes the pending timer and callback.
         clearTimeout(pollTimer);
         pollTimer = undefined;
         pendingFrame = undefined;
-      } else if (gl && onReady) {
+      } else if (onReady) {
         // Replace the waiting draw; readiness-only checks leave it intact.
         pendingFrame = onReady;
         // WebGL has no completion promise. Poll only while a draw is waiting.
-        if (pollTimer === undefined) {
+        if (gl && pollTimer === undefined) {
           pollTimer = setTimeout(pollFrame, 0);
         }
       }
@@ -49,19 +48,23 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
         fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
         gl.flush();
       } else {
-        pendingFrames += 1;
+        pending = true;
         renderer.backend.device.queue.onSubmittedWorkDone().then(
           () => {
-            // GPU completion is not presentation; draw on the next RAF.
-            pendingFrames -= 1;
+            pending = false;
             // Give a newly attached WebGPU canvas another draw after its first
             // submission completes, before the viewer settles into idle mode.
             const notify = notifyFirstFrameComplete;
             notifyFirstFrameComplete = undefined;
             notify?.();
+            // Replay outside the completion microtask; a RAF can supersede it.
+            if (pendingFrame && pollTimer === undefined) {
+              pollTimer = setTimeout(pollFrame, 0);
+            }
           },
           (error) => {
-            pendingFrames -= 1;
+            pending = false;
+            pendingFrame = undefined;
             console.error("GPU frame completion failed", error);
           },
         );
