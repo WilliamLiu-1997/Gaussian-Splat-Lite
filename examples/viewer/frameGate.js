@@ -6,13 +6,20 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
   let fence = null;
   let pending = false;
   let pendingFrame;
-  let pollTimer;
+  let polling = false;
+  let pollId = 0;
   let notifyFirstFrameComplete = onFirstFrameComplete;
 
-  function pollFrame() {
-    pollTimer = undefined;
-    const draw = pendingFrame;
-    if (gate.isReady(draw)) draw?.();
+  // MessageChannel avoids the minimum delay of nested setTimeout(0) calls.
+  const channel = gl ? new MessageChannel() : null;
+  if (channel) {
+    channel.port1.onmessage = ({ data }) => {
+      // Ignore polls cancelled or superseded since they were posted.
+      if (!polling || data !== pollId) return;
+      polling = false;
+      const draw = pendingFrame;
+      if (gate.isReady(draw)) draw?.();
+    };
   }
 
   const gate = {
@@ -28,16 +35,16 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
       }
       const ready = !pending && fence === null;
       if (ready) {
-        // A RAF draw supersedes the pending timer and callback.
-        clearTimeout(pollTimer);
-        pollTimer = undefined;
+        // A RAF draw supersedes the pending poll and callback.
+        polling = false;
         pendingFrame = undefined;
       } else if (onReady) {
         // Replace the waiting draw; readiness-only checks leave it intact.
         pendingFrame = onReady;
         // WebGL has no completion promise. Poll only while a draw is waiting.
-        if (gl && pollTimer === undefined) {
-          pollTimer = setTimeout(pollFrame, 0);
+        if (gl && !polling) {
+          polling = true;
+          channel.port2.postMessage(++pollId);
         }
       }
       return ready;
@@ -72,10 +79,11 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
     },
 
     dispose() {
-      clearTimeout(pollTimer);
-      pollTimer = undefined;
+      polling = false;
       pendingFrame = undefined;
       notifyFirstFrameComplete = undefined;
+      channel?.port1.close();
+      channel?.port2.close();
       if (fence !== null) gl.deleteSync(fence);
       fence = null;
     },
