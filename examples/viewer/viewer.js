@@ -306,6 +306,12 @@ const renderOptionActions = {
   },
   maxResidentCpuBytes: reloadRadStream,
   maxResidentGpuBytes: reloadRadStream,
+  environment: (value) => {
+    if (!isChunkStream(activeStream)) return;
+    for (const id of activeStream.sourceIds) {
+      activeStream.setSourceSettings(id, { environment: value });
+    }
+  },
   splatBudgetMode: (value) => {
     if (isChunkStream(activeStream)) activeStream.splatBudgetMode = value;
     syncStreamOptions();
@@ -548,6 +554,7 @@ function syncStreamOptions() {
   optionsPanel.setHidden("maxResidentCpuBytes", !isRad);
   optionsPanel.setHidden("maxResidentGpuBytes", !isRad);
   optionsPanel.setHidden("splatBudgetMode", !isChunk);
+  optionsPanel.setHidden("environment", !isChunk);
   optionsPanel.setHidden("lodMultiplier", !isChunk);
   optionsPanel.setHidden(
     "lodBaseDistance",
@@ -706,7 +713,11 @@ async function initializeModel(
     });
     model.stream.setCamera(camera);
     model.splat = model.stream.group;
-    await model.stream.addSource({ url, manager });
+    await model.stream.addSource({
+      url,
+      manager,
+      environment: optionsPanel.getValue("environment"),
+    });
   } else {
     model.splat = new SplatMesh({
       ...source,

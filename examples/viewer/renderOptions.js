@@ -58,6 +58,14 @@ export const renderOptionGroups = [
         commitOnChange: true,
       },
       {
+        property: "environment",
+        label: "Environment",
+        description: "Show the scene environment, if included.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
         property: "splatBudgetMode",
         label: "LOD budget mode",
         description:
