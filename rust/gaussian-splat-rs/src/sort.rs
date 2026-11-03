@@ -176,7 +176,7 @@ impl Sort32Buffers {
 /// world-space camera position, then sort them back-to-front. Axial sorting
 /// folds each affine basis into the view direction and reads raw centers
 /// directly. Radial sorting lazily materializes transformed centers and uses
-/// squared distance, which preserves distance ordering without square roots.
+/// distance from the camera.
 pub fn sort32_centers_internal(
     buffers: &mut Sort32Buffers,
     max_splats: usize,
@@ -272,7 +272,7 @@ fn sort_centers<const FAST: bool>(
                     let dx = center[0] - camera_local[0];
                     let dy = center[1] - camera_local[1];
                     let dz = center[2] - camera_local[2];
-                    let metric = dx * dx + dy * dy + dz * dz;
+                    let metric = (dx * dx + dy * dy + dz * dz).sqrt();
                     let key = metric.to_bits() >> shift;
                     *key_out = key;
                     tally_key::<FAST>(key, buckets_lo, buckets_hi, bucket_range);

@@ -97,11 +97,12 @@ export function createProjectionKernel({
       // stochastic ordering uses front-to-back depth.
       N.If(sorted, () => {
         const center = generated.center.add(sortOffset);
-        const metric = N.select(
-          radial.and(front.not()),
-          center.dot(center),
-          center.dot(direction),
-        );
+        const metric = N.float().toVar();
+        N.If(radial.and(front.not()), () => {
+          metric.assign(center.length());
+        }).Else(() => {
+          metric.assign(center.dot(direction));
+        });
         const bits = N.floatBitsToUint(metric);
         // Non-finite metrics draw last; INVALID_SORT_KEY marks absence.
         const key = N.uint(INVALID_SORT_KEY - 1).toVar();
