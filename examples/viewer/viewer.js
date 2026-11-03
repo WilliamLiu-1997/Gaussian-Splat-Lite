@@ -648,7 +648,7 @@ function frameSplat(splat) {
     .add(frameCenter);
   camera.lookAt(frameCenter);
   camera.updateMatrixWorld(true);
-  controls.minDistance = 0;
+  controls.minDistance = Math.min(0.5, radius * 0.01);
   controls.setCamera(camera);
 }
 

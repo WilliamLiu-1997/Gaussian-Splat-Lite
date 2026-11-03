@@ -730,9 +730,6 @@ class CameraController extends EventDispatcher {
     }
     const pending = this.#zoomInertia + this.#zoomDelta;
     let nextPending = pending + delta;
-    if (this.#reachCameraMinDistance() && nextPending > 0) {
-      nextPending = 0;
-    }
     if (this.#reachCameraMaxDistance() && nextPending < 0) {
       nextPending = 0;
     }
@@ -1019,7 +1016,6 @@ class CameraController extends EventDispatcher {
       if (
         !this.#hit ||
         this.#hit.distance <= 0 ||
-        (this.#zoomInertia >= 0 && this.#reachCameraMinDistance()) ||
         (this.#zoomInertia <= 0 && this.#reachCameraMaxDistance())
       ) {
         this.#zoomInertia = 0;
@@ -1030,10 +1026,7 @@ class CameraController extends EventDispatcher {
           this.#zoomInertia = 0;
         }
         this.#applyZoom(zoomAmount);
-        if (
-          (zoomAmount > 0 && this.#reachCameraMinDistance()) ||
-          (zoomAmount < 0 && this.#reachCameraMaxDistance())
-        ) {
+        if (zoomAmount < 0 && this.#reachCameraMaxDistance()) {
           this.#zoomInertia = 0;
         }
         this.dispatchEvent(UPDATE_EVENT);
@@ -1535,22 +1528,22 @@ class CameraController extends EventDispatcher {
   #applyZoom(zoomAmount) {
     const hit = this.#hit;
     if (!hit || hit.distance <= 0) return;
-    // Regenerate virtual hit at 50m from current camera position
-    if (hit.virtual) {
+    // Keep the zoom anchor ahead of the camera so zoom can pass through surfaces.
+    const anchorDistance = hit.virtual
+      ? VIRTUAL_HIT_DISTANCE
+      : this.minDistance;
+    if (
+      hit.virtual ||
+      this.#camera.position.distanceTo(hit.point) < anchorDistance
+    ) {
       _forward.subVectors(hit.point, this.#camera.position).normalize();
       hit.point
         .copy(this.#camera.position)
-        .addScaledVector(_forward, VIRTUAL_HIT_DISTANCE);
-      hit.distance = VIRTUAL_HIT_DISTANCE;
+        .addScaledVector(_forward, anchorDistance);
+      hit.distance = anchorDistance;
       this.#pivotMesh.position.copy(hit.point);
     }
-    let zoomFactor = Math.exp(-zoomAmount * 0.001);
-    if (this.minDistance > 0 && zoomFactor < 1) {
-      const distance = this.#camera.position.distanceTo(hit.point);
-      if (distance * zoomFactor < this.minDistance) {
-        zoomFactor = this.minDistance / distance;
-      }
-    }
+    const zoomFactor = Math.exp(-zoomAmount * 0.001);
     // @ts-expect-error - OrthographicCamera-specific zoom is not narrowed on the private union field.
     if (this.#camera.isOrthographicCamera) {
       this.#camera.zoom /= zoomFactor;
@@ -1582,15 +1575,6 @@ class CameraController extends EventDispatcher {
     if (this.state === DRAG) {
       this.#initializeDragAnchor();
     }
-  }
-  #reachCameraMinDistance() {
-    return (
-      this.minDistance > 0 &&
-      !!this.#hit &&
-      this.#hit.distance > 0 &&
-      this.#camera.position.distanceTo(this.#hit.point) <=
-        this.minDistance + INPUT_DAMPING_EPSILON
-    );
   }
   #reachCameraMaxDistance() {
     if (!this.#ellipsoid || this.#isCameraCenterMode()) return false;
