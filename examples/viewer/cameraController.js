@@ -590,7 +590,7 @@ class CameraController extends EventDispatcher {
     this.#camera = camera;
     this.#domElement = normalizedOptions.domElement ?? renderer.domElement;
     this.damping = normalizedOptions.damping ?? 0.15;
-    this.minDistance = 0.5;
+    this.minDistance = 1;
     this.minZoomLimit = false;
     this.state = NONE;
     this.zooming = false;
