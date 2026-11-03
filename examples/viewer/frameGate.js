@@ -1,10 +1,11 @@
-// Keep one GPU frame in flight. WebGL replays only the latest waiting draw.
+// WebGPU allows two frames in flight, submitted only from RAF.
+// WebGL keeps one frame in flight and replays only the latest waiting draw.
 export function createFrameGate(renderer, onFirstFrameComplete) {
   const gl = renderer.isWebGPURenderer
     ? (renderer.backend.gl ?? null)
     : renderer.getContext();
   let fence = null;
-  let pending = false;
+  let pendingFrames = 0;
   let pendingFrame;
   let pollTimer;
   let notifyFirstFrameComplete = onFirstFrameComplete;
@@ -26,7 +27,7 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
         gl.deleteSync(fence);
         fence = null;
       }
-      const ready = !pending && fence === null;
+      const ready = pendingFrames < 2 && fence === null;
       if (ready) {
         // A RAF draw supersedes the pending timer and callback.
         clearTimeout(pollTimer);
@@ -48,11 +49,11 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
         fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
         gl.flush();
       } else {
-        pending = true;
+        pendingFrames += 1;
         renderer.backend.device.queue.onSubmittedWorkDone().then(
           () => {
             // GPU completion is not presentation; draw on the next RAF.
-            pending = false;
+            pendingFrames -= 1;
             // Give a newly attached WebGPU canvas another draw after its first
             // submission completes, before the viewer settles into idle mode.
             const notify = notifyFirstFrameComplete;
@@ -60,7 +61,7 @@ export function createFrameGate(renderer, onFirstFrameComplete) {
             notify?.();
           },
           (error) => {
-            pending = false;
+            pendingFrames -= 1;
             console.error("GPU frame completion failed", error);
           },
         );
