@@ -1,5 +1,5 @@
 import {
-  decodeQuatOctXy1010R12ToArray,
+  decodeQuatSmallestThree32ToArray,
   decodeShRgbToArray,
   decodeSplatOpacity,
 } from "../../data/splatCodec.js";
@@ -150,7 +150,7 @@ function evaluateInputFieldBlock(
       for (let index = 0; index < blockCount; index += 1) {
         const sourceIndex = sourceIndices?.[index] ?? index;
         const wordBase = (blockStart + sourceIndex) * 4;
-        decodeQuatOctXy1010R12ToArray(
+        decodeQuatSmallestThree32ToArray(
           data.splat1[wordBase + 3],
           registers,
           outputBase + index,

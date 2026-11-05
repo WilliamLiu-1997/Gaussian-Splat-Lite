@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Improved stored Splat rotation precision with 32-bit smallest-three quaternions. Existing model files remain compatible; reload live viewers when upgrading.
+
+### Added
+
+- Added `utils.encodeQuatSmallestThree32()` and `utils.decodeQuatSmallestThree32()`.
+
+### Removed
+
+- Removed `utils.encodeQuatOctXy1010R12()` and `utils.decodeQuatOctXy1010R12()`; use the smallest-three utilities for the new internal rotation encoding.
+
 ## [1.6.2] - 2026-11-03
 
 ### Changed

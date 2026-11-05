@@ -1,12 +1,11 @@
 use std::array;
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::SQRT_2;
 use std::sync::LazyLock;
 
 use anyhow::anyhow;
 
 use crate::decoder::{ChunkReceiver, SplatInit, SplatProps, SplatReceiver};
-use crate::splat_encode::ShLookup;
+use crate::splat_encode::{decode_quat_ply, repack_quat_ply, ShLookup};
 
 pub const PLY_MAGIC: u32 = 0x00796c70; // "ply"
 const MAX_SPLAT_CHUNK: usize = 65536;
@@ -193,7 +192,9 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 break;
             }
 
-            state.output.ensure(count, [false; 4]);
+            state
+                .output
+                .ensure(count, [false; 4], T::PACKED_QUATERNIONS);
 
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
@@ -210,7 +211,11 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     state.output.rgb[i3 + d] = state.rgb[d].get_f32(&self.buffer, base);
                 }
                 state.output.scale[i3..i3 + 3].fill(DEFAULT_POINT_SCALE);
-                state.output.quat[i4..i4 + 4].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
+                if T::PACKED_QUATERNIONS {
+                    state.output.quat_packed[i] = 0xc0000000;
+                } else {
+                    state.output.quat[i4..i4 + 4].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
+                }
             }
 
             self.splats.set_batch(
@@ -218,7 +223,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 count,
                 &SplatProps {
                     scale: &state.output.scale[..count * 3],
-                    ..state.output.props(count, [false; 4])
+                    ..state.output.props(count, [false; 4], T::PACKED_QUATERNIONS)
                 },
             );
 
@@ -257,7 +262,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 break;
             }
 
-            state.output.ensure(count, float_sh);
+            state.output.ensure(count, float_sh, false);
 
             for i in 0..count {
                 let [i3, i4] = [i * 3, i * 4];
@@ -280,9 +285,13 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     state.output.scale[i3 + d] = state.scale[d].get_f32(&self.buffer, base);
                 }
                 let quat: [f32; 4] = array::from_fn(|d| state.rot[d].get_f32(&self.buffer, base));
-                let quat_magnitude = quat.map(|x| x.powi(2)).iter().sum::<f32>().sqrt();
-                for (d, value) in quat.iter().enumerate() {
-                    state.output.quat[i4 + d] = value / quat_magnitude;
+                if T::PACKED_QUATERNIONS {
+                    state.output.quat[i4..i4 + 4].copy_from_slice(&quat);
+                } else {
+                    let magnitude = quat.map(|x| x.powi(2)).iter().sum::<f32>().sqrt();
+                    for (d, value) in quat.iter().enumerate() {
+                        state.output.quat[i4 + d] = value / magnitude;
+                    }
                 }
 
                 if let Some(sh1) = sh1 {
@@ -314,7 +323,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             self.splats.set_batch_ln_scale(
                 state.next_splat,
                 count,
-                &state.output.props(count, float_sh),
+                &state.output.props(count, float_sh, false),
                 &state.output.scale[..count * 3],
             );
             for (band, props) in sh_props.iter().enumerate() {
@@ -373,7 +382,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     state.decode_chunks(chunk, offset, elem_record_size, &self.buffer);
                 }
                 PlyElementKind::Vertex => {
-                    state.decode_vertices(
+                    state.decode_vertices::<T>(
                         chunk,
                         elem_read,
                         offset,
@@ -383,7 +392,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     self.splats.set_batch_ln_scale(
                         elem_read,
                         chunk,
-                        &state.output.props(chunk, [false; 4]),
+                        &state.output.props(chunk, [false; 4], T::PACKED_QUATERNIONS),
                         &state.output.scale[..chunk * 3],
                     );
                 }
@@ -812,6 +821,7 @@ struct PlyOutput {
     rgb: Vec<f32>,
     scale: Vec<f32>,
     quat: Vec<f32>,
+    quat_packed: Vec<u32>,
     sh1: Vec<f32>,
     sh2: Vec<f32>,
     sh3: Vec<f32>,
@@ -819,13 +829,16 @@ struct PlyOutput {
 }
 
 impl PlyOutput {
-    fn ensure(&mut self, count: usize, float_sh: [bool; 4]) {
+    fn ensure(&mut self, count: usize, float_sh: [bool; 4], packed_quat: bool) {
+        if packed_quat && self.quat_packed.len() < count {
+            self.quat_packed.resize(count, 0);
+        }
         for (output, width) in [
             (&mut self.center, 3),
             (&mut self.opacity, 1),
             (&mut self.rgb, 3),
             (&mut self.scale, 3),
-            (&mut self.quat, 4),
+            (&mut self.quat, if packed_quat { 0 } else { 4 }),
             (&mut self.sh1, if float_sh[0] { 9 } else { 0 }),
             (&mut self.sh2, if float_sh[1] { 15 } else { 0 }),
             (&mut self.sh3, if float_sh[2] { 21 } else { 0 }),
@@ -839,12 +852,13 @@ impl PlyOutput {
 
     // Scale is supplied separately: point clouds use linear scale, while
     // standard and SuperSplat PLY records provide natural-log scale.
-    fn props(&self, count: usize, float_sh: [bool; 4]) -> SplatProps<'_> {
+    fn props(&self, count: usize, float_sh: [bool; 4], packed_quat: bool) -> SplatProps<'_> {
         SplatProps {
             center: &self.center[..count * 3],
             opacity: &self.opacity[..count],
             rgb: &self.rgb[..count * 3],
-            quat: &self.quat[..count * 4],
+            quat: &self.quat[..if packed_quat { 0 } else { count * 4 }],
+            quat_packed: &self.quat_packed[..if packed_quat { count } else { 0 }],
             sh1: &self.sh1[..if float_sh[0] { count * 9 } else { 0 }],
             sh2: &self.sh2[..if float_sh[1] { count * 15 } else { 0 }],
             sh3: &self.sh3[..if float_sh[2] { count * 21 } else { 0 }],
@@ -1039,7 +1053,7 @@ impl SuperSplatState {
         }
     }
 
-    fn decode_vertices(
+    fn decode_vertices<T: SplatReceiver>(
         &mut self,
         count: usize,
         base_index: usize,
@@ -1047,7 +1061,7 @@ impl SuperSplatState {
         record_size: usize,
         data: &[u8],
     ) -> anyhow::Result<()> {
-        self.output.ensure(count, [false; 4]);
+        self.output.ensure(count, [false; 4], T::PACKED_QUATERNIONS);
 
         for i in 0..count {
             let splat_index = base_index + i;
@@ -1069,28 +1083,6 @@ impl SuperSplatState {
                 + chunk.min_y;
             let z = ((packed_position & 2047) as f32 / 2047.0) * (chunk.max_z - chunk.min_z)
                 + chunk.min_z;
-
-            let r0 = (((packed_rotation >> 20) & 1023) as f32 / 1023.0 - 0.5) * SQRT_2;
-            let r1 = (((packed_rotation >> 10) & 1023) as f32 / 1023.0 - 0.5) * SQRT_2;
-            let r2 = ((packed_rotation & 1023) as f32 / 1023.0 - 0.5) * SQRT_2;
-            let rr = (1.0 - r0 * r0 - r1 * r1 - r2 * r2).max(0.0).sqrt();
-            let r_order = (packed_rotation >> 30) & 3;
-            let quat_x = if r_order == 0 {
-                r0
-            } else if r_order == 1 {
-                rr
-            } else {
-                r1
-            };
-            let quat_y = if r_order <= 1 {
-                r1
-            } else if r_order == 2 {
-                rr
-            } else {
-                r2
-            };
-            let quat_z = if r_order <= 2 { r2 } else { rr };
-            let quat_w = if r_order == 0 { rr } else { r0 };
 
             let scale_x = (((packed_scale >> 21) & 2047) as f32 / 2047.0)
                 * (chunk.max_scale_x - chunk.min_scale_x)
@@ -1122,10 +1114,11 @@ impl SuperSplatState {
             self.output.rgb[i3 + 1] = g;
             self.output.rgb[i3 + 2] = b;
             self.output.opacity[i] = opacity;
-            self.output.quat[i4] = quat_x;
-            self.output.quat[i4 + 1] = quat_y;
-            self.output.quat[i4 + 2] = quat_z;
-            self.output.quat[i4 + 3] = quat_w;
+            if T::PACKED_QUATERNIONS {
+                self.output.quat_packed[i] = repack_quat_ply(packed_rotation);
+            } else {
+                self.output.quat[i4..i4 + 4].copy_from_slice(&decode_quat_ply(packed_rotation));
+            }
         }
         Ok(())
     }
@@ -1143,8 +1136,11 @@ impl SuperSplatState {
         if self.temp_rest.len() < num_f_rest {
             self.temp_rest.resize(num_f_rest, 0.0);
         }
-        self.output
-            .ensure(count, array::from_fn(|band| band < self.max_sh_degree));
+        self.output.ensure(
+            count,
+            array::from_fn(|band| band < self.max_sh_degree),
+            false,
+        );
         for i in 0..count {
             let base = offset + i * record_size;
             for (idx, prop) in sh_props.f_rest.iter().enumerate() {

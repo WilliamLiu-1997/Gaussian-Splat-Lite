@@ -1,10 +1,10 @@
+import { decodeQuatSmallestThree32 } from "./quaternion.js";
 import {
   E,
   N,
   decodeAlphaShape,
   decodeCenter,
   decodeLnScales,
-  decodeQuaternion,
   decodeRgba,
   quatQuat,
   quatVec,
@@ -182,9 +182,9 @@ export function createProjectionProgram(uniforms, view) {
           const supportRadius = maximumSupportRadius.toVar();
           const viewQuaternion = quatQuat(
             renderToViewQuat,
-            // Keep the unit-quaternion constraint without oct/angle quantization.
+            // Keep the unit-quaternion constraint without packing the float32 path.
             packed
-              ? decodeQuaternion(source.second.w)
+              ? decodeQuatSmallestThree32(source.second.w)
               : source.quaternion.normalize(),
           );
           const rotationScale = scaleQuaternionToMatrix(scales, viewQuaternion);

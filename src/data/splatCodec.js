@@ -1,11 +1,8 @@
 import { fromHalf, toHalf } from "../utils/numeric.js";
 const F32_EPSILON = 1.192_092_895_507_812_5e-7;
-const ENCODED_IDENTITY_QUATERNION = (512 << 10) | 1023;
-// Keep JS double precision; the destination array controls decode precision.
-const QUAT_ROTATION_LOOKUP = Float64Array.from({ length: 4096 * 2 }, (_, i) => {
-  const halfTheta = ((i >>> 1) / 4095) * 0.5 * Math.PI;
-  return i & 1 ? Math.cos(halfTheta) : Math.sin(halfTheta);
-});
+const SMALLEST_THREE_SCALE = 511 * Math.SQRT2;
+const SMALLEST_THREE_DECODE_SCALE = 1 / SMALLEST_THREE_SCALE;
+const SMALLEST_THREE_IDENTITY = 0xc0000000;
 const SH_SCALE_LOOKUP = Float64Array.from(
   { length: 32 },
   (_, exponent) => 2 ** (exponent - 15) / 255,
@@ -64,29 +61,28 @@ export function decodeShRgbToArray(word, output, base = 0, stride = 1) {
       exponentAndSigns & (1 << component) ? -magnitude : magnitude;
   }
 }
-export function decodeQuatOctXy1010R12ToArray(
+
+export function decodeQuatSmallestThree32ToArray(
   word,
   output,
   base = 0,
   stride = 1,
 ) {
-  const u = word & 0x3ff;
-  const v = (word >>> 10) & 0x3ff;
-  const angle = word >>> 20;
-  let x = (u / 1023) * 2 - 1;
-  let y = (v / 1023) * 2 - 1;
-  const z = 1 - Math.abs(x) - Math.abs(y);
-  const fold = Math.max(-z, 0);
-  x += x >= 0 ? -fold : fold;
-  y += y >= 0 ? -fold : fold;
-  const inverseLength = 1 / Math.sqrt(x * x + y * y + z * z);
-  const sine = QUAT_ROTATION_LOOKUP[angle * 2];
-  output[base] = x * inverseLength * sine;
-  output[base + stride] = y * inverseLength * sine;
-  output[base + stride * 2] = z * inverseLength * sine;
-  output[base + stride * 3] = QUAT_ROTATION_LOOKUP[angle * 2 + 1];
+  const omitted = word >>> 30;
+  let sum = 0;
+  let bits = word;
+  for (let component = 0; component < 4; component += 1) {
+    if (component === omitted) continue;
+    const value =
+      (((bits & 0x3ff) ^ 0x200) - 0x200) * SMALLEST_THREE_DECODE_SCALE;
+    output[base + component * stride] = value;
+    sum += value * value;
+    bits >>>= 10;
+  }
+  output[base + omitted * stride] = Math.sqrt(1 - sum);
 }
-function encodeQuaternion(qx, qy, qz, qw, minimumLengthSquared) {
+
+function encodeSmallestThree(qx, qy, qz, qw, minimumLengthSquared) {
   const lengthSquared = qx * qx + qy * qy + qz * qz + qw * qw;
   if (
     !Number.isFinite(lengthSquared) ||
@@ -94,41 +90,33 @@ function encodeQuaternion(qx, qy, qz, qw, minimumLengthSquared) {
   ) {
     return undefined;
   }
-  if (qx === 0 && qy === 0 && qz === 0) {
-    return ENCODED_IDENTITY_QUATERNION;
+  const quaternion = [qx, qy, qz, qw];
+  let omitted = 0;
+  for (let component = 1; component < 4; component += 1) {
+    if (Math.abs(quaternion[component]) > Math.abs(quaternion[omitted])) {
+      omitted = component;
+    }
   }
-  const inverseLength = 1 / Math.sqrt(lengthSquared);
-  let x = qx * inverseLength;
-  let y = qy * inverseLength;
-  let z = qz * inverseLength;
-  let w = qw * inverseLength;
-  if (w < 0) {
-    x = -x;
-    y = -y;
-    z = -z;
-    w = -w;
+  const multiplier =
+    (quaternion[omitted] < 0 ? -1 : 1) *
+    (SMALLEST_THREE_SCALE / Math.sqrt(lengthSquared));
+  let word = omitted << 30;
+  let shift = 0;
+  for (let component = 0; component < 4; component += 1) {
+    if (component === omitted) continue;
+    const value = quaternion[component] * multiplier;
+    // Nearest integer, ties away from zero, in all four implementations.
+    const quantized = Math.sign(value) * Math.floor(Math.abs(value) + 0.5);
+    word |= (quantized & 0x3ff) << shift;
+    shift += 10;
   }
-  const theta = 2 * Math.acos(clamp(w, 0, 1));
-  const sine = Math.sin(theta * 0.5);
-  const axisX = Math.abs(sine) < 1e-6 ? 1 : x / sine;
-  const axisY = Math.abs(sine) < 1e-6 ? 0 : y / sine;
-  const axisZ = Math.abs(sine) < 1e-6 ? 0 : z / sine;
-  const sum = Math.abs(axisX) + Math.abs(axisY) + Math.abs(axisZ);
-  let octX = axisX / sum;
-  let octY = axisY / sum;
-  if (axisZ < 0) {
-    const previousX = octX;
-    octX = (1 - Math.abs(octY)) * (octX >= 0 ? 1 : -1);
-    octY = (1 - Math.abs(previousX)) * (octY >= 0 ? 1 : -1);
-  }
-  const u = Math.round(clamp((octX * 0.5 + 0.5) * 1023, 0, 1023));
-  const v = Math.round(clamp((octY * 0.5 + 0.5) * 1023, 0, 1023));
-  const angle = Math.round(clamp((theta / Math.PI) * 4095, 0, 4095));
-  return ((angle << 20) | (v << 10) | u) >>> 0;
+  return word >>> 0;
 }
-export function encodeQuatOctXy1010R12(qx, qy, qz, qw) {
-  return (encodeQuaternion(qx, qy, qz, qw, 0) ?? 0) >>> 0;
+
+export function encodeQuatSmallestThree32(qx, qy, qz, qw) {
+  return encodeSmallestThree(qx, qy, qz, qw, 0) ?? SMALLEST_THREE_IDENTITY;
 }
-export function tryEncodeQuatOctXy1010R12(qx, qy, qz, qw) {
-  return encodeQuaternion(qx, qy, qz, qw, F32_EPSILON);
+
+export function tryEncodeQuatSmallestThree32(qx, qy, qz, qw) {
+  return encodeSmallestThree(qx, qy, qz, qw, F32_EPSILON);
 }

@@ -1,11 +1,14 @@
 import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines.js";
 import {
+  decodeQuatSmallestThree32,
+  encodeQuatSmallestThree32,
+} from "./quaternion.js";
+import {
   E,
   N,
   decodeAlphaShape,
   decodeCenter,
   decodeLnScales,
-  decodeQuaternion,
   decodeRgba,
   load2D,
   loadArray,
@@ -83,46 +86,6 @@ const sdfDistance = N.Fn(([shape, position, sizes]) => {
     { name: "position", type: "vec3" },
     { name: "sizes", type: "vec4" },
   ],
-});
-const encodeQuaternion = N.Fn(([value]) => {
-  const quaternion = N.select(value.w.lessThan(0), value.negate(), value);
-  const theta = quaternion.w.clamp(0, 1).acos().mul(2);
-  const sum = quaternion.x
-    .abs()
-    .add(quaternion.y.abs())
-    .add(quaternion.z.abs());
-  const projected = N.select(
-    sum.lessThan(1e-6),
-    N.vec2(1, 0),
-    quaternion.xy.div(sum.max(1e-6)),
-  ).toVar();
-  N.If(quaternion.z.lessThan(0), () => {
-    const oldX = projected.x.toVar();
-    projected.x.assign(
-      N.float(1)
-        .sub(projected.y.abs())
-        .mul(N.select(projected.x.greaterThanEqual(0), 1, -1)),
-    );
-    projected.y.assign(
-      N.float(1)
-        .sub(oldX.abs())
-        .mul(N.select(projected.y.greaterThanEqual(0), 1, -1)),
-    );
-  });
-  const quantized = projected
-    .mul(0.5)
-    .add(0.5)
-    .mul(1023)
-    .round()
-    .clamp(0, 1023);
-  const quantU = N.uint(quantized.x);
-  const quantV = N.uint(quantized.y);
-  const angle = N.uint(theta.div(Math.PI).mul(4095).round().clamp(0, 4095));
-  return angle.shiftLeft(20).bitOr(quantV.shiftLeft(10)).bitOr(quantU);
-}).setLayout({
-  name: "gslEncodeQuaternion",
-  type: "uint",
-  inputs: [{ name: "value", type: "vec4" }],
 });
 const decodeShRgb = N.Fn(([encoded]) => {
   const biasedBase = encoded.shiftRight(27).bitAnd(0x1f);
@@ -459,7 +422,7 @@ export function createGenerateProgram({ uniforms }) {
         valid.assign(true);
         center.assign(objectBasis.mul(decodeCenter(sourceA)));
         lnScales.assign(decodeLnScales(sourceB).add(objectLnScale));
-        const sourceQuaternion = decodeQuaternion(sourceB.w).toVar();
+        const sourceQuaternion = decodeQuatSmallestThree32(sourceB.w).toVar();
         N.If(objectReflected, () => {
           sourceQuaternion.yz.negateAssign();
         });
@@ -706,7 +669,7 @@ export function createGenerateProgram({ uniforms }) {
           N.packHalf2x16(generated.rgba.rg),
           N.packHalf2x16(N.vec2(generated.rgba.b, generated.lnScales.x)),
           N.packHalf2x16(generated.lnScales.yz),
-          encodeQuaternion(generated.quaternion),
+          encodeQuatSmallestThree32(generated.quaternion),
         ),
       );
     });

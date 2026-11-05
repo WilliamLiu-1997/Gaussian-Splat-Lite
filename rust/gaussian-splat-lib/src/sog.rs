@@ -517,27 +517,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 splats.set_center(self.base, count, &self.floats);
             }
             "scales" => {
-                self.floats.resize(count * 4, 0.0);
-                let quats = &mut self.floats;
                 let quat_image = &self.images[1];
-                for i in 0..count {
-                    let [a, b, c] = array::from_fn(|d| {
-                        (quat_image.channel(self.base + i, d) as f32 / 255.0 - 0.5)
-                            * std::f32::consts::SQRT_2
-                    });
-                    let d = (1.0 - a * a - b * b - c * c).max(0.0).sqrt();
-                    let quat = match quat_image.channel(self.base + i, 3) {
-                        252 => [a, b, c, d],
-                        253 => [d, b, c, a],
-                        254 => [b, d, c, a],
-                        255 => [b, c, d, a],
-                        _ => bail!("invalid quaternion tag at splat {}", self.base + i),
-                    };
-                    let norm = quat.iter().map(|value| value * value).sum::<f32>().sqrt();
-                    for d in 0..4 {
-                        quats[i * 4 + d] = quat[d] / norm;
-                    }
-                }
                 splats.set_quantized(
                     self.base,
                     count,
@@ -545,7 +525,12 @@ impl<T: SplatReceiver> SogDecoder<T> {
                     &self.meta.scales,
                     |i, d| image.channel(self.base + i, d),
                 );
-                splats.set_quat(self.base, count, quats);
+                splats.set_quat_sog(
+                    self.base,
+                    count,
+                    |i| array::from_fn(|d| quat_image.channel(self.base + i, d)),
+                    &mut self.floats,
+                )?;
             }
             "sh0" => {
                 splats.set_quantized(

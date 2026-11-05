@@ -54,4 +54,3 @@ export declare const decodeRgba: TSL.FnNode<
   Node<"vec4">
 >;
 export declare const decodeLnScales: TSL.FnNode<[Node<"uvec4">], Node<"vec3">>;
-export declare const decodeQuaternion: TSL.FnNode<[Node<"uint">], Node<"vec4">>;

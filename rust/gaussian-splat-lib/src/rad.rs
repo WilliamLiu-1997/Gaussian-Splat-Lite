@@ -17,7 +17,10 @@ use serde_json::Value;
 
 use crate::{
     decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatProps, SplatReceiver},
-    splat_encode::{encode_splat_sh_rgb, f16_table, ShLookup, F16_SH_LOOKUP, LOD_OPACITY_LOOKUP},
+    splat_encode::{
+        encode_quat_smallest_three32, encode_quat_smallest_three32_normalized, encode_splat_sh_rgb,
+        f16_table, ShLookup, F16_SH_LOOKUP, LOD_OPACITY_LOOKUP,
+    },
 };
 
 pub const RAD_MAGIC: u32 = 0x30444152;
@@ -394,6 +397,7 @@ struct DecodedChunk {
     pub scales: Vec<f32>,
     pub scales_f16: Vec<u16>,
     pub quaternions: Vec<f32>,
+    pub quaternions_packed: Vec<u32>,
     pub packed_sh: [Vec<u32>; 3],
     pub sh_labels: Option<(usize, Vec<u32>)>,
     pub child_start: Option<Vec<u32>>,
@@ -403,6 +407,44 @@ struct DecodedChunk {
 }
 
 impl DecodedChunk {
+    fn decode_orientation<const PACKED: bool>(
+        &mut self,
+        prop: &Property,
+        data: &[u8],
+    ) -> Result<()> {
+        if prop.encoding == Encoding::Oct88R8 {
+            let angles = &*OCT_ANGLES;
+            self.quaternions.reserve(self.count * 4);
+            for bytes in data.chunks_exact(3) {
+                self.quaternions
+                    .extend(decode_quat_oct88r8(bytes.try_into().unwrap(), angles));
+            }
+            return Ok(());
+        }
+        if PACKED {
+            self.quaternions_packed.reserve(self.count);
+        } else {
+            self.quaternions.reserve(self.count * 4);
+        }
+        let push = |quat, normalized| {
+            if PACKED {
+                self.quaternions_packed.push(if normalized {
+                    encode_quat_smallest_three32_normalized(quat)
+                } else {
+                    encode_quat_smallest_three32(quat)
+                });
+            } else {
+                self.quaternions.extend(quat);
+            }
+        };
+        if prop.encoding == Encoding::F16 {
+            decode_quat_xyz::<true>(data, self.count, push)?;
+        } else {
+            decode_quat_xyz::<false>(data, self.count, push)?;
+        }
+        Ok(())
+    }
+
     fn decode_quantized(&mut self, prop: &Property, mut data: Cow<'_, [u8]>) -> Result<()> {
         let count = self.count;
         if matches!(prop.encoding, Encoding::R8Delta | Encoding::S8Delta) {
@@ -634,7 +676,7 @@ impl RadDecoder {
         bytes: &[u8],
         mut splats: T,
     ) -> Result<(T, RadChunk)> {
-        let chunk = self.decode_chunk_data(bytes)?;
+        let chunk = self.decode_chunk_data(bytes, T::PACKED_QUATERNIONS)?;
         splats.init_splats(&SplatInit {
             num_splats: chunk.count,
             max_sh_degree: chunk.max_sh,
@@ -646,6 +688,7 @@ impl RadDecoder {
             rgb: &chunk.rgb,
             scale: &chunk.scales,
             quat: &chunk.quaternions,
+            quat_packed: &chunk.quaternions_packed,
             ..Default::default()
         };
         splats.set_batch(0, chunk.count, &batch);
@@ -732,7 +775,7 @@ impl RadDecoder {
         })
     }
 
-    fn decode_chunk_data(&mut self, bytes: &[u8]) -> Result<DecodedChunk> {
+    fn decode_chunk_data(&mut self, bytes: &[u8], packed_quat: bool) -> Result<DecodedChunk> {
         ensure!(bytes.len() >= 8, "Incomplete RADC header");
         ensure!(
             bytes[..4] == RAD_CHUNK_MAGIC.to_le_bytes(),
@@ -924,6 +967,13 @@ impl RadDecoder {
                 data.len()
             );
             match prop.property {
+                PropertyName::Orientation => {
+                    if packed_quat {
+                        result.decode_orientation::<true>(prop, &data)?;
+                    } else {
+                        result.decode_orientation::<false>(prop, &data)?;
+                    }
+                }
                 PropertyName::Rgb if prop.encoding == Encoding::F16 => {
                     ensure!(
                         data.chunks_exact(2)
@@ -995,7 +1045,6 @@ impl RadDecoder {
                             }
                         }
                         PropertyName::Rgb => result.rgb = values,
-                        PropertyName::Orientation => result.quaternions = values,
                         _ if name.is_code() => {
                             let half_lookup =
                                 (prop.encoding == Encoding::F16).then(|| &*F16_SH_LOOKUP);
@@ -1163,7 +1212,7 @@ fn decode_opacity(opacity: f32) -> f32 {
 fn decode_float_property(prop: &Property, data: &[u8], count: usize) -> Result<Vec<f32>> {
     use Encoding::*;
     let dims = prop.property.dimensions();
-    let decoded = match prop.encoding {
+    Ok(match prop.encoding {
         F32 => decode_f32(data, dims, count),
         F16 => decode_f16(data, dims, count),
         F32LeBytes => decode_f32_lebytes(data, dims, count),
@@ -1172,25 +1221,10 @@ fn decode_float_property(prop: &Property, data: &[u8], count: usize) -> Result<V
         R8Delta => decode_r8_delta(data, dims, count, prop.min.unwrap(), prop.max.unwrap()),
         S8 => decode_s8(data, dims, count, prop.max.unwrap()),
         S8Delta => decode_s8_delta(data, dims, count, prop.max.unwrap()),
-        Oct88R8 => return Ok(decode_quat_oct88r8(data, count)),
-        Ln0R8 | LnF16 | U16 | U32 => bail!("Unexpected encoding for floating RAD property"),
-    };
-    if prop.property == PropertyName::Orientation {
-        ensure!(
-            decoded.iter().all(|value| value.is_finite()),
-            "Non-finite RAD orientation"
-        );
-        let mut quaternions = Vec::with_capacity(4 * count);
-        for xyz in decoded.chunks_exact(3) {
-            let length_squared = xyz.iter().map(|value| value * value).sum::<f32>();
-            ensure!(length_squared.is_finite(), "RAD orientation overflow");
-            let w = (1.0 - length_squared).max(0.0).sqrt();
-            quaternions.extend([xyz[0], xyz[1], xyz[2], w]);
+        Oct88R8 | Ln0R8 | LnF16 | U16 | U32 => {
+            bail!("Unexpected encoding for floating RAD property")
         }
-        Ok(quaternions)
-    } else {
-        Ok(decoded)
-    }
+    })
 }
 
 fn decode_f32(data: &[u8], dims: usize, count: usize) -> Vec<f32> {
@@ -1299,18 +1333,6 @@ fn decode_s8_delta(data: &[u8], dims: usize, count: usize, max: f32) -> Vec<f32>
     result
 }
 
-fn decode_quat_oct88r8(data: &[u8], count: usize) -> Vec<f32> {
-    let mut result = Vec::with_capacity(4 * count);
-    let angles = &*OCT_ANGLES;
-    for i in 0..count {
-        let index = i * 3;
-        let axis = decode_oct_axis([data[index], data[index + 1]]);
-        let [s, w] = angles[data[index + 2] as usize];
-        result.extend([axis[0] * s, axis[1] * s, axis[2] * s, w]);
-    }
-    result
-}
-
 fn decode_u16(data: &[u8], dims: usize, count: usize) -> Vec<u16> {
     let mut result = Vec::with_capacity(dims * count);
     for i in 0..count {
@@ -1340,13 +1362,40 @@ fn decode_u32(data: &[u8], dims: usize, count: usize) -> Vec<u32> {
     result
 }
 
-fn decode_oct_axis([u, v]: [u8; 2]) -> [f32; 3] {
+fn decode_quat_xyz<const HALF: bool>(
+    data: &[u8],
+    count: usize,
+    mut push: impl FnMut([f32; 4], bool),
+) -> Result<()> {
+    for i in 0..count {
+        let xyz: [f32; 3] = array::from_fn(|d| {
+            let index = (d * count + i) * if HALF { 2 } else { 4 };
+            if HALF {
+                f16::from_le_bytes(data[index..index + 2].try_into().unwrap()).to_f32()
+            } else {
+                f32::from_le_bytes(data[index..index + 4].try_into().unwrap())
+            }
+        });
+        ensure!(
+            xyz.iter().all(|v| v.is_finite()),
+            "Non-finite RAD orientation"
+        );
+        let length_squared = xyz.iter().map(|v| v * v).sum::<f32>();
+        ensure!(length_squared.is_finite(), "RAD orientation overflow");
+        let w = (1.0 - length_squared).max(0.0).sqrt();
+        push([xyz[0], xyz[1], xyz[2], w], length_squared <= 1.0);
+    }
+    Ok(())
+}
+
+fn decode_quat_oct88r8([u, v, r]: [u8; 3], angles: &[[f32; 2]; 256]) -> [f32; 4] {
     let [x, y] = [u, v].map(|x| x as f32 / 255.0 * 2.0 - 1.0);
     let z = 1.0 - x.abs() - y.abs();
     let t = (-z).max(0.0);
     let [x, y] = [x, y].map(|x| if x >= 0.0 { x - t } else { x + t });
-    let length = (x * x + y * y + z * z).sqrt();
-    [x / length, y / length, z / length]
+    let [s, w] = angles[r as usize];
+    let multiplier = s / (x * x + y * y + z * z).sqrt();
+    [x * multiplier, y * multiplier, z * multiplier, w]
 }
 
 #[cfg(test)]
@@ -1455,11 +1504,11 @@ mod tests {
         });
         for bytes in [longer, truncated] {
             decoder.meta.chunks[0].bytes = bytes.len() as u64;
-            let error = decoder.decode_chunk_data(&bytes).err().unwrap();
+            let error = decoder.decode_chunk_data(&bytes, false).err().unwrap();
             assert!(format!("{error:#}").contains("DEFLATE"), "{error:#}");
         }
         decoder.meta.chunks[0].bytes = root.len() as u64;
-        decoder.decode_chunk_data(&root).unwrap();
+        decoder.decode_chunk_data(&root, false).unwrap();
     }
 
     #[test]
@@ -1468,11 +1517,11 @@ mod tests {
             for degree in 0..=3 {
                 let (mut seeded, root, next) = fixture(half, false, degree);
                 let mut full = RadDecoder::new(seeded.meta.clone(), degree).unwrap();
-                full.decode_chunk_data(&root).unwrap();
+                full.decode_chunk_data(&root, false).unwrap();
                 seeded.set_codebooks(full.codebooks().clone()).unwrap();
                 assert_eq!(full.codebooks, seeded.codebooks);
-                let expected = full.decode_chunk_data(&next).unwrap();
-                let actual = seeded.decode_chunk_data(&next).unwrap();
+                let expected = full.decode_chunk_data(&next, false).unwrap();
+                let actual = seeded.decode_chunk_data(&next, false).unwrap();
                 assert_eq!(actual.sh_labels, expected.sh_labels);
                 if degree > 0 {
                     assert_eq!(full.sh_palette(degree), seeded.sh_palette(degree));
@@ -1484,7 +1533,7 @@ mod tests {
     #[test]
     fn codebook_import_checks_degree_and_length() {
         let (mut decoder, root, _) = fixture(true, false, 3);
-        decoder.decode_chunk_data(&root).unwrap();
+        decoder.decode_chunk_data(&root, false).unwrap();
         let mut codes = decoder.codebooks().clone();
         let mut capped = RadDecoder::new(decoder.meta.clone(), 2).unwrap();
         assert!(capped
@@ -1504,7 +1553,7 @@ mod tests {
     fn failed_chunk_preserves_codebooks_and_palette() {
         for half in [false, true] {
             let (mut decoder, root, _) = fixture(half, false, 3);
-            decoder.decode_chunk_data(&root).unwrap();
+            decoder.decode_chunk_data(&root, false).unwrap();
             let palette = decoder.sh_palette(3).to_vec();
             let codes = decoder.codebooks.clone();
             for bad in [
@@ -1513,12 +1562,14 @@ mod tests {
             ] {
                 // Keep the directory consistent so the failure tests the payload.
                 decoder.meta.chunks[0].bytes = bad.len() as u64;
-                let error = decoder.decode_chunk_data(&bad).err().unwrap();
+                let error = decoder.decode_chunk_data(&bad, false).err().unwrap();
                 assert!(error.to_string().contains("Non-finite"), "{error:#}");
                 assert_eq!(decoder.codebooks, codes);
                 assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
             }
-            assert!(decoder.decode_chunk_data(&root[..root.len() - 1]).is_err());
+            assert!(decoder
+                .decode_chunk_data(&root[..root.len() - 1], false)
+                .is_err());
             assert_eq!(decoder.codebooks, codes);
             assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
         }

@@ -361,16 +361,9 @@ void produceSplat(int index) {
     uvec4 sourceSplat = texelFetch(sourceSplats, coord, 0);
     vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(sourceSplat);
     vec3 center = decodeSplatCenter(sourceSplat);
-    vec3 lnScales;
-    vec4 quaternion;
-    vec4 rgba;
-    decodeSplatAttributesLnScale(
-        sourceSplat2,
-        alphaShapeAmount.x,
-        lnScales,
-        quaternion,
-        rgba
-    );
+    vec3 lnScales = decodeLnScales(sourceSplat2);
+    vec4 quaternion = decodeQuatSmallestThree32(sourceSplat2.w);
+    vec4 rgba = decodeSplatRgba(sourceSplat2, alphaShapeAmount.x);
     float shapeAmount = alphaShapeAmount.y;
 
     // Match PlayCanvas' work-buffer transform. Centers retain the complete
@@ -421,7 +414,7 @@ void produceSplat(int index) {
         }
     }
 
-    encodeSplatLnScale(
+    encodeWorkSplat(
         target,
         target2,
         center,

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { fromHalf, uintBitsToFloat } from "../utils/numeric.js";
 import {
-  decodeQuatOctXy1010R12ToArray,
+  decodeQuatSmallestThree32ToArray,
   decodeSplatOpacity,
 } from "./splatCodec.js";
 export function decodeSplat(
@@ -27,17 +27,11 @@ export function decodeSplat(
   result.scales.x = Math.exp(fromHalf(splatB[i4 + 1] >>> 16));
   result.scales.y = Math.exp(fromHalf(splatB[i4 + 2] & 0xffff));
   result.scales.z = Math.exp(fromHalf(splatB[i4 + 2] >>> 16));
-  decodeQuatOctXy1010R12(splatB[i4 + 3], result.quaternion);
+  decodeQuatSmallestThree32(splatB[i4 + 3], result.quaternion);
   return result;
 }
 const decodedQuaternion = [0, 0, 0, 1];
-export function decodeQuatOctXy1010R12(encoded, out) {
-  decodeQuatOctXy1010R12ToArray(encoded, decodedQuaternion);
-  out.set(
-    decodedQuaternion[0],
-    decodedQuaternion[1],
-    decodedQuaternion[2],
-    decodedQuaternion[3],
-  );
-  return out;
+export function decodeQuatSmallestThree32(encoded, out) {
+  decodeQuatSmallestThree32ToArray(encoded, decodedQuaternion);
+  return out.fromArray(decodedQuaternion);
 }

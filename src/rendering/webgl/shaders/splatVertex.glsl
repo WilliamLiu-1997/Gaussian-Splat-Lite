@@ -135,11 +135,10 @@ void main() {
 
     // The second record is only needed by splats whose centers survive the
     // view-frustum checks above.
-    vec3 lnScales;
-    vec4 quaternion, rgba;
     uvec4 splat2 = texelFetch(splats2, texCoord, 0);
-    decodeSplatAttributesLnScale(splat2, alpha, lnScales, quaternion, rgba);
-    vec3 scales = exp(lnScales);
+    vec3 scales = exp(decodeLnScales(splat2));
+    vec4 quaternion = decodeQuatSmallestThree32(splat2.w);
+    vec4 rgba = decodeSplatRgba(splat2, alpha);
     if (all(equal(scales, vec3(0.0)))) {
         return;
     }

@@ -12,19 +12,19 @@ export declare function decodeShRgbToArray(
   base?: number,
   stride?: number,
 ): void;
-export declare function decodeQuatOctXy1010R12ToArray(
+export declare function decodeQuatSmallestThree32ToArray(
   word: number,
   output: CodecOutput,
   base?: number,
   stride?: number,
 ): void;
-export declare function encodeQuatOctXy1010R12(
+export declare function encodeQuatSmallestThree32(
   qx: number,
   qy: number,
   qz: number,
   qw: number,
 ): number;
-export declare function tryEncodeQuatOctXy1010R12(
+export declare function tryEncodeQuatSmallestThree32(
   qx: number,
   qy: number,
   qz: number,

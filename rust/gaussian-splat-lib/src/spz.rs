@@ -559,7 +559,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                 return;
             };
             let input = &input[..chunk * bytes_per_item];
-            if matches!(state.stage, Centers | Quats) {
+            if matches!(state.stage, Centers) {
                 state.output.resize(chunk * components, 0.0);
             }
             let output = &mut state.output;
@@ -594,40 +594,11 @@ impl<T: SplatReceiver> SpzDecoder<T> {
                         |i, d| input[i * components + d],
                     );
                 }
+                Quats if state.version >= 3 => {
+                    self.splats.set_quat_spz(base, chunk, input, output);
+                }
                 Quats => {
-                    for (out, bytes) in output
-                        .chunks_exact_mut(4)
-                        .zip(input.chunks_exact(bytes_per_item))
-                    {
-                        if state.version >= 3 {
-                            let mut packed = read_u32_le(bytes);
-                            let largest = (packed >> 30) as usize;
-                            let mut sum_squares = 0.0;
-                            for j in (0..4).rev() {
-                                if j == largest {
-                                    continue;
-                                }
-                                let magnitude = std::f32::consts::FRAC_1_SQRT_2
-                                    * ((packed & 511) as f32 / 511.0);
-                                out[j] = if packed & 512 != 0 {
-                                    -magnitude
-                                } else {
-                                    magnitude
-                                };
-                                sum_squares += out[j] * out[j];
-                                packed >>= 10;
-                            }
-                            out[largest] = (1.0 - sum_squares).max(0.0).sqrt();
-                        } else {
-                            for j in 0..3 {
-                                out[j] = bytes[j] as f32 / 127.5 - 1.0;
-                            }
-                            out[3] = (1.0 - (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]))
-                                .max(0.0)
-                                .sqrt();
-                        }
-                    }
-                    self.splats.set_quat(base, chunk, output);
+                    self.splats.set_quat_spz_legacy(base, chunk, input, output);
                 }
                 Sh => {
                     let lookup = &*SH_LOOKUP;

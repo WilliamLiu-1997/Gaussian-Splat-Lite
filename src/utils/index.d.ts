@@ -1,6 +1,9 @@
-export { encodeQuatOctXy1010R12 } from "../data/splatCodec.js";
+export { encodeQuatSmallestThree32 } from "../data/splatCodec.js";
 export { getTextureSize } from "../data/textureLayout.js";
-export { decodeQuatOctXy1010R12, decodeSplat } from "../data/unpack.js";
+export {
+  decodeQuatSmallestThree32,
+  decodeSplat,
+} from "../data/unpack.js";
 export {
   IDENT_VERTEX_SHADER,
   uploadU32DataTextureRows,

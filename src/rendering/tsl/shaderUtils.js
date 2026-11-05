@@ -132,29 +132,3 @@ export const decodeLnScales = N.Fn(([data]) => {
   type: "vec3",
   inputs: [{ name: "data", type: "uvec4" }],
 });
-export const decodeQuaternion = N.Fn(([encodedValue]) => {
-  const encoded = N.uint(encodedValue);
-  const quantU = encoded.bitAnd(0x3ff);
-  const quantV = encoded.shiftRight(10).bitAnd(0x3ff);
-  const angleInt = encoded.shiftRight(20);
-  const folded = N.vec2(N.float(quantU), N.float(quantV))
-    .div(1023)
-    .mul(2)
-    .sub(1);
-  const axis = N.vec3(
-    folded,
-    N.float(1).sub(folded.x.abs()).sub(folded.y.abs()),
-  ).toVar();
-  const t = axis.z.negate().max(0);
-  axis.x.addAssign(N.select(axis.x.greaterThanEqual(0), t.negate(), t));
-  axis.y.addAssign(N.select(axis.y.greaterThanEqual(0), t.negate(), t));
-  axis.assign(axis.normalize());
-  const halfTheta = N.float(angleInt)
-    .div(4095)
-    .mul(Math.PI * 0.5);
-  return N.vec4(axis.mul(halfTheta.sin()), halfTheta.cos());
-}).setLayout({
-  name: "gslDecodeQuaternion",
-  type: "vec4",
-  inputs: [{ name: "encodedValue", type: "uint" }],
-});

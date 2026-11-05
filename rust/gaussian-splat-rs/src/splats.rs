@@ -3,9 +3,9 @@ use std::array;
 use gaussian_splat_lib::{
     decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatProps, SplatReceiver},
     splat_encode::{
-        encode_splat, encode_splat_center, encode_splat_ln_scale, encode_splat_opacity,
-        encode_splat_quat, encode_splat_rgb, encode_splat_scale, encode_splat_sh_rgb,
-        encode_splat_with_ln_scale, get_splat_tex_size,
+        decode_quat_sog, decode_quat_spz_legacy, encode_splat_center, encode_splat_ln_scale,
+        encode_splat_opacity, encode_splat_quat, encode_splat_rgb, encode_splat_rgb_ln_scale,
+        encode_splat_scale, encode_splat_sh_rgb, get_splat_tex_size, repack_quat_spz,
     },
 };
 use js_sys::{Float32Array, Object, Reflect, Uint32Array};
@@ -226,14 +226,18 @@ impl SplatsData {
         batch: &SplatProps,
         ln_scale: Option<&[f32]>,
     ) {
-        if batch.opacity_packed.is_empty() {
-            self.write_batch::<false>(base, count, batch, ln_scale);
-        } else {
-            self.write_batch::<true>(base, count, batch, ln_scale);
+        match (
+            batch.opacity_packed.is_empty(),
+            batch.quat_packed.is_empty(),
+        ) {
+            (true, true) => self.write_batch::<false, false>(base, count, batch, ln_scale),
+            (true, false) => self.write_batch::<false, true>(base, count, batch, ln_scale),
+            (false, true) => self.write_batch::<true, false>(base, count, batch, ln_scale),
+            (false, false) => self.write_batch::<true, true>(base, count, batch, ln_scale),
         }
     }
 
-    fn write_batch<const PACKED_OPACITY: bool>(
+    fn write_batch<const PACKED_OPACITY: bool, const PACKED_QUAT: bool>(
         &mut self,
         base: usize,
         count: usize,
@@ -245,19 +249,9 @@ impl SplatsData {
             && (PACKED_OPACITY || !batch.opacity.is_empty())
             && !batch.rgb.is_empty()
             && !scale.is_empty()
-            && !batch.quat.is_empty()
+            && (PACKED_QUAT || !batch.quat.is_empty())
         {
             self.copy_sort_centers(base, count, batch.center);
-            let encode = if ln_scale.is_some() {
-                encode_splat_with_ln_scale
-            } else {
-                encode_splat
-            };
-            let encode_scale = if ln_scale.is_some() {
-                encode_splat_ln_scale
-            } else {
-                encode_splat_scale
-            };
             self.prepare_buffer(base, count, 0, true);
             self.prepare_buffer(base, count, 1, true);
             for i in 0..count {
@@ -265,17 +259,24 @@ impl SplatsData {
                 let center = array::from_fn(|d| batch.center[i3 + d]);
                 let rgb = array::from_fn(|d| batch.rgb[i3 + d]);
                 let scale = array::from_fn(|d| scale[i3 + d]);
-                let quat = array::from_fn(|d| batch.quat[i4 + d]);
                 let a = &mut self.buffer_a[i4..i4 + 4];
                 let b = &mut self.buffer_b[i4..i4 + 4];
+                encode_splat_center(a, center);
                 if PACKED_OPACITY {
-                    encode_splat_center(a, center);
                     a[3] = batch.opacity_packed[i];
-                    encode_splat_rgb(b, rgb);
-                    encode_scale(b, scale);
-                    encode_splat_quat(b, quat);
                 } else {
-                    encode(a, b, center, batch.opacity[i], rgb, scale, quat);
+                    encode_splat_opacity(a, batch.opacity[i]);
+                }
+                let ln_scale = if ln_scale.is_some() {
+                    scale
+                } else {
+                    scale.map(f32::ln)
+                };
+                encode_splat_rgb_ln_scale(b, rgb, ln_scale);
+                if PACKED_QUAT {
+                    b[3] = batch.quat_packed[i];
+                } else {
+                    encode_splat_quat(b, array::from_fn(|d| batch.quat[i4 + d]));
                 }
             }
             self.invalidate_zero_scale_sort_centers(base, count, scale, ln_scale.is_some());
@@ -301,7 +302,12 @@ impl SplatsData {
                     self.set_scale(base, count, scale);
                 }
             }
-            if !batch.quat.is_empty() {
+            if PACKED_QUAT {
+                self.prepare_buffer(base, count, 1, false);
+                for (output, &word) in self.buffer_b.chunks_exact_mut(4).zip(batch.quat_packed) {
+                    output[3] = word;
+                }
+            } else if !batch.quat.is_empty() {
                 self.set_quat(base, count, batch.quat);
             }
         }
@@ -310,6 +316,8 @@ impl SplatsData {
 }
 
 impl SplatReceiver for SplatsData {
+    const PACKED_QUATERNIONS: bool = true;
+
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
         // Reject impossible counts before texture padding can wrap usize on WASM32.
         anyhow::ensure!(
@@ -432,6 +440,42 @@ impl SplatReceiver for SplatsData {
                 array::from_fn(|d| quat[i4 + d]),
             );
         }
+    }
+
+    fn set_quat_spz(&mut self, base: usize, count: usize, bytes: &[u8], _scratch: &mut Vec<f32>) {
+        self.prepare_buffer(base, count, 1, false);
+        for (output, input) in self.buffer_b.chunks_exact_mut(4).zip(bytes.chunks_exact(4)) {
+            output[3] = repack_quat_spz(u32::from_le_bytes(input.try_into().unwrap()));
+        }
+    }
+
+    fn set_quat_spz_legacy(
+        &mut self,
+        base: usize,
+        count: usize,
+        bytes: &[u8],
+        _scratch: &mut Vec<f32>,
+    ) {
+        self.prepare_buffer(base, count, 1, false);
+        for (output, input) in self.buffer_b.chunks_exact_mut(4).zip(bytes.chunks_exact(3)) {
+            encode_splat_quat(output, decode_quat_spz_legacy(input.try_into().unwrap()));
+        }
+    }
+
+    fn set_quat_sog<F: Fn(usize) -> [u8; 4]>(
+        &mut self,
+        base: usize,
+        count: usize,
+        code: F,
+        _scratch: &mut Vec<f32>,
+    ) -> anyhow::Result<()> {
+        self.prepare_buffer(base, count, 1, false);
+        for i in 0..count {
+            let quat = decode_quat_sog(code(i))
+                .ok_or_else(|| anyhow::anyhow!("invalid quaternion tag at splat {}", base + i))?;
+            encode_splat_quat(&mut self.buffer_b[i * 4..i * 4 + 4], quat);
+        }
+        Ok(())
     }
 
     fn set_rgb_f16(&mut self, base: usize, count: usize, rgb: &[u16]) {

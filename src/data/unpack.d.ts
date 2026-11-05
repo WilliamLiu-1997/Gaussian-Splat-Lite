@@ -16,7 +16,7 @@ export declare function decodeSplat(
   color: THREE.Color;
   opacity: number;
 };
-export declare function decodeQuatOctXy1010R12(
+export declare function decodeQuatSmallestThree32(
   encoded: number,
   out: THREE.Quaternion,
 ): THREE.Quaternion;

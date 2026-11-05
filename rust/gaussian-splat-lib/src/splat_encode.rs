@@ -6,15 +6,6 @@ pub(crate) static F16_LOOKUP: LazyLock<Box<[f32; 65536]>> =
     LazyLock::new(|| f16_table(|bits| f16::from_bits(bits).to_f32()));
 pub(crate) static F16_SH_LOOKUP: LazyLock<F16ShLookup> =
     LazyLock::new(|| F16ShLookup::from_values(F16_LOOKUP.as_ref()));
-// The packed rotation angle has only 12 bits; preserve the exact decode arithmetic.
-static QUAT_ROTATION_LOOKUP: LazyLock<Box<[(f32, f32)]>> = LazyLock::new(|| {
-    (0..4096)
-        .map(|r| {
-            let half_theta = r as f32 / 4095.0 * 0.5 * std::f32::consts::PI;
-            half_theta.sin_cos()
-        })
-        .collect()
-});
 pub(crate) static LOD_OPACITY_LOOKUP: LazyLock<Box<[u32; 65536]>> = LazyLock::new(|| {
     // The only nontrivial interval is [1, 2]: its shape has 1025 possible values.
     let shape: [u16; 1025] = array::from_fn(|i| f16::from_f32(i as f32 / 1024.0).to_bits());
@@ -100,17 +91,20 @@ pub fn encode_splat_with_ln_scale(
     ln_scale: [f32; 3],
     quat_xyzw: [f32; 4],
 ) {
-    splat_a[0] = center[0].to_bits();
-    splat_a[1] = center[1].to_bits();
-    splat_a[2] = center[2].to_bits();
+    encode_splat_center(splat_a, center);
     encode_splat_opacity(splat_a, opacity);
+    encode_splat_rgb_ln_scale(splat_b, rgb, ln_scale);
+    splat_b[3] = encode_quat_smallest_three32(quat_xyzw);
+}
+
+#[inline]
+pub fn encode_splat_rgb_ln_scale(splat_b: &mut [u32], rgb: [f32; 3], ln_scale: [f32; 3]) {
     splat_b[0] =
         f16::from_f32(rgb[0]).to_bits() as u32 | ((f16::from_f32(rgb[1]).to_bits() as u32) << 16);
     splat_b[1] = f16::from_f32(rgb[2]).to_bits() as u32
         | ((f16::from_f32(ln_scale[0]).to_bits() as u32) << 16);
     splat_b[2] = f16::from_f32(ln_scale[1]).to_bits() as u32
         | ((f16::from_f32(ln_scale[2]).to_bits() as u32) << 16);
-    splat_b[3] = encode_quat_oct101012(quat_xyzw);
 }
 
 pub fn encode_splat_center(splat_a: &mut [u32], center: [f32; 3]) {
@@ -195,54 +189,145 @@ pub fn decode_splat_ln_scale(splat_b: &[u32]) -> [f32; 3] {
 }
 
 pub fn encode_splat_quat(splat_b: &mut [u32], quat_xyzw: [f32; 4]) {
-    splat_b[3] = encode_quat_oct101012(quat_xyzw);
+    splat_b[3] = encode_quat_smallest_three32(quat_xyzw);
 }
 
 pub fn decode_splat_quat(splat_b: &[u32]) -> [f32; 4] {
-    decode_quat_oct101012(splat_b[3])
+    decode_quat_smallest_three32(splat_b[3])
 }
 
-pub fn encode_quat_oct101012(quat_xyzw: [f32; 4]) -> u32 {
-    let quat = if quat_xyzw[3] < 0.0 {
-        quat_xyzw.map(|x| -x)
-    } else {
-        quat_xyzw
-    };
-    let theta = 2.0 * quat[3].clamp(0.0, 1.0).acos();
-    let s = (theta * 0.5).sin();
+const SMALLEST_THREE_SCALE: f32 = 511.0 * std::f32::consts::SQRT_2;
+const SMALLEST_THREE_DECODE_SCALE: f32 = 1.0 / SMALLEST_THREE_SCALE;
 
-    let axis = if s.abs() < 1e-6 {
-        [1.0, 0.0, 0.0]
-    } else {
-        array::from_fn(|i| quat[i] / s)
-    };
-    let sum = axis[0].abs() + axis[1].abs() + axis[2].abs();
-    let mut p: [f32; 2] = array::from_fn(|i| axis[i] / sum);
-    if axis[2] < 0.0 {
-        p = [
-            (1.0 - p[1].abs()) * if p[0] >= 0.0 { 1.0 } else { -1.0 },
-            (1.0 - p[0].abs()) * if p[1] >= 0.0 { 1.0 } else { -1.0 },
-        ];
+pub fn encode_quat_smallest_three32(quat: [f32; 4]) -> u32 {
+    let length_squared = quat.iter().map(|v| v * v).sum::<f32>();
+    if !length_squared.is_finite() || length_squared <= 0.0 {
+        return 0xc0000000;
     }
-
-    let [u, v] = p.map(|x| ((x * 0.5 + 0.5) * 1023.0).clamp(0.0, 1023.0).round() as u32);
-    let r = (theta / std::f32::consts::PI * 4095.0)
-        .clamp(0.0, 4095.0)
-        .round() as u32;
-    (r << 20) | (v << 10) | u
+    encode_quat_smallest_three_scaled(quat, SMALLEST_THREE_SCALE / length_squared.sqrt())
 }
 
-pub fn decode_quat_oct101012(encoded: u32) -> [f32; 4] {
-    let [u, v, r] = [encoded & 0x3ff, (encoded >> 10) & 0x3ff, encoded >> 20];
-    let [x, y] = [u as f32 / 1023.0 * 2.0 - 1.0, v as f32 / 1023.0 * 2.0 - 1.0];
-    let z = 1.0 - x.abs() - y.abs();
-    let t = (-z).max(0.0);
-    let [x, y] = [x, y].map(|x| if x >= 0.0 { x - t } else { x + t });
-    let length = (x * x + y * y + z * z).sqrt();
-    let axis = [x / length, y / length, z / length];
+/// The caller must supply a unit quaternion.
+#[inline]
+pub fn encode_quat_smallest_three32_normalized(quat: [f32; 4]) -> u32 {
+    encode_quat_smallest_three_scaled(quat, SMALLEST_THREE_SCALE)
+}
 
-    let (s, w) = QUAT_ROTATION_LOOKUP[r as usize];
-    [axis[0] * s, axis[1] * s, axis[2] * s, w]
+#[inline(always)]
+fn encode_quat_smallest_three_scaled(quat: [f32; 4], scale: f32) -> u32 {
+    let mut omitted = 0;
+    for component in 1..4 {
+        if quat[component].abs() > quat[omitted].abs() {
+            omitted = component;
+        }
+    }
+    let sign = if quat[omitted] < 0.0 { -1.0 } else { 1.0 };
+    let multiplier = sign * scale;
+    let mut word = (omitted as u32) << 30;
+    let mut shift = 0;
+    for (component, value) in quat.iter().enumerate() {
+        if component == omitted {
+            continue;
+        }
+        // Nearest integer, ties away from zero; negative fields use two's complement.
+        let value = value * multiplier;
+        let quantized = (value.signum() * (value.abs() + 0.5).floor()) as i32;
+        word |= ((quantized as u32) & 0x3ff) << shift;
+        shift += 10;
+    }
+    word
+}
+
+pub fn decode_quat_smallest_three32(word: u32) -> [f32; 4] {
+    let omitted = (word >> 30) as usize;
+    let mut quat = [0.0; 4];
+    let mut bits = word;
+    let mut sum = 0.0;
+    for (component, value) in quat.iter_mut().enumerate() {
+        if component == omitted {
+            continue;
+        }
+        *value = (((bits & 0x3ff) ^ 0x200) as i32 - 0x200) as f32 * SMALLEST_THREE_DECODE_SCALE;
+        sum += *value * *value;
+        bits >>= 10;
+    }
+    quat[omitted] = (1.0 - sum).sqrt();
+    quat
+}
+
+pub fn decode_quat_spz(mut word: u32) -> [f32; 4] {
+    let omitted = (word >> 30) as usize;
+    let mut quat = [0.0; 4];
+    let mut sum = 0.0;
+    for component in (0..4).rev() {
+        if component == omitted {
+            continue;
+        }
+        let magnitude = std::f32::consts::FRAC_1_SQRT_2 * ((word & 511) as f32 / 511.0);
+        quat[component] = if word & 512 != 0 {
+            -magnitude
+        } else {
+            magnitude
+        };
+        sum += quat[component] * quat[component];
+        word >>= 10;
+    }
+    quat[omitted] = (1.0 - sum).max(0.0).sqrt();
+    quat
+}
+
+pub fn decode_quat_spz_legacy(bytes: [u8; 3]) -> [f32; 4] {
+    let [x, y, z] = bytes.map(|v| v as f32 / 127.5 - 1.0);
+    let w = (1.0 - (x * x + y * y + z * z)).max(0.0).sqrt();
+    [x, y, z, w]
+}
+
+pub fn repack_quat_spz(word: u32) -> u32 {
+    let kept = [word, word >> 10, word >> 20].map(|field| {
+        let magnitude = (field & 511) as i32;
+        let value = if field & 512 != 0 {
+            -magnitude
+        } else {
+            magnitude
+        };
+        value as u32 & 1023
+    });
+    (word & 0xc0000000) | kept[2] | (kept[1] << 10) | (kept[0] << 20)
+}
+
+pub fn decode_quat_sog(code: [u8; 4]) -> Option<[f32; 4]> {
+    let [a, b, c] = array::from_fn(|i| (code[i] as f32 / 255.0 - 0.5) * std::f32::consts::SQRT_2);
+    let d = (1.0 - a * a - b * b - c * c).max(0.0).sqrt();
+    Some(match code[3] {
+        252 => [a, b, c, d],
+        253 => [d, b, c, a],
+        254 => [b, d, c, a],
+        255 => [b, c, d, a],
+        _ => return None,
+    })
+}
+
+pub fn decode_quat_ply(word: u32) -> [f32; 4] {
+    let [a, b, c] = [word >> 20, word >> 10, word]
+        .map(|bits| ((bits & 1023) as f32 / 1023.0 - 0.5) * std::f32::consts::SQRT_2);
+    let d = (1.0 - a * a - b * b - c * c).max(0.0).sqrt();
+    match word >> 30 {
+        0 => [a, b, c, d],
+        1 => [d, b, c, a],
+        2 => [b, d, c, a],
+        _ => [b, c, d, a],
+    }
+}
+
+pub fn repack_quat_ply(word: u32) -> u32 {
+    // UNORM10 has two middle codes; both round to zero in signed smallest-three.
+    let [a, b, c] = [word >> 20, word >> 10, word].map(|bits| {
+        let value = (bits & 1023) as i32;
+        (value - 511 - (value >> 9)) as u32 & 1023
+    });
+    let order = word >> 30;
+    let [a, b, c] = if order == 0 { [a, b, c] } else { [b, c, a] };
+    (((order + 3) & 3) << 30) | a | (b << 10) | (c << 20)
 }
 
 pub fn encode_splat_sh_rgb(rgb: [f32; 3]) -> u32 {

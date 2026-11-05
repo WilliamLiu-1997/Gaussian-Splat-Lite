@@ -17,65 +17,30 @@ vec3 srgbToLinear(vec3 rgb) {
         rgb * 0.0773993808, lessThanEqual(rgb, vec3(0.04045)));
 }
 
-uint encodeQuatOctXy1010R12(vec4 q) {
-    // Ensure minimal representation: flip if q.w is negative.
-    if (q.w < 0.0) {
-        q = -q;
-    }
-    // Compute rotation angle: θ = 2 * acos(q.w) ∈ [0,π]
-    float theta = 2.0 * acos(clamp(q.w, 0.0, 1.0));
-
-    // --- Folded Octahedral Mapping (inline) ---
-    // q.xyz = axis * sin(theta / 2). The common sine factor cancels during
-    // octahedral normalization, so the rotation axis need not be recovered.
-    float sum = abs(q.x) + abs(q.y) + abs(q.z);
-    // Use the canonical +X axis when the vector part is too small to project.
-    vec2 p = (sum < 1e-6) ? vec2(1.0, 0.0) : q.xy / sum;
-    // Fold the lower hemisphere.
-    if (q.z < 0.0) {
-        float oldPx = p.x;
-        p.x = (1.0 - abs(p.y)) * (p.x >= 0.0 ? 1.0 : -1.0);
-        p.y = (1.0 - abs(oldPx)) * (p.y >= 0.0 ? 1.0 : -1.0);
-    }
-    // Remap from [-1,1] to [0,1]
-    float u_f = p.x * 0.5 + 0.5;
-    float v_f = p.y * 0.5 + 0.5;
-    // Quantize to 10 bits (0 to 1023)
-    uint quantU = uint(clamp(round(u_f * 1023.0), 0.0, 1023.0));
-    uint quantV = uint(clamp(round(v_f * 1023.0), 0.0, 1023.0));
-    
-    // --- Angle Quantization ---
-    // Quantize θ ∈ [0,π] to 12 bits (0 to 4095)
-    uint angleInt = uint(clamp(round((theta / PI) * 4095.0), 0.0, 4095.0));
-    
-    // Pack bits: bits [0–9]: quantU, [10–19]: quantV, [20–31]: angleInt.
-    return (angleInt << 20u) | (quantV << 10u) | quantU;
+uint encodeQuatSmallestThree32(vec4 q) {
+    q = normalize(q);
+    vec4 magnitudes = abs(q);
+    uint omitted = 0u;
+    float largest = magnitudes.x;
+    if (magnitudes.y > largest) { omitted = 1u; largest = magnitudes.y; }
+    if (magnitudes.z > largest) { omitted = 2u; largest = magnitudes.z; }
+    if (magnitudes.w > largest) { omitted = 3u; }
+    if (q[omitted] < 0.0) q = -q;
+    vec3 kept = omitted == 0u ? q.yzw : omitted == 1u ? q.xzw : omitted == 2u ? q.xyw : q.xyz;
+    vec3 scaled = kept * 722.6631303726516;
+    // Nearest integer, ties away from zero; negative fields use two's complement.
+    uvec3 quantized = uvec3(ivec3(sign(scaled) * floor(abs(scaled) + 0.5))) & 0x3ffu;
+    return (omitted << 30u) | (quantized.z << 20u) | (quantized.y << 10u) | quantized.x;
 }
 
-vec4 decodeQuatOctXy1010R12(uint encoded) {
-    // Extract the fields.
-    uint quantU = encoded & uint(0x3FFu);               // bits 0–9
-    uint quantV = (encoded >> 10u) & uint(0x3FFu);         // bits 10–19
-    uint angleInt = encoded >> 20u;                      // bits 20–31
-
-    // Recover u and v in [0,1], then map to [-1,1].
-    float u_f = float(quantU) / 1023.0;
-    float v_f = float(quantV) / 1023.0;
-    vec2 f = vec2(u_f * 2.0 - 1.0, v_f * 2.0 - 1.0);
-
-    vec3 axis = vec3(f.xy, 1.0 - abs(f.x) - abs(f.y));
-    float t = max(-axis.z, 0.0);
-    axis.x += (axis.x >= 0.0) ? -t : t;
-    axis.y += (axis.y >= 0.0) ? -t : t;
-    axis = normalize(axis);
-    
-    // Decode the angle θ ∈ [0,π].
-    float theta = (float(angleInt) / 4095.0) * PI;
-    float halfTheta = theta * 0.5;
-    float s = sin(halfTheta);
-    float w = cos(halfTheta);
-    
-    return vec4(axis * s, w);
+vec4 decodeQuatSmallestThree32(uint word) {
+    uint omitted = word >> 30u;
+    ivec3 fields = ivec3(uvec3(word, word >> 10u, word >> 20u) & 0x3ffu);
+    vec3 kept = vec3((fields ^ 0x200) - 0x200) * 0.0013837706089756314;
+    float missing = sqrt(1.0 - dot(kept, kept));
+    return omitted == 0u ? vec4(missing, kept) :
+        omitted == 1u ? vec4(kept.x, missing, kept.yz) :
+        omitted == 2u ? vec4(kept.xy, missing, kept.z) : vec4(kept, missing);
 }
 
 vec3 decodeSplatCenter(uvec4 splatData) {
@@ -86,10 +51,7 @@ vec3 decodeSplatCenter(uvec4 splatData) {
     );
 }
 
-// Encode a Splat whose scale is already logarithmic into the standard
-// two-record representation. The first record's final word stores alpha and
-// special-kernel shape amount as float16.
-void encodeSplatLnScale(
+void encodeWorkSplat(
     out uvec4 splatData, out uvec4 splatData2,
     vec3 center, vec3 lnScales, vec4 quaternion, vec4 rgba, float shapeAmount
 ) {
@@ -101,26 +63,19 @@ void encodeSplatLnScale(
     splatData2.x = packHalf2x16(rgba.rg);
     splatData2.y = packHalf2x16(vec2(rgba.b, lnScales.x));
     splatData2.z = packHalf2x16(lnScales.yz);
-    splatData2.w = encodeQuatOctXy1010R12(quaternion);
+    splatData2.w = encodeQuatSmallestThree32(quaternion);
 }
 
 vec2 decodeSplatAlphaShapeAmount(uvec4 splatData) {
     return unpackHalf2x16(splatData.w);
 }
 
-void decodeSplatAttributesLnScale(
-    uvec4 splatData2,
-    float alpha,
-    out vec3 lnScales, out vec4 quaternion, out vec4 rgba
-) {
-    rgba.a = alpha;
+vec3 decodeLnScales(uvec4 data) {
+    return vec3(unpackHalf2x16(data.y).y, unpackHalf2x16(data.z));
+}
 
-    rgba.rg = unpackHalf2x16(splatData2.x);
-    vec2 split = unpackHalf2x16(splatData2.y);
-    rgba.b = split.x;
-    lnScales.x = split.y;
-    lnScales.yz = unpackHalf2x16(splatData2.z);
-    quaternion = decodeQuatOctXy1010R12(splatData2.w);
+vec4 decodeSplatRgba(uvec4 data, float alpha) {
+    return vec4(unpackHalf2x16(data.x), unpackHalf2x16(data.y).x, alpha);
 }
 
 vec3 decodeSplatShRgb(uint encoded) {

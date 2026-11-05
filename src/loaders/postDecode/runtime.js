@@ -1,7 +1,7 @@
 import {
   encodeShRgb,
   encodeSplatOpacity,
-  tryEncodeQuatOctXy1010R12,
+  tryEncodeQuatSmallestThree32,
 } from "../../data/splatCodec.js";
 import { toHalf } from "../../utils/numeric.js";
 import { executeRange, shWord } from "./operations.js";
@@ -40,7 +40,7 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 function encodeQuaternion(registers, base, stride) {
-  return tryEncodeQuatOctXy1010R12(
+  return tryEncodeQuatSmallestThree32(
     registers[base],
     registers[base + stride],
     registers[base + stride * 2],

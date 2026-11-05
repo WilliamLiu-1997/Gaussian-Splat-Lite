@@ -4,7 +4,10 @@ use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::{
     ply::{PlyDecoder, PLY_MAGIC},
-    splat_encode::{decode_splat_sh_rgb, encode_splat_opacity},
+    splat_encode::{
+        decode_quat_sog, decode_quat_spz, decode_quat_spz_legacy, decode_splat_sh_rgb,
+        encode_splat_opacity,
+    },
     spz::{SpzDecoder, SPZ_MAGIC},
 };
 
@@ -36,6 +39,8 @@ pub struct SplatProps<'a> {
     pub opacity_packed: &'a [u32],
     pub scale: &'a [f32],
     pub quat: &'a [f32],
+    /// Smallest-three words for receivers that opt into PACKED_QUATERNIONS.
+    pub quat_packed: &'a [u32],
     pub sh1: &'a [f32],
     pub sh2: &'a [f32],
     pub sh3: &'a [f32],
@@ -71,6 +76,8 @@ impl QuantizedProperty {
 #[allow(unused)]
 pub trait SplatReceiver: 'static {
     const SUPPORTS_COMPRESSED_PLY: bool = true;
+    /// Accepts packed rotation words; float rotations may be unnormalized.
+    const PACKED_QUATERNIONS: bool = false;
 
     /// Reserve the decoder's estimated live working memory before allocation.
     /// Budgeted receivers can spill their output storage to make room.
@@ -130,6 +137,54 @@ pub trait SplatReceiver: 'static {
         self.set_ln_scale(base, count, &values);
     }
     fn set_quat(&mut self, base: usize, count: usize, quat: &[f32]);
+
+    /// Reads SPZ v3+ rotations without an intermediate float batch for packed receivers.
+    /// Float receivers reuse the decoder-owned scratch buffer.
+    fn set_quat_spz(&mut self, base: usize, count: usize, bytes: &[u8], scratch: &mut Vec<f32>) {
+        scratch.clear();
+        scratch.extend(
+            bytes
+                .chunks_exact(4)
+                .flat_map(|bytes| decode_quat_spz(u32::from_le_bytes(bytes.try_into().unwrap()))),
+        );
+        self.set_quat(base, count, scratch);
+    }
+
+    fn set_quat_spz_legacy(
+        &mut self,
+        base: usize,
+        count: usize,
+        bytes: &[u8],
+        scratch: &mut Vec<f32>,
+    ) {
+        scratch.clear();
+        scratch.extend(
+            bytes
+                .chunks_exact(3)
+                .flat_map(|bytes| decode_quat_spz_legacy(bytes.try_into().unwrap())),
+        );
+        self.set_quat(base, count, scratch);
+    }
+
+    /// Reads SOG rotation pixels, preserving float output for unpacked receivers.
+    fn set_quat_sog<F: Fn(usize) -> [u8; 4]>(
+        &mut self,
+        base: usize,
+        count: usize,
+        code: F,
+        scratch: &mut Vec<f32>,
+    ) -> anyhow::Result<()> {
+        scratch.clear();
+        scratch.reserve_exact(count * 4);
+        for i in 0..count {
+            let quat = decode_quat_sog(code(i))
+                .ok_or_else(|| anyhow::anyhow!("invalid quaternion tag at splat {}", base + i))?;
+            let norm = quat.iter().map(|value| value * value).sum::<f32>().sqrt();
+            scratch.extend(quat.map(|value| value / norm));
+        }
+        self.set_quat(base, count, scratch);
+        Ok(())
+    }
 
     /// Reads quantized components without requiring an intermediate float batch.
     /// `lookup` contains one shared table or one per component; `code` receives
