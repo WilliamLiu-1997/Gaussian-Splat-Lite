@@ -5,6 +5,9 @@ export function unpackRadChunk(decoded) {
     splatArrays: [decoded.splat0, decoded.splat1],
     sortCenters: decoded.sortCenters,
     extra: {
+      shPalette: decoded.shPalette,
+      shDegree: decoded.shDegree,
+      shLabels: decoded.shLabels,
       shBlock0: decoded.shBlock0,
       shBlock1: decoded.shBlock1,
       shBlock2: decoded.shBlock2,

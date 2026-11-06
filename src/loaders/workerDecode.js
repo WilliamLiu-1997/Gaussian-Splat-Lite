@@ -1,4 +1,5 @@
 import { decode_to_splats } from "gaussian-splat-rs";
+import { packShPalette } from "../data/shPaletteData.js";
 import { abortable } from "../runtime/abort.js";
 import { wasmCall, wasmFree } from "../runtime/wasmCall.js";
 import { getAssetBaseUrl } from "./assetUrl.js";
@@ -231,6 +232,11 @@ export async function decodeSplats(args, { sendStatus }) {
     splatArrays: [decoded.splat0, decoded.splat1],
     sortCenters: decoded.sortCenters,
     extra: {
+      shPalette: decoded.shPalette
+        ? packShPalette(decoded.shPalette, decoded.shDegree)
+        : undefined,
+      shDegree: decoded.shDegree,
+      shLabels: decoded.shLabels,
       shBlock0: decoded.shBlock0,
       shBlock1: decoded.shBlock1,
       shBlock2: decoded.shBlock2,

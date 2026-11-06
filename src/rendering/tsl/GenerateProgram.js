@@ -293,6 +293,9 @@ export function createGenerateProgram({ uniforms }) {
   const sourceIndexed = bindUniform("sourceIndexed", "bool");
   const sourceIndices = bindTexture("sourceIndices");
   const numSh = bindUniform("numSh", "int");
+  const shPaletteStride = bindUniform("shPaletteStride", "uint");
+  const shPaletteLayout = bindUniform("shPaletteLayout", "uvec4");
+  const shLabelsTexture = bindTexture("shLabelsTexture");
   const shBlock0Texture = bindTexture("shBlock0Texture");
   const shBlock1Texture = bindTexture("shBlock1Texture");
   const shBlock2Texture = bindTexture("shBlock2Texture");
@@ -309,29 +312,51 @@ export function createGenerateProgram({ uniforms }) {
   const numEdits = bindUniform("numEdits", "int");
   const sdfTexture = bindTexture("sdfTexture");
   const editTexture = bindTexture("editTexture");
+  const loadShBlock = (texture, coord, block) => {
+    const value = N.uvec4(0).toVar();
+    N.If(shPaletteStride.greaterThan(0), () => {
+      value.assign(
+        N.uvec4(
+          loadArray(shBlock0Texture, coord.add(N.ivec3(0, block, 0))).x,
+          loadArray(shBlock0Texture, coord.add(N.ivec3(1, block, 0))).x,
+          loadArray(shBlock0Texture, coord.add(N.ivec3(2, block, 0))).x,
+          loadArray(shBlock0Texture, coord.add(N.ivec3(3, block, 0))).x,
+        ),
+      );
+    }).Else(() => {
+      value.assign(loadArray(texture, coord));
+    });
+    return value;
+  };
   const evaluateSH = N.Fn(([coord, direction]) => {
     const result = N.vec3(0).toVar();
     N.If(numSh.equal(N.int(1)), () => {
-      result.assign(evaluateSH1(loadArray(shBlock0Texture, coord), direction));
+      result.assign(
+        evaluateSH1(loadShBlock(shBlock0Texture, coord, 0), direction),
+      );
     }).ElseIf(numSh.greaterThanEqual(N.int(2)), () => {
       result.assign(
         evaluateSH12(
-          loadArray(shBlock0Texture, coord),
-          loadArray(shBlock1Texture, coord),
+          loadShBlock(shBlock0Texture, coord, 0),
+          loadShBlock(shBlock1Texture, coord, 1),
           direction,
         ),
       );
       N.If(numSh.greaterThanEqual(N.int(3)), () => {
-        const shBlock3 = loadArray(shBlock3Texture, coord).toVar();
+        const shBlock3 = loadShBlock(shBlock3Texture, coord, 3).toVar();
         result.addAssign(
-          evaluateSH3(loadArray(shBlock2Texture, coord), shBlock3, direction),
+          evaluateSH3(
+            loadShBlock(shBlock2Texture, coord, 2),
+            shBlock3,
+            direction,
+          ),
         );
         N.If(numSh.greaterThanEqual(N.int(4)), () => {
           result.addAssign(
             evaluateSH4(
               shBlock3.w,
-              loadArray(shBlock4Texture, coord),
-              loadArray(shBlock5Texture, coord),
+              loadShBlock(shBlock4Texture, coord, 4),
+              loadShBlock(shBlock5Texture, coord, 5),
               direction,
             ),
           );
@@ -355,7 +380,23 @@ export function createGenerateProgram({ uniforms }) {
       N.If(objectReflected, () => {
         sourceViewDirection.x.negateAssign();
       });
-      rgb.addAssign(evaluateSH(coord, sourceViewDirection));
+      const shCoord = coord.toVar();
+      N.If(shPaletteStride.greaterThan(0), () => {
+        const label = loadArray(shLabelsTexture, coord).x.toVar();
+        shCoord.assign(
+          N.ivec3(
+            N.int(label.bitAnd(shPaletteLayout.x).shiftLeft(2)),
+            N.int(
+              label
+                .bitAnd(shPaletteLayout.z)
+                .shiftRight(shPaletteLayout.y)
+                .mul(shPaletteStride),
+            ),
+            N.int(label.shiftRight(shPaletteLayout.w)),
+          ),
+        );
+      });
+      rgb.addAssign(evaluateSH(shCoord, sourceViewDirection));
     });
   };
   const generateValues = (index, deferredColor) => {

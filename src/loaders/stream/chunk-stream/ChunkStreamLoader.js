@@ -1,4 +1,5 @@
 import { DefaultLoadingManager } from "three";
+import { ShPalette } from "../../../data/shPalette.js";
 import { WorkerTerminatedError } from "../../../runtime/WorkerRpc.js";
 import { abortable, linkedAbortController } from "../../../runtime/abort.js";
 import { getAssetBaseUrl } from "../../assetUrl.js";
@@ -11,6 +12,10 @@ export class ChunkSource {
     this.worker = worker;
     this.id = id;
     this.info = info;
+    this.palette = info.shPalette
+      ? new ShPalette(info.shPalette, info.shDegree)
+      : undefined;
+    info.shPalette = undefined;
     this.onRelease = onRelease;
     this.released = false;
   }

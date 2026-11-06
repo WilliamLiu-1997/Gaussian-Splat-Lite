@@ -169,9 +169,6 @@ function remapOutputs(outputs, registers) {
     scale: remap(outputs.scale),
     quaternion: remap(outputs.quaternion),
     opacity: remap(outputs.opacity),
-    alpha: remap(outputs.alpha),
-    color: remap(outputs.color),
-    sh: outputs.sh?.map((register) => registers.get(register)),
   };
 }
 function compileConditionFlow(builder, outputs, outputRoots, whenRegister) {
@@ -365,9 +362,6 @@ function compileSource(builder, sourceOutputs) {
     outputs.scale,
     outputs.quaternion,
     outputs.opacity,
-    outputs.alpha,
-    outputs.color,
-    ...(outputs.sh ?? []),
   ];
   if (outputs.when !== undefined) {
     const flow = compileConditionFlow(

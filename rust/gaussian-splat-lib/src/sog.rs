@@ -431,6 +431,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
         self.splats.init_splats(&SplatInit {
             num_splats: self.meta.count,
             max_sh_degree: self.meta.degree.min(self.max_sh),
+            indexed_sh: self.meta.degree.min(self.max_sh) > 0,
         })?;
         self.initialized = true;
         Ok(())

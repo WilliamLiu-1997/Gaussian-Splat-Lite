@@ -59,12 +59,7 @@ export const InputField = {
   Scale: 2,
   Quaternion: 3,
   Opacity: 4,
-  Alpha: 5,
-  Color: 6,
-  Sh0: 7,
 };
-/** @internal */
-export const SH_COEFFICIENT_COUNT = 24;
 /** @internal */
 export const TYPE_WIDTHS = {
   float: 1,

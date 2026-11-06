@@ -2,14 +2,14 @@
 
 [Back to documentation](../README.md#documentation)
 
-Changes every Splat of a model while it loads: move it, scale it, recolor it, or adjust its opacity. Describe the change once with `postDecode.define()`, then pass the result as the `postDecode` option of `SplatMesh` or `Splats`. It works for PLY, SPZ, SOG, and RAD files.
+Changes every Splat of a model while it loads: move it, scale it, rotate it, or adjust its opacity. Describe the change once with `postDecode.define()`, then pass the result as the `postDecode` option of `SplatMesh` or `Splats`. It works for PLY, SPZ, SOG, and RAD files.
 
 ```ts
 import { postDecode, SplatFileType, SplatMesh } from "gaussian-splat-lite";
 
 const transform = postDecode.define(({ splat, op }) => ({
   position: op.add(splat.position, [1, 0, 0]),
-  color: op.mul(splat.color, [1, 0.8, 0.8]),
+  scale: op.mul(splat.scale, 1.2),
 }));
 
 const mesh = new SplatMesh({
@@ -20,7 +20,7 @@ const mesh = new SplatMesh({
 await mesh.initialized;
 ```
 
-This example shifts the model and gives it a warmer tint.
+This example shifts the model and increases each Splat's size by 20%.
 
 Your callback runs once, right away, to record the calculation; it does not run for each Splat. That has two consequences:
 
@@ -41,30 +41,29 @@ Read these from `splat`:
 | `splat.scale` | `vec3` | Size along each axis |
 | `splat.quaternion` | `quaternion` | Rotation, xyzw |
 | `splat.opacity` | `float` | Opacity as stored in the model, which can be above 1 |
-| `splat.alpha` | `float` | Opacity from 0 (transparent) to 1 (opaque) |
-| `splat.color` | `vec3` | RGB color |
-| `splat.sh.coefficient(index)` | `vec3` | One of the 24 view-dependent color coefficients (indices 0–23, SH1–SH4) |
 
-`splat.sh.map((coefficient, { degree }) => ...)` builds a calculation for all 24 coefficients at once. Only the ones the model has are updated.
+These are the only Splat fields available to `postDecode`. Color, independent alpha, and SH coefficients are not exposed. Use [mesh properties](SplatMesh.md#properties) or [SDF edits](SplatEdit.md) for display color changes.
 
 ## Returning changes
 
-Return any of `position`, `scale`, `quaternion`, `opacity`, `alpha`, `color`, or `sh`. Fields you leave out stay as they are.
+Return any of `position`, `scale`, `quaternion`, or `opacity`. Fields you leave out stay as they are. Unsupported output fields throw from `define()`.
 
 Add `when` to change only the Splats that match a condition. Splats that do not match stay exactly as loaded:
 
 ```ts
 const transform = postDecode.define(({ splat, op }) => ({
   when: op.lt(op.component(splat.position, 1), 0), // Only Splats below y = 0.
-  alpha: 0,
+  opacity: 0,
 }));
 ```
 
 Rules for the values you return:
 
-- Return `opacity` or `alpha`, never both. `alpha` is limited to 0–1. A negative `opacity` becomes 0, and values above 1 are allowed up to a fixed maximum.
+- A negative `opacity` becomes 0. Values from 0 to 1 use the ordinary Gaussian profile; values above 1 use a wider kernel with alpha fixed at 1, up to a fixed maximum opacity.
 - Quaternions are normalized for you. An invalid or zero-length result keeps the original rotation.
 - Values are stored in a compact format, so what you read back later can differ slightly from what you calculated.
+
+`postDecode` preserves shared SH codebooks and does not expand them into per-Splat coefficients.
 
 ## External data
 

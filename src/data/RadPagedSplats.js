@@ -12,11 +12,12 @@ function lowerBound(values, value) {
 }
 /** Eight shared 65,536-record RAD slots, one page per texture array layer. */
 export class RadPagedSplats extends IndexedSplats {
-  constructor({ numSh, deferAllocation = false }) {
+  constructor({ numSh, indexedSh = false, deferAllocation = false }) {
     super({
       capacity: RAD_POOL_PAGE_COUNT * RAD_PAGE_SIZE,
       layerSize: RAD_PAGE_SIZE,
       numSh,
+      indexedSh,
       blockBits: 0,
       packedOpacityGroups: true,
       deferAllocation,
@@ -46,9 +47,10 @@ export class RadPagedSplats extends IndexedSplats {
     this.spatialChunks.set(target, spatial);
     this.spatialBoundsBytes += spatial.bounds.byteLength;
     for (const [index, array] of source.sourceArrays.entries()) {
+      const stride = array.length / source.maxSplats;
       this.sourceArrays[index].set(
-        array.subarray(start * 4, (start + RAD_PAGE_SIZE) * 4),
-        target * 4,
+        array.subarray(start * stride, (start + RAD_PAGE_SIZE) * stride),
+        target * stride,
       );
       this.sourceTextures[index].addLayerUpdate(slot);
       this.sourceTextures[index].needsUpdate = true;
@@ -125,8 +127,8 @@ export class RadPagedSplats extends IndexedSplats {
  * in ascending storage order, so picking needs no pool-sized reverse map.
  */
 export class RadPageView extends IndexedSplats {
-  constructor(storage) {
-    super({ storage });
+  constructor(storage, palette) {
+    super({ storage, palette });
     this.finalCut = undefined;
   }
   forEachRaycastRange(query, callback) {

@@ -14,7 +14,10 @@ import type {
 import type { RadLodChunk, RadSourceCut } from "./radLod.js";
 /** Workers own LOD traversal, display preparation, or a persistent page decoder. */
 export declare function createRadStreamHandlers(): {
-  allocateRadStorage(request: { numSh: number }): Uint32Array<ArrayBuffer>[];
+  allocateRadStorage(request: {
+    numSh: number;
+    indexedSh: boolean;
+  }): Uint32Array<ArrayBuffer>[];
   prepareRadSelection(
     request: Parameters<typeof prepareRadSelection>[0],
   ): RadSelectionPreparation;
@@ -29,16 +32,13 @@ export declare function createRadStreamHandlers(): {
   removeRadSource(request: { id: number }): number;
   addRadSelectionSource(request: { source: number }): void;
   removeRadSelectionSource(request: { source: number }): number;
-  initializeRadDecoder(request: {
-    header: RadHeader;
-    maxSh: number;
-    codebooks?: (Uint32Array | undefined)[];
-  }): void;
+  initializeRadDecoder(request: { header: RadHeader; maxSh: number }): void;
   loadRadChunk(
     args: {
       index: number;
       generation: number;
       request: RadReadRequest;
+      needsPalette: boolean;
     },
     options: {
       sendStatus: (data: {
@@ -49,7 +49,8 @@ export declare function createRadStreamHandlers(): {
     data: RadStreamChunk;
     tree: RadLodChunk;
     state: RadResourceState | undefined;
-    codebooks: (Uint32Array | undefined)[] | undefined;
+    /** Page zero's shared SH palette in texture tile order, when requested. */
+    palette?: Uint32Array;
   }>;
   cancelRadLoad(request: { generation: number }): void;
   retainRadChunk(request: {

@@ -11,9 +11,15 @@ import {
 } from "./splatData.js";
 import { disposeDataTexture, getTextureSize } from "./textureLayout.js";
 import { decodeSplat } from "./unpack.js";
-function makeTexture(data, width, height, depth) {
+function makeTexture(
+  data,
+  width,
+  height,
+  depth,
+  format = THREE.RGBAIntegerFormat,
+) {
   const texture = new THREE.DataArrayTexture(data, width, height, depth);
-  texture.format = THREE.RGBAIntegerFormat;
+  texture.format = format;
   texture.type = THREE.UnsignedIntType;
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
@@ -31,6 +37,8 @@ export class IndexedSplats extends Splats {
     packedOpacityGroups = false,
     storage,
     deferAllocation = false,
+    indexedSh = false,
+    palette,
   }) {
     // RAD and SOG supply aligned power-of-two layers.
     if (capacity > 0x1_0000_0000)
@@ -45,11 +53,13 @@ export class IndexedSplats extends Splats {
     // A view draws its own indices from another source's packed records,
     // opacity groups and spatial bounds; that source writes and owns them.
     this.storage = storage;
+    this.palette = palette;
     if (storage) {
       this.spatialChunks = storage.spatialChunks;
       this.maxSplats = storage.maxSplats;
       this.layerSize = storage.layerSize;
       this.numSh = storage.numSh;
+      this.indexedSh = storage.indexedSh;
       this.blockBits = storage.blockBits;
       this.opacities = storage.opacities;
       this.sourceArrays = storage.sourceArrays;
@@ -62,6 +72,7 @@ export class IndexedSplats extends Splats {
     this.maxSplats = capacity;
     this.layerSize = layerSize;
     this.numSh = numSh;
+    this.indexedSh = indexedSh;
     this.blockBits = blockBits;
     this.opacities = new SplatOpacityTable(
       capacity,
@@ -72,7 +83,7 @@ export class IndexedSplats extends Splats {
     this.sourceArrays = [];
     this.sourceTextures = [];
     if (!deferAllocation)
-      for (const array of createSplatTextureArrays(capacity, numSh))
+      for (const array of createSplatTextureArrays(capacity, numSh, indexedSh))
         this.allocateTexture(array);
   }
   /** Create one packed texture from its array, which may come from a worker. */
@@ -82,6 +93,9 @@ export class IndexedSplats extends Splats {
       SPLAT_TEX_WIDTH,
       this.layerSize / SPLAT_TEX_WIDTH,
       this.maxSplats / this.layerSize,
+      this.indexedSh && this.sourceArrays.length === 2
+        ? THREE.RedIntegerFormat
+        : THREE.RGBAIntegerFormat,
     );
     this.sourceArrays.push(array);
     this.sourceTextures.push(texture);
@@ -145,16 +159,23 @@ export class IndexedSplats extends Splats {
       throw new Error("Invalid streaming Splat write range");
     if (!Number.isInteger(numSh) || numSh < 0 || numSh > this.numSh)
       throw new Error("Invalid streaming Splat SH degree");
+    if (!!data.extra.shDegree !== this.indexedSh)
+      throw new Error("Streaming SH storage representation mismatch");
     const arrays = [
       ...data.splatArrays,
-      ...SH_KEYS.slice(0, SH_ARRAY_COUNTS[numSh]).map((key) => data.extra[key]),
+      ...(this.indexedSh
+        ? [data.extra.shLabels]
+        : SH_KEYS.slice(0, SH_ARRAY_COUNTS[numSh]).map(
+            (key) => data.extra[key],
+          )),
     ];
     if (
-      arrays.length !== getSplatTextureCount(numSh) ||
+      arrays.length !== getSplatTextureCount(numSh, this.indexedSh) ||
       arrays.some(
-        (array) =>
+        (array, index) =>
           count > 0 &&
-          (!(array instanceof Uint32Array) || array.length < count * 4),
+          (!(array instanceof Uint32Array) ||
+            array.length < count * (this.indexedSh && index === 2 ? 1 : 4)),
       )
     )
       throw new Error("Incomplete packed Splat or SH records");
@@ -173,12 +194,14 @@ export class IndexedSplats extends Splats {
     for (let index = 0; index < this.sourceArrays.length; index++) {
       const target = this.sourceArrays[index];
       const source = arrays[index];
-      if (source) target.set(source.subarray(0, count * 4), start * 4);
+      const stride = target.length / this.maxSplats;
+      if (source)
+        target.set(source.subarray(0, count * stride), start * stride);
       // A lower-SH page may reuse a slot previously occupied by higher SH.
       target.fill(
         0,
-        (start + (source ? count : 0)) * 4,
-        (start + allocation) * 4,
+        (start + (source ? count : 0)) * stride,
+        (start + allocation) * stride,
       );
       for (let layer = firstLayer; layer < lastLayer; layer++)
         this.sourceTextures[index].addLayerUpdate(layer);
@@ -189,18 +212,21 @@ export class IndexedSplats extends Splats {
   }
   /** Remaining dirty layers; successful uploads clear them in the renderer. */
   get pendingUploadBytes() {
-    let layers = 0;
+    let bytes = 0;
     for (const texture of this.sourceTextures)
-      layers += texture.layerUpdates.size;
-    return layers * this.layerSize * 16;
+      bytes +=
+        (texture.layerUpdates.size * texture.image.data.byteLength) /
+        texture.image.depth;
+    return bytes;
   }
   /** Additional upload bytes for layers in [firstLayer, lastLayer). */
   getUploadBytes(firstLayer, lastLayer) {
-    let layers = 0;
+    let bytes = 0;
     for (const texture of this.sourceTextures)
       for (let layer = firstLayer; layer < lastLayer; layer++)
-        if (!texture.layerUpdates.has(layer)) layers++;
-    return layers * this.layerSize * 16;
+        if (!texture.layerUpdates.has(layer))
+          bytes += texture.image.data.byteLength / texture.image.depth;
+    return bytes;
   }
   /** Upload written layers now, including storage not yet in the scene. */
   uploadPending(renderer) {
@@ -232,7 +258,7 @@ export class IndexedSplats extends Splats {
     // A view's records and opacity groups count toward its storage.
     if (!this.storage) {
       for (const array of this.sourceArrays) bytes += array.byteLength;
-      bytes += this.opacities.byteLength;
+      bytes += this.opacities.byteLength + (this.palette?.byteLength ?? 0);
     }
     return bytes;
   }
@@ -307,10 +333,11 @@ export class IndexedSplats extends Splats {
     const sh = Array.from(
       { length: this.numSh * (this.numSh + 2) },
       (_, coefficient) => {
-        const word =
-          this.sourceArrays[2 + (coefficient >> 2)][
-            source * 4 + (coefficient & 3)
-          ];
+        const word = this.palette
+          ? this.palette.word(this.sourceArrays[2][source], coefficient)
+          : this.sourceArrays[2 + (coefficient >> 2)][
+              source * 4 + (coefficient & 3)
+            ];
         decodeShRgbToArray(word, rgb);
         return new THREE.Color(rgb[0], rgb[1], rgb[2]);
       },
@@ -352,20 +379,28 @@ export class IndexedSplats extends Splats {
     this.ensureIndices();
     const count = this.numSplats;
     const arrays = this.sourceArrays.map((source) => {
-      const target = new Uint32Array(count * 4);
+      const stride = source.length / this.maxSplats;
+      const target = new Uint32Array(count * stride);
       for (let index = 0; index < count; index++) {
-        const offset = this.sourceIndices[index] * 4;
-        for (let word = 0; word < 4; word++)
-          target[index * 4 + word] = source[offset + word];
+        const offset = this.sourceIndices[index] * stride;
+        for (let word = 0; word < stride; word++)
+          target[index * stride + word] = source[offset + word];
       }
       return target;
     });
     const data = {
       numSplats: count,
       splatArrays: [arrays[0], arrays[1]],
-      extra: Object.fromEntries(
-        arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
-      ),
+      extra: this.indexedSh
+        ? {
+            shLabels: arrays[2],
+            shDegree: this.numSh,
+            // Another view or a cached chunk may still bind this palette.
+            shPalette: this.palette?.data.slice(),
+          }
+        : Object.fromEntries(
+            arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
+          ),
     };
     this.dispose();
     return data;
@@ -387,6 +422,11 @@ export class IndexedSplats extends Splats {
       this.sourceTextures[6] ?? Splats.emptyTexture;
     uniforms.shBlock5Texture.value =
       this.sourceTextures[7] ?? Splats.emptyTexture;
+    uniforms.shLabelsTexture.value = this.indexedSh
+      ? this.sourceTextures[2]
+      : Splats.emptyTexture;
+    uniforms.shPaletteStride.value = 0;
+    this.palette?.bind(uniforms);
     uniforms.sourceLayerBits.value = Math.log2(this.layerSize);
     uniforms.sourceLayerMask.value = this.layerSize - 1;
     uniforms.sourceBlockBits.value = this.blockBits;
@@ -399,6 +439,8 @@ export class IndexedSplats extends Splats {
   }
   dispose() {
     if (this.disposed) return;
+    // Views borrow their input's palette; owners release it through Splats.
+    if (this.storage) this.palette = undefined;
     super.dispose();
     if (this.indexTexture !== Splats.emptyTexture)
       disposeDataTexture(this.indexTexture);

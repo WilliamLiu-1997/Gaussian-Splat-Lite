@@ -1,11 +1,6 @@
 export declare function decodeSplatOpacity(word: number): number;
 export declare function encodeSplatOpacity(opacity: number): number;
 type CodecOutput = Float32Array | number[];
-export declare function encodeShRgb(
-  red: number,
-  green: number,
-  blue: number,
-): number;
 export declare function decodeShRgbToArray(
   word: number,
   output: CodecOutput,

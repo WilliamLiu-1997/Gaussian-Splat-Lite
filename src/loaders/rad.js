@@ -7,7 +7,7 @@ import { RadSource } from "./rad/RadSource.js";
 import { collectRadHeader, getRadChunkSpan } from "./rad/radFormat.js";
 export { isRadPrefix } from "./rad/radFormat.js";
 import { collectBytes, prefetchOrdered } from "./source.js";
-const TEXTURE_KEYS = ["splat0", "splat1", ...SH_KEYS];
+const TEXTURE_KEYS = ["splat0", "splat1", ...SH_KEYS, "shLabels"];
 /** Rust validates each page's ranges; check ownership and cycles across pages. */
 function validateRadTree(start, count) {
   const owners = new Uint8Array(start.length);
@@ -33,7 +33,7 @@ function validateRadTree(start, count) {
 function createRadOutput(numSplats, mapAttributes) {
   const capacity = getTextureSize(numSplats).maxSplats;
   return {
-    numSplats,
+    numSplats: 0,
     splat0: new Uint32Array(capacity * 4),
     splat1: new Uint32Array(capacity * 4),
     sortCenters: new Float32Array(numSplats * 3),
@@ -47,19 +47,18 @@ function copyRadChunk(result, chunk, offset) {
   for (const key of TEXTURE_KEYS) {
     const source = chunk[key];
     if (!source?.length) continue;
-    result[key] ??= new Uint32Array(result.splat0.length);
+    const stride = key === "shLabels" ? 1 : 4;
+    result[key] ??= new Uint32Array((result.splat0.length / 4) * stride);
     const target = result[key];
     if (!childCount) {
-      target.set(source.subarray(0, chunk.numSplats * 4), output * 4);
+      target.set(source.subarray(0, chunk.numSplats * stride), output * stride);
       continue;
     }
     let out = output;
     for (let i = 0; i < chunk.numSplats; i++) {
       if (childCount[i]) continue;
-      target[out * 4] = source[i * 4];
-      target[out * 4 + 1] = source[i * 4 + 1];
-      target[out * 4 + 2] = source[i * 4 + 2];
-      target[out * 4 + 3] = source[i * 4 + 3];
+      for (let word = 0; word < stride; word++)
+        target[out * stride + word] = source[i * stride + word];
       out++;
     }
   }
@@ -89,8 +88,9 @@ function trimRadOutput(result, numSplats) {
   result.numSplats = numSplats;
   for (const key of TEXTURE_KEYS) {
     const array = result[key];
-    if (array && array.length !== capacity * 4)
-      result[key] = array.slice(0, capacity * 4);
+    const stride = key === "shLabels" ? 1 : 4;
+    if (array && array.length !== capacity * stride)
+      result[key] = array.slice(0, capacity * stride);
   }
   if (result.sortCenters.length !== numSplats * 3)
     result.sortCenters = result.sortCenters.slice(0, numSplats * 3);
@@ -180,11 +180,10 @@ export async function loadRad(args) {
       header.meta.count,
       tree && args.postDecode?.attributes.length > 0,
     );
-    let outputCount = 0;
     let chunkIndex = 0;
     const input = source;
-    // Decode in file order to seed SH codebooks from page zero. Bounded reads of
-    // later pages overlap decoding, for both random-access and buffered inputs.
+    // Decode in file order: page zero carries the shared SH palette. Bounded reads
+    // of later pages overlap decoding, for both random-access and buffered inputs.
     for await (const bytes of prefetchOrdered(
       header.meta.chunks.length,
       4,
@@ -193,6 +192,10 @@ export async function loadRad(args) {
     )) {
       signal.throwIfAborted();
       const chunk = wasmCall(() => activeDecoder.decode_chunk(bytes));
+      if (chunk.shPalette) {
+        result.shDegree = chunk.shDegree;
+        result.shPalette = chunk.shPalette;
+      }
       const expected = getRadChunkSpan(header.meta, chunkIndex++);
       // Rust matches the count to its directory entry; verify the requested page.
       if (chunk.base !== expected.base)
@@ -203,14 +206,14 @@ export async function loadRad(args) {
         tree.start.set(chunk.childStart, chunk.base);
         tree.count.set(chunk.childCount, chunk.base);
       }
-      outputCount = copyRadChunk(result, chunk, outputCount);
+      result.numSplats = copyRadChunk(result, chunk, result.numSplats);
     }
     args.sendStatus({
       loaded: loaded + source.stats.downloadedBytes,
       total: loaded + source.stats.downloadedBytes,
     });
     if (tree) validateRadTree(tree.start, tree.count);
-    return trimRadOutput(result, outputCount);
+    return trimRadOutput(result, result.numSplats);
   } finally {
     request.controller.abort();
     source?.dispose();

@@ -16,6 +16,10 @@ export declare enum SplatFileType {
   RAD = "rad",
 }
 export type SplatExtra = {
+  /** Shared SH entries in texture tile order, addressed by one uint32 label per splat. */
+  shPalette?: Uint32Array;
+  shLabels?: Uint32Array;
+  shDegree?: 1 | 2 | 3 | 4;
   shBlock0?: Uint32Array;
   shBlock1?: Uint32Array;
   shBlock2?: Uint32Array;

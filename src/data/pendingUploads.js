@@ -1,5 +1,5 @@
 /**
- * Streaming groups list sources whose written layers await upload. The Splat
+ * Streaming groups list sources and shared palettes awaiting upload. The Splat
  * renderer finds the list while walking the scene and uploads before drawing,
  * so storage reaches the GPU when written rather than on first display.
  */

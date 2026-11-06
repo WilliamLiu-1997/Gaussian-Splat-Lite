@@ -2,8 +2,8 @@ import { RadPageView } from "../../../data/RadPagedSplats.js";
 import { SplatMesh } from "../../../scene/SplatMesh.js";
 /** One input's pages in a pool, drawn with that input's transform. */
 export class RadStreamBatch extends SplatMesh {
-  constructor(storage, maxSh) {
-    const source = new RadPageView(storage);
+  constructor(storage, maxSh, palette) {
+    const source = new RadPageView(storage, palette);
     super({ splats: source, maxSh });
     this.source = source;
     this.name = "rad-batch";

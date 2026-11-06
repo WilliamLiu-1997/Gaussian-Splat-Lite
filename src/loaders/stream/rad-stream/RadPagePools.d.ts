@@ -1,6 +1,8 @@
 import type { RadPagedSplats } from "../../../data/RadPagedSplats.js";
+import type { ReorderedSplatResult } from "../../../data/defines.js";
 import type { RadStreamBatch } from "./RadStreamBatch.js";
 import type { RadStreamScheduler } from "./RadStreamScheduler.js";
+
 /** A page's records: decoded and awaiting a slot, or written to one. */
 type RadPage = {
   readonly index: number;
@@ -14,6 +16,7 @@ type RadPage = {
   registration?: Promise<void>;
   storage?: {
     phase: "decoded" | "resident";
+    data?: ReorderedSplatResult;
     pool?: RadPagePool;
     slot?: number;
   };

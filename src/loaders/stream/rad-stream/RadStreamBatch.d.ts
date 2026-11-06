@@ -3,11 +3,13 @@ import type {
   RadPagedSplats,
   RadPreparedViewCut,
 } from "../../../data/RadPagedSplats.js";
+import type { ShPalette } from "../../../data/shPalette.js";
 import { SplatMesh } from "../../../scene/SplatMesh.js";
+
 /** One input's pages in a pool, drawn with that input's transform. */
 export declare class RadStreamBatch extends SplatMesh {
   readonly source: RadPageView;
-  constructor(storage: RadPagedSplats, maxSh: number);
+  constructor(storage: RadPagedSplats, maxSh: number, palette?: ShPalette);
   /** Redraw after the pool's fade coefficients change. */
   fadeChanged(): boolean;
   commitSelection(cut: RadPreparedViewCut): void;

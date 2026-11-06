@@ -28,6 +28,7 @@ pub trait ChunkReceiver: Any {
 pub struct SplatInit {
     pub num_splats: usize,
     pub max_sh_degree: usize,
+    pub indexed_sh: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -78,6 +79,9 @@ pub trait SplatReceiver: 'static {
     const SUPPORTS_COMPRESSED_PLY: bool = true;
     /// Accepts packed rotation words; float rotations may be unnormalized.
     const PACKED_QUATERNIONS: bool = false;
+    /// Keeps one shared SH palette plus per-splat labels. RAD then supplies the
+    /// palette with the first chunk only and later chunks through `set_sh_labels`.
+    const SHARED_SH: bool = false;
 
     /// Reserve the decoder's estimated live working memory before allocation.
     /// Budgeted receivers can spill their output storage to make room.
@@ -289,6 +293,11 @@ pub trait SplatReceiver: 'static {
             }
             offset += coefficients;
         }
+    }
+
+    /// Labels into a palette supplied earlier; called only when `SHARED_SH` is set.
+    fn set_sh_labels(&mut self, base: usize, count: usize, degree: usize, labels: &[u32]) {
+        unreachable!("SH labels without a palette require SHARED_SH");
     }
 }
 

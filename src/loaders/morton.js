@@ -34,6 +34,7 @@ export function reorderSplats(
       bounds,
       boundsBlocks,
       spatialBounds,
+      data.extra.shLabels,
       onProgress,
     ),
   );
@@ -50,13 +51,13 @@ export function restoreSplatOrder(data) {
   const order = invertSplatOrder(storageOrder.subarray(0, numSplats));
   const [splat0, splat1] = splatArrays;
   const scratch = new Uint32Array(numSplats * 4);
-  const permute = (array) => {
+  const permute = (array, stride = 4) => {
     for (let i = 0; i < numSplats; i++) {
-      const source = order[i] * 4;
-      for (let component = 0; component < 4; component++)
-        scratch[i * 4 + component] = array[source + component];
+      const source = order[i] * stride;
+      for (let component = 0; component < stride; component++)
+        scratch[i * stride + component] = array[source + component];
     }
-    array.set(scratch);
+    array.set(scratch.subarray(0, numSplats * stride));
   };
   permute(splat0);
   permute(splat1);
@@ -64,6 +65,7 @@ export function restoreSplatOrder(data) {
     const array = data.extra[key];
     if (array) permute(array);
   }
+  if (data.extra.shLabels) permute(data.extra.shLabels, 1);
   data.storageOrder = undefined;
 }
 /** Original index to storage index; chunk ranges require a complete permutation. */

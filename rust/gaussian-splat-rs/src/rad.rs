@@ -1,7 +1,7 @@
 //! JavaScript bridge for the validated native RAD chunk decoder.
 
 use gaussian_splat_lib::rad::{self, RadMeta};
-use js_sys::{Array, Float32Array, Object, Reflect, Uint16Array, Uint32Array, Uint8Array};
+use js_sys::{Float32Array, Object, Reflect, Uint16Array, Uint32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 use crate::splats::SplatsData;
@@ -36,8 +36,9 @@ pub fn decode_rad_header(bytes: Uint8Array) -> Result<JsValue, JsValue> {
     Ok(object.into())
 }
 
-/// Owns only dataset metadata and the requested SH codebooks. Call the generated
-/// `free()` method when a load finishes or its stream scheduler is disposed.
+/// Owns only dataset metadata; chunk 0's result carries the shared SH palette,
+/// and later chunks only their labels. Call the generated `free()` method when
+/// a load finishes or its stream scheduler is disposed.
 #[wasm_bindgen]
 pub struct RadDecoder {
     decoder: rad::RadDecoder,
@@ -50,32 +51,6 @@ impl RadDecoder {
         let meta = RadMeta::from_json(meta_json).map_err(js_error)?;
         let decoder = rad::RadDecoder::new(meta, max_sh as usize).map_err(js_error)?;
         Ok(Self { decoder })
-    }
-
-    /// Copy packed per-band codebooks for reuse after this decoder is freed.
-    pub fn get_codebooks(&self) -> Array {
-        self.decoder
-            .codebooks()
-            .iter()
-            .map(|codes| {
-                codes
-                    .as_ref()
-                    .map(|codes| JsValue::from(Uint32Array::from(codes.as_slice())))
-                    .unwrap_or(JsValue::UNDEFINED)
-            })
-            .collect()
-    }
-
-    /// Import packed codebooks without decompressing or quantizing them again.
-    pub fn set_codebooks(
-        &mut self,
-        sh1: Option<Uint32Array>,
-        sh2: Option<Uint32Array>,
-        sh3: Option<Uint32Array>,
-    ) -> Result<(), JsValue> {
-        self.decoder
-            .set_codebooks([sh1, sh2, sh3].map(|codes| codes.map(|codes| codes.to_vec())))
-            .map_err(js_error)
     }
 
     pub fn decode_chunk(&mut self, bytes: Uint8Array) -> Result<JsValue, JsValue> {

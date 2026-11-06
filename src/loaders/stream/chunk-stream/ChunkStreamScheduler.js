@@ -162,8 +162,7 @@ export class ChunkStreamScheduler {
     }
     for (const chunk of source.chunks) {
       chunk.controller?.abort();
-      chunk.data?.dispose();
-      chunk.data = undefined;
+      this.releaseChunkData(chunk);
       this.wanted.delete(chunk);
       this.activeChunks.delete(chunk);
       this.chunks.delete(chunk.index);
@@ -350,6 +349,11 @@ export class ChunkStreamScheduler {
       if (data?.alive) {
         stats.residentChunks++;
         stats.residentCpuBytes += data.info.byteLength;
+        if (data.palette && data.palette !== batch?.source.palette) {
+          stats.residentCpuBytes += data.palette.byteLength;
+          if (data.palette.pendingUploadBytes === 0)
+            stats.residentGpuBytes += data.palette.byteLength;
+        }
       }
       if (controller) stats.loadingChunks++;
     }
@@ -679,6 +683,11 @@ export class ChunkStreamScheduler {
       const start = range.batchStart;
       if (start === undefined) throw new Error("Missing chunk region slot");
       let batch = chunk.batch;
+      const palette = batch?.source.palette ?? chunk.data.palette;
+      if (palette && !palette.prepareUpload(this.uploads)) {
+        changed = true;
+        continue;
+      }
       const numSh = getSplatShDegree(data.extra);
       const layerSize =
         batch?.source.layerSize ??
@@ -690,7 +699,11 @@ export class ChunkStreamScheduler {
       // Charge whole layers; dirty layers already await upload.
       const bytes = batch
         ? batch.source.getUploadBytes(firstLayer, lastLayer)
-        : getSplatTextureBytes((lastLayer - firstLayer) * layerSize, numSh);
+        : getSplatTextureBytes(
+            (lastLayer - firstLayer) * layerSize,
+            numSh,
+            !!data.extra.shDegree,
+          );
       // Later regions wait until rendering consumes the queued uploads.
       if (!this.uploads.canAdd(bytes)) break;
       if (!batch) {
@@ -702,6 +715,7 @@ export class ChunkStreamScheduler {
             chunk.batch = undefined;
             this.pruneChunk(chunk);
           },
+          palette,
         );
         batch.matrixAutoUpdate = false;
         batch.matrix.copy(this.sourceSetting(chunk.source).transform);
@@ -733,7 +747,11 @@ export class ChunkStreamScheduler {
       const chunk = this.chunks.get(range.file);
       const source = chunk.data;
       if (!source?.alive || now < chunk.retryAt) continue;
-      const bytes = getSplatTextureBytes(range.count, source.info.numSh);
+      const bytes = getSplatTextureBytes(
+        range.count,
+        source.info.numSh,
+        !!source.info.shDegree,
+      );
       const pending = { range, chunk, bytes };
       leaf.pending = pending;
       const batch = batches.get(chunk) ?? { source, regions: [] };
@@ -849,7 +867,7 @@ export class ChunkStreamScheduler {
       } else {
         chunk.expiresAt ??= now + this.cooldownMs;
         if (allowRelease && now >= chunk.expiresAt) {
-          chunk.data.dispose();
+          this.releaseChunkData(chunk);
           this.pruneChunk(chunk);
         }
       }
@@ -933,8 +951,19 @@ export class ChunkStreamScheduler {
       }
     }
   }
+  releaseChunkData(chunk) {
+    const data = chunk.data;
+    if (!data) return;
+    // Pending regions depend on this cache's palette, even after extraction.
+    for (const leaf of this.leaves.values())
+      if (leaf.pending?.chunk === chunk) leaf.pending = undefined;
+    // Displayed regions can outlive the worker cache that supplied their palette.
+    if (data.palette !== chunk.batch?.source.palette) data.palette?.dispose();
+    data.dispose();
+    chunk.data = undefined;
+  }
   pruneChunk(chunk) {
-    if (chunk.data && !chunk.data.alive) chunk.data = undefined;
+    if (chunk.data && !chunk.data.alive) this.releaseChunkData(chunk);
     if (!chunk.data) chunk.expiresAt = undefined;
     if (!chunk.batch && !chunk.data && !chunk.controller)
       this.activeChunks.delete(chunk);
@@ -974,8 +1003,7 @@ export class ChunkStreamScheduler {
     for (const leaf of this.leaves.values()) leaf.pending = undefined;
     for (const chunk of this.activeChunks) {
       chunk.controller?.abort(error);
-      chunk.data?.dispose();
-      chunk.data = undefined;
+      this.releaseChunkData(chunk);
       this.pruneChunk(chunk);
     }
     this.loader.dispose();
@@ -993,8 +1021,7 @@ export class ChunkStreamScheduler {
     this.loader.dispose();
     for (const chunk of this.activeChunks) {
       chunk.controller?.abort();
-      chunk.data?.dispose();
-      chunk.data = undefined;
+      this.releaseChunkData(chunk);
     }
     for (const leaf of this.leaves.values()) {
       if (leaf.current) this.releaseRegion(leaf.current);

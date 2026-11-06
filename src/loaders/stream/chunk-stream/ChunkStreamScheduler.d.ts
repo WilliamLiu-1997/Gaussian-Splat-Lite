@@ -146,6 +146,7 @@ export declare abstract class ChunkStreamScheduler {
   private releaseUnused;
   private pump;
   private load;
+  private releaseChunkData;
   private pruneChunk;
   private releaseRegion;
   private changed;

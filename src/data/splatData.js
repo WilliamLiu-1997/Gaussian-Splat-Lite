@@ -21,25 +21,27 @@ export function resetSplatBounds(bounds) {
   bounds.fill(Number.NEGATIVE_INFINITY, 3, 6);
 }
 export function getSplatShDegree(extra) {
+  if (extra.shDegree) return extra.shDegree;
   if (!extra.shBlock0) return 0;
   if (!extra.shBlock1) return 1;
   if (!extra.shBlock2 || !extra.shBlock3) return 2;
   return !extra.shBlock4 || !extra.shBlock5 ? 3 : 4;
 }
-/** Packed RGBA32UI textures per record: two base textures plus SH blocks. */
-export function getSplatTextureCount(numSh) {
-  return 2 + SH_ARRAY_COUNTS[numSh];
+/** Two base textures plus per-splat SH blocks or one shared-palette label texture. */
+export function getSplatTextureCount(numSh, indexedSh = false) {
+  return indexedSh ? 3 : 2 + SH_ARRAY_COUNTS[numSh];
 }
 /** Zeroed packed arrays for capacity records, one per texture. */
-export function createSplatTextureArrays(capacity, numSh) {
+export function createSplatTextureArrays(capacity, numSh, indexedSh = false) {
   return Array.from(
-    { length: getSplatTextureCount(numSh) },
-    () => new Uint32Array(capacity * 4),
+    { length: getSplatTextureCount(numSh, indexedSh) },
+    (_, index) =>
+      new Uint32Array(capacity * (indexedSh && index === 2 ? 1 : 4)),
   );
 }
 /** Packed texture storage; capacity includes padding, but excludes sort centers. */
-export function getSplatTextureBytes(capacity, numSh) {
-  return capacity * getSplatTextureCount(numSh) * 16;
+export function getSplatTextureBytes(capacity, numSh, indexedSh = false) {
+  return capacity * (indexedSh ? 36 : getSplatTextureCount(numSh) * 16);
 }
 /** Retained CPU arrays, including sort centers and extra attribute buffers. */
 export function getSplatByteLength(data) {
@@ -51,6 +53,6 @@ export function getSplatByteLength(data) {
     (data.spatialBounds?.byteLength ?? 0);
   for (const array of data.splatArrays) bytes += array.byteLength;
   for (const array of Object.values(data.extra))
-    bytes += array?.byteLength ?? 0;
+    bytes += typeof array === "number" ? 0 : (array?.byteLength ?? 0);
   return bytes;
 }

@@ -1,13 +1,11 @@
 import {
-  encodeShRgb,
   encodeSplatOpacity,
   tryEncodeQuatSmallestThree32,
 } from "../../data/splatCodec.js";
 import { toHalf } from "../../utils/numeric.js";
-import { executeRange, shWord } from "./operations.js";
+import { executeRange } from "./operations.js";
 import {
   Opcode,
-  SH_COEFFICIENT_COUNT,
   SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION,
   SPLAT_POST_DECODE_FLOW_STAGE_ON_FALSE,
   SPLAT_POST_DECODE_FLOW_STAGE_ON_TRUE,
@@ -36,9 +34,6 @@ function getBlockSize(registerValueCount, processCount) {
     Math.floor(MAX_REGISTER_BYTES / bytesPerSplat),
   );
 }
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
 function encodeQuaternion(registers, base, stride) {
   return tryEncodeQuatSmallestThree32(
     registers[base],
@@ -47,22 +42,13 @@ function encodeQuaternion(registers, base, stride) {
     registers[base + stride * 3],
   );
 }
-function encodeSh(registers, base, stride) {
-  return encodeShRgb(
-    registers[base],
-    registers[base + stride],
-    registers[base + stride * 2],
-  );
-}
 const OUTPUT_POSITION = 0;
 const OUTPUT_SCALE = 1;
 const OUTPUT_QUATERNION = 2;
 const OUTPUT_OPACITY = 3;
-const OUTPUT_ALPHA = 4;
-const OUTPUT_COLOR = 5;
-const OUTPUT_COUNT = 6;
+const OUTPUT_COUNT = 4;
 const MISSING_OUTPUT_BASE = 0xffff_ffff;
-function createOutputWritePlan(data, program, registerBases) {
+function createOutputWritePlan(program, registerBases) {
   const { outputs } = program;
   const outputBases = new Uint32Array(OUTPUT_COUNT);
   outputBases.fill(MISSING_OUTPUT_BASE);
@@ -77,35 +63,14 @@ function createOutputWritePlan(data, program, registerBases) {
   setOutputBase(OUTPUT_SCALE, outputs.scale);
   setOutputBase(OUTPUT_QUATERNION, outputs.quaternion);
   setOutputBase(OUTPUT_OPACITY, outputs.opacity);
-  setOutputBase(OUTPUT_ALPHA, outputs.alpha);
-  setOutputBase(OUTPUT_COLOR, outputs.color);
-  const shTargetArrays = [];
-  const shWordOffsets = [];
-  const shRegisterBases = [];
-  if (outputs.sh) {
-    for (
-      let coefficient = 0;
-      coefficient < SH_COEFFICIENT_COUNT;
-      coefficient += 1
-    ) {
-      const location = shWord(data, coefficient);
-      if (!location) continue;
-      shTargetArrays.push(location[0]);
-      shWordOffsets.push(location[1]);
-      shRegisterBases.push(registerBases[outputs.sh[coefficient]]);
-    }
-  }
   return {
     outputBases,
-    shTargetArrays,
-    shWordOffsets: new Uint8Array(shWordOffsets),
-    shRegisterBases: new Uint32Array(shRegisterBases),
     updatesSortCenter:
       outputs.position !== undefined || outputs.scale !== undefined,
-    writesOutputs: outputFieldCount !== 0 || shTargetArrays.length !== 0,
+    writesOutputs: outputFieldCount !== 0,
   };
 }
-function prepareProgram(data, program, processCount) {
+function prepareProgram(program, processCount) {
   const {
     registerOffsets: registerBases,
     registerValueCount,
@@ -126,7 +91,7 @@ function prepareProgram(data, program, processCount) {
         SPLAT_POST_DECODE_FLOW_STAGE_INSTRUCTION
     ] ?? -1) + 1;
   return {
-    outputPlan: createOutputWritePlan(data, program, registerBases),
+    outputPlan: createOutputWritePlan(program, registerBases),
     registerBases,
     conditionStages,
     conditionStageCount,
@@ -450,28 +415,7 @@ function writeOutputBlock(
   const { outputBases } = plan;
   const positionBase = outputBases[OUTPUT_POSITION];
   const scaleBase = outputBases[OUTPUT_SCALE];
-  const colorBase = outputBases[OUTPUT_COLOR];
-  if (scaleBase !== MISSING_OUTPUT_BASE && colorBase !== MISSING_OUTPUT_BASE) {
-    for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      const wordBase = outputWordBases[blockIndex];
-      const scale = scaleBase + blockIndex;
-      const color = colorBase + blockIndex;
-      // Blue and X log-scale share a word. Write it once without either
-      // read/modify/write cycle when both fields are being updated.
-      data.splat1[wordBase] =
-        (toHalf(registers[color]) |
-          (toHalf(registers[color + blockSize]) << 16)) >>>
-        0;
-      data.splat1[wordBase + 1] =
-        (toHalf(registers[color + blockSize * 2]) |
-          (toHalf(Math.log(registers[scale])) << 16)) >>>
-        0;
-      data.splat1[wordBase + 2] =
-        (toHalf(Math.log(registers[scale + blockSize])) |
-          (toHalf(Math.log(registers[scale + blockSize * 2])) << 16)) >>>
-        0;
-    }
-  } else if (scaleBase !== MISSING_OUTPUT_BASE) {
+  if (scaleBase !== MISSING_OUTPUT_BASE) {
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       const wordBase = outputWordBases[blockIndex];
       const registerBase = scaleBase + blockIndex;
@@ -502,43 +446,6 @@ function writeOutputBlock(
       const wordBase = outputWordBases[blockIndex];
       data.splat0[wordBase + 3] = encodeSplatOpacity(
         registers[opacityBase + blockIndex],
-      );
-    }
-  }
-  const alphaBase = outputBases[OUTPUT_ALPHA];
-  if (alphaBase !== MISSING_OUTPUT_BASE) {
-    for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      const wordIndex = outputWordBases[blockIndex] + 3;
-      data.splat0[wordIndex] =
-        ((data.splat0[wordIndex] & 0xffff_0000) |
-          toHalf(clamp(registers[alphaBase + blockIndex] || 0, 0, 1))) >>>
-        0;
-    }
-  }
-  if (colorBase !== MISSING_OUTPUT_BASE && scaleBase === MISSING_OUTPUT_BASE) {
-    for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      const wordBase = outputWordBases[blockIndex];
-      const registerBase = colorBase + blockIndex;
-      data.splat1[wordBase] =
-        (toHalf(registers[registerBase]) |
-          (toHalf(registers[registerBase + blockSize]) << 16)) >>>
-        0;
-      data.splat1[wordBase + 1] =
-        ((data.splat1[wordBase + 1] & 0xffff_0000) |
-          toHalf(registers[registerBase + blockSize * 2])) >>>
-        0;
-    }
-  }
-  for (let shIndex = 0; shIndex < plan.shTargetArrays.length; shIndex += 1) {
-    const target = plan.shTargetArrays[shIndex];
-    const wordOffset = plan.shWordOffsets[shIndex];
-    const shRegisterBase = plan.shRegisterBases[shIndex];
-    for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      const wordBase = outputWordBases[blockIndex];
-      target[wordBase + wordOffset] = encodeSh(
-        registers,
-        shRegisterBase + blockIndex,
-        blockSize,
       );
     }
   }
@@ -579,7 +486,7 @@ export function applySplatPostDecode(data, program, onProgress) {
     return;
   }
   onProgress?.(0, processCount);
-  const plan = prepareProgram(data, program, processCount);
+  const plan = prepareProgram(program, processCount);
   const registers = new Float32Array(plan.registerValueCount * plan.blockSize);
   const attributeData = new DataView(
     program.attributeData.buffer,

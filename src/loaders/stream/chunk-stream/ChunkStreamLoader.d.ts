@@ -1,10 +1,13 @@
 import type { Matrix4 } from "three";
 import type { Splats } from "../../../data/Splats.js";
+import type { ReorderedSplatResult } from "../../../data/defines.js";
+import type { ShPalette } from "../../../data/shPalette.js";
 import type { SogLodIndex } from "../sog-stream/sogLod.js";
 import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
 import type { StreamRequestOptions } from "../streamOptions.js";
 import type { ChunkStreamWorker } from "./ChunkStreamWorker.js";
 import type { ChunkInfo } from "./workerHandlers.js";
+
 export type ChunkStreamSourceOptions = StreamRequestOptions & {
   url: string;
   /** Model-to-group transform; identity when omitted. Change with setSourceSettings(). */
@@ -44,6 +47,7 @@ export declare class ChunkSource {
   private readonly worker;
   private readonly id;
   readonly info: ChunkInfo;
+  readonly palette?: ShPalette;
   private readonly onRelease;
   private released;
   constructor(
@@ -58,7 +62,7 @@ export declare class ChunkSource {
       start: number;
       count: number;
     }[],
-  ): Promise<import("../../../data/defines.js").ReorderedSplatResult[]>;
+  ): Promise<ReorderedSplatResult[]>;
   dispose(): void;
 }
 /** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */

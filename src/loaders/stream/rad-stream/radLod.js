@@ -5,8 +5,8 @@ import {
 } from "../../../data/defines.js";
 import { getSplatTextureBytes } from "../../../data/splatData.js";
 /** Conservative page reservations at the storage SH degree. */
-export function radPageCosts(numSh) {
-  const splatBytes = getSplatTextureBytes(1, numSh);
+export function radPageCosts(numSh, indexedSh = false) {
+  const splatBytes = getSplatTextureBytes(1, numSh, indexedSh);
   const boundsBlocks = RAD_PAGE_SIZE / SPLAT_BOUNDS_BLOCK_SIZE;
   const gpu = RAD_PAGE_SIZE * (splatBytes + 4 + 0.25) + 16;
   // Keep the removed reverse map's allowance as headroom for padded indices

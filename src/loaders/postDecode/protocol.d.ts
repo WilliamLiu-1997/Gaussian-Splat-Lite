@@ -60,14 +60,9 @@ export declare const InputField: {
   readonly Scale: 2;
   readonly Quaternion: 3;
   readonly Opacity: 4;
-  readonly Alpha: 5;
-  readonly Color: 6;
-  readonly Sh0: 7;
 };
 /** @internal */
 export type InputField = (typeof InputField)[keyof typeof InputField];
-/** @internal */
-export declare const SH_COEFFICIENT_COUNT = 24;
 /** @internal */
 export type SplatPostDecodeValueType =
   | "float"
@@ -142,9 +137,6 @@ export type SplatPostDecodeOutputs = {
   scale?: number;
   quaternion?: number;
   opacity?: number;
-  alpha?: number;
-  color?: number;
-  sh?: readonly number[];
 };
 /** @internal */
 export declare const SPLAT_POST_DECODE_FLOW_STAGE_START = 0;
@@ -185,6 +177,9 @@ export type PostDecodeSplatData = {
   sortCenters: Float32Array;
   /** Original RAD node indices for attributes after non-leaf records are omitted. */
   sourceIds?: Uint32Array;
+  shPalette?: Uint32Array;
+  shLabels?: Uint32Array;
+  shDegree?: 1 | 2 | 3;
   shBlock0?: Uint32Array;
   shBlock1?: Uint32Array;
   shBlock2?: Uint32Array;

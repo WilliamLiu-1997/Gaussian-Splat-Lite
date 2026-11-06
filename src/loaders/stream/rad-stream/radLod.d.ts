@@ -1,4 +1,7 @@
-export declare function radPageCosts(numSh: number): {
+export declare function radPageCosts(
+  numSh: number,
+  indexedSh?: boolean,
+): {
   cpu: number;
   gpu: number;
   pending: number;

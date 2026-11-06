@@ -67,42 +67,12 @@ type AttributeValue<Components extends AttributeComponents> =
       : Components extends 3
         ? Vec3Value
         : Vec4Value;
-type SplatShCoefficientContext = {
-  index: number;
-  degree: 1 | 2 | 3 | 4;
-  order: number;
-};
-declare class SplatPostDecodeShPatch {
-  /** @internal */ readonly owner: ProgramBuilder;
-  /** @internal */ readonly coefficients: readonly Vec3Value[];
-  /** @internal */
-  constructor(
-    /** @internal */ owner: ProgramBuilder,
-    /** @internal */ coefficients: readonly Vec3Value[],
-  );
-}
-declare class SplatPostDecodeShValue {
-  private readonly owner;
-  /** @internal */
-  constructor(owner: ProgramBuilder);
-  coefficient(index: number): Vec3Value;
-  map(
-    transform: (
-      coefficient: Vec3Value,
-      context: SplatShCoefficientContext,
-    ) => Vec3Like,
-  ): SplatPostDecodeShPatch;
-}
 type SplatPostDecodeInput = {
   readonly position: Vec3Value;
   readonly scale: Vec3Value;
   readonly quaternion: QuaternionValue;
   /** Semantic opacity in [0, exp(24/e)] (approximately 6830.182). */
   readonly opacity: FloatValue;
-  /** Standard alpha in the [0, 1] range. */
-  readonly alpha: FloatValue;
-  readonly color: Vec3Value;
-  readonly sh: SplatPostDecodeShValue;
 };
 export type SplatPostDecodePatch = {
   /** If false, this splat's packed values are left byte-for-byte unchanged. */
@@ -112,13 +82,6 @@ export type SplatPostDecodePatch = {
   quaternion?: QuaternionLike;
   /** Semantic opacity, encoded within the renderer's shape range [0, 1]. */
   opacity?: FloatLike;
-  /**
-   * Standard alpha, clamped to [0, 1] and independent from semantic opacity.
-   * Cannot be output with opacity in the same patch.
-   */
-  alpha?: FloatLike;
-  color?: Vec3Like;
-  sh?: SplatPostDecodeShPatch;
 };
 type VariadicNumericOperation = <T extends NumericValueType>(
   first: ValueLike<T>,

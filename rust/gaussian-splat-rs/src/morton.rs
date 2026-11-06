@@ -167,6 +167,7 @@ pub fn morton_reorder(
     bounds: Float32Array,
     bounds_blocks: Option<Float32Array>,
     spatial_bounds: Float32Array,
+    sh_labels: Option<Uint32Array>,
     progress: Option<Function>,
 ) -> Result<(), JsValue> {
     let words = count
@@ -198,6 +199,9 @@ pub fn morton_reorder(
         || sort_centers
             .as_ref()
             .is_some_and(|array| array.length() < count * 3)
+        || sh_labels
+            .as_ref()
+            .is_some_and(|array| array.length() < count)
         || storage_order
             .as_ref()
             .is_some_and(|array| array.length() < count)
@@ -214,6 +218,7 @@ pub fn morton_reorder(
         + arrays.len()
         + usize::from(sort_centers.is_some())
         + usize::from(storage_order.is_some())
+        + usize::from(sh_labels.is_some())
         + 1) as f64
         * work_count;
     let progress = progress.as_ref();
@@ -305,6 +310,15 @@ pub fn morton_reorder(
         centers.copy_to(&mut source[..size]);
         permute::<3>(&source, &mut scratch, &order);
         centers.copy_from(&scratch[..size]);
+        completed += work_count;
+        report_progress(progress, completed, total)?;
+    }
+    if let Some(labels) = sh_labels {
+        let size = count as usize;
+        let labels = labels.subarray(0, count);
+        labels.copy_to(&mut source[..size]);
+        permute::<1>(&source, &mut scratch, &order);
+        labels.copy_from(&scratch[..size]);
         completed += work_count;
         report_progress(progress, completed, total)?;
     }

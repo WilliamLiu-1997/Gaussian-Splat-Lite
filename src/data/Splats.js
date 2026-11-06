@@ -1,9 +1,11 @@
 import * as THREE from "three";
+import { loadSplatData } from "../loaders/loadSplatData.js";
 import {
   SPLAT_BLOCKS_DISABLED,
   SPLAT_BOUNDS_BLOCK_SIZE,
   SPLAT_TEX_WIDTH_BITS,
 } from "./defines.js";
+import { ShPalette } from "./shPalette.js";
 import { decodeShRgbToArray } from "./splatCodec.js";
 import {
   SH_KEYS,
@@ -13,6 +15,7 @@ import {
 } from "./splatData.js";
 import { disposeDataTexture, getTextureSize } from "./textureLayout.js";
 import { decodeSplat } from "./unpack.js";
+const SH_TEXTURE_KEYS = [...SH_KEYS, "shLabels"];
 function validateInitializationInputs(options) {
   if ("splatArrays" in options)
     throw new Error(
@@ -63,6 +66,12 @@ function createDecodedState(data) {
     Math.ceil(numSplats / SPLAT_BOUNDS_BLOCK_SIZE) * 6
   )
     throw new Error("Incorrect spatial bounds block length");
+  if (
+    data.extra.shDegree &&
+    (!(data.extra.shLabels instanceof Uint32Array) ||
+      data.extra.shLabels.length < numSplats)
+  )
+    throw new Error("Incomplete shared SH labels");
   const maxSplats = getTextureSize(inputCapacity).maxSplats;
   let splatArrays = data.splatArrays;
   if (maxSplats !== inputCapacity) {
@@ -147,6 +156,10 @@ export class Splats {
     this.bounds = state.boundingBox;
     this.spatialBounds = state.spatialBounds;
     this.extra = state.extra;
+    this.palette = state.extra.shPalette
+      ? new ShPalette(state.extra.shPalette, state.extra.shDegree)
+      : undefined;
+    if (this.palette) this.extra.shPalette = undefined;
     this.needsUpdate = true;
   }
   /** @internal Adopt a loader result with precomputed bounds. */
@@ -156,7 +169,6 @@ export class Splats {
     this.commitState(state);
   }
   async asyncInitialize(options, signal) {
-    const { loadSplatData } = await import("../loaders/loadSplatData.js");
     const decoded = await loadSplatData({ ...options, signal });
     return createDecodedState(decoded);
   }
@@ -167,6 +179,8 @@ export class Splats {
     this.commitState(createEmptyState());
   }
   disposeTextures() {
+    this.palette?.dispose();
+    this.palette = undefined;
     this.disposeMainTextures();
     for (const texture of Object.values(this.shTextures)) {
       if (texture) disposeDataTexture(texture);
@@ -189,15 +203,18 @@ export class Splats {
   }
   /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
   getByteLength() {
-    return getSplatByteLength({
-      splatArrays: this.splatArrays,
-      sortCenters: this.sortCenters,
-      storageOrder: this.storageOrder,
-      centerOnlyBoundingBox: this.centerOnlyBounds,
-      boundingBox: this.bounds,
-      spatialBounds: this.spatialBounds,
-      extra: this.extra,
-    });
+    return (
+      (this.palette?.byteLength ?? 0) +
+      getSplatByteLength({
+        splatArrays: this.splatArrays,
+        sortCenters: this.sortCenters,
+        storageOrder: this.storageOrder,
+        centerOnlyBoundingBox: this.centerOnlyBounds,
+        boundingBox: this.bounds,
+        spatialBounds: this.spatialBounds,
+        extra: this.extra,
+      })
+    );
   }
   /** @internal Consume owned arrays for transfer to a streaming worker. */
   takeData() {
@@ -212,6 +229,8 @@ export class Splats {
       spatialBounds: this.spatialBounds,
       extra: this.extra,
     };
+    // This source owns its palette and is disposed below, so hand it over.
+    if (this.palette) data.extra.shPalette = this.palette.data;
     this.dispose();
     return data;
   }
@@ -221,7 +240,16 @@ export class Splats {
     }
     const splat = decodeSplat(this.splatArrays, index);
     return includeSh
-      ? { ...splat, sh: decodeSplatSh(this.extra, index, this.getNumSh()) }
+      ? {
+          ...splat,
+          sh: decodeSplatSh(
+            this.extra,
+            index,
+            this.getNumSh(),
+            this.extra.shLabels?.[index],
+            this.palette,
+          ),
+        }
       : splat;
   }
   /** @internal Consecutive visible records surviving spatial block picking. */
@@ -303,6 +331,9 @@ export class Splats {
     uniforms.shBlock3Texture.value = sh.shBlock3 ?? Splats.emptyTexture;
     uniforms.shBlock4Texture.value = sh.shBlock4 ?? Splats.emptyTexture;
     uniforms.shBlock5Texture.value = sh.shBlock5 ?? Splats.emptyTexture;
+    uniforms.shLabelsTexture.value = sh.shLabels ?? Splats.emptyTexture;
+    uniforms.shPaletteStride.value = 0;
+    this.palette?.bind(uniforms);
     this.needsUpdate = false;
   }
   getSplatTextures() {
@@ -330,7 +361,7 @@ export class Splats {
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];
   }
   getShTextures() {
-    for (const key of SH_KEYS) {
+    for (const key of SH_TEXTURE_KEYS) {
       this.shTextures[key] = this.ensureShTexture(key, this.shTextures[key]);
     }
     return this.shTextures;
@@ -342,22 +373,35 @@ export class Splats {
     }
     const data = this.extra[key];
     if (!data) return undefined;
+    const stride = key === "shLabels" ? 1 : 4;
     const { width, height, depth, maxSplats } = getTextureSize(
-      Math.max(1, data.length / 4),
+      key === "shLabels" ? this.maxSplats : Math.max(1, data.length / stride),
     );
     let padded = data;
-    if (data.length < maxSplats * 4) {
-      padded = new Uint32Array(maxSplats * 4);
+    if (data.length < maxSplats * stride) {
+      padded = new Uint32Array(maxSplats * stride);
       padded.set(data);
       this.extra[key] = padded;
     }
-    return newUintArrayTexture(padded, width, height, depth);
+    return newUintArrayTexture(
+      padded,
+      width,
+      height,
+      depth,
+      stride === 1 ? THREE.RedIntegerFormat : THREE.RGBAIntegerFormat,
+    );
   }
   static emptyTexture = newUintArrayTexture(new Uint32Array(4), 1, 1, 1);
 }
-function newUintArrayTexture(data, width, height, depth) {
+function newUintArrayTexture(
+  data,
+  width,
+  height,
+  depth,
+  format = THREE.RGBAIntegerFormat,
+) {
   const texture = new THREE.DataArrayTexture(data, width, height, depth);
-  texture.format = THREE.RGBAIntegerFormat;
+  texture.format = format;
   texture.type = THREE.UnsignedIntType;
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
@@ -365,14 +409,16 @@ function newUintArrayTexture(data, width, height, depth) {
   texture.needsUpdate = true;
   return texture;
 }
-function decodeSplatSh(extra, index, degree) {
+function decodeSplatSh(extra, index, degree, label, palette) {
   const count = degree * (degree + 2);
   const result = new Array(count);
   const rgb = [0, 0, 0];
   const base = index * 4;
   for (let coefficient = 0; coefficient < count; coefficient += 1) {
     const data = extra[SH_KEYS[coefficient >> 2]];
-    const word = data?.[base + (coefficient & 3)] ?? 0;
+    const word = palette
+      ? palette.word(label, coefficient)
+      : (data?.[base + (coefficient & 3)] ?? 0);
     decodeShRgbToArray(word, rgb);
     result[coefficient] = new THREE.Color(rgb[0], rgb[1], rgb[2]);
   }

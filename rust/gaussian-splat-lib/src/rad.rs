@@ -223,8 +223,6 @@ struct RadChunkMeta {
     count: u64,
     #[serde(rename = "payloadBytes")]
     payload_bytes: u64,
-    #[serde(rename = "maxSh")]
-    max_sh: Option<u32>,
     #[serde(rename = "lodTree")]
     lod_tree: Option<bool>,
     properties: Vec<Property>,
@@ -399,7 +397,7 @@ struct DecodedChunk {
     pub quaternions: Vec<f32>,
     pub quaternions_packed: Vec<u32>,
     pub packed_sh: [Vec<u32>; 3],
-    pub sh_labels: Option<(usize, Vec<u32>)>,
+    pub sh_labels: Option<Vec<u32>>,
     pub child_start: Option<Vec<u32>>,
     pub child_count: Option<Vec<u16>>,
     /// Conservative projected-size radius, not a subtree spatial bounding box.
@@ -649,8 +647,7 @@ pub struct RadDecoder {
     pub meta: RadMeta,
     max_sh: usize,
     codebooks: [Option<Vec<u32>>; 3],
-    // Separate degrees keep omitted bands zero when chunks use different maxSh.
-    palettes: [Option<Vec<u32>>; 3],
+    palette: Option<Vec<u32>>,
     chunk_bounds: Vec<(u32, u32)>,
 }
 
@@ -661,11 +658,12 @@ impl RadDecoder {
         let chunk_bounds = (0..meta.chunks.len())
             .map(|index| meta.chunk_bounds(index))
             .collect::<Result<_>>()?;
+        let max_sh = max_sh.min(meta.max_sh.unwrap_or(0) as usize);
         Ok(Self {
             meta,
             max_sh,
             codebooks: array::from_fn(|_| None),
-            palettes: array::from_fn(|_| None),
+            palette: None,
             chunk_bounds,
         })
     }
@@ -680,6 +678,7 @@ impl RadDecoder {
         splats.init_splats(&SplatInit {
             num_splats: chunk.count,
             max_sh_degree: chunk.max_sh,
+            indexed_sh: chunk.sh_labels.is_some(),
         })?;
         let batch = SplatProps {
             center: &chunk.centers,
@@ -707,8 +706,17 @@ impl RadDecoder {
                 |i, d| codes[d * chunk.count + i],
             );
         }
-        if let Some((degree, labels)) = chunk.sh_labels {
-            splats.set_sh_palette(0, chunk.count, degree, self.sh_palette(degree), &labels);
+        if let Some(labels) = chunk.sh_labels {
+            if !T::SHARED_SH {
+                splats.set_sh_palette(0, chunk.count, self.max_sh, self.sh_palette()?, &labels);
+            } else if chunk.base == 0 {
+                // Shared receivers keep the first chunk's palette; later chunks
+                // need only labels, so the decoder drops its codebooks.
+                splats.set_sh_palette(0, chunk.count, self.max_sh, self.sh_palette()?, &labels);
+                self.set_codebooks(array::from_fn(|_| None))?;
+            } else {
+                splats.set_sh_labels(0, chunk.count, self.max_sh, &labels);
+            }
         }
         for (band, words) in chunk.packed_sh.iter().enumerate() {
             if !words.is_empty() {
@@ -743,7 +751,7 @@ impl RadDecoder {
                     .context("RAD codebook requires positive shCodeCount")?
                     as usize;
                 ensure!(
-                    band < self.max_sh.min(self.meta.max_sh.unwrap_or(0) as usize),
+                    band < self.max_sh,
                     "RAD codebook exceeds requested SH degree"
                 );
                 ensure!(
@@ -753,13 +761,18 @@ impl RadDecoder {
             }
         }
         self.codebooks = codebooks;
-        self.palettes.fill(None);
+        self.palette = None;
         Ok(())
     }
 
-    /// Assemble packed bands once for each requested degree.
-    fn sh_palette(&mut self, degree: usize) -> &[u32] {
-        self.palettes[degree - 1].get_or_insert_with(|| {
+    /// Assemble the file's packed bands once at the requested SH limit.
+    fn sh_palette(&mut self) -> Result<&[u32]> {
+        let degree = self.max_sh;
+        ensure!(
+            degree > 0 && self.codebooks[..degree].iter().all(Option::is_some),
+            "RAD SH codebook unavailable; decode chunk 0 first"
+        );
+        Ok(self.palette.get_or_insert_with(|| {
             let stride = [0, 4, 8, 16][degree];
             let mut palette = vec![0; self.meta.sh_code_count.unwrap() as usize * stride];
             let mut offset = 0;
@@ -772,7 +785,7 @@ impl RadDecoder {
                 offset += coefficients;
             }
             palette
-        })
+        }))
     }
 
     fn decode_chunk_data(&mut self, bytes: &[u8], packed_quat: bool) -> Result<DecodedChunk> {
@@ -823,16 +836,8 @@ impl RadDecoder {
             "RADC byte length disagrees with chunk directory"
         );
         let header_sh = self.meta.max_sh.unwrap_or(0) as usize;
-        let declared_sh = chunk.max_sh.unwrap_or(header_sh as u32) as usize;
-        ensure!(
-            declared_sh <= header_sh,
-            "RADC SH degree exceeds RAD header"
-        );
-        // Keep every page compatible with the dataset's source textures. A
-        // chunk may contain fewer bands; the receiver leaves its absent upper
-        // bands at zero instead of returning incompatible texture arrays.
-        let max_sh = self.max_sh.min(header_sh);
-        let decode_sh = self.max_sh.min(declared_sh);
+        // Full RAD files use the header's SH degree for every chunk.
+        let max_sh = self.max_sh;
         let lod_tree = chunk.lod_tree.or(self.meta.lod_tree).unwrap_or(false);
         ensure!(
             chunk
@@ -875,8 +880,8 @@ impl RadDecoder {
             };
             prop.validate(records)?;
             ensure!(
-                prop.property.sh_degree() <= declared_sh,
-                "RAD SH property exceeds declared degree"
+                prop.property.sh_degree() <= header_sh,
+                "RAD SH property exceeds header degree"
             );
         }
         ranges.sort_unstable();
@@ -908,11 +913,11 @@ impl RadDecoder {
             "RAD tree properties disagree with lodTree"
         );
         let labels_present = names.contains(&PropertyName::ShLabel);
+        ensure!(
+            labels_present == self.meta.sh_code_count.is_some_and(|count| count > 0),
+            "RAD SH labels disagree with shCodeCount"
+        );
         if labels_present {
-            ensure!(
-                self.meta.sh_code_count.is_some_and(|count| count > 0),
-                "RAD SH labels require positive shCodeCount"
-            );
             ensure!(
                 !names
                     .iter()
@@ -930,8 +935,8 @@ impl RadDecoder {
         };
         let mut labels: Option<Vec<u32>> = None;
         for prop in &chunk.properties {
-            if prop.property.sh_degree() > decode_sh
-                || (prop.property == PropertyName::ShLabel && decode_sh == 0)
+            if prop.property.sh_degree() > max_sh
+                || (prop.property == PropertyName::ShLabel && max_sh == 0)
             {
                 continue;
             }
@@ -1068,24 +1073,18 @@ impl RadDecoder {
                 }
             }
         }
-        if labels_present {
-            for (band, codes) in pending_codes.iter().enumerate().take(decode_sh) {
-                codes
-                    .as_ref()
-                    .or(self.codebooks[band].as_ref())
-                    .context("RAD SH codebook unavailable; decode chunk 0 first")?;
-            }
-        }
-        if labels_present && decode_sh > 0 {
+        // Labels need no codebook here; expanding receivers check for it when
+        // decode_chunk builds the palette.
+        if labels_present && max_sh > 0 {
             let labels = labels.unwrap();
             let code_count = self.meta.sh_code_count.unwrap() as usize;
             ensure!(
                 labels.iter().all(|label| (*label as usize) < code_count),
                 "RAD SH label exceeds codebook"
             );
-            result.sh_labels = Some((decode_sh, labels));
+            result.sh_labels = Some(labels);
         } else {
-            for band in 0..decode_sh {
+            for band in 0..max_sh {
                 ensure!(
                     result.packed_sh[band].len() == count * [3, 5, 7][band],
                     "Missing RAD SH{} coefficients",
@@ -1137,7 +1136,7 @@ impl RadDecoder {
 
     fn cache_codebooks(&mut self, pending_codes: [Option<Vec<u32>>; 3]) {
         if pending_codes.iter().any(Option::is_some) {
-            self.palettes.fill(None);
+            self.palette = None;
         }
         for (cached, pending) in self.codebooks.iter_mut().zip(pending_codes) {
             if pending.is_some() {
@@ -1524,7 +1523,7 @@ mod tests {
                 let actual = seeded.decode_chunk_data(&next, false).unwrap();
                 assert_eq!(actual.sh_labels, expected.sh_labels);
                 if degree > 0 {
-                    assert_eq!(full.sh_palette(degree), seeded.sh_palette(degree));
+                    assert_eq!(full.sh_palette().unwrap(), seeded.sh_palette().unwrap());
                 }
             }
         }
@@ -1554,7 +1553,7 @@ mod tests {
         for half in [false, true] {
             let (mut decoder, root, _) = fixture(half, false, 3);
             decoder.decode_chunk_data(&root, false).unwrap();
-            let palette = decoder.sh_palette(3).to_vec();
+            let palette = decoder.sh_palette().unwrap().to_vec();
             let codes = decoder.codebooks.clone();
             for bad in [
                 chunk(0, half, true, 0.25),
@@ -1565,13 +1564,13 @@ mod tests {
                 let error = decoder.decode_chunk_data(&bad, false).err().unwrap();
                 assert!(error.to_string().contains("Non-finite"), "{error:#}");
                 assert_eq!(decoder.codebooks, codes);
-                assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
+                assert_eq!(decoder.palette.as_deref(), Some(palette.as_slice()));
             }
             assert!(decoder
                 .decode_chunk_data(&root[..root.len() - 1], false)
                 .is_err());
             assert_eq!(decoder.codebooks, codes);
-            assert_eq!(decoder.palettes[2].as_deref(), Some(palette.as_slice()));
+            assert_eq!(decoder.palette.as_deref(), Some(palette.as_slice()));
         }
     }
 }

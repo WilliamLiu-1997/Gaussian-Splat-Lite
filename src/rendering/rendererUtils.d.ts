@@ -1,5 +1,6 @@
 import type * as THREE from "three";
-type WebGPURenderer = import("three/webgpu").WebGPURenderer;
+import type { WebGPURenderer } from "three/webgpu";
+
 export type GaussianSplatCompatibleRenderer =
   | THREE.WebGLRenderer
   | WebGPURenderer;

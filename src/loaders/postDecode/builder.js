@@ -2,7 +2,6 @@ import {
   ATTRIBUTE_FORMAT_BYTES,
   InputField,
   Opcode,
-  SH_COEFFICIENT_COUNT,
   TYPE_WIDTHS,
 } from "./protocol.js";
 class SplatPostDecodeValue {
@@ -13,46 +12,14 @@ class SplatPostDecodeValue {
     this.owner = owner;
   }
 }
-class SplatPostDecodeShPatch {
-  /** @internal */
-  constructor(/** @internal */ owner, /** @internal */ coefficients) {
-    this.owner = owner;
-    this.coefficients = coefficients;
-  }
-}
-class SplatPostDecodeShValue {
-  /** @internal */
-  constructor(owner) {
-    this.owner = owner;
-  }
-  coefficient(index) {
-    if (
-      !Number.isInteger(index) ||
-      index < 0 ||
-      index >= SH_COEFFICIENT_COUNT
-    ) {
-      throw new Error("SH coefficient index must be between 0 and 23");
-    }
-    return this.owner.inputField("vec3", InputField.Sh0 + index);
-  }
-  map(transform) {
-    const coefficients = [];
-    let index = 0;
-    for (let degree = 1; degree <= 4; degree += 1) {
-      for (let order = -degree; order <= degree; order += 1) {
-        coefficients.push(
-          this.owner.coerce(
-            transform(this.coefficient(index), { index, degree, order }),
-            "vec3",
-          ),
-        );
-        index += 1;
-      }
-    }
-    return new SplatPostDecodeShPatch(this.owner, coefficients);
-  }
-}
 const COMPONENT_TYPES = ["float", "vec2", "vec3", "vec4"];
+const OUTPUT_TYPES = {
+  when: "bool",
+  position: "vec3",
+  scale: "vec3",
+  quaternion: "quaternion",
+  opacity: "float",
+};
 function inferLiteralType(value) {
   if (typeof value === "boolean") return "bool";
   if (typeof value === "number") return "float";
@@ -75,7 +42,6 @@ export class ProgramBuilder {
     this.inputRegisters = new Map();
     this.op = this.createOperations();
     const builder = this;
-    const sh = new SplatPostDecodeShValue(this);
     this.splat = {
       get position() {
         return builder.inputField("vec3", InputField.Position);
@@ -89,13 +55,6 @@ export class ProgramBuilder {
       get opacity() {
         return builder.inputField("float", InputField.Opacity);
       },
-      get alpha() {
-        return builder.inputField("float", InputField.Alpha);
-      },
-      get color() {
-        return builder.inputField("vec3", InputField.Color);
-      },
-      sh,
     };
   }
   instruction(type, opcode, args = [], immediate = 0) {
@@ -387,30 +346,12 @@ export class ProgramBuilder {
   }
 }
 export function buildOutputs(builder, patch) {
-  if (patch.opacity !== undefined && patch.alpha !== undefined) {
-    throw new Error("postDecode opacity cannot be combined with alpha");
-  }
-  const output = (value, type) =>
-    value === undefined ? undefined : builder.coerce(value, type).register;
-  const outputs = {
-    when: output(patch.when, "bool"),
-    position: output(patch.position, "vec3"),
-    scale: output(patch.scale, "vec3"),
-    quaternion: output(patch.quaternion, "quaternion"),
-    opacity: output(patch.opacity, "float"),
-    alpha: output(patch.alpha, "float"),
-    color: output(patch.color, "vec3"),
-  };
-  if (patch.sh !== undefined) {
-    if (
-      !(patch.sh instanceof SplatPostDecodeShPatch) ||
-      patch.sh.owner !== builder
-    ) {
-      throw new Error(
-        "postDecode SH output must be created from splat.sh.map()",
-      );
-    }
-    outputs.sh = patch.sh.coefficients.map((value) => value.register);
+  const outputs = {};
+  for (const [field, value] of Object.entries(patch)) {
+    if (!Object.hasOwn(OUTPUT_TYPES, field))
+      throw new Error(`Unsupported postDecode output: ${field}`);
+    if (value !== undefined)
+      outputs[field] = builder.coerce(value, OUTPUT_TYPES[field]).register;
   }
   return outputs;
 }

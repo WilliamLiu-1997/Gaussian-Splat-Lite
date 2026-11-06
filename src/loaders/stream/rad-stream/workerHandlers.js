@@ -4,6 +4,7 @@ import {
   RAD_POOL_PAGE_COUNT,
   SPLAT_BOUNDS_BLOCK_SIZE,
 } from "../../../data/defines.js";
+import { packShPalette } from "../../../data/shPaletteData.js";
 import { createSplatTextureArrays } from "../../../data/splatData.js";
 import { wasmCall } from "../../../runtime/wasmCall.js";
 import { invertSplatOrder, reorderSplats } from "../../morton.js";
@@ -36,10 +37,11 @@ export function createRadStreamHandlers() {
   const selections = new RadSelectionState();
   const loads = new Map();
   return {
-    allocateRadStorage({ numSh }) {
+    allocateRadStorage({ numSh, indexedSh }) {
       return createSplatTextureArrays(
         RAD_POOL_PAGE_COUNT * RAD_PAGE_SIZE,
         numSh,
+        indexedSh,
       );
     },
     prepareRadSelection(request) {
@@ -94,18 +96,17 @@ export function createRadStreamHandlers() {
       }
       return chunkBytes;
     },
-    initializeRadDecoder({ header: value, maxSh, codebooks }) {
+    initializeRadDecoder({ header: value, maxSh }) {
       decoder?.free();
       decoderHeader = value;
       decoder = wasmCall(
         () => new RadDecoder(JSON.stringify(decoderHeader.meta), maxSh),
       );
-      if (codebooks)
-        wasmCall(() =>
-          decoder.set_codebooks(codebooks[0], codebooks[1], codebooks[2]),
-        );
     },
-    async loadRadChunk({ index, generation, request }, { sendStatus }) {
+    async loadRadChunk(
+      { index, generation, request, needsPalette },
+      { sendStatus },
+    ) {
       const controller = new AbortController();
       loads.set(generation, controller);
       let loaded = 0;
@@ -149,6 +150,9 @@ export function createRadStreamHandlers() {
         for (let index = 0; index < decoded.numSplats; index++)
           for (let axis = 0; axis < 3; axis++)
             centers[index * 3 + axis] = positions[index * 4 + axis];
+        // Page zero carries the input's shared SH palette; other pages only labels.
+        const { shPalette } = decoded.extra;
+        decoded.extra.shPalette = undefined;
         // Only packed render records stay on the main thread after registration.
         const data = {
           numSplats: decoded.numSplats,
@@ -171,12 +175,11 @@ export function createRadStreamHandlers() {
           sourceToStorage,
           boundsBlocks,
         };
-        // The input owns this packed cache independently of worker decoders.
-        const codebooks =
-          index === 0 && decoderHeader.meta.shCodeCount && data.extra.shBlock0
-            ? wasmCall(() => decoder.get_codebooks())
+        const palette =
+          shPalette && needsPalette
+            ? packShPalette(shPalette, data.extra.shDegree)
             : undefined;
-        return { data, tree, state, codebooks };
+        return { data, tree, state, palette };
       } finally {
         sendStatus({ loaded });
         loads.delete(generation);

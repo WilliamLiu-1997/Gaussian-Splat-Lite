@@ -7,9 +7,6 @@ const SH_SCALE_LOOKUP = Float64Array.from(
   { length: 32 },
   (_, exponent) => 2 ** (exponent - 15) / 255,
 );
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
 export function decodeSplatOpacity(word) {
   const shapeAmount = fromHalf(word >>> 16);
   if (shapeAmount > 0) {
@@ -27,30 +24,6 @@ export function encodeSplatOpacity(opacity) {
     return (toHalf(1) | (toHalf(Math.min(shapeAmount, 1)) << 16)) >>> 0;
   }
   return toHalf(value);
-}
-// NaN channels encode as zero without affecting the shared exponent. All
-// magnitudes are nonnegative, so Math.round also gives ties away from zero.
-// Keep JS precision here; the destination array controls decode precision.
-export function encodeShRgb(red, green, blue) {
-  const maxAbsolute = Math.max(
-    Math.abs(red) || 0,
-    Math.abs(green) || 0,
-    Math.abs(blue) || 0,
-  );
-  // The shared exponent must cover the largest channel before quantization.
-  const exponent = clamp(Math.ceil(Math.log2(maxAbsolute)) + 15, 0, 31);
-  const divisor = 2 ** (exponent - 15) / 255;
-  const encodedRed = Math.round(clamp(Math.abs(red) / divisor, 0, 255));
-  const encodedGreen = Math.round(clamp(Math.abs(green) / divisor, 0, 255));
-  const encodedBlue = Math.round(clamp(Math.abs(blue) / divisor, 0, 255));
-  const signs = (red < 0 ? 1 : 0) | (green < 0 ? 2 : 0) | (blue < 0 ? 4 : 0);
-  return (
-    (encodedRed |
-      (encodedGreen << 8) |
-      (encodedBlue << 16) |
-      (((exponent << 3) | signs) << 24)) >>>
-    0
-  );
 }
 export function decodeShRgbToArray(word, output, base = 0, stride = 1) {
   const exponentAndSigns = word >>> 24;

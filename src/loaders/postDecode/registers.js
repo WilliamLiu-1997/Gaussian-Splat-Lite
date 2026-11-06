@@ -68,9 +68,6 @@ export function allocateSplatPostDecodeRegisters(program) {
     outputs.scale,
     outputs.quaternion,
     outputs.opacity,
-    outputs.alpha,
-    outputs.color,
-    ...(outputs.sh ?? []),
   ]) {
     if (output !== undefined) lastUses[output] = programEnd;
   }

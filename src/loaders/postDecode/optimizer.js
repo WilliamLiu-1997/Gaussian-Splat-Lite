@@ -11,9 +11,6 @@ export function fuseArithmetic(source, outputs) {
     outputs.scale,
     outputs.quaternion,
     outputs.opacity,
-    outputs.alpha,
-    outputs.color,
-    ...(outputs.sh ?? []),
   ]) {
     if (register !== undefined) uses[register] += 1;
   }

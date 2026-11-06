@@ -2,10 +2,6 @@ import type {
   PostDecodeSplatData,
   SerializedSplatPostDecode,
 } from "./protocol.js";
-export declare function shWord(
-  data: PostDecodeSplatData,
-  coefficient: number,
-): [Uint32Array, number] | undefined;
 export declare function executeRange(
   data: PostDecodeSplatData,
   program: SerializedSplatPostDecode,

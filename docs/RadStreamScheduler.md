@@ -74,7 +74,7 @@ streaming.setSourceSettings(building, {
 });
 ```
 
-SH codebooks are cached and copied in a background worker. Page decoders reuse their current input's codebook; switching inputs transfers a worker-created copy without copying the codebook on the main thread. The cache remains included in the CPU memory budget.
+An input with an SH codebook keeps one copy of it, shared by all of its pages. The codebook counts toward both memory budgets.
 
 `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene. `splatBudget` and both memory budgets must be large enough to hold the coarsest detail of every nonempty input.
 

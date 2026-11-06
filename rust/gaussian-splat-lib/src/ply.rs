@@ -121,6 +121,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             self.splats.init_splats(&SplatInit {
                 num_splats: state.num_splats,
                 max_sh_degree: state.max_sh_degree,
+                indexed_sh: false,
             })?;
             PlyState::SuperSplat(state)
         } else if parsed.is_pointcloud {
@@ -132,6 +133,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             self.splats.init_splats(&SplatInit {
                 num_splats: parsed.num_splats,
                 max_sh_degree: 0,
+                indexed_sh: false,
             })?;
             PlyState::PointCloud(state)
         } else {
@@ -143,6 +145,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             self.splats.init_splats(&SplatInit {
                 num_splats: parsed.num_splats,
                 max_sh_degree: state.max_sh_degree,
+                indexed_sh: false,
             })?;
             PlyState::Standard(state)
         };

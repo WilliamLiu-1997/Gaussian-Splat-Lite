@@ -10,7 +10,9 @@ import type {
   SplatResult,
 } from "./defines.js";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
+import type { ShPalette } from "./shPalette.js";
 import type { decodeSplat } from "./unpack.js";
+
 type DecodedSplat = ReturnType<typeof decodeSplat>;
 type DecodedSplatWithSh = DecodedSplat & {
   sh: THREE.Color[];
@@ -40,6 +42,7 @@ export declare class Splats {
   protected bounds: Float32Array;
   private spatialBounds;
   private extra;
+  protected palette?: ShPalette;
   initialized: Promise<Splats>;
   isInitialized: boolean;
   needsUpdate: boolean;

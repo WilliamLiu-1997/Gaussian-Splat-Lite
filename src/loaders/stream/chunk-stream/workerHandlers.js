@@ -1,4 +1,5 @@
 import { sogBatchAllocationSize } from "../../../data/SogRegionSplats.js";
+import { truncateShPalette } from "../../../data/shPaletteData.js";
 import {
   SH_ARRAY_COUNTS,
   SH_KEYS,
@@ -140,14 +141,32 @@ export function createChunkStreamHandlers(decodeSplats) {
     // Custom loaders may return higher SH than this scheduler retains.
     for (const key of SH_KEYS.slice(SH_ARRAY_COUNTS[maxSh]))
       delete data.extra[key];
+    if (data.extra.shDegree && data.extra.shDegree > maxSh) {
+      if (maxSh) {
+        data.extra.shPalette = truncateShPalette(
+          data.extra.shPalette,
+          data.extra.shDegree,
+          maxSh,
+        );
+        data.extra.shDegree = maxSh;
+      } else {
+        data.extra.shLabels = undefined;
+        data.extra.shPalette = undefined;
+        data.extra.shDegree = undefined;
+      }
+    }
     // A custom loader may have reordered the whole chunk. Restore file ranges
     // once; each extracted region is reordered independently below.
     restoreSplatOrder(data);
+    const shPalette = data.extra.shPalette;
+    data.extra.shPalette = undefined;
     chunks.set(id, data);
     return {
       numSplats: data.numSplats,
       numSh: getSplatShDegree(data.extra),
       byteLength: getSplatByteLength(data),
+      shPalette,
+      shDegree: data.extra.shDegree,
     };
   }
   async function loadChunk({ id, ...args }, options) {

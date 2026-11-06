@@ -13,7 +13,7 @@ import { radPoolBytes } from "./radLod.js";
 function planConsolidation(pools, inUse, canMove) {
   const groups = new Map();
   for (const pool of pools) {
-    const { numSh } = pool.storage;
+    const numSh = pool.storage.numSh + (pool.storage.indexedSh ? 4 : 0);
     let group = groups.get(numSh);
     if (!group) {
       group = { free: 0, cached: [], pools: [] };
@@ -108,7 +108,7 @@ export class RadPagePools {
   get overBudget() {
     const { scheduler } = this;
     let cpu = scheduler.loader.residentCpuOverheadBytes;
-    let gpu = 0;
+    let gpu = scheduler.loader.residentGpuOverheadBytes;
     for (const pool of this.pools) {
       cpu += pool.residentBytes.cpu;
       gpu += pool.residentBytes.gpu;
@@ -181,15 +181,17 @@ export class RadPagePools {
   reserve(page) {
     const { scheduler } = this;
     const { input } = page;
+    const { numSh, indexedSh, costs } = input;
     let cpu = scheduler.loader.residentCpuOverheadBytes;
-    let gpu = 0;
+    let gpu = scheduler.loader.residentGpuOverheadBytes;
     let oldest;
     let available;
     let mostActive = -1;
     for (const pool of this.pools) {
       cpu += pool.residentBytes.cpu;
       gpu += pool.residentBytes.gpu;
-      if (pool.storage.numSh !== input.numSh) continue;
+      if (pool.storage.numSh !== numSh || pool.storage.indexedSh !== indexedSh)
+        continue;
       const active = pool.slots.filter(
         (other) => other && this.inUse(other),
       ).length;
@@ -208,12 +210,12 @@ export class RadPagePools {
       }
     }
     if (!available) {
-      const bytes = radPoolBytes(input.costs);
+      const bytes = radPoolBytes(costs);
       if (
         cpu + bytes.cpu <= scheduler.maxResidentCpuBytes &&
         gpu + bytes.gpu <= scheduler.maxResidentGpuBytes
       ) {
-        void this.allocate(input);
+        void this.allocate(numSh, indexedSh, costs);
         return false;
       }
       if (!oldest) return false;
@@ -227,22 +229,24 @@ export class RadPagePools {
     page.storage.slot = slot;
     return true;
   }
-  async allocate(input) {
+  async allocate(numSh, indexedSh, costs) {
     const { scheduler } = this;
     const allocation = {
-      residentBytes: radPoolBytes(input.costs),
+      residentBytes: radPoolBytes(costs),
       bytes: getSplatTextureBytes(
         RAD_POOL_PAGE_COUNT * RAD_PAGE_SIZE,
-        input.numSh,
+        numSh,
+        indexedSh,
       ),
       cancelled: false,
     };
     this.allocation = allocation;
     try {
-      const arrays = await scheduler.loader.allocateStorage(input.numSh);
+      const arrays = await scheduler.loader.allocateStorage(numSh, indexedSh);
       if (allocation.cancelled) return;
       const storage = new RadPagedSplats({
-        numSh: input.numSh,
+        numSh,
+        indexedSh,
         deferAllocation: true,
       });
       storage.uploadQueue = scheduler.uploads;
@@ -261,10 +265,15 @@ export class RadPagePools {
     for (const page of pages) {
       const storage = page?.storage;
       if (storage?.phase !== "decoded" || storage.slot === undefined) continue;
+      const palette = this.scheduler.loader.palette(page.input.id);
+      if (palette && !palette.prepareUpload(this.scheduler.uploads)) {
+        changed = true;
+        continue;
+      }
       const { pool, slot } = storage;
       const bytes = pool.storage.getUploadBytes(slot, slot + 1);
       if (!this.scheduler.uploads.canAdd(bytes)) break;
-      pool.storage.writePage(slot, storage.data, page.input.numSh);
+      pool.storage.writePage(slot, storage.data, pool.storage.numSh);
       page.storage = { phase: "resident", pool, slot };
       page.expiresAt = undefined;
       changed = true;
@@ -389,6 +398,12 @@ export class RadPagePools {
     // Uploads drain only when the scene renders.
     if (storage.pendingUploadBytes) return true;
     if (arrays.length) {
+      const bytes = getSplatTextureBytes(
+        RAD_PAGE_SIZE,
+        storage.numSh,
+        storage.indexedSh,
+      );
+      if (!this.scheduler.uploads.canAdd(bytes)) return true;
       // Initialize all packed textures together, even before the pool has a view.
       for (const array of arrays) {
         const texture = storage.allocateTexture(array);

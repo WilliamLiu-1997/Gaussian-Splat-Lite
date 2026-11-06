@@ -1,4 +1,5 @@
 import type { Matrix4 } from "three";
+import type { ShPalette } from "../../../data/shPalette.js";
 import type { RadSourceOptions } from "../../rad/RadSource.js";
 import type {
   RadChunkRange,
@@ -13,6 +14,7 @@ import type {
 } from "./prepareRadSelection.js";
 import type { RadStreamSelection } from "./radFade.js";
 import type { RadSourceCut } from "./radLod.js";
+
 export type RadStreamSourceOptions = Pick<
   RadSourceOptions,
   | "url"
@@ -39,7 +41,6 @@ export declare class RadStreamLoader {
   private readonly sources;
   private readonly lodWorker;
   private readonly preparationWorker;
-  private codebookWorker?;
   private readonly pool;
   private readonly decoderReady;
   private readonly controller;
@@ -57,12 +58,14 @@ export declare class RadStreamLoader {
     cachedBytes: number;
     downloadedBytes: number;
     peakWasmMemoryBytes: number;
-    estimatedCodebookBytes: number;
-    codebookCacheBytes: number;
+    paletteBytes: number;
     selectionBytes: number;
   };
-  /** Reserve per-input packed codebooks and each worker's current decoder. */
+  /** Reserve each input's source cache and shared SH palette. */
   get residentCpuOverheadBytes(): number;
+  /** Reserve each input's shared SH palette texture. */
+  get residentGpuOverheadBytes(): number;
+  palette(source: number): ShPalette | undefined;
   addSource(
     id: number,
     options: RadStreamSourceOptions,
@@ -90,7 +93,10 @@ export declare class RadStreamLoader {
     request: Parameters<typeof prepareRadMerge>[0],
   ): Promise<ReturnType<typeof prepareRadMerge>>;
   /** Allocate a fixed eight-page pool off the main thread. */
-  allocateStorage(numSh: number): Promise<Uint32Array<ArrayBuffer>[]>;
+  allocateStorage(
+    numSh: number,
+    indexedSh: boolean,
+  ): Promise<Uint32Array<ArrayBuffer>[]>;
   releaseChunk(index: number, source: number, generation?: number): void;
   dispose(): void;
 }

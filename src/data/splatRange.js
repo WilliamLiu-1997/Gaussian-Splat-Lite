@@ -10,7 +10,11 @@ export function extractSplatRange(source, start, count) {
   )
     throw new Error("Invalid Splat extraction range");
   const copy = (array) => array.slice(start * 4, (start + count) * 4);
-  const extra = {};
+  // Regions reference their chunk's shared palette; they never carry it.
+  const extra = {
+    shDegree: source.extra.shDegree,
+    shLabels: source.extra.shLabels?.slice(start, start + count),
+  };
   if (count) {
     for (const key of SH_KEYS) {
       const array = source.extra[key];

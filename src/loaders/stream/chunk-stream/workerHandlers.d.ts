@@ -1,8 +1,14 @@
-import type { SplatResult } from "../../../data/defines.js";
+import type {
+  ReorderedSplatResult,
+  SplatResult,
+} from "../../../data/defines.js";
 import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes.js";
 import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
 import type { ChunkStreamMetadata } from "./ChunkStreamLoader.js";
+
 export type ChunkInfo = {
+  shPalette?: Uint32Array;
+  shDegree?: 1 | 2 | 3 | 4;
   numSplats: number;
   numSh: number;
   byteLength: number;
@@ -46,7 +52,7 @@ export declare function createChunkStreamHandlers(
       start: number;
       count: number;
     }[];
-  }) => import("../../../data/defines.js").ReorderedSplatResult[];
+  }) => ReorderedSplatResult[];
   releaseChunk: ({
     id,
   }: {

@@ -1,9 +1,7 @@
 import {
   decodeQuatSmallestThree32ToArray,
-  decodeShRgbToArray,
   decodeSplatOpacity,
 } from "../../data/splatCodec.js";
-import { SH_KEYS, getSplatShDegree } from "../../data/splatData.js";
 import { fromHalf } from "../../utils/numeric.js";
 import {
   ATTRIBUTE_FORMAT_BYTES,
@@ -106,11 +104,6 @@ function readAttributeBlock(
     }
   }
 }
-export function shWord(data, coefficient) {
-  const degree = getSplatShDegree(data);
-  if (coefficient >= degree * (degree + 2)) return undefined;
-  return [data[SH_KEYS[coefficient >> 2]], coefficient & 3];
-}
 function evaluateInputFieldBlock(
   field,
   blockStart,
@@ -166,54 +159,6 @@ function evaluateInputFieldBlock(
         );
       }
       break;
-    case InputField.Alpha:
-      for (let index = 0; index < blockCount; index += 1) {
-        const sourceIndex = sourceIndices?.[index] ?? index;
-        registers[outputBase + index] = fromHalf(
-          data.splat0[(blockStart + sourceIndex) * 4 + 3] & 0xffff,
-        );
-      }
-      break;
-    case InputField.Color:
-      for (let index = 0; index < blockCount; index += 1) {
-        const sourceIndex = sourceIndices?.[index] ?? index;
-        const wordBase = (blockStart + sourceIndex) * 4;
-        const word0 = data.splat1[wordBase];
-        const word1 = data.splat1[wordBase + 1];
-        registers[outputBase + index] = fromHalf(word0 & 0xffff);
-        registers[outputBase + blockSize + index] = fromHalf(word0 >>> 16);
-        registers[outputBase + blockSize * 2 + index] = fromHalf(
-          word1 & 0xffff,
-        );
-      }
-      break;
-    default: {
-      const coefficient = field - InputField.Sh0;
-      const location = shWord(data, coefficient);
-      if (location) {
-        for (let index = 0; index < blockCount; index += 1) {
-          const sourceIndex = sourceIndices?.[index] ?? index;
-          decodeShRgbToArray(
-            location[0][(blockStart + sourceIndex) * 4 + location[1]],
-            registers,
-            outputBase + index,
-            blockSize,
-          );
-        }
-      } else {
-        registers.fill(0, outputBase, outputBase + blockCount);
-        registers.fill(
-          0,
-          outputBase + blockSize,
-          outputBase + blockSize + blockCount,
-        );
-        registers.fill(
-          0,
-          outputBase + blockSize * 2,
-          outputBase + blockSize * 2 + blockCount,
-        );
-      }
-    }
   }
 }
 function evaluateUnaryBlock(

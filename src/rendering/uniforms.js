@@ -91,6 +91,10 @@ export function makeGenerateUniforms() {
     sourceIndexed: { value: false },
     sourceIndices: { value: emptySplatTexture },
     numSh: { value: 0 },
+    shPaletteStride: { value: 0 },
+    // Entry column mask/bits and layer mask/bits; tiles are four texels wide.
+    shPaletteLayout: { value: new THREE.Vector4() },
+    shLabelsTexture: { value: emptySplatTexture },
     shBlock0Texture: { value: emptySplatTexture },
     shBlock1Texture: { value: emptySplatTexture },
     shBlock2Texture: { value: emptySplatTexture },

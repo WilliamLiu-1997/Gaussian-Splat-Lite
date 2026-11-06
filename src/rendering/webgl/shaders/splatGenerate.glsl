@@ -22,6 +22,9 @@ uniform bool sourceIndexed;
 uniform usampler2DArray sourceIndices;
 
 uniform int numSh;
+uniform uint shPaletteStride;
+uniform uvec4 shPaletteLayout;
+uniform usampler2DArray shLabelsTexture;
 uniform usampler2DArray shBlock0Texture;
 uniform usampler2DArray shBlock1Texture;
 uniform usampler2DArray shBlock2Texture;
@@ -113,28 +116,41 @@ vec3 evaluateSH4(uint previous, uvec4 first, uvec4 second, vec3 direction) {
         + decodeSplatShRgb(second.w) * (0.62583574 * (xx * (xx - 3.0 * yy) - yy * (3.0 * xx - yy)));
 }
 
+uvec4 loadShBlock(usampler2DArray source, ivec3 coord, int block) {
+    if (shPaletteStride > 0u) {
+        coord.y += block;
+        return uvec4(
+            texelFetch(shBlock0Texture, coord, 0).x,
+            texelFetch(shBlock0Texture, coord + ivec3(1, 0, 0), 0).x,
+            texelFetch(shBlock0Texture, coord + ivec3(2, 0, 0), 0).x,
+            texelFetch(shBlock0Texture, coord + ivec3(3, 0, 0), 0).x
+        );
+    }
+    return texelFetch(source, coord, 0);
+}
+
 vec3 evaluateSH(ivec3 coord, vec3 direction) {
     vec3 result = vec3(0.0);
     if (numSh == 1) {
-        result = evaluateSH1(texelFetch(shBlock0Texture, coord, 0), direction);
+        result = evaluateSH1(loadShBlock(shBlock0Texture, coord, 0), direction);
     } else if (numSh >= 2) {
         result = evaluateSH12(
-            texelFetch(shBlock0Texture, coord, 0),
-            texelFetch(shBlock1Texture, coord, 0),
+            loadShBlock(shBlock0Texture, coord, 0),
+            loadShBlock(shBlock1Texture, coord, 1),
             direction
         );
         if (numSh >= 3) {
-            uvec4 shBlock3 = texelFetch(shBlock3Texture, coord, 0);
+            uvec4 shBlock3 = loadShBlock(shBlock3Texture, coord, 3);
             result += evaluateSH3(
-                texelFetch(shBlock2Texture, coord, 0),
+                loadShBlock(shBlock2Texture, coord, 2),
                 shBlock3,
                 direction
             );
             if (numSh >= 4) {
                 result += evaluateSH4(
                     shBlock3.w,
-                    texelFetch(shBlock4Texture, coord, 0),
-                    texelFetch(shBlock5Texture, coord, 0),
+                    loadShBlock(shBlock4Texture, coord, 4),
+                    loadShBlock(shBlock5Texture, coord, 5),
                     direction
                 );
             }
@@ -375,7 +391,15 @@ void produceSplat(int index) {
         vec4 inverseObjectQuaternion = vec4(-objectQuaternion.xyz, objectQuaternion.w);
         vec3 sourceViewDirection = normalize(quatVec(inverseObjectQuaternion, worldViewDirection));
         if (objectReflected) sourceViewDirection.x = -sourceViewDirection.x;
-        rgba.rgb += evaluateSH(coord, sourceViewDirection);
+        ivec3 shCoord = coord;
+        if (shPaletteStride > 0u) {
+            uint label = texelFetch(shLabelsTexture, coord, 0).r;
+            shCoord = ivec3(
+                (label & shPaletteLayout.x) << 2u,
+                ((label & shPaletteLayout.z) >> shPaletteLayout.y) * shPaletteStride,
+                label >> shPaletteLayout.w);
+        }
+        rgba.rgb += evaluateSH(shCoord, sourceViewDirection);
     }
     lnScales += objectLnScale;
     if (objectReflected) quaternion.yz = -quaternion.yz;

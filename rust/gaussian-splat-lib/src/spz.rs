@@ -209,6 +209,7 @@ impl<T: SplatReceiver> SpzDecoder<T> {
         self.splats.init_splats(&SplatInit {
             num_splats,
             max_sh_degree: sh_degree,
+            indexed_sh: false,
         })?;
 
         Ok(())

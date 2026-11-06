@@ -4,7 +4,9 @@ import type { SplatOpacityTable } from "./SplatOpacityTable.js";
 import { Splats, type SplatsOptions } from "./Splats.js";
 import type { ReorderedSplatResult, SplatResult } from "./defines.js";
 import type { PendingUploads } from "./pendingUploads.js";
+import type { ShPalette } from "./shPalette.js";
 import type { decodeSplat } from "./unpack.js";
+
 type IndexedSplatsOptions =
   | {
       capacity: number;
@@ -12,6 +14,8 @@ type IndexedSplatsOptions =
       numSh: number;
       blockBits: number;
       packedOpacityGroups?: boolean;
+      indexedSh?: boolean;
+      palette?: ShPalette;
       /** Internal: attach packed textures after their arrays are ready. */
       deferAllocation?: boolean;
       storage?: never;
@@ -19,6 +23,7 @@ type IndexedSplatsOptions =
   | {
       /** Draw own indices from this source's records, opacity groups and bounds. */
       storage: IndexedSplats;
+      palette?: ShPalette;
     };
 type DecodedSplat = ReturnType<typeof decodeSplat>;
 type DecodedSplatWithSh = DecodedSplat & {
@@ -28,6 +33,7 @@ type DecodedSplatWithSh = DecodedSplat & {
  * Fades affect display only: records returned to picking retain their source opacity. */
 export declare abstract class IndexedSplats extends Splats {
   readonly layerSize: number;
+  readonly indexedSh: boolean;
   readonly numSh: 0 | 1 | 2 | 3 | 4;
   protected readonly opacities: SplatOpacityTable;
   protected sourceIndices: Uint32Array<ArrayBuffer>;

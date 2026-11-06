@@ -1,8 +1,11 @@
 import { IndexedSplats } from "./IndexedSplats.js";
 import type { ReorderedSplatResult } from "./defines.js";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
+import type { ShPalette } from "./shPalette.js";
+
 export type RadPagedSplatsOptions = {
   numSh: number;
+  indexedSh?: boolean;
   /** Internal: attach packed textures after their arrays are ready. */
   deferAllocation?: boolean;
 };
@@ -73,7 +76,7 @@ export declare class RadPagedSplats extends IndexedSplats {
  */
 export declare class RadPageView extends IndexedSplats {
   private finalCut?;
-  constructor(storage: RadPagedSplats);
+  constructor(storage: RadPagedSplats, palette?: ShPalette);
   forEachRaycastRange(
     query: SplatRaycastQuery,
     callback: RaycastRangeCallback,

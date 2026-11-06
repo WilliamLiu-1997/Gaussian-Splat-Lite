@@ -232,11 +232,8 @@ export class RadStreamScheduler {
       residentChunks: 0,
       residentMeshes: 0,
       residentCpuBytes:
-        loader.estimatedCodebookBytes +
-        loader.codebookCacheBytes +
-        loader.cachedBytes +
-        loader.selectionBytes,
-      residentGpuBytes: 0,
+        loader.cachedBytes + loader.selectionBytes + loader.paletteBytes,
+      residentGpuBytes: loader.paletteBytes,
       pendingBytes:
         this.loader.pendingRegistrationBytes +
         (this.preparation?.bytes ?? 0) +
@@ -320,7 +317,10 @@ export class RadStreamScheduler {
       controller.signal.throwIfAborted();
       input.metadata = metadata;
       input.numSh = Math.min(metadata.header.meta.maxSh ?? 0, this.maxSh);
-      input.costs = radPageCosts(input.numSh);
+      const codeCount = metadata.header.meta.shCodeCount ?? 0;
+      input.indexedSh = input.numSh > 0 && codeCount > 0;
+      input.storageSh = input.indexedSh ? 4 + input.numSh : input.numSh;
+      input.costs = radPageCosts(input.numSh, input.indexedSh);
       if (metadata.header.meta.count) {
         this.rootPages.add(this.page(id, 0));
       }
@@ -363,12 +363,15 @@ export class RadStreamScheduler {
     const roots = new Map();
     for (const input of this.inputs.values()) {
       if (!input.metadata?.header.meta.count) continue;
-      const entry = roots.get(input.numSh) ?? { costs: input.costs, pages: 0 };
+      const entry = roots.get(input.storageSh) ?? {
+        costs: input.costs,
+        pages: 0,
+      };
       entry.pages++;
-      roots.set(input.numSh, entry);
+      roots.set(input.storageSh, entry);
     }
     let cpu = this.loader.residentCpuOverheadBytes;
-    let gpu = 0;
+    let gpu = this.loader.residentGpuOverheadBytes;
     for (const { costs, pages } of roots.values()) {
       const bytes = radPoolBytes(costs, pages);
       cpu += bytes.cpu;
@@ -396,7 +399,10 @@ export class RadStreamScheduler {
           (this.maxResidentCpuBytes - this.loader.residentCpuOverheadBytes) /
             pool.cpu,
         ) * RAD_POOL_PAGE_COUNT,
-        Math.floor(this.maxResidentGpuBytes / pool.gpu) * RAD_POOL_PAGE_COUNT,
+        Math.floor(
+          (this.maxResidentGpuBytes - this.loader.residentGpuOverheadBytes) /
+            pool.gpu,
+        ) * RAD_POOL_PAGE_COUNT,
       ),
     );
   }
@@ -574,7 +580,7 @@ export class RadStreamScheduler {
           .filter((input) => input.metadata)
           .map((input) => ({
             id: input.id,
-            numSh: input.numSh,
+            numSh: input.storageSh,
             transform: input.transform.elements,
             pageCpuBytes: input.costs.cpu,
             pageGpuBytes: input.costs.gpu,
@@ -583,7 +589,8 @@ export class RadStreamScheduler {
         splatBudgetTolerance,
         maxResidentCpuBytes:
           this.maxResidentCpuBytes - this.loader.residentCpuOverheadBytes,
-        maxResidentGpuBytes: this.maxResidentGpuBytes,
+        maxResidentGpuBytes:
+          this.maxResidentGpuBytes - this.loader.residentGpuOverheadBytes,
         pixelThreshold: 1,
         residentChunks,
         previousId,
@@ -945,7 +952,11 @@ export class RadStreamScheduler {
   }
   /** One input's records in this pool, with its own transform. */
   createView(pool, input) {
-    const batch = new RadStreamBatch(pool.storage, input.numSh);
+    const batch = new RadStreamBatch(
+      pool.storage,
+      input.numSh,
+      pool.storage.indexedSh ? this.loader.palette(input.id) : undefined,
+    );
     batch.matrixAutoUpdate = false;
     batch.matrix.copy(input.transform);
     batch.matrixWorldNeedsUpdate = true;

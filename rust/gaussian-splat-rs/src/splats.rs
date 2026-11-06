@@ -13,6 +13,9 @@ use wasm_bindgen::JsValue;
 
 pub struct SplatsData {
     max_sh: usize,
+    sh_palette: Option<Uint32Array>,
+    sh_labels: Option<Uint32Array>,
+    sh_degree: usize,
     pub max_splats: usize,
     pub num_splats: usize,
     pub max_sh_degree: usize,
@@ -35,6 +38,9 @@ impl SplatsData {
     pub fn new(max_sh: usize) -> Self {
         Self {
             max_sh,
+            sh_palette: None,
+            sh_labels: None,
+            sh_degree: 0,
             max_splats: 0,
             num_splats: 0,
             max_sh_degree: 0,
@@ -59,6 +65,18 @@ impl SplatsData {
 
     pub fn into_splat_object(self) -> Object {
         let object = Object::new();
+        if let Some(labels) = &self.sh_labels {
+            Reflect::set(&object, &"shLabels".into(), labels).unwrap();
+            Reflect::set(
+                &object,
+                &"shDegree".into(),
+                &JsValue::from(self.sh_degree as u32),
+            )
+            .unwrap();
+            if let Some(palette) = &self.sh_palette {
+                Reflect::set(&object, &"shPalette".into(), palette).unwrap();
+            }
+        }
         Reflect::set(
             &object,
             &JsValue::from_str("maxSplats"),
@@ -317,6 +335,7 @@ impl SplatsData {
 
 impl SplatReceiver for SplatsData {
     const PACKED_QUATERNIONS: bool = true;
+    const SHARED_SH: bool = true;
 
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
         // Reject impossible counts before texture padding can wrap usize on WASM32.
@@ -332,13 +351,16 @@ impl SplatReceiver for SplatsData {
         self.max_splats = max_splats;
         self.num_splats = init.num_splats;
         self.max_sh_degree = init.max_sh_degree.min(self.max_sh);
+        self.sh_labels = init
+            .indexed_sh
+            .then(|| Uint32Array::new_with_length(max_splats as u32));
 
         self.splat_arrays[0] = Uint32Array::new_with_length((max_splats * 4) as u32);
         self.splat_arrays[1] = Uint32Array::new_with_length((max_splats * 4) as u32);
         self.sort_centers = Float32Array::new_with_length((max_splats * 3) as u32);
 
         let sh_block = |degree| {
-            (self.max_sh_degree >= degree)
+            (!init.indexed_sh && self.max_sh_degree >= degree)
                 .then(|| Uint32Array::new_with_length((max_splats * 4) as u32))
         };
         self.sh_block0 = sh_block(1);
@@ -613,30 +635,19 @@ impl SplatReceiver for SplatsData {
         palette: &[u32],
         labels: &[u32],
     ) {
-        self.invalidate_buffers();
-        self.ensure_buffer_a(count);
-        let stride = [0, 4, 8, 16, 24][degree];
-        for (block, output) in [
-            &self.sh_block0,
-            &self.sh_block1,
-            &self.sh_block2,
-            &self.sh_block3,
-            &self.sh_block4,
-            &self.sh_block5,
-        ]
-        .into_iter()
-        .enumerate()
-        .take(stride / 4)
-        {
-            let Some(output) = output else { continue };
-            for (i, &label) in labels.iter().take(count).enumerate() {
-                let offset = label as usize * stride + block * 4;
-                self.buffer_a[i * 4..i * 4 + 4].copy_from_slice(&palette[offset..offset + 4]);
-            }
-            output
-                .subarray((base * 4) as u32, ((base + count) * 4) as u32)
-                .copy_from(&self.buffer_a);
+        if self.sh_palette.is_none() {
+            self.sh_palette = Some(Uint32Array::from(palette));
         }
+        self.set_sh_labels(base, count, degree, labels);
+    }
+
+    fn set_sh_labels(&mut self, base: usize, count: usize, degree: usize, labels: &[u32]) {
+        self.sh_degree = degree;
+        self.sh_labels
+            .as_ref()
+            .unwrap()
+            .subarray(base as u32, (base + count) as u32)
+            .copy_from(&labels[..count]);
     }
 
     fn set_sh(

@@ -1,5 +1,6 @@
 import type * as THREE from "three";
-import type { SogLodIndex, SogLodOptions } from "./sogLod.js";
+import type { SogLodIndex, SogLodOptions, SogVisibleLeaf } from "./sogLod.js";
+
 type PreparedCamera = {
   modelView: THREE.Matrix4;
   cameraPosition: THREE.Vector3;
@@ -57,7 +58,7 @@ export declare class SogVisibility {
       SogLodRequest,
       "view" | "lodBehindPenalty" | "lodDistanceShrink"
     > & { transform: number[] },
-  ): Omit<import("./sogLod.js").SogVisibleLeaf, "source">[];
+  ): Omit<SogVisibleLeaf, "source">[];
 }
 
 export {};

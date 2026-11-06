@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- RAD and SOG models with SH codebooks keep one shared codebook instead of per-Splat SH coefficients, including when streaming, which reduces CPU and GPU memory use. SH, opacity and wide-kernel precision are unchanged. Streamed RAD inputs with codebooks fit more detail in the same memory budgets.
 - Improved stored Splat rotation precision with 32-bit smallest-three quaternions. Existing model files remain compatible; reload live viewers when upgrading.
 
 ### Added
@@ -17,6 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- Removed `alpha`, `color`, and `sh` from `postDecode` inputs and outputs. Load-time transforms now expose only `position`, `scale`, `quaternion`, and `opacity`, preserving shared SH codebooks. Use `opacity` for transparency and kernel changes, and mesh properties or SDF edits for display color changes.
 - Removed `utils.encodeQuatOctXy1010R12()` and `utils.decodeQuatOctXy1010R12()`; use the smallest-three utilities for the new internal rotation encoding.
 
 ## [1.6.2] - 2026-11-03
