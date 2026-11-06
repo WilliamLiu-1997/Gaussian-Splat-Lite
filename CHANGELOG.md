@@ -11,7 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- RAD and SOG models with SH codebooks keep one shared codebook instead of per-Splat SH coefficients, including when streaming. CPU and GPU memory used by Splat attributes is reduced by up to 25% / 43.75% / 62.5% for SH1 / SH2 / SH3, respectively; actual savings depend on codebook size and exclude other rendering and loading overhead. SH, opacity and wide-kernel precision are unchanged. Streamed RAD inputs with codebooks fit more detail in the same memory budgets.
+- RAD and SOG models with SH codebooks keep one shared codebook instead of per-Splat SH coefficients, including when streaming. CPU and GPU memory used by Splat attributes is reduced by up to 25% / 43.75% / 62.5% for SH1 / SH2 / SH3, respectively; actual savings depend on codebook size and exclude other rendering and loading overhead. Streamed RAD inputs with codebooks fit more detail in the same memory budgets.
 - Improved stored Splat rotation precision with 32-bit smallest-three quaternions. Existing model files remain compatible; reload live viewers when upgrading.
 
 ### Added
