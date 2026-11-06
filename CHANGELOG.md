@@ -7,9 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-06
+
 ### Changed
 
-- RAD and SOG models with SH codebooks keep one shared codebook instead of per-Splat SH coefficients, including when streaming, which reduces CPU and GPU memory use. SH, opacity and wide-kernel precision are unchanged. Streamed RAD inputs with codebooks fit more detail in the same memory budgets.
+- RAD and SOG models with SH codebooks keep one shared codebook instead of per-Splat SH coefficients, including when streaming. CPU and GPU memory used by Splat attributes is reduced by up to 25% / 43.75% / 62.5% for SH1 / SH2 / SH3, respectively; actual savings depend on codebook size and exclude other rendering and loading overhead. SH, opacity and wide-kernel precision are unchanged. Streamed RAD inputs with codebooks fit more detail in the same memory budgets.
 - Improved stored Splat rotation precision with 32-bit smallest-three quaternions. Existing model files remain compatible; reload live viewers when upgrading.
 
 ### Added
@@ -792,7 +794,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.2...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.5.4...v1.6.0
