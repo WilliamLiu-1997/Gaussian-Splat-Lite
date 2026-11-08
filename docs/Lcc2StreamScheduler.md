@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Loads LCC2 `0.0.x` scenes from a `.lcc2` index and its SOG, SPZ, or PLY files. Detail follows the registered cameras on WebGPU and WebGL2. Keep the scene's folder structure when hosting it or opening it in the viewer.
+Loads LCC2 `0.0.x` scenes from a `.lcc2` index and its SOG, SPZ, or PLY files, retaining up to SH4 by default. Detail follows the registered cameras on WebGPU and WebGL2. Keep the scene's folder structure when hosting it or opening it in the viewer.
 
 Data Organization Format originated from XGRIDS. See the [LCC2 white paper and format terms](https://github.com/xgrids/LCC2Whitepaper).
 
@@ -118,7 +118,7 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | Option | Default | Description |
 | --- | --- | --- |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
-| `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
+| `maxSh` | `4` | Maximum SH degree to decode and store, an integer from `0` to `4`. Set at creation; `0` keeps only the base color |
 | `splatBudgetMode` | `"target"` | `"target"` refines detail across inputs toward the budget. `"limit"` caps detail at the configured distance bands and reduces it when needed to fit the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |

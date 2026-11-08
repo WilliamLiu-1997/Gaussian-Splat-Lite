@@ -307,6 +307,15 @@ pub fn decode_quat_sog(code: [u8; 4]) -> Option<[f32; 4]> {
     })
 }
 
+#[inline]
+pub fn decode_quat_sog_v3(code: [u8; 3]) -> [f32; 4] {
+    let p: [f32; 3] = array::from_fn(|d| (code[d] as f32 - 128.0) / 127.0);
+    let r = p.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let (sin, cos) = (r * std::f32::consts::FRAC_PI_2).sin_cos();
+    let k = if r > 0.0 { sin / r } else { 0.0 };
+    [p[0] * k, p[1] * k, p[2] * k, cos]
+}
+
 pub fn decode_quat_ply(word: u32) -> [f32; 4] {
     let [a, b, c] = [word >> 20, word >> 10, word]
         .map(|bits| ((bits & 1023) as f32 / 1023.0 - 0.5) * std::f32::consts::SQRT_2);

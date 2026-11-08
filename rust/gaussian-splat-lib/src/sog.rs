@@ -11,12 +11,13 @@ use serde_json::Value;
 
 use crate::{
     decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatReceiver},
-    splat_encode::ShLookup,
+    opacity::sog_opacity_lookup,
+    splat_encode::{decode_quat_sog_v3, ShLookup},
 };
 
 const BATCH: usize = 65536;
-const SH_COEFFS: [usize; 4] = [0, 3, 8, 15];
-const SH_WORDS: [usize; 4] = [0, 4, 8, 16];
+const SH_COEFFS: [usize; 5] = [0, 3, 8, 15, 24];
+const SH_WORDS: [usize; 5] = [0, 4, 8, 16, 24];
 const SH_C0: f32 = 0.282_094_8;
 
 fn integer(value: &Value, name: &str) -> Result<usize> {
@@ -70,7 +71,7 @@ fn codebook(section: &Value, name: &str) -> Result<[f32; 256]> {
 }
 
 fn lookup<const N: usize>(section: &Value, version: usize, name: &str) -> Result<[[f32; 256]; N]> {
-    if version == 2 {
+    if version >= 2 {
         return Ok([codebook(section, name)?; N]);
     }
     let (mins, maxs) = ranges::<N>(section, name)?;
@@ -80,6 +81,7 @@ fn lookup<const N: usize>(section: &Value, version: usize, name: &str) -> Result
 }
 
 struct Metadata {
+    version: usize,
     count: usize,
     means: ([f32; 3], [f32; 3]),
     scales: [ScalarLookup; 3],
@@ -99,7 +101,7 @@ impl Metadata {
             Some(value) => integer(value, "version")?,
         };
         ensure!(
-            version == 1 || version == 2,
+            (1..=3).contains(&version),
             "unsupported metadata version {version}"
         );
         if let Some(value) = root.get("model") {
@@ -109,7 +111,7 @@ impl Metadata {
                 "unsupported splat model {model}"
             );
         }
-        let count = if version == 2 {
+        let count = if version >= 2 {
             integer(&root["count"], "count")?
         } else {
             let shape = root["means"]["shape"]
@@ -138,7 +140,9 @@ impl Metadata {
                 *value = 0.5 + SH_C0 * *value;
             }
         }
-        if version == 2 {
+        if version == 3 {
+            colors[3] = sog_opacity_lookup();
+        } else if version == 2 {
             colors[3] = array::from_fn(|b| b as f32 / 255.0);
         } else {
             for value in &mut colors[3] {
@@ -166,24 +170,30 @@ impl Metadata {
                 })
                 .collect()
         };
-        let mut geometry = files("scales", 1)?;
-        geometry.extend(files("quats", 1)?);
-        let mut groups = vec![
-            ("means", files("means", 2)?),
-            ("scales", geometry),
-            ("sh0", files("sh0", 1)?),
-        ];
+        let mut means_files = files("means", 2)?;
+        let mut scales_files = files("scales", 1)?;
+        let mut groups = if version == 3 {
+            // Rotation spans all three alpha channels, decoded in the same batch.
+            means_files.extend(scales_files);
+            vec![("means", means_files)]
+        } else {
+            scales_files.extend(files("quats", 1)?);
+            vec![("means", means_files), ("scales", scales_files)]
+        };
+        groups.push(("sh0", files("sh0", 1)?));
         let (mut degree, mut palette_count, mut sh) = (0, 0, [0.0; 256]);
         if let Some(section) = root.get("shN").filter(|value| !value.is_null()) {
             let names = files("shN", 2)?;
-            if version == 2 {
+            if version >= 2 {
                 if let Some(value) = section.get("bands") {
                     degree = integer(value, "shN.bands")?;
-                    ensure!((1..=3).contains(&degree), "shN.bands must be 1, 2, or 3");
+                    let max_degree = if version == 3 { 4 } else { 3 };
+                    ensure!((1..=max_degree).contains(&degree), "invalid shN.bands");
                 }
                 if let Some(value) = section.get("count") {
                     palette_count = integer(value, "shN.count")?;
-                    ensure!((1..=65536).contains(&palette_count), "invalid shN.count");
+                    let limit = if version == 3 { 1 << 24 } else { 65536 };
+                    ensure!((1..=limit).contains(&palette_count), "invalid shN.count");
                 }
                 sh = codebook(section, "shN")?;
             } else {
@@ -196,6 +206,7 @@ impl Metadata {
             groups.push(("labels", vec![names[1].clone()]));
         }
         Ok(Self {
+            version,
             count,
             means,
             scales: scales.map(|values| QuantizedProperty::LnScale.lookup(values)),
@@ -351,7 +362,7 @@ pub struct SogDecoder<T: SplatReceiver> {
 
 impl<T: SplatReceiver> SogDecoder<T> {
     pub fn new(splats: T, metadata: &str, max_sh: usize) -> Result<Self> {
-        ensure!(max_sh <= 3, "maxSh must be between 0 and 3");
+        ensure!(max_sh <= 4, "maxSh must be between 0 and 4");
         let mut meta = Metadata::parse(metadata)?;
         if max_sh == 0 {
             meta.groups
@@ -443,6 +454,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
             192 => 1,
             512 => 2,
             960 => 3,
+            1536 if self.meta.version == 3 => 4,
             _ => bail!("invalid centroid texture width"),
         };
         if self.meta.degree == 0 {
@@ -455,8 +467,13 @@ impl<T: SplatReceiver> SogDecoder<T> {
             degree == self.meta.degree,
             "centroid width does not match shN.bands"
         );
+        let limit = if self.meta.version == 3 {
+            1 << 24
+        } else {
+            65536
+        };
         ensure!(
-            (1..=65536).contains(&self.meta.palette_count)
+            (1..=limit).contains(&self.meta.palette_count)
                 && self.meta.palette_count <= image.height * 64,
             "invalid centroid count or height"
         );
@@ -516,6 +533,26 @@ impl<T: SplatReceiver> SogDecoder<T> {
                     }
                 }
                 splats.set_center(self.base, count, &self.floats);
+                if self.meta.version == 3 {
+                    let scales = &self.images[2];
+                    splats.set_quantized(
+                        self.base,
+                        count,
+                        QuantizedProperty::LnScale,
+                        &self.meta.scales,
+                        |i, d| scales.channel(self.base + i, d),
+                    );
+                    splats.set_quat_from(
+                        self.base,
+                        count,
+                        |i| {
+                            decode_quat_sog_v3(array::from_fn(|d| {
+                                self.images[d].channel(self.base + i, 3)
+                            }))
+                        },
+                        &mut self.floats,
+                    );
+                }
             }
             "scales" => {
                 let quat_image = &self.images[1];
@@ -554,6 +591,9 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 for (i, label) in self.labels.iter_mut().enumerate() {
                     *label = image.channel(self.base + i, 0) as u32
                         | ((image.channel(self.base + i, 1) as u32) << 8);
+                    if self.meta.version == 3 {
+                        *label |= (image.channel(self.base + i, 2) as u32) << 16;
+                    }
                     ensure!(
                         (*label as usize) < self.meta.palette_count,
                         "SH label exceeds palette at splat {}",

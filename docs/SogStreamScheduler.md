@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarser surroundings ready as the camera turns. It supports version 1 and older unversioned indexes, on WebGPU and WebGL2. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md). For a `.lcc2` scene, use [Lcc2StreamScheduler](Lcc2StreamScheduler.md).
+Shows large SOG `lod-meta.json` scenes with camera-driven detail, keeping coarser surroundings ready as the camera turns. It supports version 1 and older unversioned indexes with SOG v1–v3 chunks, on WebGPU and WebGL2. SH4 chunks retain all four bands by default; use `maxSh` to keep fewer. For an ordinary `.sog` file or `meta.json`, use [SplatMesh](SplatMesh.md). For a `.lcc2` scene, use [Lcc2StreamScheduler](Lcc2StreamScheduler.md).
 
 ```js
 import { SogStreamScheduler } from "gaussian-splat-lite";
@@ -110,7 +110,7 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | Option | Default | Description |
 | --- | --- | --- |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
-| `maxSh` | `3` | Maximum SH degree to decode and store, an integer from `0` to `3`. Set at creation; `0` keeps only the base color |
+| `maxSh` | `4` | Maximum SH degree to decode and store, an integer from `0` to `4`. Set at creation; `0` keeps only the base color |
 | `splatBudgetMode` | `"target"` | `"target"` scales all inputs' distance bands together to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |

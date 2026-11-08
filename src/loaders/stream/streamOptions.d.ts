@@ -6,7 +6,7 @@ export type StreamRequestOptions = SplatRequestOptions & {
 export type StreamSchedulerOptions = {
   /** Initial Splat budget; update scheduler.splatBudget to change it at runtime. */
   splatBudget?: number;
-  /** Maximum decoded and stored SH degree, 0–3. Defaults to 3; fixed at construction. */
+  /** Maximum decoded and stored SH degree, fixed at construction. Range and default: 0–4 / 4 for SOG and LCC2, 0–3 / 3 for RAD. */
   maxSh?: number;
   /** Milliseconds to retain unused data after fade-out; defaults to 2000. */
   cooldownMs?: number;
@@ -41,7 +41,10 @@ export declare function checkStreamTransform<T extends Matrix4>(
   transform: T,
 ): T;
 export declare function positiveInteger(value: number, name: string): number;
-export declare function streamSettings(options: StreamSchedulerOptions): {
+export declare function streamSettings(
+  options: StreamSchedulerOptions,
+  maxShDegree: 3 | 4,
+): {
   splatBudget: number;
   maxSh: number;
   cooldownMs: number;

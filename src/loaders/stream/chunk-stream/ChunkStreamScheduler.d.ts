@@ -86,7 +86,7 @@ export declare abstract class ChunkStreamScheduler {
   /** Visible-point budget, including the environment. Reassign to reselect LODs. */
   get splatBudget(): number;
   set splatBudget(value: number);
-  /** Maximum decoded and stored SH degree (0–3), fixed at construction. */
+  /** Maximum decoded and stored SH degree (0–4), fixed at construction. */
   get maxSh(): number;
   /** Fill the budget, or limit detail to the configured distance bands. */
   get splatBudgetMode(): SogBudgetMode;

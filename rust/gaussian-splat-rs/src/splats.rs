@@ -500,6 +500,27 @@ impl SplatReceiver for SplatsData {
         Ok(())
     }
 
+    fn set_quat_from<F: Fn(usize) -> [f32; 4]>(
+        &mut self,
+        base: usize,
+        count: usize,
+        quat: F,
+        _scratch: &mut Vec<f32>,
+    ) {
+        self.prepare_buffer(base, count, 1, false);
+        // Small blocks preserve packing throughput without a full-batch float buffer.
+        const BLOCK: usize = 64;
+        let mut quats = [[0.0; 4]; BLOCK];
+        for (block, output) in self.buffer_b.chunks_mut(BLOCK * 4).enumerate() {
+            for (i, value) in quats.iter_mut().take(output.len() / 4).enumerate() {
+                *value = quat(block * BLOCK + i);
+            }
+            for (output, quat) in output.chunks_exact_mut(4).zip(&quats) {
+                encode_splat_quat(output, *quat);
+            }
+        }
+    }
+
     fn set_rgb_f16(&mut self, base: usize, count: usize, rgb: &[u16]) {
         self.prepare_buffer(base, count, 1, false);
         for i in 0..count {

@@ -1,4 +1,5 @@
 pub mod decoder;
+mod opacity;
 pub mod ply;
 pub mod rad;
 pub mod sog;

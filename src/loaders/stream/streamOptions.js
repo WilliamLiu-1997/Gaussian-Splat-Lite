@@ -14,14 +14,14 @@ export function positiveInteger(value, name) {
     throw new Error(`${name} must be a positive safe integer`);
   return value;
 }
-export function streamSettings(options) {
+export function streamSettings(options, maxShDegree) {
   const splatBudget = positiveInteger(
     options.splatBudget ?? 3_000_000,
     "splatBudget",
   );
-  const maxSh = options.maxSh ?? 3;
-  if (!Number.isInteger(maxSh) || maxSh < 0 || maxSh > 3)
-    throw new Error("maxSh must be an integer between 0 and 3");
+  const maxSh = options.maxSh ?? maxShDegree;
+  if (!Number.isInteger(maxSh) || maxSh < 0 || maxSh > maxShDegree)
+    throw new Error(`maxSh must be an integer between 0 and ${maxShDegree}`);
   const cooldownMs = options.cooldownMs ?? 2000;
   if (!Number.isFinite(cooldownMs) || cooldownMs < 0)
     throw new Error("cooldownMs must be finite and nonnegative");

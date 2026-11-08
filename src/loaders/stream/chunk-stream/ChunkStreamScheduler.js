@@ -85,7 +85,7 @@ export class ChunkStreamScheduler {
     this.options = { onChange: options.onChange, onError: options.onError };
     this.group = new THREE.Group();
     this.uploads = new PendingUploads(this.group);
-    const settings = streamSettings(options);
+    const settings = streamSettings(options, 4);
     this._splatBudget = settings.splatBudget;
     this._maxSh = settings.maxSh;
     this.splatBudgetMode = options.splatBudgetMode ?? "target";
@@ -247,7 +247,7 @@ export class ChunkStreamScheduler {
     this._splatBudget = positiveInteger(value, "splatBudget");
     void this.requestSelection();
   }
-  /** Maximum decoded and stored SH degree (0–3), fixed at construction. */
+  /** Maximum decoded and stored SH degree (0–4), fixed at construction. */
   get maxSh() {
     return this._maxSh;
   }

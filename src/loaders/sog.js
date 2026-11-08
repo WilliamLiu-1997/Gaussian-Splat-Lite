@@ -67,16 +67,14 @@ async function decodeSog(args, controller) {
   );
   if (args.expectedSogCount !== undefined) {
     const meta = JSON.parse(metadata.replace(/^\uFEFF+/, ""));
-    const count = meta.version === 2 ? meta.count : meta.means?.shape?.[0];
+    const count = meta.version >= 2 ? meta.count : meta.means?.shape?.[0];
     if (count !== args.expectedSogCount)
       fail(
         `chunk count mismatch: expected ${args.expectedSogCount}, received ${count}`,
       );
   }
   controller.signal.throwIfAborted();
-  const session = wasmCall(
-    () => new SogDecodeSession(metadata, Math.min(args.maxSh ?? 3, 3)),
-  );
+  const session = wasmCall(() => new SogDecodeSession(metadata, args.maxSh));
   let consumed = false;
   try {
     const groups = JSON.parse(wasmCall(() => session.plan()));
@@ -98,7 +96,7 @@ async function decodeSog(args, controller) {
             );
       return { entry, chunks };
     };
-    // Start all property downloads: five images, plus two with higher-order SH.
+    // Start all property downloads while decoding one group at a time.
     const downloads = groups.map((names) =>
       names.map((name) => {
         const task = downloadAsset(name);

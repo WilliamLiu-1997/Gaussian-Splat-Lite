@@ -190,6 +190,19 @@ pub trait SplatReceiver: 'static {
         Ok(())
     }
 
+    /// Reads rotations on demand, allowing packed receivers to bound scratch storage.
+    fn set_quat_from<F: Fn(usize) -> [f32; 4]>(
+        &mut self,
+        base: usize,
+        count: usize,
+        quat: F,
+        scratch: &mut Vec<f32>,
+    ) {
+        scratch.clear();
+        scratch.extend((0..count).flat_map(quat));
+        self.set_quat(base, count, scratch);
+    }
+
     /// Reads quantized components without requiring an intermediate float batch.
     /// `lookup` contains one shared table or one per component; `code` receives
     /// the splat and component indices. The default passes decoded floats on.

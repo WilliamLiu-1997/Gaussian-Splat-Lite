@@ -59,7 +59,7 @@ export class RadStreamScheduler {
     this.retryTimer = new RetryTimer(() => this.changed());
     this.group = new THREE.Group();
     this.uploads = new PendingUploads(this.group);
-    const settings = streamSettings(options);
+    const settings = streamSettings(options, 3);
     this._splatBudget = settings.splatBudget;
     this._maxSh = settings.maxSh;
     this._splatBudgetTolerance = budgetTolerance(

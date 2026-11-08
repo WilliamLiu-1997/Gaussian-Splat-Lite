@@ -30,7 +30,7 @@ impl SogDecodeSession {
     #[wasm_bindgen(constructor)]
     pub fn new(metadata: &str, max_sh: Option<u32>) -> Result<Self, JsValue> {
         Ok(Self {
-            decoder: SogDecoder::new(SplatsData::new(3), metadata, max_sh.unwrap_or(3) as usize)
+            decoder: SogDecoder::new(SplatsData::new(4), metadata, max_sh.unwrap_or(4) as usize)
                 .map_err(js_error)?,
         })
     }

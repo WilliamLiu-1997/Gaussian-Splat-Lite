@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 use anyhow::anyhow;
 
 use crate::decoder::{ChunkReceiver, SplatInit, SplatProps, SplatReceiver};
+use crate::opacity::mass_to_opacity;
 use crate::splat_encode::{decode_quat_ply, repack_quat_ply, ShLookup};
 
 pub const PLY_MAGIC: u32 = 0x00796c70; // "ply"
@@ -274,8 +275,12 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 for d in 0..3 {
                     state.output.center[i3 + d] = state.xyz[d].get_f32(&self.buffer, base);
                 }
-                let op_logistic = state.op_logi.get_f32(&self.buffer, base);
-                state.output.opacity[i] = 1.0 / (1.0 + (-op_logistic).exp());
+                state.output.opacity[i] = if state.opacity_is_linear {
+                    mass_to_opacity(state.opacity.get_raw_f32(&self.buffer, base))
+                } else {
+                    let logit = state.opacity.get_f32(&self.buffer, base);
+                    1.0 / (1.0 + (-logit).exp())
+                };
                 for d in 0..3 {
                     let color = state.color[d].get_f32(&self.buffer, base);
                     state.output.rgb[i3 + d] = if state.color_is_sh {
@@ -1200,7 +1205,8 @@ struct PlyDecoderState {
     xyz: [PlyProperty; 3],
     scale: [PlyProperty; 3],
     rot: [PlyProperty; 4],
-    op_logi: PlyProperty,
+    opacity: PlyProperty,
+    opacity_is_linear: bool,
     color: [PlyProperty; 3],
     color_is_sh: bool,
     max_sh_degree: usize,
@@ -1221,7 +1227,15 @@ impl PlyDecoderState {
         let xyz = required_properties(properties, ["x", "y", "z"])?;
         let scale = required_properties(properties, ["scale_0", "scale_1", "scale_2"])?;
         let rot = required_properties(properties, ["rot_1", "rot_2", "rot_3", "rot_0"])?;
-        let op_logi = required_property(properties, "opacity")?;
+        let opacity_is_linear = properties.contains_key("opacity_linear");
+        let opacity = required_property(
+            properties,
+            if opacity_is_linear {
+                "opacity_linear"
+            } else {
+                "opacity"
+            },
+        )?;
         let color_is_sh = properties.contains_key("f_dc_0");
         let color = required_properties(
             properties,
@@ -1245,7 +1259,8 @@ impl PlyDecoderState {
             xyz,
             scale,
             rot,
-            op_logi,
+            opacity,
+            opacity_is_linear,
             color,
             color_is_sh,
             max_sh_degree,

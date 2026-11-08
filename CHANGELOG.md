@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added SOG v3 loading for bundled and split models, including 24-bit rotations, opacity above 1, larger SH palettes, and SH4. Opacity above 1 is converted to GSL's wider kernel with matching mass before render-time cutoff, fade, or blur. SOG and LCC2 streaming also accept v3 chunks and retain SH4 by default; their `maxSh` option now accepts `0`–`4` and defaults to `4`. See [supported formats](docs/SplatFileType.md) for rendering and metadata limits.
+- Added standard PLY `opacity_linear` support, including values above 1 with the same mass conversion as SOG v3. It takes precedence over the usual `opacity` logit when present.
+
 ## [1.7.0] - 2026-11-06
 
 ### Changed
