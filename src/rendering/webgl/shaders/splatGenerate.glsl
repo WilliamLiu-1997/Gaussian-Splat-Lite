@@ -177,17 +177,15 @@ float sdfDistance(uint type, vec3 position, vec4 sizes) {
         case 1u: return position.z;
         case 2u: return length(position) - sizes.w;
         case 3u: {
-            vec3 q = abs(position) - sizes.xyz + sizes.w;
+            vec3 q = abs(position) - sizes.xyz;
             return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - sizes.w;
         }
         case 4u: {
-            vec3 radii = abs(sizes.xyz);
-            if (any(lessThanEqual(radii, vec3(0.0)))) return SDF_DISTANCE_LIMIT;
-            vec3 scaledPosition = position / radii;
-            float k0 = length(scaledPosition);
-            float k1 = length(scaledPosition / radii);
+            if (sizes.w >= 0.0) return SDF_DISTANCE_LIMIT;
+            float k0 = length(position);
+            float k1 = length(position * sizes.xyz);
             // At the center, the exact signed distance is the shortest radius.
-            if (k1 <= 0.0) return -min(radii.x, min(radii.y, radii.z));
+            if (k1 <= 0.0) return sizes.w;
             return k0 * (k0 - 1.0) / k1;
         }
         case 5u: {
@@ -195,12 +193,11 @@ float sdfDistance(uint type, vec3 position, vec4 sizes) {
             return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
         }
         case 6u: {
-            position.y -= clamp(position.y, -0.5 * sizes.y, 0.5 * sizes.y);
+            position.y -= clamp(position.y, -sizes.y, sizes.y);
             return length(position) - sizes.w;
         }
         case 7u: {
-            float angle = 0.25 * PI * sizes.w;
-            vec2 c = vec2(sin(angle), cos(angle));
+            vec2 c = sizes.xy;
             vec2 q = vec2(length(position.xy), -position.z);
             float distance = length(q - c * max(dot(q, c), 0.0));
             return distance * (((q.x * c.y - q.y * c.x) < 0.0) ? -1.0 : 1.0);
@@ -249,82 +246,97 @@ float blindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds) {
     return distance == 0.0 ? -1e-20 : clamp(distance, -SDF_DISTANCE_LIMIT, SDF_DISTANCE_LIMIT);
 }
 
+vec4 sdfRgbaMask(uint flags) {
+    return vec4(
+        (flags & 0x10000u) != 0u ? 1.0 : 0.0,
+        (flags & 0x20000u) != 0u ? 1.0 : 0.0,
+        (flags & 0x40000u) != 0u ? 1.0 : 0.0,
+        (flags & 0x80000u) != 0u ? 1.0 : 0.0
+    );
+}
+
+bool sampleSdfDistance(int index, uint sourceIndex, vec3 position, out float distance, out uint flags) {
+    uvec4 data0 = texelFetch(sdfTexture, ivec2(0, index), 0);
+    flags = data0.w;
+    uint type = flags & 0xffu;
+    if (type == BLIND_SDF_TYPE) {
+        if ((flags & BLIND_ACTIVE) == 0u) return false;
+        uvec4 bounds = texelFetch(sdfTexture, ivec2(2, index), 0);
+        distance = blindDistance(sourceIndex, data0.xyz, flags, bounds);
+        if ((flags & 0x100u) != 0u) distance = -distance;
+        return true;
+    }
+    uvec4 data5 = texelFetch(sdfTexture, ivec2(5, index), 0);
+    float distanceScale = uintBitsToFloat(data5.w);
+    if (distanceScale == 0.0) return false;
+    vec4 sizes = uintBitsToFloat(texelFetch(sdfTexture, ivec2(3, index), 0));
+    uvec4 data1 = texelFetch(sdfTexture, ivec2(1, index), 0);
+    uvec4 data2 = texelFetch(sdfTexture, ivec2(2, index), 0);
+    mat3 basis = mat3(uintBitsToFloat(data1.xyz), uintBitsToFloat(data2.xyz), uintBitsToFloat(data5.xyz));
+    vec3 center = uintBitsToFloat(data0.xyz);
+    distance = sdfDistance(type, basis * position + center, sizes) * distanceScale;
+    return true;
+}
+
 float evaluateSdfs(
     int sdfFirst,
     int sdfCount,
     uint sourceIndex,
     vec3 position,
-    float smoothAmount,
+    float invSmoothAmount,
     out vec4 resultRgba,
     out vec4 resultRgbaMask
 ) {
-    float distanceAccum = smoothAmount == 0.0 ? SDF_DISTANCE_LIMIT : 0.0;
-    float maxExponent = 0.0;
-    bool hasSelection = false;
     resultRgba = vec4(0.0);
     resultRgbaMask = vec4(0.0);
     int sdfLast = min(sdfFirst + sdfCount, numSdfs);
 
-    for (int index = sdfFirst; index < sdfLast; ++index) {
-        uvec4 header = texelFetch(sdfTexture, ivec2(0, index), 0);
-        uint flags = header.w;
-        uint type = flags & 0xffu;
-        float distance;
-        if (type == BLIND_SDF_TYPE) {
-            if ((flags & BLIND_ACTIVE) == 0u) continue;
-            uvec4 bounds = texelFetch(sdfTexture, ivec2(2, index), 0);
-            distance = blindDistance(sourceIndex, header.xyz, flags, bounds);
-        } else {
-            uvec4 thirdAxis = texelFetch(sdfTexture, ivec2(5, index), 0);
-            float distanceScale = uintBitsToFloat(thirdAxis.w);
-            if (distanceScale <= 0.0) continue;
-            vec3 firstAxis = uintBitsToFloat(texelFetch(sdfTexture, ivec2(1, index), 0).xyz);
-            vec3 secondAxis = uintBitsToFloat(texelFetch(sdfTexture, ivec2(2, index), 0).xyz);
-            mat3 basis = mat3(firstAxis, secondAxis, uintBitsToFloat(thirdAxis.xyz));
-            vec4 sizes = uintBitsToFloat(texelFetch(sdfTexture, ivec2(3, index), 0));
-            vec3 sdfPosition = basis * position + uintBitsToFloat(header.xyz);
-            distance = sdfDistance(type, sdfPosition, sizes) * distanceScale;
-        }
-        vec4 value = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
-        vec4 valueMask = vec4(
-            (flags & 0x10000u) != 0u ? 1.0 : 0.0,
-            (flags & 0x20000u) != 0u ? 1.0 : 0.0,
-            (flags & 0x40000u) != 0u ? 1.0 : 0.0,
-            (flags & 0x80000u) != 0u ? 1.0 : 0.0
-        );
-        if ((flags & 0x100u) != 0u) distance = -distance;
-
-        if (smoothAmount == 0.0) {
-            if (!hasSelection || distance < distanceAccum) {
-                distanceAccum = distance;
-                resultRgba = value * valueMask;
-                resultRgbaMask = valueMask;
+    if (invSmoothAmount == 0.0) {
+        float nearestDistance = SDF_DISTANCE_LIMIT;
+        int nearestIndex = -1;
+        uint nearestFlags = 0u;
+        for (int index = sdfFirst; index < sdfLast; ++index) {
+            float distance;
+            uint flags;
+            if (!sampleSdfDistance(index, sourceIndex, position, distance, flags)) continue;
+            if (nearestIndex < 0 || distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestIndex = index;
+                nearestFlags = flags;
             }
-        } else {
-            float exponent = -distance / smoothAmount;
-            if (distanceAccum == 0.0) {
-                maxExponent = exponent;
-            } else if (exponent > maxExponent) {
-                float rescale = exp(maxExponent - exponent);
-                distanceAccum *= rescale;
-                resultRgba *= rescale;
-                resultRgbaMask *= rescale;
-                maxExponent = exponent;
-            }
-            float weight = exp(exponent - maxExponent);
-            distanceAccum += weight;
-            resultRgba += weight * value * valueMask;
-            resultRgbaMask += weight * valueMask;
         }
-        hasSelection = true;
+        if (nearestIndex >= 0) {
+            resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, nearestIndex), 0));
+            resultRgbaMask = sdfRgbaMask(nearestFlags);
+        }
+        return nearestDistance;
     }
 
-    // A hard union can have distance zero on the surface; it is not empty.
-    if (smoothAmount == 0.0) return distanceAccum;
+    float distanceAccum = 0.0;
+    float maxExponent = 0.0;
+    for (int index = sdfFirst; index < sdfLast; ++index) {
+        float distance;
+        uint flags;
+        if (!sampleSdfDistance(index, sourceIndex, position, distance, flags)) continue;
+        float exponent = -distance * invSmoothAmount;
+        bool dominant = distanceAccum == 0.0 || exponent > maxExponent;
+        float relativeWeight = exp(-abs(exponent - maxExponent));
+        float rescale = dominant ? relativeWeight : 1.0;
+        float weight = dominant ? 1.0 : relativeWeight;
+        if (weight != 0.0) {
+            vec4 value = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
+            vec4 valueMask = sdfRgbaMask(flags);
+            maxExponent = dominant ? exponent : maxExponent;
+            distanceAccum = distanceAccum * rescale + weight;
+            resultRgba = resultRgba * rescale + weight * value;
+            resultRgbaMask = resultRgbaMask * rescale + weight * valueMask;
+        }
+    }
+
     if (distanceAccum == 0.0) return SDF_DISTANCE_LIMIT;
     resultRgba /= distanceAccum;
     resultRgbaMask /= distanceAccum;
-    return (-log(distanceAccum) - maxExponent) * smoothAmount;
+    return (-log(distanceAccum) - maxExponent) / invSmoothAmount;
 }
 
 bool applySdfEdits(
@@ -340,8 +352,8 @@ bool applySdfEdits(
         bool invert = (edit.x & 0x100u) != 0u;
         int sdfFirst = int(edit.y & 0xffffu);
         int sdfCount = int(edit.y >> 16u);
-        float softEdge = uintBitsToFloat(edit.z);
-        float smoothAmount = uintBitsToFloat(edit.w);
+        float invSoftEdge = uintBitsToFloat(edit.z);
+        float invSmoothAmount = uintBitsToFloat(edit.w);
 
         vec4 sdfRgba;
         vec4 sdfRgbaMask;
@@ -350,14 +362,14 @@ bool applySdfEdits(
             sdfCount,
             sourceIndex,
             position,
-            smoothAmount,
+            invSmoothAmount,
             sdfRgba,
             sdfRgbaMask
         );
         if (invert) distance = -distance;
-        float amount = softEdge == 0.0
+        float amount = invSoftEdge == 0.0
             ? (distance < 0.0 ? 1.0 : 0.0)
-            : clamp(-distance / softEdge + 0.5, 0.0, 1.0);
+            : clamp(-distance * invSoftEdge + 0.5, 0.0, 1.0);
         bool editOpacity = amount > 0.0 && sdfRgbaMask.a > 0.0;
         if (editOpacity && !semanticOpacityDecoded) {
             // SDF opacity values operate on semantic opacity, not on the alpha

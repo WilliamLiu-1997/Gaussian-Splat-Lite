@@ -23,6 +23,13 @@ import {
 // Finite sentinel for empty/unbounded SDFs. Runtime infinity arithmetic is not
 // portable in WGSL, and smooth ALL shapes otherwise evaluate exp(inf - inf).
 const SDF_DISTANCE_LIMIT = 1e20;
+const sdfRgbaMask = (flags) =>
+  N.vec4(
+    N.select(flags.bitAnd(0x10000).notEqual(N.uint(0)), 1, 0),
+    N.select(flags.bitAnd(0x20000).notEqual(N.uint(0)), 1, 0),
+    N.select(flags.bitAnd(0x40000).notEqual(N.uint(0)), 1, 0),
+    N.select(flags.bitAnd(0x80000).notEqual(N.uint(0)), 1, 0),
+  );
 const sdfDistance = N.Fn(([shape, position, sizes]) => {
   const distance = N.float(SDF_DISTANCE_LIMIT).toVar();
   N.If(shape.equal(N.uint(0)), () => {
@@ -35,7 +42,7 @@ const sdfDistance = N.Fn(([shape, position, sizes]) => {
       distance.assign(position.length().sub(sizes.w));
     })
     .ElseIf(shape.equal(N.uint(3)), () => {
-      const q = position.abs().sub(sizes.xyz).add(sizes.w);
+      const q = position.abs().sub(sizes.xyz);
       distance.assign(
         q
           .max(0)
@@ -45,14 +52,12 @@ const sdfDistance = N.Fn(([shape, position, sizes]) => {
       );
     })
     .ElseIf(shape.equal(N.uint(4)), () => {
-      const radii = sizes.xyz.abs();
-      N.If(N.all(radii.greaterThan(N.vec3(0))), () => {
-        const scaledPosition = position.div(radii);
-        const k0 = scaledPosition.length();
-        const k1 = scaledPosition.div(radii).length();
+      N.If(sizes.w.lessThan(0), () => {
+        const k0 = position.length();
+        const k1 = position.mul(sizes.xyz).length();
         // The approximation divides by zero at the center; use the exact
         // signed distance there, the negative shortest radius.
-        distance.assign(radii.x.min(radii.y).min(radii.z).negate());
+        distance.assign(sizes.w);
         N.If(k1.greaterThan(0), () => {
           distance.assign(k0.mul(k0.sub(1)).div(k1));
         });
@@ -64,12 +69,11 @@ const sdfDistance = N.Fn(([shape, position, sizes]) => {
     })
     .ElseIf(shape.equal(N.uint(6)), () => {
       const p = position.toVar();
-      p.y.subAssign(p.y.clamp(sizes.y.mul(-0.5), sizes.y.mul(0.5)));
+      p.y.subAssign(p.y.clamp(sizes.y.negate(), sizes.y));
       distance.assign(p.length().sub(sizes.w));
     })
     .ElseIf(shape.equal(N.uint(7)), () => {
-      const angle = sizes.w.mul(Math.PI * 0.25);
-      const c = N.vec2(angle.sin(), angle.cos());
+      const c = sizes.xy;
       const q = N.vec2(position.xy.length(), position.z.negate());
       const sign = N.select(q.x.mul(c.y).sub(q.y.mul(c.x)).lessThan(0), -1, 1);
       distance.assign(
@@ -315,6 +319,57 @@ export function createGenerateProgram({ uniforms }) {
   const numEdits = bindUniform("numEdits", "int");
   const sdfTexture = bindTexture("sdfTexture");
   const editTexture = bindTexture("editTexture");
+  const loadSdf = (column, index) =>
+    load2D(sdfTexture, N.ivec2(N.int(column), index));
+  const forEachSdf = (first, last, sourceIndex, position, visit) => {
+    N.Loop(
+      {
+        start: first,
+        end: last,
+        type: "int",
+        condition: "<",
+        name: "sdfIndex",
+      },
+      ({ sdfIndex }) => {
+        const data0 = loadSdf(0, sdfIndex).toVar();
+        const flags = data0.w;
+        const sdfType = flags.bitAnd(0xff).toVar();
+        const distance = N.float(0).toVar();
+        N.If(sdfType.equal(N.uint(BLIND_SDF_TYPE)), () => {
+          N.If(flags.bitAnd(BLIND_ACTIVE).equal(N.uint(0)), () => {
+            N.Continue();
+          });
+          const bounds = loadSdf(2, sdfIndex).toVar();
+          distance.assign(blindDistance(sourceIndex, data0.xyz, flags, bounds));
+          N.If(flags.bitAnd(0x100).notEqual(N.uint(0)), () => {
+            distance.negateAssign();
+          });
+        }).Else(() => {
+          const data5 = loadSdf(5, sdfIndex).toVar();
+          const distanceScale = N.uintBitsToFloat(data5.w).toVar();
+          N.If(distanceScale.equal(0), () => {
+            N.Continue();
+          });
+          const data1 = loadSdf(1, sdfIndex).toVar();
+          const data2 = loadSdf(2, sdfIndex).toVar();
+          const sizes = N.uintBitsToFloat(loadSdf(3, sdfIndex)).toVar();
+          const basis = N.mat3(
+            N.uintBitsToFloat(data1.xyz),
+            N.uintBitsToFloat(data2.xyz),
+            N.uintBitsToFloat(data5.xyz),
+          );
+          const sdfPosition = basis
+            .mul(position)
+            .add(N.uintBitsToFloat(data0.xyz))
+            .toVar();
+          distance.assign(
+            sdfDistance(sdfType, sdfPosition, sizes).mul(distanceScale),
+          );
+        });
+        visit(sdfIndex, flags, distance);
+      },
+    );
+  };
   const loadShBlock = (texture, coord, block) => {
     const value = N.uvec4(0).toVar();
     N.If(shPaletteStride.greaterThan(0), () => {
@@ -485,129 +540,93 @@ export function createGenerateProgram({ uniforms }) {
         N.Loop(
           { start: N.int(0), end: numEdits, type: "int", condition: "<" },
           ({ i: editIndex }) => {
-            const edit = load2D(editTexture, N.ivec2(N.int(0), editIndex));
+            const edit = load2D(
+              editTexture,
+              N.ivec2(N.int(0), editIndex),
+            ).toVar();
             const blendMode = edit.x.bitAnd(0xff);
             const invert = edit.x.bitAnd(0x100).notEqual(N.uint(0));
-            const sdfFirst = N.int(edit.y.bitAnd(0xffff));
-            const sdfCount = N.int(edit.y.shiftRight(16));
-            const softEdge = N.uintBitsToFloat(edit.z);
-            const smoothAmount = N.uintBitsToFloat(edit.w);
-            const distanceAccum = N.select(
-              smoothAmount.equal(0),
-              SDF_DISTANCE_LIMIT,
-              0,
-            ).toVar();
-            const maxExponent = N.float(0).toVar();
-            const hasSelection = N.bool(false).toVar();
+            // Both union branches use these bounds and decoded parameters.
+            const sdfFirst = N.int(edit.y.bitAnd(0xffff)).toVar();
+            const sdfCount = N.int(edit.y.shiftRight(16)).toVar();
+            const invSoftEdge = N.uintBitsToFloat(edit.z);
+            const invSmoothAmount = N.uintBitsToFloat(edit.w).toVar();
+            const sdfLast = sdfFirst.add(sdfCount).min(numSdfs).toVar();
+            const distance = N.float(SDF_DISTANCE_LIMIT).toVar();
             const sdfRgba = N.vec4(0).toVar();
-            const sdfRgbaMask = N.vec4(0).toVar();
-            const sdfLast = sdfFirst.add(sdfCount).min(numSdfs);
-            N.Loop(
-              {
-                start: sdfFirst,
-                end: sdfLast,
-                type: "int",
-                condition: "<",
-                name: "sdfIndex",
-              },
-              ({ sdfIndex }) => {
-                const data0 = load2D(
-                  sdfTexture,
-                  N.ivec2(N.int(0), sdfIndex),
-                ).toVar();
-                const flags = data0.w;
-                const sdfType = flags.bitAnd(0xff).toVar();
-                const distance = N.float(0).toVar();
-                N.If(sdfType.equal(N.uint(BLIND_SDF_TYPE)), () => {
-                  N.If(flags.bitAnd(BLIND_ACTIVE).equal(N.uint(0)), () => {
-                    N.Continue();
-                  });
-                  const bounds = load2D(
-                    sdfTexture,
-                    N.ivec2(N.int(2), sdfIndex),
-                  ).toVar();
-                  distance.assign(
-                    blindDistance(sourceIndex, data0.xyz, flags, bounds),
-                  );
-                }).Else(() => {
-                  const data5 = load2D(
-                    sdfTexture,
-                    N.ivec2(N.int(5), sdfIndex),
-                  ).toVar();
-                  const distanceScale = N.uintBitsToFloat(data5.w).toVar();
-                  N.If(distanceScale.lessThanEqual(0), () => {
-                    N.Continue();
-                  });
-                  const data1 = load2D(sdfTexture, N.ivec2(N.int(1), sdfIndex));
-                  const data2 = load2D(sdfTexture, N.ivec2(N.int(2), sdfIndex));
-                  const data3 = load2D(sdfTexture, N.ivec2(N.int(3), sdfIndex));
-                  const sdfBasis = N.mat3(
-                    N.uintBitsToFloat(data1.xyz),
-                    N.uintBitsToFloat(data2.xyz),
-                    N.uintBitsToFloat(data5.xyz),
-                  );
-                  // Materialize shared expressions before the shape branches.
-                  const sizes = N.uintBitsToFloat(data3).toVar();
-                  const sdfPosition = sdfBasis
-                    .mul(editPosition)
-                    .add(N.uintBitsToFloat(data0.xyz))
-                    .toVar();
-                  distance.assign(
-                    sdfDistance(sdfType, sdfPosition, sizes).mul(distanceScale),
-                  );
-                });
-                const data4 = load2D(sdfTexture, N.ivec2(N.int(4), sdfIndex));
-                const value = N.uintBitsToFloat(data4).toVar();
-                const valueMask = N.vec4(
-                  N.select(flags.bitAnd(0x10000).notEqual(N.uint(0)), 1, 0),
-                  N.select(flags.bitAnd(0x20000).notEqual(N.uint(0)), 1, 0),
-                  N.select(flags.bitAnd(0x40000).notEqual(N.uint(0)), 1, 0),
-                  N.select(flags.bitAnd(0x80000).notEqual(N.uint(0)), 1, 0),
-                ).toVar();
-                N.If(flags.bitAnd(0x100).notEqual(N.uint(0)), () => {
-                  distance.negateAssign();
-                });
-                N.If(smoothAmount.equal(0), () => {
+            const sdfMask = N.vec4(0).toVar();
+            N.If(invSmoothAmount.equal(0), () => {
+              const nearestIndex = N.int(-1).toVar();
+              const nearestFlags = N.uint(0).toVar();
+              forEachSdf(
+                sdfFirst,
+                sdfLast,
+                sourceIndex,
+                editPosition,
+                (index, flags, value) => {
                   N.If(
-                    hasSelection.not().or(distance.lessThan(distanceAccum)),
+                    nearestIndex.lessThan(0).or(value.lessThan(distance)),
                     () => {
-                      distanceAccum.assign(distance);
-                      sdfRgba.assign(value.mul(valueMask));
-                      sdfRgbaMask.assign(valueMask);
+                      distance.assign(value);
+                      nearestIndex.assign(index);
+                      nearestFlags.assign(flags);
                     },
                   );
-                }).Else(() => {
-                  const exponent = distance.negate().div(smoothAmount).toVar();
-                  N.If(distanceAccum.equal(0), () => {
-                    maxExponent.assign(exponent);
-                  }).ElseIf(exponent.greaterThan(maxExponent), () => {
-                    const rescale = maxExponent.sub(exponent).exp();
-                    distanceAccum.mulAssign(rescale);
-                    sdfRgba.mulAssign(rescale);
-                    sdfRgbaMask.mulAssign(rescale);
-                    maxExponent.assign(exponent);
+                },
+              );
+              N.If(nearestIndex.greaterThanEqual(0), () => {
+                sdfRgba.assign(N.uintBitsToFloat(loadSdf(4, nearestIndex)));
+                sdfMask.assign(sdfRgbaMask(nearestFlags));
+              });
+            }).Else(() => {
+              const distanceAccum = N.float(0).toVar();
+              const maxExponent = N.float(0).toVar();
+              forEachSdf(
+                sdfFirst,
+                sdfLast,
+                sourceIndex,
+                editPosition,
+                (index, flags, value) => {
+                  const exponent = value.negate().mul(invSmoothAmount).toVar();
+                  const dominant = distanceAccum
+                    .equal(0)
+                    .or(exponent.greaterThan(maxExponent))
+                    .toVar();
+                  const relativeWeight = exponent
+                    .sub(maxExponent)
+                    .abs()
+                    .negate()
+                    .exp()
+                    .toVar();
+                  const rescale = N.select(dominant, relativeWeight, 1).toVar();
+                  const weight = N.select(dominant, 1, relativeWeight).toVar();
+                  N.If(weight.notEqual(0), () => {
+                    const rgbaValue = N.uintBitsToFloat(
+                      loadSdf(4, index),
+                    ).toVar();
+                    const mask = sdfRgbaMask(flags).toVar();
+                    maxExponent.assign(
+                      N.select(dominant, exponent, maxExponent),
+                    );
+                    distanceAccum.assign(
+                      distanceAccum.mul(rescale).add(weight),
+                    );
+                    sdfRgba.assign(
+                      sdfRgba.mul(rescale).add(weight.mul(rgbaValue)),
+                    );
+                    sdfMask.assign(sdfMask.mul(rescale).add(weight.mul(mask)));
                   });
-                  const weight = exponent.sub(maxExponent).exp();
-                  distanceAccum.addAssign(weight);
-                  sdfRgba.addAssign(weight.mul(value).mul(valueMask));
-                  sdfRgbaMask.addAssign(weight.mul(valueMask));
-                });
-                hasSelection.assign(true);
-              },
-            );
-            const distance = distanceAccum.toVar();
-            N.If(smoothAmount.notEqual(0), () => {
-              N.If(distanceAccum.equal(0), () => {
-                distance.assign(SDF_DISTANCE_LIMIT);
-              }).Else(() => {
+                },
+              );
+              N.If(distanceAccum.notEqual(0), () => {
                 sdfRgba.divAssign(distanceAccum);
-                sdfRgbaMask.divAssign(distanceAccum);
+                sdfMask.divAssign(distanceAccum);
                 distance.assign(
                   distanceAccum
                     .log()
                     .negate()
                     .sub(maxExponent)
-                    .mul(smoothAmount),
+                    .div(invSmoothAmount),
                 );
               });
             });
@@ -615,13 +634,13 @@ export function createGenerateProgram({ uniforms }) {
               distance.negateAssign();
             });
             const amount = N.select(
-              softEdge.equal(0),
+              invSoftEdge.equal(0),
               N.select(distance.lessThan(0), 1, 0),
-              distance.negate().div(softEdge).add(0.5).clamp(0, 1),
+              distance.negate().mul(invSoftEdge).add(0.5).clamp(0, 1),
             );
             const editOpacity = amount
               .greaterThan(0)
-              .and(sdfRgbaMask.a.greaterThan(0));
+              .and(sdfMask.a.greaterThan(0));
             N.If(editOpacity.and(semanticOpacityDecoded.not()), () => {
               rgba.a.assign(
                 decodeSemanticOpacity(rgba.a.clamp(0, 1), shapeAmount),
@@ -632,14 +651,14 @@ export function createGenerateProgram({ uniforms }) {
             // composes RGB edits so SH can wait for the final visibility test.
             const input = deferredColor ? rgba.a : rgba;
             const value = deferredColor ? sdfRgba.a : sdfRgba;
-            const mask = deferredColor ? sdfRgbaMask.a : sdfRgbaMask;
+            const mask = deferredColor ? sdfMask.a : sdfMask;
             const one = deferredColor ? N.float(1) : N.vec4(1);
             const target = input.toVar();
             N.If(blendMode.equal(N.uint(0)), () => {
               target.assign(input.mul(one.add(value).sub(mask)));
               if (deferredColor) {
                 const scale = N.vec3(1)
-                  .add(sdfRgba.rgb.sub(sdfRgbaMask.rgb).mul(amount))
+                  .add(sdfRgba.rgb.sub(sdfMask.rgb).mul(amount))
                   .toVar();
                 deferredColor.scale.mulAssign(scale);
                 deferredColor.offset.mulAssign(scale);
@@ -648,9 +667,7 @@ export function createGenerateProgram({ uniforms }) {
               .ElseIf(blendMode.equal(N.uint(1)), () => {
                 target.assign(input.mul(one.sub(mask)).add(value));
                 if (deferredColor) {
-                  const scale = N.vec3(1)
-                    .sub(sdfRgbaMask.rgb.mul(amount))
-                    .toVar();
+                  const scale = N.vec3(1).sub(sdfMask.rgb.mul(amount)).toVar();
                   deferredColor.scale.mulAssign(scale);
                   deferredColor.offset.assign(
                     deferredColor.offset

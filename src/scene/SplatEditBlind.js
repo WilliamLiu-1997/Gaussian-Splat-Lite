@@ -86,8 +86,8 @@ export function encodeBlindSelection(selection, fields) {
     const upper = value ?? max;
     if (lower > upper) {
       // Empty ranges use inverted ALL, preserving RGBA for the parent's inversion.
-      record[3] = (invert ? 0 : SDF_INVERT) | (mask << SDF_RGBA_MASK_SHIFT);
-      floats[23] = 1;
+      record[3] = mask << SDF_RGBA_MASK_SHIFT;
+      floats[23] = invert ? 1 : -1;
       return record;
     }
     const { shift, mask: fieldMask, encoding, range } = definition;

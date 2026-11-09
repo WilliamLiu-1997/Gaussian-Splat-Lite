@@ -14,6 +14,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - Added [SplatEditBlind](docs/SplatEditBlind.md) to recolor, fade, or hide Gaussians by a SOG v3 Blind field value or range, with the same blend modes, inversion, soft edges, and smoothing as SDF shapes. It works on ordinary loads and SOG/LCC2 streaming. `splats.blindFields` lists a model's Blind fields. A Blind texture with invalid metadata is skipped with a warning instead of failing the load.
 - Added the `blindData` option to `SplatMesh`, `Splats`, `SplatLoader`, `SogStreamScheduler`, and `Lcc2StreamScheduler`. Set it to `false` to skip downloading, decoding, and storing SOG v3 Blind data.
 
+### Changed
+
+- Reduced per-Splat computation and texture reads for SDF color and opacity edits on WebGL and WebGPU, including smooth unions.
+
 ## [1.7.0] - 2026-11-06
 
 ### Changed
