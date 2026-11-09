@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { loadSplatData } from "../loaders/loadSplatData.js";
 import { packBlindData } from "./blindData.js";
+import { decodeBlindFields } from "./blindFields.js";
 import {
   SPLAT_BLOCKS_DISABLED,
   SPLAT_BOUNDS_BLOCK_SIZE,
@@ -266,23 +267,24 @@ export class Splats {
     this.dispose();
     return data;
   }
-  getSplat(index, includeSh = true) {
+  getSplat(index, includeSh = true, includeBlind = true) {
     if (index < 0 || index >= this.numSplats) {
       throw new Error("Invalid splat index");
     }
+
     const splat = decodeSplat(this.splatArrays, index);
-    return includeSh
-      ? {
-          ...splat,
-          sh: decodeSplatSh(
-            this.extra,
-            index,
-            this.getNumSh(),
-            this.extra.shLabels?.[index],
-            this.palette,
-          ),
-        }
-      : splat;
+    if (includeBlind) splat.blind = decodeBlindFields(this.extra.blind, index);
+    if (includeSh) {
+      splat.sh = decodeSplatSh(
+        this.extra,
+        index,
+        this.getNumSh(),
+        this.extra.shLabels?.[index],
+        this.palette,
+      );
+    }
+
+    return splat;
   }
   /** @internal Consecutive visible records surviving spatial block picking. */
   forEachRaycastRange(query, callback) {

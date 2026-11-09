@@ -30,7 +30,9 @@ type IndexedSplatsOptions =
       storage: IndexedSplats;
       palette?: ShPalette;
     };
-type DecodedSplat = ReturnType<typeof decodeSplat>;
+type DecodedSplat = ReturnType<typeof decodeSplat> & {
+  blind?: Record<string, number>;
+};
 type DecodedSplatWithSh = DecodedSplat & {
   sh: THREE.Color[];
 };
@@ -102,9 +104,21 @@ export declare abstract class IndexedSplats extends Splats {
     count: number,
   ): void;
   getSplat(index: number): DecodedSplatWithSh;
-  getSplat(index: number, includeSh: true): DecodedSplatWithSh;
-  getSplat(index: number, includeSh: false): DecodedSplat;
-  getSplat(index: number, includeSh: boolean): DecodedSplat;
+  getSplat(
+    index: number,
+    includeSh: true | undefined,
+    includeBlind?: boolean,
+  ): DecodedSplatWithSh;
+  getSplat(
+    index: number,
+    includeSh: false,
+    includeBlind?: boolean,
+  ): DecodedSplat;
+  getSplat(
+    index: number,
+    includeSh: boolean | undefined,
+    includeBlind?: boolean,
+  ): DecodedSplat;
   forEachCenter(
     callback: (index: number, x: number, y: number, z: number) => void,
   ): void;

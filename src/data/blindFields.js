@@ -1,3 +1,5 @@
+import { fromHalf, uintBitsToFloat } from "../utils/numeric.js";
+
 const TYPES = {
   u8: [1, 0],
   u16: [2, 0],
@@ -35,4 +37,26 @@ export function getBlindFieldLayout(fields) {
 
 export function getBlindLayoutKey(blind = []) {
   return `[${blind.map(({ fields }) => getBlindFieldLayout(fields).key).join(",")}]`;
+}
+
+export function decodeBlindFields(blind, index) {
+  if (!blind?.length) return;
+  const values = new Map();
+  for (const { fields, data } of blind) {
+    const word = data[index];
+    for (const [name, { shift, mask, encoding, range }] of getBlindFieldLayout(
+      fields,
+    ).lookup) {
+      // Match SplatEditBlind's first group when a name occurs more than once.
+      if (values.has(name)) continue;
+      const bits = ((word >>> shift) & mask) >>> 0;
+      let value = bits;
+      if (encoding === 1) value = fromHalf(bits);
+      else if (encoding === 2) value = uintBitsToFloat(bits);
+      else if (encoding === 3)
+        value = range[0] + (range[1] - range[0]) * (bits / mask);
+      values.set(name, value);
+    }
+  }
+  return Object.fromEntries(values);
 }

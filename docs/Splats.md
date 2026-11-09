@@ -12,7 +12,7 @@ const data = splat.splats;
 const item = data.getSplat(0);
 ```
 
-For SOG v3 sources, `splats.blindFields` lists the available Blind field definitions. Use [SplatEditBlind](SplatEditBlind.md) to edit color or opacity by a field value or range.
+For SOG v3 sources, `splats.blindFields` lists the available Blind field definitions. `getSplat(index).blind` returns decoded values by field name, for example `item.blind?.confidence`. It is `undefined` when no Blind data is loaded, including with `blindData: false`. Integer and float fields return their numeric values; normalized fields use their declared `range`, or `[0, 1]` when omitted. If a name appears in multiple groups, the first group is used, matching [SplatEditBlind](SplatEditBlind.md).
 
 ## Options
 
@@ -41,7 +41,7 @@ Choose at most one of `url`, `file`, or `fileBytes`; combining them throws.
 | `initialize(options)` | Load new data from a URL, file, or bytes, replacing what was there. Returns the new `initialized` promise |
 | `getNumSplats()` / `getNumSh()` | Splat count, and the level of view-dependent color (spherical harmonics degree) the model has |
 | `getByteLength()` | Memory used by the data, in bytes |
-| `getSplat(index, includeSh?)` | Read one Splat; pass `false` to skip its view-dependent color |
+| `getSplat(index, includeSh?, includeBlind?)` | Read one Splat; both flags default to `true`. Set `includeSh` or `includeBlind` to `false` to skip decoding and omit `sh` or `blind`, respectively |
 | `forEachCenter(callback)` | Visit only the center of every Splat, for example to build a spatial index |
 | `forEachSplat(callback)` | Visit every Splat |
 | `dispose()` | Cancel loading and release the data |
@@ -51,7 +51,7 @@ Calling `initialize()` again or `dispose()` cancels a load still in progress; it
 ## Data rules
 
 - **Indices address the current data.** Splats are reordered while loading, so indices may differ from file order. Passing existing `Splats` to a mesh keeps their order. Streamed indices can change when the visible detail changes.
-- **Reads return copies.** `getSplat()` returns new `center`, `scales`, `quaternion`, `opacity`, `color`, and `sh` values on each call; changing them does not change the model. `sh` holds 0, 3, 8, 15, or 24 RGB coefficients, depending on the model's degree (SH0–SH4).
+- **Reads return copies.** `getSplat()` returns new `center`, `scales`, `quaternion`, `opacity`, `color`, `sh`, and `blind` values on each call; changing them does not change the model. `sh` holds 0, 3, 8, 15, or 24 RGB coefficients, depending on the model's degree (SH0–SH4).
 - **`forEachSplat()` reuses its objects.** The same objects are passed for every Splat, so clone anything you want to keep after the callback returns.
 - **Streamed data is read-only.** Data from [RadStreamScheduler](RadStreamScheduler.md), [SogStreamScheduler](SogStreamScheduler.md), or [Lcc2StreamScheduler](Lcc2StreamScheduler.md) cannot be reinitialized.
 - **Bounds live on the mesh.** Use [`mesh.getBoundingBox()`](SplatMesh.md#bounding-box).

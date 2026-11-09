@@ -6,7 +6,7 @@ import {
   getBlindTextureLayout,
   getBlindUploadBytes,
 } from "./blindData.js";
-import { getBlindLayoutKey } from "./blindFields.js";
+import { decodeBlindFields, getBlindLayoutKey } from "./blindFields.js";
 import { SPLAT_BOUNDS_BLOCK_SIZE, SPLAT_TEX_WIDTH } from "./defines.js";
 import { decodeShRgbToArray } from "./splatCodec.js";
 import {
@@ -389,27 +389,30 @@ export class IndexedSplats extends Splats {
       }
     }
   }
-  getSplat(index, includeSh = true) {
+  getSplat(index, includeSh = true, includeBlind = true) {
     const source = this.getStorageIndex(index);
     const splat = decodeSplat(
       [this.sourceArrays[0], this.sourceArrays[1]],
       source,
     );
-    if (!includeSh) return splat;
-    const rgb = [0, 0, 0];
-    const sh = Array.from(
-      { length: this.numSh * (this.numSh + 2) },
-      (_, coefficient) => {
-        const word = this.palette
-          ? this.palette.word(this.sourceArrays[2][source], coefficient)
-          : this.sourceArrays[2 + (coefficient >> 2)][
-              source * 4 + (coefficient & 3)
-            ];
-        decodeShRgbToArray(word, rgb);
-        return new THREE.Color(rgb[0], rgb[1], rgb[2]);
-      },
-    );
-    return { ...splat, sh };
+    if (includeBlind) splat.blind = decodeBlindFields(this.extra.blind, source);
+    if (includeSh) {
+      const rgb = [0, 0, 0];
+      splat.sh = Array.from(
+        { length: this.numSh * (this.numSh + 2) },
+        (_, coefficient) => {
+          const word = this.palette
+            ? this.palette.word(this.sourceArrays[2][source], coefficient)
+            : this.sourceArrays[2 + (coefficient >> 2)][
+                source * 4 + (coefficient & 3)
+              ];
+          decodeShRgbToArray(word, rgb);
+          return new THREE.Color(rgb[0], rgb[1], rgb[2]);
+        },
+      );
+    }
+
+    return splat;
   }
   forEachCenter(callback) {
     this.assertLive();

@@ -129,7 +129,7 @@ if (intersections.length > 0) {
 ```
 
 - The model needs `raycastable: true`, the default. Picking may return nothing while the model is still being set up.
-- Each hit contains `distance`, `point`, `object`, and `index` (`SplatIntersection` in TypeScript). Read the hit Splat with `hit.object.splats.getSplat(hit.index)`.
+- Each hit contains `distance`, `point`, `object`, and `index` (`SplatIntersection` in TypeScript). Read the hit Splat with `hit.object.splats.getSplat(hit.index)`. To read its decoded Blind fields without SH, use `hit.object.splats.getSplat(hit.index, false, true).blind`.
 - Values of `minRaycastOpacity` below `0.01` have limited effect: areas that transparent may not be pickable.
 - Streamed models can be picked. Hits ignore their display fades. An `index` belongs to the hit object's current data and can change as the shown detail changes; read the Splat before the streaming selection updates.
 

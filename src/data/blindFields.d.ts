@@ -8,3 +8,7 @@ export declare function getBlindFieldLayout(fields: SplatBlindField[]): {
   key: string;
 };
 export declare function getBlindLayoutKey(blind?: SplatBlindTexture[]): string;
+export declare function decodeBlindFields(
+  blind: SplatBlindTexture[] | undefined,
+  index: number,
+): Record<string, number> | undefined;

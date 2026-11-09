@@ -14,7 +14,10 @@ import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 import type { ShPalette } from "./shPalette.js";
 import type { decodeSplat } from "./unpack.js";
 
-type DecodedSplat = ReturnType<typeof decodeSplat>;
+type DecodedSplat = ReturnType<typeof decodeSplat> & {
+  /** Decoded SOG v3 fields by name; undefined when no Blind data is loaded. */
+  blind?: Record<string, number>;
+};
 type DecodedSplatWithSh = DecodedSplat & {
   sh: THREE.Color[];
 };
@@ -75,9 +78,21 @@ export declare class Splats {
   /** @internal Consume owned arrays for transfer to a streaming worker. */
   takeData(): SplatResult;
   getSplat(index: number): DecodedSplatWithSh;
-  getSplat(index: number, includeSh: true): DecodedSplatWithSh;
-  getSplat(index: number, includeSh: false): DecodedSplat;
-  getSplat(index: number, includeSh: boolean): DecodedSplat;
+  getSplat(
+    index: number,
+    includeSh: true | undefined,
+    includeBlind?: boolean,
+  ): DecodedSplatWithSh;
+  getSplat(
+    index: number,
+    includeSh: false,
+    includeBlind?: boolean,
+  ): DecodedSplat;
+  getSplat(
+    index: number,
+    includeSh: boolean | undefined,
+    includeBlind?: boolean,
+  ): DecodedSplat;
   /** @internal Consecutive visible records surviving spatial block picking. */
   forEachRaycastRange(
     query: SplatRaycastQuery,
