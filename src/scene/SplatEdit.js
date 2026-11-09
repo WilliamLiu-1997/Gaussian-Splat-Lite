@@ -106,12 +106,6 @@ export class SplatEdits {
           sdf.type === "box" ||
           sdf.type === "ellipsoid" ||
           sdf.type === "capsule";
-        sizes.set(
-          dimensional ? Math.abs(sdf.scale.x) : 1,
-          dimensional ? Math.abs(sdf.scale.y) : 1,
-          dimensional ? Math.abs(sdf.scale.z) : 1,
-          sdf.radius,
-        );
         const collapsed = worldToSdf.determinant() === 0;
         if (dimensional && !collapsed)
           worldToSdf.scale(
@@ -129,9 +123,61 @@ export class SplatEdits {
               Math.hypot(e[4], e[5], e[6]),
               Math.hypot(e[8], e[9], e[10]),
             );
-        worldToSdf.invert();
-        if (coordinateOrigin)
-          rebaseAffineTransform(worldToSdf, coordinateOrigin);
+        if (sdf.type !== "all") {
+          worldToSdf.invert();
+          if (coordinateOrigin)
+            rebaseAffineTransform(worldToSdf, coordinateOrigin);
+        }
+
+        sizes.set(
+          dimensional ? Math.abs(sdf.scale.x) : 1,
+          dimensional ? Math.abs(sdf.scale.y) : 1,
+          dimensional ? Math.abs(sdf.scale.z) : 1,
+          sdf.radius,
+        );
+        switch (sdf.type) {
+          case "all":
+            // Only distanceScale matters; unused transforms must not dirty ALL.
+            worldToSdf.identity();
+            sizes.set(0, 0, 0, 0);
+            break;
+          case "plane":
+            // Only the z row contributes to plane distance.
+            for (let offset = 0; offset < 16; offset += 4) {
+              e[offset] = 0;
+              e[offset + 1] = 0;
+            }
+            sizes.set(0, 0, 0, 0);
+            break;
+          case "box":
+            sizes.x -= sizes.w;
+            sizes.y -= sizes.w;
+            sizes.z -= sizes.w;
+            break;
+          case "ellipsoid":
+            // Inverse radii and the signed distance at the center.
+            sizes.w = -Math.min(sizes.x, sizes.y, sizes.z);
+            if (sizes.w < 0)
+              sizes.set(1 / sizes.x, 1 / sizes.y, 1 / sizes.z, sizes.w);
+            else sizes.set(0, 0, 0, 0);
+            // Normalize output coordinates, including the rebased translation.
+            for (let offset = 0; offset < 16; offset += 4) {
+              e[offset] *= sizes.x;
+              e[offset + 1] *= sizes.y;
+              e[offset + 2] *= sizes.z;
+            }
+            break;
+          case "capsule":
+            sizes.y *= 0.5;
+            break;
+          case "infinite_cone": {
+            const angle = sdf.radius * (Math.PI * 0.25);
+            sizes.x = Math.sin(angle);
+            sizes.y = Math.cos(angle);
+            break;
+          }
+        }
+
         sdfUpdated =
           this.encodeSdf(sdfIndex, sdf, worldToSdf, distanceScale, sizes) ||
           sdfUpdated;
@@ -173,11 +219,16 @@ export class SplatEdits {
     const base = index * 4;
     const blend = rgbaBlendModeToNumber(edit.rgbaBlendMode);
     const flags = blend | (edit.invert ? 1 << 8 : 0);
+    // Zero keeps hard edges/unions; nonzero parameters are stored as reciprocals.
+    const invSoftEdge = edit.softEdge === 0 ? 0 : 1 / edit.softEdge;
+    const invSmoothAmount =
+      sdfCount > 1 && edit.sdfSmooth !== 0 ? 1 / edit.sdfSmooth : 0;
+
     let updated = this.setEditUint(base, flags);
     updated =
       this.setEditUint(base + 1, sdfFirst | (sdfCount << 16)) || updated;
-    updated = this.setEditFloat(base + 2, edit.softEdge) || updated;
-    updated = this.setEditFloat(base + 3, edit.sdfSmooth) || updated;
+    updated = this.setEditFloat(base + 2, invSoftEdge) || updated;
+    updated = this.setEditFloat(base + 3, invSmoothAmount) || updated;
     return updated;
   }
   encodeSdf(index, sdf, matrix, distanceScale, sizes) {
@@ -188,10 +239,7 @@ export class SplatEdits {
       (color.g === undefined ? 0 : 1 << 1) |
       (color.b === undefined ? 0 : 1 << 2) |
       (sdf.opacity === undefined ? 0 : 1 << 3);
-    const flags =
-      sdfTypeToNumber(sdf.type) |
-      (sdf.invert ? 1 << 8 : 0) |
-      (rgbaMask << SDF_RGBA_MASK_SHIFT);
+    const flags = sdfTypeToNumber(sdf.type) | (rgbaMask << SDF_RGBA_MASK_SHIFT);
     const e = matrix.elements;
     let updated = this.setSdfFloat(base, e[12]);
     updated = this.setSdfFloat(base + 1, e[13]) || updated;
@@ -202,7 +250,9 @@ export class SplatEdits {
       updated = this.setSdfFloat(base + 8 + axis, e[4 + axis]) || updated;
       updated = this.setSdfFloat(base + 20 + axis, e[8 + axis]) || updated;
     }
-    updated = this.setSdfFloat(base + 23, distanceScale) || updated;
+    // The sign carries shape inversion; zero disables collapsed transforms.
+    const signedScale = sdf.invert ? -distanceScale : distanceScale;
+    updated = this.setSdfFloat(base + 23, signedScale) || updated;
     updated = this.setSdfFloat(base + 12, sizes.x) || updated;
     updated = this.setSdfFloat(base + 13, sizes.y) || updated;
     updated = this.setSdfFloat(base + 14, sizes.z) || updated;

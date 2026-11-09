@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced per-Splat computation and texture reads for SDF color and opacity edits on WebGL and WebGPU, including smooth unions.
+
 ## [1.7.0] - 2026-11-06
 
 ### Changed
