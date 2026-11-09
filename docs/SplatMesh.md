@@ -39,6 +39,7 @@ For large streamed scenes, use [RadStreamScheduler](RadStreamScheduler.md), [Sog
 | `fileType` | `SplatFileType` | Detected from the name | Set the format explicitly: `PLY`, `SPZ`, `SOG`, or `RAD` |
 | `fileName` | `string` | `File.name` when available | Name used to detect the format |
 | `maxSh` | `number` | `4` | Fixed SH limit; integer `0`–`4`. Caps decoding, storage, and rendering when loading a file. With existing `splats`, limits rendering only |
+| `blindData` | `boolean` | `true` | Load SOG v3 Blind data for [SplatEditBlind](SplatEditBlind.md); `false` skips its decoding and storage |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Supply the extra files of a split SOG or RAD model; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | [Change each Splat while loading](PostDecode.md) |
 | `splats` | `Splats` | New `Splats` | Use existing [Splats](Splats.md) data instead of loading |

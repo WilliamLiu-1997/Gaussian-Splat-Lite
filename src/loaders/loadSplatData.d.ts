@@ -10,6 +10,8 @@ export type SplatDataLoadOptions = {
   fileName?: string;
   /** Maximum SH degree to decode and store, 0–4. Defaults to 4. */
   maxSh?: number;
+  /** Load SOG v3 Blind data for SplatEditBlind; false skips its decoding and storage. Defaults to true. */
+  blindData?: boolean;
   resolveFile?: SplatFileResolver;
   postDecode?: SplatPostDecodeProgram;
   signal?: AbortSignal;
@@ -30,6 +32,7 @@ export declare function loadSplatData(
     fileType,
     fileName,
     maxSh,
+    blindData,
     resolveFile,
     postDecode,
     signal,

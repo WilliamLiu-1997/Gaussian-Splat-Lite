@@ -69,6 +69,7 @@ export declare class ChunkSource {
 export declare class ChunkStreamLoader {
   private readonly format;
   private readonly maxSh;
+  private readonly blindData;
   private readonly lodWorker;
   private readonly pool;
   private readonly controller;
@@ -80,6 +81,7 @@ export declare class ChunkStreamLoader {
     maxSh: number,
     onChange: () => void,
     format?: "sog" | "lcc2",
+    blindData?: boolean,
   );
   get stats(): {
     downloadedBytes: number;

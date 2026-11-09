@@ -8,7 +8,7 @@ use gaussian_splat_lib::{
         encode_splat_scale, encode_splat_sh_rgb, get_splat_tex_size, repack_quat_spz,
     },
 };
-use js_sys::{Float32Array, Object, Reflect, Uint32Array};
+use js_sys::{Array, Float32Array, Object, Reflect, Uint32Array};
 use wasm_bindgen::JsValue;
 
 pub struct SplatsData {
@@ -16,6 +16,7 @@ pub struct SplatsData {
     sh_palette: Option<Uint32Array>,
     sh_labels: Option<Uint32Array>,
     sh_degree: usize,
+    blind: Vec<Uint32Array>,
     pub max_splats: usize,
     pub num_splats: usize,
     pub max_sh_degree: usize,
@@ -41,6 +42,7 @@ impl SplatsData {
             sh_palette: None,
             sh_labels: None,
             sh_degree: 0,
+            blind: Vec::new(),
             max_splats: 0,
             num_splats: 0,
             max_sh_degree: 0,
@@ -65,6 +67,10 @@ impl SplatsData {
 
     pub fn into_splat_object(self) -> Object {
         let object = Object::new();
+        if !self.blind.is_empty() {
+            let arrays = self.blind.iter().collect::<Array>();
+            Reflect::set(&object, &"blindData".into(), &arrays).unwrap();
+        }
         if let Some(labels) = &self.sh_labels {
             Reflect::set(&object, &"shLabels".into(), labels).unwrap();
             Reflect::set(
@@ -334,6 +340,15 @@ impl SplatsData {
 }
 
 impl SplatReceiver for SplatsData {
+    fn set_blind(&mut self, texture: usize, base: usize, words: &[u32]) {
+        if texture == self.blind.len() {
+            self.blind
+                .push(Uint32Array::new_with_length(self.num_splats as u32));
+        }
+        self.blind[texture]
+            .subarray(base as u32, (base + words.len()) as u32)
+            .copy_from(words);
+    }
     const PACKED_QUATERNIONS: bool = true;
     const SHARED_SH: bool = true;
 

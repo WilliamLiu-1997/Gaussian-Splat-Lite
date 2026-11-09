@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { loadSplatData } from "../loaders/loadSplatData.js";
+import { packBlindData } from "./blindData.js";
 import {
   SPLAT_BLOCKS_DISABLED,
   SPLAT_BOUNDS_BLOCK_SIZE,
@@ -72,6 +73,9 @@ function createDecodedState(data) {
       data.extra.shLabels.length < numSplats)
   )
     throw new Error("Incomplete shared SH labels");
+  for (const { data: array } of data.extra.blind ?? [])
+    if (!(array instanceof Uint32Array) || array.length < numSplats)
+      throw new Error("Incomplete blind records");
   const maxSplats = getTextureSize(inputCapacity).maxSplats;
   let splatArrays = data.splatArrays;
   if (maxSplats !== inputCapacity) {
@@ -82,6 +86,7 @@ function createDecodedState(data) {
     splatArrays[0].set(first);
     splatArrays[1].set(second);
   }
+  packBlindData(data.extra.blind, numSplats, maxSplats);
   return { ...data, maxSplats, splatArrays };
 }
 function createEmptyState() {
@@ -107,6 +112,7 @@ export class Splats {
     this.isInitialized = false;
     this.needsUpdate = true;
     this.shTextures = {};
+    this.blindTexture = undefined;
     this.textures = [Splats.emptyTexture, Splats.emptyTexture];
     this.initialized = Promise.resolve(this);
     this.initialize(options);
@@ -156,6 +162,9 @@ export class Splats {
     this.bounds = state.boundingBox;
     this.spatialBounds = state.spatialBounds;
     this.extra = state.extra;
+    this.blindFieldGroups = (state.extra.blind ?? []).map(
+      ({ fields }) => fields,
+    );
     this.palette = state.extra.shPalette
       ? new ShPalette(state.extra.shPalette, state.extra.shDegree)
       : undefined;
@@ -186,6 +195,8 @@ export class Splats {
       if (texture) disposeDataTexture(texture);
     }
     this.shTextures = {};
+    if (this.blindTexture) disposeDataTexture(this.blindTexture);
+    this.blindTexture = undefined;
   }
   getNumSplats() {
     return this.numSplats;
@@ -200,6 +211,27 @@ export class Splats {
   }
   getNumSh() {
     return getSplatShDegree(this.extra);
+  }
+  /** SOG v3 field definitions, grouped by their packed texture. */
+  get blindFields() {
+    return this.blindFieldGroups;
+  }
+  getBlindTexture() {
+    const blind = this.extra.blind;
+    if (!this.blindTexture && blind?.length) {
+      const { width, height, depth } = getTextureSize(
+        this.maxSplats * blind.length,
+      );
+      const packed = new Uint32Array(blind[0].data.buffer);
+      this.blindTexture = newUintArrayTexture(
+        packed,
+        width,
+        height,
+        depth,
+        THREE.RedIntegerFormat,
+      );
+    }
+    return this.blindTexture;
   }
   /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
   getByteLength() {

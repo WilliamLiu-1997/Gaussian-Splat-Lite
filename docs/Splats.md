@@ -12,6 +12,8 @@ const data = splat.splats;
 const item = data.getSplat(0);
 ```
 
+For SOG v3 sources, `splats.blindFields` lists the available Blind field definitions. Use [SplatEditBlind](SplatEditBlind.md) to edit color or opacity by a field value or range.
+
 ## Options
 
 The constructor and `initialize()` accept `SplatsOptions`:
@@ -24,6 +26,7 @@ The constructor and `initialize()` accept `SplatsOptions`:
 | `fileType` | `SplatFileType` | Detected from the name | Set the format explicitly |
 | `fileName` | `string` | `File.name` when available | Name used to detect the format |
 | `maxSh` | `number` | `4` | Maximum SH degree to decode and store; integer `0`–`4`, further limited by the model's degree |
+| `blindData` | `boolean` | `true` | Load SOG v3 Blind data for [SplatEditBlind](SplatEditBlind.md); `false` skips its decoding and storage |
 | `resolveFile` | `SplatFileResolver` | `undefined` | Supply the extra files of a split SOG or RAD model; see [local split files](SplatLoader.md#local-split-files) |
 | `postDecode` | `SplatPostDecodeProgram` | `undefined` | [Change each Splat while loading](PostDecode.md) |
 | `onProgress` | `(event: SplatProgressEvent) => void` | `undefined` | [Loading progress](SplatLoader.md#loading-progress) callback |

@@ -7,6 +7,8 @@ import { joinBytes as join } from "./source.js";
 function fail(message) {
   throw new Error(`SOG: ${message}`);
 }
+// Streaming decodes many chunks with the same metadata; warn once per message.
+const warned = new Set();
 function isJson(bytes) {
   let index =
     bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
@@ -74,9 +76,16 @@ async function decodeSog(args, controller) {
       );
   }
   controller.signal.throwIfAborted();
-  const session = wasmCall(() => new SogDecodeSession(metadata, args.maxSh));
+  const session = wasmCall(
+    () => new SogDecodeSession(metadata, args.maxSh, args.blindData),
+  );
   let consumed = false;
   try {
+    for (const warning of JSON.parse(wasmCall(() => session.warnings()))) {
+      if (warned.has(warning)) continue;
+      warned.add(warning);
+      console.warn(`SOG: ${warning}`);
+    }
     const groups = JSON.parse(wasmCall(() => session.plan()));
     // Metadata and bundles with external assets do not describe the total input size.
     if (!zip || groups.some((group) => group.some((name) => !zip.entry(name))))

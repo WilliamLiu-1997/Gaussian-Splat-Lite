@@ -28,15 +28,24 @@ pub struct SogDecodeSession {
 #[wasm_bindgen]
 impl SogDecodeSession {
     #[wasm_bindgen(constructor)]
-    pub fn new(metadata: &str, max_sh: Option<u32>) -> Result<Self, JsValue> {
+    pub fn new(metadata: &str, max_sh: Option<u32>, blind: Option<bool>) -> Result<Self, JsValue> {
         Ok(Self {
-            decoder: SogDecoder::new(SplatsData::new(4), metadata, max_sh.unwrap_or(4) as usize)
-                .map_err(js_error)?,
+            decoder: SogDecoder::new(
+                SplatsData::new(4),
+                metadata,
+                max_sh.unwrap_or(4) as usize,
+                blind.unwrap_or(true),
+            )
+            .map_err(js_error)?,
         })
     }
 
     pub fn plan(&self) -> String {
         serde_json::to_string(&self.decoder.plan()).expect("asset names are serializable")
+    }
+
+    pub fn warnings(&self) -> String {
+        serde_json::to_string(self.decoder.warnings()).expect("warnings are serializable")
     }
 
     pub fn decode_asset(
@@ -74,7 +83,9 @@ impl SogDecodeSession {
 
     pub fn finish(mut self) -> Result<Object, JsValue> {
         self.decoder.finish().map_err(js_error)?;
+        let blind = serde_json::to_string(self.decoder.blind_metadata()).unwrap();
         let output = self.decoder.into_splats().into_splat_object();
+        Reflect::set(&output, &"blind".into(), &js_sys::JSON::parse(&blind)?)?;
         Reflect::set(&output, &"fileType".into(), &"sog".into())?;
         Ok(output)
     }

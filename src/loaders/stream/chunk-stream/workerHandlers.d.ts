@@ -12,6 +12,7 @@ export type ChunkInfo = {
   numSplats: number;
   numSh: number;
   byteLength: number;
+  blindTextureCount: number;
 };
 /** LOD workers parse the index once before selection; other workers own chunk caches. */
 export declare function createChunkStreamHandlers(
@@ -38,10 +39,12 @@ export declare function createChunkStreamHandlers(
     id,
     data,
     maxSh,
+    blindData,
   }: {
     id: number;
     data: SplatResult;
     maxSh: number;
+    blindData?: boolean;
   }) => ChunkInfo;
   extractRegions: ({
     id,

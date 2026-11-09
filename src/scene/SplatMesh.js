@@ -9,6 +9,7 @@ import { Splats } from "../data/Splats.js";
 import { SplatRaycastQuery } from "../data/raycast.js";
 import * as wasm from "../runtime/wasm.js";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit.js";
+import { SplatEditBlind } from "./SplatEditBlind.js";
 let raycastVisibleIndices = new Uint32Array(0);
 const raycastWorldToMesh = new THREE.Matrix4();
 const raycastDirectionMatrix = new THREE.Matrix3();
@@ -95,6 +96,7 @@ export class SplatMesh extends THREE.Object3D {
         fileType: options.fileType,
         fileName: options.fileName,
         maxSh: this.maxSh,
+        blindData: options.blindData,
         resolveFile: options.resolveFile,
         postDecode: options.postDecode,
         onProgress: options.onProgress,
@@ -194,8 +196,12 @@ export class SplatMesh extends THREE.Object3D {
       this.matrixWorld,
     );
     if (
-      this.sdfEdits?.update(groups, sdfCoordinateOrigin, shrinkResources)
-        .updated
+      this.sdfEdits?.update(
+        groups,
+        sdfCoordinateOrigin,
+        shrinkResources,
+        source.blindFields,
+      ).updated
     ) {
       // RGBA-only SDF changes preserve centers and their existing sort order.
       updated = true;
@@ -231,7 +237,8 @@ export class SplatMesh extends THREE.Object3D {
       if (edit.sdfs) return { edit, sdfs: edit.sdfs };
       const sdfs = [];
       edit.traverseVisible((node) => {
-        if (node instanceof SplatEditSdf) sdfs.push(node);
+        if (node instanceof SplatEditSdf || node instanceof SplatEditBlind)
+          sdfs.push(node);
       });
       return { edit, sdfs };
     });

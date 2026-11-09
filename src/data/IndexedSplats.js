@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import { SplatOpacityTable } from "./SplatOpacityTable.js";
 import { Splats } from "./Splats.js";
+import {
+  getBlindLayerUpdates,
+  getBlindTextureLayout,
+  getBlindUploadBytes,
+} from "./blindData.js";
+import { getBlindLayoutKey } from "./blindFields.js";
 import { SPLAT_BOUNDS_BLOCK_SIZE, SPLAT_TEX_WIDTH } from "./defines.js";
 import { decodeShRgbToArray } from "./splatCodec.js";
 import {
@@ -39,6 +45,7 @@ export class IndexedSplats extends Splats {
     deferAllocation = false,
     indexedSh = false,
     palette,
+    blindFields = [],
   }) {
     // RAD and SOG supply aligned power-of-two layers.
     if (capacity > 0x1_0000_0000)
@@ -65,6 +72,9 @@ export class IndexedSplats extends Splats {
       this.sourceArrays = storage.sourceArrays;
       this.sourceCenters = storage.sourceCenters;
       this.sourceTextures = storage.sourceTextures;
+      this.extra.blind = storage.extra.blind;
+      this.blindTexture = storage.blindTexture;
+      this.blindFieldGroups = storage.blindFields;
       this.needsUpdate = true;
       return;
     }
@@ -85,6 +95,28 @@ export class IndexedSplats extends Splats {
     if (!deferAllocation)
       for (const array of createSplatTextureArrays(capacity, numSh, indexedSh))
         this.allocateTexture(array);
+    // Streamed regions must match the batch's Blind layout.
+    this.blindFieldGroups = blindFields;
+    if (blindFields.length) {
+      const layout = getBlindTextureLayout(
+        capacity,
+        blindFields.length,
+        layerSize,
+      );
+      const packed = new Uint32Array(layout.maxSplats);
+      this.extra.blind = blindFields.map((fields, index) => ({
+        fields,
+        data: packed.subarray(index * capacity, (index + 1) * capacity),
+      }));
+      this.blindTexture = makeTexture(
+        packed,
+        layout.width,
+        layout.height,
+        layout.depth,
+        THREE.RedIntegerFormat,
+      );
+    }
+    this.blindLayout = getBlindLayoutKey(this.extra.blind);
   }
   /** Create one packed texture from its array, which may come from a worker. */
   allocateTexture(array) {
@@ -161,6 +193,8 @@ export class IndexedSplats extends Splats {
       throw new Error("Invalid streaming Splat SH degree");
     if (!!data.extra.shDegree !== this.indexedSh)
       throw new Error("Streaming SH storage representation mismatch");
+    if (getBlindLayoutKey(data.extra.blind) !== this.blindLayout)
+      throw new Error("Streaming blind field layout mismatch");
     const arrays = [
       ...data.splatArrays,
       ...(this.indexedSh
@@ -184,6 +218,10 @@ export class IndexedSplats extends Splats {
       Math.ceil(count / SPLAT_BOUNDS_BLOCK_SIZE) * 6
     )
       throw new Error("Incorrect spatial bounds block length");
+    for (const { data: array } of data.extra.blind ?? []) {
+      if (!(array instanceof Uint32Array) || array.length < count)
+        throw new Error("Incomplete blind records");
+    }
     this.releaseSpatialBounds(start);
     // Packed data remains caller-owned, as do its spatial bounds.
     const bounds = data.spatialBounds.slice();
@@ -207,16 +245,34 @@ export class IndexedSplats extends Splats {
         this.sourceTextures[index].addLayerUpdate(layer);
       this.sourceTextures[index].needsUpdate = true;
     }
+    const blindTexture = this.blindTexture;
+    this.extra.blind?.forEach((group, index) => {
+      group.data.set(data.extra.blind[index].data.subarray(0, count), start);
+      group.data.fill(0, start + count, start + allocation);
+    });
+    if (blindTexture) {
+      const { width, height } = blindTexture.image;
+      for (const layer of getBlindLayerUpdates(
+        this.maxSplats,
+        this.extra.blind.length,
+        start,
+        allocation,
+        width * height,
+      ))
+        blindTexture.addLayerUpdate(layer);
+      blindTexture.needsUpdate = true;
+    }
     this.needsUpdate = true;
     this.uploadQueue?.add(this);
   }
   /** Remaining dirty layers; successful uploads clear them in the renderer. */
   get pendingUploadBytes() {
     let bytes = 0;
-    for (const texture of this.sourceTextures)
-      bytes +=
-        (texture.layerUpdates.size * texture.image.data.byteLength) /
-        texture.image.depth;
+    for (const texture of [...this.sourceTextures, this.blindTexture])
+      if (texture)
+        bytes +=
+          (texture.layerUpdates.size * texture.image.data.byteLength) /
+          texture.image.depth;
     return bytes;
   }
   /** Additional upload bytes for layers in [firstLayer, lastLayer). */
@@ -226,12 +282,22 @@ export class IndexedSplats extends Splats {
       for (let layer = firstLayer; layer < lastLayer; layer++)
         if (!texture.layerUpdates.has(layer))
           bytes += texture.image.data.byteLength / texture.image.depth;
-    return bytes;
+    return (
+      bytes +
+      getBlindUploadBytes(
+        this.maxSplats,
+        this.blindFieldGroups.length,
+        this.layerSize,
+        firstLayer,
+        lastLayer,
+        this.blindTexture?.layerUpdates,
+      )
+    );
   }
   /** Upload written layers now, including storage not yet in the scene. */
   uploadPending(renderer) {
-    for (const texture of this.sourceTextures)
-      if (texture.layerUpdates.size > 0) renderer.initTexture(texture);
+    for (const texture of [...this.sourceTextures, this.blindTexture])
+      if (texture?.layerUpdates.size) renderer.initTexture(texture);
   }
   getStorageIndex(index) {
     this.assertLive();
@@ -258,6 +324,7 @@ export class IndexedSplats extends Splats {
     // A view's records and opacity groups count toward its storage.
     if (!this.storage) {
       for (const array of this.sourceArrays) bytes += array.byteLength;
+      bytes += this.blindTexture?.image.data.byteLength ?? 0;
       bytes += this.opacities.byteLength + (this.palette?.byteLength ?? 0);
     }
     return bytes;
@@ -378,7 +445,7 @@ export class IndexedSplats extends Splats {
     this.assertLive();
     this.ensureIndices();
     const count = this.numSplats;
-    const arrays = this.sourceArrays.map((source) => {
+    const gather = (source) => {
       const stride = source.length / this.maxSplats;
       const target = new Uint32Array(count * stride);
       for (let index = 0; index < count; index++) {
@@ -387,7 +454,8 @@ export class IndexedSplats extends Splats {
           target[index * stride + word] = source[offset + word];
       }
       return target;
-    });
+    };
+    const arrays = this.sourceArrays.map(gather);
     const data = {
       numSplats: count,
       splatArrays: [arrays[0], arrays[1]],
@@ -402,6 +470,11 @@ export class IndexedSplats extends Splats {
             arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
           ),
     };
+    if (this.extra.blind?.length)
+      data.extra.blind = this.extra.blind.map(({ fields, data }) => ({
+        fields,
+        data: gather(data),
+      }));
     this.dispose();
     return data;
   }
@@ -440,7 +513,10 @@ export class IndexedSplats extends Splats {
   dispose() {
     if (this.disposed) return;
     // Views borrow their input's palette; owners release it through Splats.
-    if (this.storage) this.palette = undefined;
+    if (this.storage) {
+      this.palette = undefined;
+      this.blindTexture = undefined;
+    }
     super.dispose();
     if (this.indexTexture !== Splats.emptyTexture)
       disposeDataTexture(this.indexTexture);

@@ -1,6 +1,6 @@
 import type { Box3 } from "three";
 import { IndexedSplats } from "./IndexedSplats.js";
-import type { ReorderedSplatResult } from "./defines.js";
+import type { ReorderedSplatResult, SplatBlindField } from "./defines.js";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 import type { ShPalette } from "./shPalette.js";
 
@@ -15,7 +15,12 @@ export declare class SogRegionSplats extends IndexedSplats {
   private indicesDirty;
   private boundsDirty;
   private readonly regionBounds;
-  constructor(count: number, numSh: number, palette?: ShPalette);
+  constructor(
+    count: number,
+    numSh: number,
+    palette?: ShPalette,
+    blindFields?: SplatBlindField[][],
+  );
   write(start: number, data: ReorderedSplatResult): void;
   setOpacity(
     start: number,

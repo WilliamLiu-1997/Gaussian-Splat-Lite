@@ -37,9 +37,16 @@ export class ChunkSource {
 }
 /** Dedicated LOD worker, bounded decoders and retained chunk cache handles. */
 export class ChunkStreamLoader {
-  constructor(maxConcurrentLoads, maxSh, onChange, format = "sog") {
+  constructor(
+    maxConcurrentLoads,
+    maxSh,
+    onChange,
+    format = "sog",
+    blindData = true,
+  ) {
     this.format = format;
     this.maxSh = maxSh;
+    this.blindData = blindData;
     this.controller = new AbortController();
     this.sources = new Map();
     this.downloadedBytes = 0;
@@ -160,6 +167,7 @@ export class ChunkStreamLoader {
               id,
               data: custom.takeData(),
               maxSh: this.maxSh,
+              blindData: this.blindData,
             });
           } finally {
             custom.dispose();
@@ -187,6 +195,7 @@ export class ChunkStreamLoader {
                       .pop()
                       .toLowerCase(),
               maxSh: this.maxSh,
+              blindData: this.blindData,
               requestHeader: sameOrigin ? options.requestHeader : undefined,
               withCredentials: sameOrigin && options.withCredentials,
               expectedSogCount:

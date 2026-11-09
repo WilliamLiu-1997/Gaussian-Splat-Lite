@@ -1,5 +1,7 @@
 import { decode_to_splats } from "gaussian-splat-rs";
+import { packBlindData } from "../data/blindData.js";
 import { packShPalette } from "../data/shPaletteData.js";
+import { getTextureSize } from "../data/textureLayout.js";
 import { abortable } from "../runtime/abort.js";
 import { wasmCall, wasmFree } from "../runtime/wasmCall.js";
 import { getAssetBaseUrl } from "./assetUrl.js";
@@ -135,6 +137,7 @@ async function decodeInput(args) {
         const streamingArgs = {
           expectedSogCount: args.expectedSogCount,
           maxSh: args.maxSh,
+          blindData: args.blindData,
           readChunk: async () => pending.shift() ?? readInputChunk(),
           baseUrl: getAssetBaseUrl(responseUrl) ?? baseUrl,
           requestHeader: crossOrigin ? undefined : requestHeader,
@@ -232,6 +235,10 @@ export async function decodeSplats(args, { sendStatus }) {
     splatArrays: [decoded.splat0, decoded.splat1],
     sortCenters: decoded.sortCenters,
     extra: {
+      blind: decoded.blindData?.map((data, index) => ({
+        fields: decoded.blind[index].fields,
+        data,
+      })),
       shPalette: decoded.shPalette
         ? packShPalette(decoded.shPalette, decoded.shDegree)
         : undefined,
@@ -257,6 +264,11 @@ export async function loadSplats(args, options) {
       "optimize",
     ),
   });
+  packBlindData(
+    data.extra.blind,
+    data.numSplats,
+    getTextureSize(data.splatArrays[0].length / 4).maxSplats,
+  );
   return data;
 }
 let assetRequestId = 0;

@@ -12,6 +12,10 @@ export function extractSplatRange(source, start, count) {
   const copy = (array) => array.slice(start * 4, (start + count) * 4);
   // Regions reference their chunk's shared palette; they never carry it.
   const extra = {
+    blind: source.extra.blind?.map(({ fields, data }) => ({
+      fields,
+      data: data.slice(start, start + count),
+    })),
     shDegree: source.extra.shDegree,
     shLabels: source.extra.shLabels?.slice(start, start + count),
   };

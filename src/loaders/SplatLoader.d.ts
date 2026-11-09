@@ -10,6 +10,8 @@ type SplatLoadOptions = Omit<SplatDataLoadOptions, "onLoad"> & {
 export declare class SplatLoader extends Loader {
   /** Maximum SH degree to decode and store for subsequent loads, 0–4. Defaults to 4. */
   maxSh: number;
+  /** Load SOG v3 Blind data in subsequent loads; false skips its decoding and storage. Defaults to true. */
+  blindData: boolean;
   private readonly requests;
   abort(): this;
   load(

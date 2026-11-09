@@ -16,6 +16,7 @@ export declare enum SplatFileType {
   RAD = "rad",
 }
 export type SplatExtra = {
+  blind?: SplatBlindTexture[];
   /** Shared SH entries in texture tile order, addressed by one uint32 label per splat. */
   shPalette?: Uint32Array;
   shLabels?: Uint32Array;
@@ -26,6 +27,15 @@ export type SplatExtra = {
   shBlock3?: Uint32Array;
   shBlock4?: Uint32Array;
   shBlock5?: Uint32Array;
+};
+export type SplatBlindField = {
+  name: string;
+  type: "u8" | "u16" | "u24" | "u32" | "f16" | "f32" | "unorm8" | "unorm16";
+  range?: [number, number];
+};
+export type SplatBlindTexture = {
+  fields: SplatBlindField[];
+  data: Uint32Array;
 };
 /** Morton storage records per cached spatial bounds block. */
 export declare const SPLAT_BOUNDS_BLOCK_SIZE = 256;

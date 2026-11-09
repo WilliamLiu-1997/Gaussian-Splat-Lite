@@ -15,6 +15,8 @@ export type SplatMeshOptions = {
   fileName?: string;
   /** Fixed SH limit 0–4 (default 4). Also caps storage when loading a file; existing Splats are unchanged. */
   maxSh?: number;
+  /** Load SOG v3 Blind data for SplatEditBlind (default true); false skips its decoding and storage. */
+  blindData?: boolean;
   resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
   postDecode?: SplatPostDecodeProgram;

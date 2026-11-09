@@ -60,6 +60,7 @@ export {
   SplatEdits,
   type SplatEditGroup,
   type SplatEditOptions,
+  type SplatEditSelection,
   type SplatEditSdfColor,
   type SplatEditSdfOptions,
 } from "./scene/SplatEdit.js";
@@ -73,3 +74,8 @@ export { fromHalf, toHalf } from "./utils/index.js";
 export * as utils from "./utils/index.js";
 export { SplatFileType } from "./data/defines.js";
 export * as defines from "./data/defines.js";
+
+export {
+  SplatEditBlind,
+  type SplatEditBlindOptions,
+} from "./scene/SplatEditBlind.js";

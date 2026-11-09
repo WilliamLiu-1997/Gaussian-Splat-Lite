@@ -39,6 +39,8 @@ scene.add(edit);
 
 A mesh created with `editable: false` ignores edits. Edits also work on [streamed scenes](RadStreamScheduler.md).
 
+Use [SplatEditBlind](SplatEditBlind.md) to select a SOG v3 field by value or range instead of a spatial shape. It shares the same blend modes, inversion, soft edges, smoothing, and attachment rules.
+
 ## SplatEdit options
 
 | Option | Type | Default | Description |
@@ -48,7 +50,7 @@ A mesh created with `editable: false` ignores edits. Edits also work on [streame
 | `softEdge` | `number` | `0` | Soften the edge of the edited region; `0` gives a hard edge |
 | `sdfSmooth` | `number` | `0` | Blend neighboring shapes into each other smoothly |
 | `invert` | `boolean` | `false` | Affect the outside of the shapes instead of the inside |
-| `sdfs` | `SplatEditSdf[]` | `null` | Explicit list of shapes, instead of using child objects |
+| `sdfs` | `(SplatEditSdf \| SplatEditBlind)[]` | `null` | Explicit list of selections, instead of using child objects |
 
 Shapes are normally children of the edit: use `edit.add(sdf)` and `edit.remove(sdf)`. If you set an explicit `sdfs` list, it is used instead of the children; manage it with `edit.addSdf(sdf)`, which skips duplicates, and `edit.removeSdf(sdf)`.
 

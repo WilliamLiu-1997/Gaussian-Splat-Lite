@@ -3,6 +3,8 @@ import type { SogBudgetMode } from "../sog-stream/sogLod.js";
 import type { StreamSchedulerOptions, StreamStats } from "../streamOptions.js";
 import type { ChunkStreamSourceOptions } from "./ChunkStreamLoader.js";
 export type ChunkStreamSchedulerOptions = StreamSchedulerOptions & {
+  /** Load SOG v3 Blind data for SplatEditBlind; false skips its decoding and storage with the built-in loader. Defaults to true. */
+  blindData?: boolean;
   /** Defaults to "target". "limit" caps detail at the configured distance bands. */
   splatBudgetMode?: SogBudgetMode;
   /** Default base LOD distance in world units; defaults to 100. In "target" mode it only sets inputs' relative detail. Must be finite and positive. */

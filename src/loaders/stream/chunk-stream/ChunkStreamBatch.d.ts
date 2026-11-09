@@ -1,5 +1,8 @@
 import type * as THREE from "three";
-import type { ReorderedSplatResult } from "../../../data/defines.js";
+import type {
+  ReorderedSplatResult,
+  SplatBlindField,
+} from "../../../data/defines.js";
 import type { ShPalette } from "../../../data/shPalette.js";
 import { SplatMesh } from "../../../scene/SplatMesh.js";
 
@@ -15,6 +18,7 @@ export declare class ChunkStreamBatch extends SplatMesh {
     group: THREE.Group,
     onEmpty: () => void,
     palette?: ShPalette,
+    blindFields?: SplatBlindField[][],
   );
   writeRegion(start: number, data: ReorderedSplatResult): void;
   setRegionOpacity(start: number, opacity: number): void;

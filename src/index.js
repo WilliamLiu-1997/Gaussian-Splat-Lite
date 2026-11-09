@@ -21,3 +21,5 @@ export { fromHalf, toHalf } from "./utils/index.js";
 export * as utils from "./utils/index.js";
 export { SplatFileType } from "./data/defines.js";
 export * as defines from "./data/defines.js";
+
+export { SplatEditBlind } from "./scene/SplatEditBlind.js";

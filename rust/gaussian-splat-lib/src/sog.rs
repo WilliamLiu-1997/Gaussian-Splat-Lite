@@ -2,6 +2,7 @@
 //! Only the current property group and packed SH palette remain in the decoder.
 use std::{
     array,
+    collections::HashSet,
     io::{Cursor, Read},
 };
 
@@ -90,10 +91,12 @@ struct Metadata {
     degree: usize,
     palette_count: usize,
     groups: Vec<(&'static str, Vec<String>)>,
+    blind: Vec<Value>,
+    warnings: Vec<String>,
 }
 
 impl Metadata {
-    fn parse(text: &str) -> Result<Self> {
+    fn parse(text: &str, keep_blind: bool) -> Result<Self> {
         let root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .context("invalid meta.json")?;
         let version = match root.get("version") {
@@ -205,6 +208,14 @@ impl Metadata {
             groups.insert(0, ("centroids", vec![names[0].clone()]));
             groups.push(("labels", vec![names[1].clone()]));
         }
+        let mut warnings = Vec::new();
+        let mut blind = Vec::new();
+        if keep_blind {
+            for (texture, file) in blind_textures(&root, version, &mut warnings) {
+                blind.push(texture);
+                groups.push(("blind", vec![file]));
+            }
+        }
         Ok(Self {
             version,
             count,
@@ -222,8 +233,95 @@ impl Metadata {
             degree,
             palette_count,
             groups,
+            blind,
+            warnings,
         })
     }
+}
+
+/// Blind textures hold optional application data: an invalid one is skipped
+/// with a warning instead of failing the whole model.
+fn blind_textures(
+    root: &Value,
+    version: usize,
+    warnings: &mut Vec<String>,
+) -> Vec<(Value, String)> {
+    let Some(value) = root.get("blind") else {
+        return Vec::new();
+    };
+    if version != 3 {
+        warnings.push("blind data requires SOG v3; ignored".to_owned());
+        return Vec::new();
+    }
+    let Some(textures) = value.as_array() else {
+        warnings.push("blind must be an array; ignored".to_owned());
+        return Vec::new();
+    };
+    let mut names = HashSet::new();
+    let mut kept = Vec::new();
+    for (index, texture) in textures.iter().enumerate() {
+        match blind_texture(texture) {
+            Ok((file, ids)) if ids.iter().all(|id| !names.contains(id)) => {
+                names.extend(ids);
+                kept.push((texture.clone(), file));
+            }
+            Ok(_) => warnings.push(format!(
+                "blind texture {index} repeats a field name; ignored"
+            )),
+            Err(error) => warnings.push(format!("blind texture {index}: {error}; ignored")),
+        }
+    }
+    kept
+}
+
+/// Validates one texture; returns its image name and its fields' identifiers.
+fn blind_texture(texture: &Value) -> Result<(String, Vec<String>)> {
+    let files = texture["files"]
+        .as_array()
+        .context("files must be an array")?;
+    let file = match files.as_slice() {
+        [file] => file.as_str().filter(|s| !s.is_empty()),
+        _ => None,
+    }
+    .context("files must name one image")?;
+    let fields = texture["fields"]
+        .as_array()
+        .context("fields must be an array")?;
+    ensure!(!fields.is_empty(), "fields must not be empty");
+    let mut bytes = 0;
+    let mut ids = Vec::new();
+    for field in fields {
+        let name = field["name"]
+            .as_str()
+            .context("field name must be a string")?;
+        // The SOG v3 proposal requires names to stay distinct as shader identifiers.
+        let id = name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("_");
+        ensure!(
+            !id.is_empty() && !ids.contains(&id),
+            "empty or repeated field name {name}"
+        );
+        ids.push(id);
+        let kind = field["type"]
+            .as_str()
+            .context("field type must be a string")?;
+        bytes += match kind {
+            "u8" | "unorm8" => 1,
+            "u16" | "f16" | "unorm16" => 2,
+            "u24" => 3,
+            "u32" | "f32" => 4,
+            _ => bail!("unsupported field type {kind}"),
+        };
+        if let Some(range) = field.get("range") {
+            let [min, max] = numbers::<2>(range, "field range")?;
+            ensure!(min <= max && (max - min).is_finite(), "invalid field range");
+        }
+    }
+    ensure!(bytes <= 4, "fields exceed four bytes");
+    Ok((file.to_owned(), ids))
 }
 
 struct Image {
@@ -358,12 +456,14 @@ pub struct SogDecoder<T: SplatReceiver> {
     positions: Vec<f32>,
     floats: Vec<f32>,
     labels: Vec<u32>,
+    blind_index: usize,
 }
 
 impl<T: SplatReceiver> SogDecoder<T> {
-    pub fn new(splats: T, metadata: &str, max_sh: usize) -> Result<Self> {
+    /// `blind: false` skips Blind textures, so their images are never planned or decoded.
+    pub fn new(splats: T, metadata: &str, max_sh: usize, blind: bool) -> Result<Self> {
         ensure!(max_sh <= 4, "maxSh must be between 0 and 4");
-        let mut meta = Metadata::parse(metadata)?;
+        let mut meta = Metadata::parse(metadata, blind)?;
         if max_sh == 0 {
             meta.groups
                 .retain(|(role, _)| !matches!(*role, "centroids" | "labels"));
@@ -381,6 +481,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
             positions: Vec::new(),
             floats: Vec::new(),
             labels: Vec::new(),
+            blind_index: 0,
         })
     }
 
@@ -390,6 +491,15 @@ impl<T: SplatReceiver> SogDecoder<T> {
             .iter()
             .map(|(_, files)| files.as_slice())
             .collect()
+    }
+
+    pub fn blind_metadata(&self) -> &[Value] {
+        &self.meta.blind
+    }
+
+    /// Metadata problems that were skipped instead of failing the load.
+    pub fn warnings(&self) -> &[String] {
+        &self.meta.warnings
     }
 
     pub fn finish(&mut self) -> Result<()> {
@@ -509,6 +619,13 @@ impl<T: SplatReceiver> SogDecoder<T> {
         let splats = &mut self.splats;
         let image = &self.images[0];
         match role {
+            "blind" => {
+                self.labels.resize(count, 0);
+                for (i, word) in self.labels.iter_mut().enumerate() {
+                    *word = u32::from_le_bytes(array::from_fn(|d| image.channel(self.base + i, d)));
+                }
+                splats.set_blind(self.blind_index, self.base, &self.labels);
+            }
             "means" => {
                 let (mins, maxs) = self.meta.means;
                 let position = |d: usize, code: usize| {
@@ -612,6 +729,9 @@ impl<T: SplatReceiver> SogDecoder<T> {
         }
         self.base += count;
         if self.base == self.meta.count {
+            if role == "blind" {
+                self.blind_index += 1;
+            }
             self.images.clear();
             self.positions = Vec::new();
             self.base = 0;

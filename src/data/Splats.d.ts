@@ -6,6 +6,7 @@ import type {
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program.js";
 import type {
   ReorderedSplatResult,
+  SplatBlindField,
   SplatFileType,
   SplatResult,
 } from "./defines.js";
@@ -25,6 +26,8 @@ export type SplatsOptions = {
   fileName?: string;
   /** Maximum SH degree to decode and store, 0–4. Defaults to 4. */
   maxSh?: number;
+  /** Load SOG v3 Blind data for SplatEditBlind; false skips its decoding and storage. Defaults to true. */
+  blindData?: boolean;
   /** Resolve external SOG images or RAD chunks by metadata filename. */
   resolveFile?: SplatFileResolver;
   /** Declarative per-splat transform executed in the decode worker. */
@@ -48,6 +51,8 @@ export declare class Splats {
   needsUpdate: boolean;
   private textures;
   private shTextures;
+  protected blindTexture?: THREE.DataArrayTexture;
+  protected blindFieldGroups: SplatBlindField[][];
   private loadController?;
   constructor(options?: SplatsOptions);
   initialize(options?: SplatsOptions): Promise<Splats>;
@@ -61,6 +66,10 @@ export declare class Splats {
   /** @internal Copy cached local bounds into the target box. */
   getBoundingBox(centersOnly?: boolean, target?: THREE.Box3): THREE.Box3;
   getNumSh(): 0 | 1 | 2 | 3 | 4;
+  /** SOG v3 field definitions, grouped by their packed texture. */
+  get blindFields(): SplatBlindField[][];
+  /** @internal Packed SOG application data. */
+  getBlindTexture(): THREE.DataArrayTexture | undefined;
   /** Current retained bytes for encoded Splat, sort-center, and SH arrays. */
   getByteLength(): number;
   /** @internal Consume owned arrays for transfer to a streaming worker. */

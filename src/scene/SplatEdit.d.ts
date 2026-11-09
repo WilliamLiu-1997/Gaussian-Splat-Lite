@@ -1,4 +1,7 @@
 import * as THREE from "three";
+import type { SplatBlindField } from "../data/defines.js";
+import type { SplatEditBlind } from "./SplatEditBlind.js";
+export type SplatEditSelection = SplatEditSdf | SplatEditBlind;
 export declare enum SplatEditSdfType {
   ALL = "all",
   PLANE = "plane",
@@ -9,7 +12,7 @@ export declare enum SplatEditSdfType {
   CAPSULE = "capsule",
   INFINITE_CONE = "infinite_cone",
 }
-/** RGBA-only operations supported by the SDF pipeline. */
+/** RGBA-only operations supported by the edit pipeline. */
 export declare enum SplatEditRgbaBlendMode {
   MULTIPLY_RGBA = "multiply_rgba",
   SET_RGBA = "set_rgba",
@@ -42,27 +45,28 @@ export type SplatEditOptions = {
   sdfSmooth?: number;
   softEdge?: number;
   invert?: boolean;
-  sdfs?: SplatEditSdf[];
+  sdfs?: SplatEditSelection[];
 };
-/** An ordered RGBA operation evaluated over one or more SDF shapes. */
+/** An ordered RGBA operation evaluated over SDF shapes or Blind selections. */
 export declare class SplatEdit extends THREE.Object3D {
   ordering: number;
   rgbaBlendMode: SplatEditRgbaBlendMode;
   sdfSmooth: number;
   softEdge: number;
   invert: boolean;
-  sdfs: SplatEditSdf[] | null;
+  sdfs: SplatEditSelection[] | null;
   static nextOrdering: number;
   constructor(options?: SplatEditOptions);
-  addSdf(sdf: SplatEditSdf): void;
-  removeSdf(sdf: SplatEditSdf): void;
+  addSdf(sdf: SplatEditSelection): void;
+  removeSdf(sdf: SplatEditSelection): void;
 }
 export type SplatEditGroup = {
   edit: SplatEdit;
-  sdfs: SplatEditSdf[];
+  sdfs: SplatEditSelection[];
 };
 /** Encodes SDF geometry/RGBA and edit operations as regular integer textures. */
 export declare class SplatEdits {
+  hasBlind: boolean;
   maxSdfs: number;
   numSdfs: number;
   sdfData: Uint32Array;
@@ -83,6 +87,7 @@ export declare class SplatEdits {
     groups: SplatEditGroup[],
     coordinateOrigin?: THREE.Vector3,
     shrinkResources?: boolean,
+    blindFields?: SplatBlindField[][],
   ): {
     updated: boolean;
   };

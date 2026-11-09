@@ -2,7 +2,11 @@ import type * as THREE from "three";
 import type { GaussianSplatCompatibleRenderer } from "../rendering/rendererUtils.js";
 import type { SplatOpacityTable } from "./SplatOpacityTable.js";
 import { Splats, type SplatsOptions } from "./Splats.js";
-import type { ReorderedSplatResult, SplatResult } from "./defines.js";
+import type {
+  ReorderedSplatResult,
+  SplatBlindField,
+  SplatResult,
+} from "./defines.js";
 import type { PendingUploads } from "./pendingUploads.js";
 import type { ShPalette } from "./shPalette.js";
 import type { decodeSplat } from "./unpack.js";
@@ -16,6 +20,7 @@ type IndexedSplatsOptions =
       packedOpacityGroups?: boolean;
       indexedSh?: boolean;
       palette?: ShPalette;
+      blindFields?: SplatBlindField[][];
       /** Internal: attach packed textures after their arrays are ready. */
       deferAllocation?: boolean;
       storage?: never;
@@ -42,6 +47,7 @@ export declare abstract class IndexedSplats extends Splats {
   private sourceTextures;
   private indexTexture;
   private readonly blockBits;
+  private readonly blindLayout;
   private disposed;
   /** Owner's pending-upload queue; written layers wait there for the renderer. */
   uploadQueue?: PendingUploads;

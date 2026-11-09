@@ -34,7 +34,10 @@ export function reorderSplats(
       bounds,
       boundsBlocks,
       spatialBounds,
-      data.extra.shLabels,
+      [
+        data.extra.shLabels,
+        ...(data.extra.blind ?? []).map(({ data }) => data),
+      ].filter(Boolean),
       onProgress,
     ),
   );
@@ -66,6 +69,7 @@ export function restoreSplatOrder(data) {
     if (array) permute(array);
   }
   if (data.extra.shLabels) permute(data.extra.shLabels, 1);
+  for (const { data: array } of data.extra.blind ?? []) permute(array, 1);
   data.storageOrder = undefined;
 }
 /** Original index to storage index; chunk ranges require a complete permutation. */

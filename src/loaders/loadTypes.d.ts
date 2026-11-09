@@ -17,6 +17,8 @@ export type SplatRequestOptions = {
 /** Format loaders share transport and resolver inputs; decoding stays format-specific. */
 export type SplatSourceArgs = SplatRequestOptions & {
   maxSh?: number;
+  /** Load SOG v3 Blind data; false skips its decoding and storage. Defaults to true. */
+  blindData?: boolean;
   url?: string;
   file?: Blob;
   fileBytes?: Uint8Array;
@@ -42,6 +44,8 @@ export type SplatLoadArgs = SplatRequestOptions & {
   expectedSogCount?: number;
   /** Maximum SH degree to decode and store, 0–4. Defaults to the format's maximum. */
   maxSh?: number;
+  /** Load SOG v3 Blind data; false skips its decoding and storage. Defaults to true. */
+  blindData?: boolean;
   hasFileResolver?: boolean;
   /** Request processing progress; streaming loaders only track downloaded bytes. */
   reportProcessingProgress?: boolean;

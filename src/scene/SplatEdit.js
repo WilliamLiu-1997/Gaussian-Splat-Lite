@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { emptyUintTexture } from "../data/textureLayout.js";
 import { rebaseAffineTransform } from "../utils/transforms.js";
+import {
+  BLIND_ACTIVE,
+  SplatEditBlind,
+  encodeBlindSelection,
+} from "./SplatEditBlind.js";
 export const SplatEditSdfType = {
   ALL: "all",
   PLANE: "plane",
@@ -11,7 +16,7 @@ export const SplatEditSdfType = {
   CAPSULE: "capsule",
   INFINITE_CONE: "infinite_cone",
 };
-/** RGBA-only operations supported by the SDF pipeline. */
+/** RGBA-only operations supported by the edit pipeline. */
 export const SplatEditRgbaBlendMode = {
   MULTIPLY_RGBA: "multiply_rgba",
   SET_RGBA: "set_rgba",
@@ -28,7 +33,7 @@ export class SplatEditSdf extends THREE.Object3D {
     this.radius = options.radius ?? 0;
   }
 }
-/** An ordered RGBA operation evaluated over one or more SDF shapes. */
+/** An ordered RGBA operation evaluated over SDF shapes or Blind selections. */
 export class SplatEdit extends THREE.Object3D {
   static nextOrdering = 1;
   constructor(options = {}) {
@@ -64,6 +69,7 @@ const scratchMatrix = new THREE.Matrix4();
 /** Encodes SDF geometry/RGBA and edit operations as regular integer textures. */
 export class SplatEdits {
   constructor({ maxSdfs = 0, maxEdits = 0 } = {}) {
+    this.hasBlind = false;
     this.numSdfs = 0;
     this.numEdits = 0;
     this.maxSdfs = Math.max(MIN_CAPACITY, maxSdfs);
@@ -77,7 +83,8 @@ export class SplatEdits {
     this.sdfTexture.dispose();
     this.editTexture.dispose();
   }
-  update(groups, coordinateOrigin, shrinkResources = false) {
+  update(groups, coordinateOrigin, shrinkResources = false, blindFields = []) {
+    this.hasBlind = false;
     const sdfCount = groups.reduce(
       (total, group) => total + group.sdfs.length,
       0,
@@ -98,6 +105,15 @@ export class SplatEdits {
       editUpdated =
         this.encodeEdit(editIndex, edit, sdfIndex, sdfs.length) || editUpdated;
       for (const sdf of sdfs) {
+        if (sdf instanceof SplatEditBlind) {
+          const record = encodeBlindSelection(sdf, blindFields);
+          this.hasBlind ||= (record[3] & BLIND_ACTIVE) !== 0;
+          const base = sdfIndex++ * SDF_TEXELS * 4;
+          for (let word = 0; word < record.length; word++)
+            sdfUpdated =
+              this.setSdfUint(base + word, record[word]) || sdfUpdated;
+          continue;
+        }
         sdf.updateWorldMatrix(true, false);
         worldToSdf.copy(sdf.matrixWorld);
         // These shapes already use scale as dimensions. Preserve their
@@ -177,7 +193,8 @@ export class SplatEdits {
     updated =
       this.setEditUint(base + 1, sdfFirst | (sdfCount << 16)) || updated;
     updated = this.setEditFloat(base + 2, edit.softEdge) || updated;
-    updated = this.setEditFloat(base + 3, edit.sdfSmooth) || updated;
+    updated =
+      this.setEditFloat(base + 3, sdfCount > 1 ? edit.sdfSmooth : 0) || updated;
     return updated;
   }
   encodeSdf(index, sdf, matrix, distanceScale, sizes) {

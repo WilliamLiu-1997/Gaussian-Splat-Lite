@@ -197,6 +197,13 @@ export class SplatAccumulator {
       THREE.MathUtils.clamp(mesh.opacity, 0, 1),
     );
     const edits = mesh.sdfEdits;
+    const blind =
+      (edits?.hasBlind && source.getBlindTexture()) || emptySplatTexture;
+    uniforms.blindTexture.value = blind;
+    uniforms.blindStride.value = source.maxSplats;
+    const blindBits = 11 + Math.ceil(Math.log2(blind.image.height));
+    uniforms.blindLayerBits.value = blindBits;
+    uniforms.blindLayerMask.value = 2 ** blindBits - 1;
     uniforms.numSdfs.value = edits?.numSdfs ?? 0;
     uniforms.numEdits.value = edits?.numEdits ?? 0;
     uniforms.sdfTexture.value = edits?.sdfTexture ?? SplatEdits.emptyTexture;

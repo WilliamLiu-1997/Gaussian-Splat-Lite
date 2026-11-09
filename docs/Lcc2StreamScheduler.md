@@ -41,6 +41,8 @@ To display a streamed scene:
 
 Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only. Read a hit with `hit.object.splats.getSplat(hit.index)` before the streaming selection updates.
 
+Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields in current and future chunks. Set `blindData: false` if you do not need them: Blind data otherwise adds upload and memory cost to every chunk.
+
 ## Detail and loading
 
 Each region uses its own LOD data or is replaced by its children. Coarse data establishes coverage while finer data loads. A replacement is shown after all its regions are ready; loaded finer data can remain visible while a coarser replacement loads. Changes fade over `fadeDurationMs`.
@@ -119,6 +121,7 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | --- | --- | --- |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
 | `maxSh` | `4` | Maximum SH degree to decode and store, an integer from `0` to `4`. Set at creation; `0` keeps only the base color |
+| `blindData` | `true` | Load SOG v3 Blind data for [SplatEditBlind](SplatEditBlind.md). Set at creation; `false` skips its decoding and storage with the built-in loader |
 | `splatBudgetMode` | `"target"` | `"target"` refines detail across inputs toward the budget. `"limit"` caps detail at the configured distance bands and reduces it when needed to fit the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |

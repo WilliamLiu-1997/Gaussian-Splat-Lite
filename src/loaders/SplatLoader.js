@@ -8,6 +8,7 @@ export class SplatLoader extends Loader {
   constructor(...args) {
     super(...args);
     this.maxSh = 4;
+    this.blindData = true;
     this.requests = new Set();
   }
   abort() {
@@ -36,6 +37,7 @@ export class SplatLoader extends Loader {
         {
           ...options,
           maxSh: options.maxSh ?? this.maxSh,
+          blindData: options.blindData ?? this.blindData,
           signal: request.signal,
           onLoad: (decoded) => {
             result = splats ?? new Splats();

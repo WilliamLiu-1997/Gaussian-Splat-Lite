@@ -119,6 +119,8 @@ pub trait SplatReceiver: 'static {
     fn set_center(&mut self, base: usize, count: usize, center: &[f32]);
     fn set_opacity(&mut self, base: usize, count: usize, opacity: &[f32]);
     fn set_rgb(&mut self, base: usize, count: usize, rgb: &[f32]);
+    /// SOG application data: one little-endian RGBA8 word per Gaussian.
+    fn set_blind(&mut self, _texture: usize, _base: usize, _words: &[u32]) {}
     /// Reads point-major RGB half bits, allowing packed receivers to copy them directly.
     fn set_rgb_f16(&mut self, base: usize, count: usize, rgb: &[u16]) {
         let values: Vec<f32> = rgb

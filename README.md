@@ -197,6 +197,7 @@ Keep the index and its companion files together. See [LCC2 streaming](docs/Lcc2S
 - [SplatFileType](docs/SplatFileType.md) — PLY, SPZ, SOG, and RAD formats.
 - [postDecode](docs/PostDecode.md) — Change Splats while a model loads.
 - [SplatEdit and SplatEditSdf](docs/SplatEdit.md) — Recolor, fade, or hide parts of a model.
+- [SplatEditBlind](docs/SplatEditBlind.md) — Select SOG v3 Blind fields to recolor, fade, or hide Gaussians.
 - [Splats](docs/Splats.md) — Read a loaded model's data.
 
 **Large scenes**

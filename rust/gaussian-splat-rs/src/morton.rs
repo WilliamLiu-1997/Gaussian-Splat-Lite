@@ -167,7 +167,7 @@ pub fn morton_reorder(
     bounds: Float32Array,
     bounds_blocks: Option<Float32Array>,
     spatial_bounds: Float32Array,
-    sh_labels: Option<Uint32Array>,
+    scalar_arrays: Array,
     progress: Option<Function>,
 ) -> Result<(), JsValue> {
     let words = count
@@ -175,6 +175,10 @@ pub fn morton_reorder(
         .ok_or_else(|| js_sys::Error::new("Morton record count exceeds the array limit"))?;
     let block_count = (count as usize).div_ceil(BOUNDS_BLOCK_SIZE);
     let arrays = arrays
+        .iter()
+        .map(|array| array.dyn_into::<Uint32Array>())
+        .collect::<Result<Vec<_>, _>>()?;
+    let scalar_arrays = scalar_arrays
         .iter()
         .map(|array| array.dyn_into::<Uint32Array>())
         .collect::<Result<Vec<_>, _>>()?;
@@ -199,9 +203,7 @@ pub fn morton_reorder(
         || sort_centers
             .as_ref()
             .is_some_and(|array| array.length() < count * 3)
-        || sh_labels
-            .as_ref()
-            .is_some_and(|array| array.length() < count)
+        || scalar_arrays.iter().any(|array| array.length() < count)
         || storage_order
             .as_ref()
             .is_some_and(|array| array.length() < count)
@@ -218,7 +220,7 @@ pub fn morton_reorder(
         + arrays.len()
         + usize::from(sort_centers.is_some())
         + usize::from(storage_order.is_some())
-        + usize::from(sh_labels.is_some())
+        + scalar_arrays.len()
         + 1) as f64
         * work_count;
     let progress = progress.as_ref();
@@ -313,7 +315,7 @@ pub fn morton_reorder(
         completed += work_count;
         report_progress(progress, completed, total)?;
     }
-    if let Some(labels) = sh_labels {
+    for labels in scalar_arrays {
         let size = count as usize;
         let labels = labels.subarray(0, count);
         labels.copy_to(&mut source[..size]);

@@ -137,7 +137,9 @@ export function createChunkStreamHandlers(decodeSplats) {
     }
     return result;
   }
-  function cacheChunk({ id, data, maxSh }) {
+  function cacheChunk({ id, data, maxSh, blindData = true }) {
+    // Custom loaders may return Blind data this scheduler skips.
+    if (!blindData) data.extra.blind = undefined;
     // Custom loaders may return higher SH than this scheduler retains.
     for (const key of SH_KEYS.slice(SH_ARRAY_COUNTS[maxSh]))
       delete data.extra[key];
@@ -167,6 +169,7 @@ export function createChunkStreamHandlers(decodeSplats) {
       byteLength: getSplatByteLength(data),
       shPalette,
       shDegree: data.extra.shDegree,
+      blindTextureCount: data.extra.blind?.length ?? 0,
     };
   }
   async function loadChunk({ id, ...args }, options) {

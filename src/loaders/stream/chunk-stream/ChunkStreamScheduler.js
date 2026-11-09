@@ -3,6 +3,7 @@ import {
   sogBatchAllocationSize,
   sogBatchTextureLayout,
 } from "../../../data/SogRegionSplats.js";
+import { getBlindUploadBytes } from "../../../data/blindData.js";
 import { PendingUploads } from "../../../data/pendingUploads.js";
 import {
   getSplatByteLength,
@@ -88,6 +89,9 @@ export class ChunkStreamScheduler {
     const settings = streamSettings(options, 4);
     this._splatBudget = settings.splatBudget;
     this._maxSh = settings.maxSh;
+    const blindData = options.blindData ?? true;
+    if (typeof blindData !== "boolean")
+      throw new Error("blindData must be a boolean");
     this.splatBudgetMode = options.splatBudgetMode ?? "target";
     this.lodBaseDistance = options.lodBaseDistance ?? 100;
     this.lodMultiplier = options.lodMultiplier ?? 2;
@@ -102,6 +106,7 @@ export class ChunkStreamScheduler {
       this.maxSh,
       () => this.changed(),
       format,
+      blindData,
     );
     this.firstRenderable = new Promise((resolve, reject) => {
       this.resolveFirst = resolve;
@@ -689,9 +694,12 @@ export class ChunkStreamScheduler {
         continue;
       }
       const numSh = getSplatShDegree(data.extra);
-      const layerSize =
-        batch?.source.layerSize ??
-        sogBatchTextureLayout(chunk.batchCapacity).layerSize;
+      const { capacity, layerSize } = batch
+        ? {
+            capacity: batch.source.maxSplats,
+            layerSize: batch.source.layerSize,
+          }
+        : sogBatchTextureLayout(chunk.batchCapacity);
       const firstLayer = Math.floor(start / layerSize);
       const lastLayer = Math.ceil(
         (start + sogBatchAllocationSize(range.count)) / layerSize,
@@ -703,6 +711,13 @@ export class ChunkStreamScheduler {
             (lastLayer - firstLayer) * layerSize,
             numSh,
             !!data.extra.shDegree,
+          ) +
+          getBlindUploadBytes(
+            capacity,
+            data.extra.blind?.length ?? 0,
+            layerSize,
+            firstLayer,
+            lastLayer,
           );
       // Later regions wait until rendering consumes the queued uploads.
       if (!this.uploads.canAdd(bytes)) break;
@@ -716,6 +731,7 @@ export class ChunkStreamScheduler {
             this.pruneChunk(chunk);
           },
           palette,
+          data.extra.blind?.map(({ fields }) => fields),
         );
         batch.matrixAutoUpdate = false;
         batch.matrix.copy(this.sourceSetting(chunk.source).transform);
@@ -752,7 +768,11 @@ export class ChunkStreamScheduler {
         source.info.numSh,
         !!source.info.shDegree,
       );
-      const pending = { range, chunk, bytes };
+      const pending = {
+        range,
+        chunk,
+        bytes: bytes + range.count * (source.info.blindTextureCount ?? 0) * 4,
+      };
       leaf.pending = pending;
       const batch = batches.get(chunk) ?? { source, regions: [] };
       batch.regions.push(pending);

@@ -2,8 +2,8 @@ import { SogRegionSplats } from "../../../data/SogRegionSplats.js";
 import { SplatMesh } from "../../../scene/SplatMesh.js";
 /** Regions share one source, one scene node and one accumulator generation call. */
 export class ChunkStreamBatch extends SplatMesh {
-  constructor(capacity, numSh, group, onEmpty, palette) {
-    const source = new SogRegionSplats(capacity, numSh, palette);
+  constructor(capacity, numSh, group, onEmpty, palette, blindFields) {
+    const source = new SogRegionSplats(capacity, numSh, palette, blindFields);
     super({ splats: source, maxSh: numSh });
     this.group = group;
     this.onEmpty = onEmpty;

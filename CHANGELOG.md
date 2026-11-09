@@ -11,6 +11,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Added SOG v3 loading for bundled and split models, including 24-bit rotations, opacity above 1, larger SH palettes, and SH4. Opacity above 1 is converted to GSL's wider kernel with matching mass before render-time cutoff, fade, or blur. SOG and LCC2 streaming also accept v3 chunks and retain SH4 by default; their `maxSh` option now accepts `0`–`4` and defaults to `4`. See [supported formats](docs/SplatFileType.md) for rendering and metadata limits.
 - Added standard PLY `opacity_linear` support, including values above 1 with the same mass conversion as SOG v3. It takes precedence over the usual `opacity` logit when present.
+- Added [SplatEditBlind](docs/SplatEditBlind.md) to recolor, fade, or hide Gaussians by a SOG v3 Blind field value or range, with the same blend modes, inversion, soft edges, and smoothing as SDF shapes. It works on ordinary loads and SOG/LCC2 streaming. `splats.blindFields` lists a model's Blind fields. A Blind texture with invalid metadata is skipped with a warning instead of failing the load.
+- Added the `blindData` option to `SplatMesh`, `Splats`, `SplatLoader`, `SogStreamScheduler`, and `Lcc2StreamScheduler`. Set it to `false` to skip downloading, decoding, and storing SOG v3 Blind data.
 
 ## [1.7.0] - 2026-11-06
 
