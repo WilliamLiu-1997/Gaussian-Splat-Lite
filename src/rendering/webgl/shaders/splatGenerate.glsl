@@ -87,14 +87,12 @@ vec3 evaluateSH1(uvec4 data, vec3 direction) {
         + decodeSplatShRgb(data.z) * (-0.4886025 * direction.x);
 }
 
-vec3 evaluateSH12(uvec4 first, uvec4 second, vec3 direction) {
-    vec3 result = evaluateSH1(first, direction);
-    result += decodeSplatShRgb(first.w) * (1.0925484 * direction.x * direction.y);
-    result += decodeSplatShRgb(second.x) * (-1.0925484 * direction.y * direction.z);
-    result += decodeSplatShRgb(second.y) * (0.3153915 * (2.0 * direction.z * direction.z - direction.x * direction.x - direction.y * direction.y));
-    result += decodeSplatShRgb(second.z) * (-1.0925484 * direction.x * direction.z);
-    result += decodeSplatShRgb(second.w) * (0.5462742 * (direction.x * direction.x - direction.y * direction.y));
-    return result;
+vec3 evaluateSH2(uint previous, uvec4 data, vec3 direction) {
+    return decodeSplatShRgb(previous) * (1.0925484 * direction.x * direction.y)
+        + decodeSplatShRgb(data.x) * (-1.0925484 * direction.y * direction.z)
+        + decodeSplatShRgb(data.y) * (0.3153915 * (2.0 * direction.z * direction.z - direction.x * direction.x - direction.y * direction.y))
+        + decodeSplatShRgb(data.z) * (-1.0925484 * direction.x * direction.z)
+        + decodeSplatShRgb(data.w) * (0.5462742 * (direction.x * direction.x - direction.y * direction.y));
 }
 
 vec3 evaluateSH3(uvec4 first, uvec4 second, vec3 direction) {
@@ -142,12 +140,11 @@ uvec4 loadShBlock(usampler2DArray source, ivec3 coord, int block) {
 }
 
 vec3 evaluateSH(ivec3 coord, vec3 direction) {
-    vec3 result = vec3(0.0);
-    if (numSh == 1) {
-        result = evaluateSH1(loadShBlock(shBlock0Texture, coord, 0), direction);
-    } else if (numSh >= 2) {
-        result = evaluateSH12(
-            loadShBlock(shBlock0Texture, coord, 0),
+    uvec4 shBlock0 = loadShBlock(shBlock0Texture, coord, 0);
+    vec3 result = evaluateSH1(shBlock0, direction);
+    if (numSh >= 2) {
+        result += evaluateSH2(
+            shBlock0.w,
             loadShBlock(shBlock1Texture, coord, 1),
             direction
         );
@@ -278,65 +275,82 @@ bool sampleSdfDistance(int index, uint sourceIndex, vec3 position, out float dis
     return true;
 }
 
+float sdfEditAmount(float distance, float invSoftEdge) {
+    return invSoftEdge == 0.0
+        ? (distance < 0.0 ? 1.0 : 0.0)
+        : clamp(-distance * invSoftEdge + 0.5, 0.0, 1.0);
+}
+
+// Return the blend factor for the RGBA and mask values (unnormalized for unions).
 float evaluateSdfs(
     int sdfFirst,
     int sdfCount,
     uint sourceIndex,
     vec3 position,
     float invSmoothAmount,
+    float invSoftEdge,
+    bool invert,
     out vec4 resultRgba,
     out vec4 resultRgbaMask
 ) {
     resultRgba = vec4(0.0);
     resultRgbaMask = vec4(0.0);
-    int sdfLast = min(sdfFirst + sdfCount, numSdfs);
 
-    if (invSmoothAmount == 0.0) {
-        float nearestDistance = SDF_DISTANCE_LIMIT;
-        int nearestIndex = -1;
-        uint nearestFlags = 0u;
-        for (int index = sdfFirst; index < sdfLast; ++index) {
-            float distance;
-            uint flags;
-            if (!sampleSdfDistance(index, sourceIndex, position, distance, flags)) continue;
-            if (nearestIndex < 0 || distance < nearestDistance) {
-                nearestDistance = distance;
-                nearestIndex = index;
-                nearestFlags = flags;
-            }
-        }
-        if (nearestIndex >= 0) {
-            resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, nearestIndex), 0));
-            resultRgbaMask = sdfRgbaMask(nearestFlags);
-        }
-        return nearestDistance;
-    }
-
-    float distanceAccum = 0.0;
-    float maxExponent = 0.0;
-    for (int index = sdfFirst; index < sdfLast; ++index) {
+    if (sdfCount == 1) {
+        if (sdfFirst >= numSdfs) return 0.0;
         float distance;
         uint flags;
-        if (!sampleSdfDistance(index, sourceIndex, position, distance, flags)) continue;
-        float exponent = -distance * invSmoothAmount;
-        bool dominant = distanceAccum == 0.0 || exponent > maxExponent;
-        float relativeWeight = exp(-abs(exponent - maxExponent));
-        float rescale = dominant ? relativeWeight : 1.0;
-        float weight = dominant ? 1.0 : relativeWeight;
-        if (weight != 0.0) {
-            vec4 value = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
-            vec4 valueMask = sdfRgbaMask(flags);
-            maxExponent = dominant ? exponent : maxExponent;
-            distanceAccum = distanceAccum * rescale + weight;
-            resultRgba = resultRgba * rescale + weight * value;
-            resultRgbaMask = resultRgbaMask * rescale + weight * valueMask;
+        if (!sampleSdfDistance(sdfFirst, sourceIndex, position, distance, flags)) return 0.0;
+        float amount = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
+        if (amount > 0.0) {
+            resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, sdfFirst), 0));
+            resultRgbaMask = sdfRgbaMask(flags);
         }
+        return amount;
     }
 
-    if (distanceAccum == 0.0) return SDF_DISTANCE_LIMIT;
-    resultRgba /= distanceAccum;
-    resultRgbaMask /= distanceAccum;
-    return (-log(distanceAccum) - maxExponent) / invSmoothAmount;
+    int sdfLast = min(sdfFirst + sdfCount, numSdfs);
+    float distance = SDF_DISTANCE_LIMIT;
+    float weightSum = 0.0;
+    if (invSmoothAmount == 0.0) {
+        for (int index = sdfFirst; index < sdfLast; ++index) {
+            float valueDistance;
+            uint flags;
+            if (!sampleSdfDistance(index, sourceIndex, position, valueDistance, flags)) continue;
+            distance = min(distance, valueDistance);
+            // Parent inversion uses the edge of the combined region below.
+            float weight = invert ? 1.0 : sdfEditAmount(valueDistance, invSoftEdge);
+            if (weight > 0.0) {
+                resultRgba += weight * uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
+                resultRgbaMask += weight * sdfRgbaMask(flags);
+                weightSum += weight;
+            }
+        }
+    } else {
+        float maxExponent = 0.0;
+        for (int index = sdfFirst; index < sdfLast; ++index) {
+            float valueDistance;
+            uint flags;
+            if (!sampleSdfDistance(index, sourceIndex, position, valueDistance, flags)) continue;
+            float exponent = -valueDistance * invSmoothAmount;
+            bool dominant = weightSum == 0.0 || exponent > maxExponent;
+            float relativeWeight = exp(-abs(exponent - maxExponent));
+            float rescale = dominant ? relativeWeight : 1.0;
+            float weight = dominant ? 1.0 : relativeWeight;
+            if (weight != 0.0) {
+                vec4 value = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
+                vec4 valueMask = sdfRgbaMask(flags);
+                maxExponent = dominant ? exponent : maxExponent;
+                weightSum = weightSum * rescale + weight;
+                resultRgba = resultRgba * rescale + weight * value;
+                resultRgbaMask = resultRgbaMask * rescale + weight * valueMask;
+            }
+        }
+        if (weightSum > 0.0) distance = (-log(weightSum) - maxExponent) / invSmoothAmount;
+    }
+
+    if (weightSum == 0.0) return 0.0;
+    return sdfEditAmount(invert ? -distance : distance, invSoftEdge) / weightSum;
 }
 
 bool applySdfEdits(
@@ -357,20 +371,18 @@ bool applySdfEdits(
 
         vec4 sdfRgba;
         vec4 sdfRgbaMask;
-        float distance = evaluateSdfs(
+        float factor = evaluateSdfs(
             sdfFirst,
             sdfCount,
             sourceIndex,
             position,
             invSmoothAmount,
+            invSoftEdge,
+            invert,
             sdfRgba,
             sdfRgbaMask
         );
-        if (invert) distance = -distance;
-        float amount = invSoftEdge == 0.0
-            ? (distance < 0.0 ? 1.0 : 0.0)
-            : clamp(-distance * invSoftEdge + 0.5, 0.0, 1.0);
-        bool editOpacity = amount > 0.0 && sdfRgbaMask.a > 0.0;
+        bool editOpacity = factor > 0.0 && sdfRgbaMask.a > 0.0;
         if (editOpacity && !semanticOpacityDecoded) {
             // SDF opacity values operate on semantic opacity, not on the alpha
             // half of the nonlinear wide-kernel encoding.
@@ -392,7 +404,7 @@ bool applySdfEdits(
                 target = rgba + sdfRgba;
                 break;
         }
-        rgba = mix(rgba, target, amount);
+        rgba = mix(rgba, target, factor);
     }
     return semanticOpacityDecoded;
 }

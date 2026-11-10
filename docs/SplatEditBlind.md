@@ -57,9 +57,9 @@ Only assigned color and opacity channels change. The parent edit controls `MULTI
 
 ## Edges, smoothing, and inversion
 
-- `softEdge: 0` selects the inclusive range exactly. Positive `softEdge` gives a linear transition centered on each bound, measured in the field's decoded value units. For example, `min: 0.5` and `softEdge: 0.1` transition from no effect at `0.45` to full effect at `0.55`, away from the upper bound.
-- `sdfSmooth` smoothly combines multiple selections using the existing SDF union and channel blending. It has no effect with only one selection. Different fields, or Blind and spatial SDF selections, should have comparable distance scales for meaningful smoothing.
-- `selection.invert` reverses that selection; `edit.invert` reverses the combined selection. At a hard edge, inversion excludes the original range endpoints. With a soft edge, both sides meet at half strength on the boundary.
+- `softEdge` softens the range boundaries; `0` gives a hard edge. Its width uses the field's value units.
+- `sdfSmooth` smooths transitions between selections and has no effect with only one selection. Overlapping selections blend their color and opacity even when it is `0`.
+- `selection.invert` reverses that selection; `edit.invert` reverses the combined selection.
 - Object position, rotation, and scale do not affect Blind values or their ranges.
 
 Selections can be children of the edit or entries in its explicit `sdfs` list. Ordering, visibility, and attachment follow the same rules as `SplatEditSdf`.

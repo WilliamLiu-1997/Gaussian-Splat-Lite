@@ -48,7 +48,7 @@ Use [SplatEditBlind](SplatEditBlind.md) to select a SOG v3 field by value or ran
 | `name` | `string` | Generated | Object name |
 | `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY_RGBA` | How the shapes' color and opacity combine with the model's; see [blend modes](#blend-modes) |
 | `softEdge` | `number` | `0` | Soften the edge of the edited region; `0` gives a hard edge |
-| `sdfSmooth` | `number` | `0` | Blend neighboring shapes into each other smoothly |
+| `sdfSmooth` | `number` | `0` | Smooth transitions between selections; `0` disables smoothing |
 | `invert` | `boolean` | `false` | Affect the outside of the shapes instead of the inside |
 | `sdfs` | `(SplatEditSdf \| SplatEditBlind)[]` | `null` | Explicit list of selections, instead of using child objects |
 
