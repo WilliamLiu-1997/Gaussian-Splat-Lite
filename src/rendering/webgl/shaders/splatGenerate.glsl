@@ -230,8 +230,8 @@ float blindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds) {
         if (encoding == 1u) value = unpackHalf2x16(bits).x;
         else if (encoding == 2u) value = uintBitsToFloat(bits);
         else {
-            vec2 range = uintBitsToFloat(bounds.zw);
-            value = range.x + (range.y - range.x) * (float(bits) / float(field.z));
+            vec2 decode = uintBitsToFloat(bounds.zw);
+            value = decode.x + decode.y * float(bits);
         }
         vec2 range = uintBitsToFloat(bounds.xy);
         lower = range.x - value;

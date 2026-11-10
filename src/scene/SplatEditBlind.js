@@ -105,10 +105,10 @@ export function encodeBlindSelection(selection, fields) {
       flags |= BLIND_HAS_UPPER;
       setBound(9, upper, integer, fieldMask);
     }
-    // Normalized fields reuse the integer residual slots for decoding.
+    // Normalized fields reuse the integer residual slots for offset and scale.
     if (encoding === 3) {
       floats[10] = range[0];
-      floats[11] = range[1];
+      floats[11] = (range[1] - range[0]) / fieldMask;
     }
     record[3] |= flags;
     return record;

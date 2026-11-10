@@ -44,12 +44,8 @@ export function createBlindSelection(uniforms) {
           value.assign(N.uintBitsToFloat(bits));
         })
         .Else(() => {
-          const range = N.uintBitsToFloat(bounds.zw).toVar();
-          value.assign(
-            range.x.add(
-              range.y.sub(range.x).mul(N.float(bits).div(N.float(field.z))),
-            ),
-          );
+          const decode = N.uintBitsToFloat(bounds.zw).toVar();
+          value.assign(decode.x.add(decode.y.mul(N.float(bits))));
         });
       const range = N.uintBitsToFloat(bounds.xy).toVar();
       lower.assign(range.x.sub(value));
