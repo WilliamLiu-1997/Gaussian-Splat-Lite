@@ -9,7 +9,11 @@ export declare function createGenerateProgram({
   accumulatorB: Node<"uvec4">;
   stochasticSeed: Node<"uint">;
 }) & {
-  prepare: (index: Node<"uint">) => {
+  /** `isVisible` returns true to keep a camera-relative center for decoding. */
+  prepare: (
+    index: Node<"uint">,
+    isVisible?: (center: Node<"vec3">) => Node<"bool">,
+  ) => {
     resolveRgb: () => Node<"vec3">;
     valid: Node<"bool">;
     center: Node<"vec3">;

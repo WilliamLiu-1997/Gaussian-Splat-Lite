@@ -36,9 +36,17 @@ export type SplatProjection = {
   supportRadiusSquared: Node<"float">;
   kernelPower: Node<"float">;
 };
+/** View and clip position of a center, and whether the frustum keeps it. */
+export type ProjectedCenter = {
+  viewCenter: Node<"vec3">;
+  clipCenter: Node<"vec4">;
+  visible: Node<"bool">;
+};
 /** Shared projection for vertex and compute paths. Call inside a TSL Fn. */
 export declare function createProjectionProgram(
   uniforms: Uniforms,
   view: ProjectionView,
-): (source: ProjectionInput, includeColor?: boolean) => SplatProjection;
+): ((source: ProjectionInput, includeColor?: boolean) => SplatProjection) & {
+  projectCenter: (center: Node<"vec3">) => ProjectedCenter;
+};
 export {};

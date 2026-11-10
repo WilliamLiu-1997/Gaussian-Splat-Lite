@@ -51,8 +51,14 @@ export function createProjectionKernel({
     // keep source order every frame.
     const sorted = stochastic.not().or(u("stochasticOrdering", "bool")).toVar();
     const mappingIndex = u("targetBase", "uint").add(index).toVar();
-    // Decode, edit and evaluate color once, then project for each eye.
-    const generated = generate.prepare(index);
+    // Cull by the frustum of every eye before a Splat is decoded and edited.
+    // Each eye projects the center again afterwards: keeping this result
+    // across the edits makes them slower.
+    const generated = generate.prepare(index, (center) =>
+      eyes
+        .map(({ project }) => project.projectCenter(center).visible)
+        .reduce((any, visible) => any.or(visible)),
+    );
     const projected = eyes.map(({ project }) => {
       const projection = project(generated, false);
       const extent = projection.axis1.abs().add(projection.axis2.abs());

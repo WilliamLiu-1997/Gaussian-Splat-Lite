@@ -122,7 +122,30 @@ export function createProjectionProgram(uniforms, view) {
   const blurAmount = uniformBinding(uniforms, "blurAmount", "float");
   const clipXY = uniformBinding(uniforms, "clipXY", "float");
   const focalAdjustment = uniformBinding(uniforms, "focalAdjustment", "float");
-  return (source, includeColor = true) => {
+  /** View and clip position of a center, and whether the frustum keeps it. */
+  const projectCenter = (center) => {
+    const viewCenter = quatVec(renderToViewQuat, center)
+      .mul(renderToViewScale)
+      .add(renderToViewPos)
+      .toVar();
+    const clipCenter = N.vec4(0).toVar();
+    const visible = N.bool(false).toVar();
+    const depthVisible = viewCenter.z
+      .lessThan(near.negate())
+      .and(viewCenter.z.greaterThan(far.negate()));
+    N.If(depthVisible, () => {
+      clipCenter.assign(projectionMatrix.mul(N.vec4(viewCenter, 1)));
+      const clip = clipCenter.w.mul(clipXY);
+      visible.assign(
+        clipCenter.x
+          .abs()
+          .lessThanEqual(clip)
+          .and(clipCenter.y.abs().lessThanEqual(clip)),
+      );
+    });
+    return { viewCenter, clipCenter, visible };
+  };
+  const project = (source, includeColor = true) => {
     // This is a JS-time choice, not a shader branch. WebGL still reads its
     // packed accumulator; native compute consumes transformed float32 values.
     const packed = "first" in source;
@@ -144,25 +167,11 @@ export function createProjectionProgram(uniforms, view) {
       .and(alpha.greaterThanEqual(minAlpha))
       .and(alpha.greaterThan(0));
     N.If(sourceVisible, () => {
-      const center = packed ? decodeCenter(source.first) : source.center;
-      const viewCenter = quatVec(renderToViewQuat, center)
-        .mul(renderToViewScale)
-        .add(renderToViewPos);
-      const clipCenter = N.vec4(0).toVar();
-      const centerVisible = N.bool(false).toVar();
-      const depthVisible = viewCenter.z
-        .lessThan(near.negate())
-        .and(viewCenter.z.greaterThan(far.negate()));
-      N.If(depthVisible, () => {
-        clipCenter.assign(projectionMatrix.mul(N.vec4(viewCenter, 1)));
-        const clip = clipCenter.w.mul(clipXY);
-        centerVisible.assign(
-          clipCenter.x
-            .abs()
-            .lessThanEqual(clip)
-            .and(clipCenter.y.abs().lessThanEqual(clip)),
-        );
-      });
+      const {
+        viewCenter,
+        clipCenter,
+        visible: centerVisible,
+      } = projectCenter(packed ? decodeCenter(source.first) : source.center);
       N.If(centerVisible, () => {
         const lnScales = packed
           ? decodeLnScales(source.second)
@@ -383,4 +392,5 @@ export function createProjectionProgram(uniforms, view) {
       kernelPower: projectedKernelPower,
     };
   };
+  return Object.assign(project, { projectCenter });
 }
