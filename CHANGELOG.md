@@ -9,17 +9,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Added SOG v3 loading for bundled and split models, including 24-bit rotations, opacity above 1, larger SH palettes, and SH4. Opacity above 1 is converted to GSL's wider kernel with matching mass before render-time cutoff, fade, or blur. SOG and LCC2 streaming also accept v3 chunks and retain SH4 by default; their `maxSh` option now accepts `0`–`4` and defaults to `4`. See [supported formats](docs/SplatFileType.md) for rendering and metadata limits.
-- Added standard PLY `opacity_linear` support, including values above 1 with the same mass conversion as SOG v3. It takes precedence over the usual `opacity` logit when present.
-- Added [SplatEditBlind](docs/SplatEditBlind.md) to recolor, fade, or hide Gaussians by a SOG v3 Blind field value or range, with the same blend modes, inversion, soft edges, and smoothing as SDF shapes. It works on ordinary loads and SOG/LCC2 streaming. `splats.blindFields` lists a model's Blind fields. A Blind texture with invalid metadata is skipped with a warning instead of failing the load.
+- Added SOG v3 loading for bundled and split models, including opacity above 1 and SH4. SOG and LCC2 streaming also accept v3 chunks and keep SH4 by default; their `maxSh` option now accepts `0`–`4` and defaults to `4`. See [supported formats](docs/SplatFileType.md).
+- Added support for the PLY `opacity_linear` property, including values above 1. It takes precedence over `opacity` when both are present.
+- Added [SplatEditBlind](docs/SplatEditBlind.md) to recolor, fade, or hide Gaussians by a SOG v3 Blind field value or range, with the same blend modes, inversion, soft edges, and smoothing as SDF shapes. It works on ordinary loads and SOG/LCC2 streaming. `splats.blindFields` lists a model's Blind fields. Blind fields with invalid metadata are skipped with a warning instead of failing the load.
 - Added the `blindData` option to `SplatMesh`, `Splats`, `SplatLoader`, `SogStreamScheduler`, and `Lcc2StreamScheduler`. Set it to `false` to skip downloading, decoding, and storing SOG v3 Blind data.
 - Added decoded SOG v3 field values as `blind` on `getSplat()` results, including streamed models. Pass `false` as `getSplat()`'s third argument (`includeBlind`) to skip Blind decoding and omit the field. After raycasting, read fields on demand with `hit.object.splats.getSplat(hit.index, false, true).blind`.
 
 ### Changed
 
 - Overlapping SDF and Blind selections now blend their color and opacity when `sdfSmooth` is `0`.
-- Reduced per-Splat computation and texture reads for SDF color and opacity edits on WebGL and WebGPU, including smooth unions.
-- WebGPU culls Gaussians outside the view earlier, reducing subsequent decoding and editing work.
+- SDF color and opacity edits render faster on WebGL and WebGPU, including with `sdfSmooth`.
+- WebGPU renders faster when part of a model is outside the view, especially with edits.
 
 ## [1.7.0] - 2026-11-06
 

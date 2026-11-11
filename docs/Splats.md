@@ -12,9 +12,9 @@ const data = splat.splats;
 const item = data.getSplat(0);
 ```
 
-For SOG v3 sources, `splats.blindFields` lists the available Blind field definitions. `getSplat(index).blind` returns decoded values by field name, for example `item.blind?.confidence`. It is `undefined` when no Blind data is loaded, including with `blindData: false`. Integer and float fields return their numeric values; normalized fields use their declared `range`, or `[0, 1]` when omitted. If a name appears in multiple groups, the first group is used, matching [SplatEditBlind](SplatEditBlind.md).
+For SOG v3 models, `splats.blindFields` lists the available Blind fields, and `getSplat(index).blind` returns their values by name, for example `item.blind?.confidence`. It is `undefined` when the model has no Blind data or was loaded with `blindData: false`. Normalized fields are returned in their declared `range`, or `[0, 1]` when omitted. If two groups share a field name, the first is used. To recolor or hide Splats by these fields, see [SplatEditBlind](SplatEditBlind.md).
 
-`splats.extra` exposes application-defined JSON from the current SOG file's `meta.json.extras`, including SOG chunks loaded through [LCC2](Lcc2StreamScheduler.md). `splats.sceneExtra` exposes the owning [Streamed SOG](SogStreamScheduler.md) input's `lod-meta.json.extras`, shared by that input's chunks. Both values are kept unchanged and separate, whether objects, arrays, or other JSON values. An absent value is `undefined`; both remain available with `blindData: false`.
+`splats.extra` holds the application-defined `extras` of a SOG file's `meta.json`, also for the SOG chunks of an [LCC2](Lcc2StreamScheduler.md) scene. For [streamed SOG](SogStreamScheduler.md), `splats.sceneExtra` holds the `extras` of the scene's `lod-meta.json`. Both are returned as stored, and are `undefined` when the file has none.
 
 ## Options
 

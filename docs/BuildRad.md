@@ -34,7 +34,7 @@ gsl-build-lod scene.ply -o output/scene.rad
 gsl-build-lod scene.ply --max-sh 0
 ```
 
-The output directory must exist. Existing output files, including matching `.radc` files when using `--rad-chunked`, are never overwritten. Choose a different output name or remove the old files before converting again. Output files are first written under hidden temporary names in the output directory and receive their final names only after all of them are complete. Failed conversions return a nonzero exit code and remove their output files; if a file cannot be removed, a warning shows its path.
+The output directory must exist. Existing output files, including matching `.radc` files when using `--rad-chunked`, are never overwritten. Choose a different output name or remove the old files before converting again. Output files appear only once the whole conversion has succeeded. Failed conversions return a nonzero exit code and leave no output files; if a file cannot be removed, a warning shows its path.
 
 The output keeps up to SH3. SH4 inputs are accepted and converted to SH3 or the level chosen with `--max-sh`. Higher SH levels retain more view-dependent color and increase file size. Conversion is lossy, so colors and shape can differ slightly from the source.
 
@@ -59,9 +59,9 @@ gsl-build-lod scene.ply --cluster-sh=20
 gsl-build-lod scene.ply --no-cluster-sh
 ```
 
-By default, SH coefficients are stored as a shared codebook, and each splat stores the index of its entry. The codebook holds up to 262144 entries for each of SH1, SH2 and SH3. It never has more entries than the number of splats after LOD. This can substantially reduce SH data for large models; the savings depend on the splat count and SH values. Models that fit entirely in the codebook still store one entry per splat plus an index for each splat, so the file may grow. Each splat's view-dependent color comes from its nearest entry, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
+By default, splats share their SH coefficients through a codebook of up to 262144 entries per SH level, instead of each storing its own. This can make large models much smaller; small models can grow. View-dependent color becomes approximate, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
 
-The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. Larger codebooks preserve more distinct SH values but increase conversion time and memory use. Clustering runs on as many CPU cores as the memory target leaves room for.
+The codebook is refined in 10 iterations by default; `--cluster-sh=<n>` sets another number. More iterations take longer and can match the original colors more closely.
 
 Models without SH, or converted with `--max-sh 0`, are written without a codebook.
 
@@ -73,7 +73,7 @@ gsl-build-lod scene.ply --memory-budget 16 --temp-dir /fast-disk/rad-temp
 
 `--memory-budget` sets a target in GiB (default `4`, minimum `1`, fractional values accepted). Values such as `16` are supported when enough RAM is available. Lower targets may make conversion slower and require more temporary disk space; output quality is unchanged. If conversion reports insufficient memory, increase this value.
 
-The target covers the whole conversion, worker threads included: the converter measures its memory as it runs and keeps within it. Leave room for the operating system and other applications.
+The target covers the whole conversion. Leave room for the operating system and other applications.
 
 `--temp-dir` chooses where temporary working files are stored; the default is the system temporary directory. Use a fast disk with enough free space, as temporary files can be much larger than the input. Each conversion keeps them in its own `gsl-build-rad-*` folder there, which is removed when the conversion finishes or fails; if it cannot be removed, a warning shows its path.
 
@@ -103,7 +103,7 @@ See [RadStreamScheduler](RadStreamScheduler.md) for the complete loading and dis
 | `--lod-base <base>` | `1.75` | LOD spacing, from `1.1` to `16`; smaller values retain more detail levels. |
 | `--max-sh <0..3>` | `3` | Highest SH degree to keep, limited by the input. |
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere before building LOD, in input coordinates. |
-| `--cluster-sh[=<n>]` | Enabled, `10` iterations | Store SH as a codebook of up to 262144 entries for SH1/SH2/SH3, refined in `n` iterations. See [SH codebook](#sh-codebook). |
+| `--cluster-sh[=<n>]` | Enabled, `10` iterations | Store SH in a shared codebook, refined in `n` iterations. See [SH codebook](#sh-codebook). |
 | `--no-cluster-sh` | — | Store SH coefficients without a codebook. |
 | `--memory-budget <GiB>` | `4` | Target memory use in GiB, at least `1`; for example `16`. |
 | `--temp-dir <path>` | System temp directory | Location for temporary files; created if needed. |

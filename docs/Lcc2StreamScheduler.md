@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Loads LCC2 `0.0.x` scenes from a `.lcc2` index and its SOG, SPZ, or PLY files, retaining up to SH4 by default. Detail follows the registered cameras on WebGPU and WebGL2. Keep the scene's folder structure when hosting it or opening it in the viewer.
+Loads LCC2 `0.0.x` scenes from a `.lcc2` index and its SOG, SPZ, or PLY files, retaining up to SH4 by default. Detail follows the registered cameras on WebGPU and WebGL2. Keep the scene's folder structure when hosting it.
 
 Data Organization Format originated from XGRIDS. See the [LCC2 white paper and format terms](https://github.com/xgrids/LCC2Whitepaper).
 
@@ -43,13 +43,13 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields in current and future chunks. Set `blindData: false` if you do not need them: Blind data otherwise adds upload and memory cost to every chunk.
 
-For SOG chunks, `hit.object.splats.extra` exposes that chunk's application-defined `meta.json.extras`, so Blind IDs can be looked up in the same file's metadata. Each chunk keeps its own value. Missing `extras` returns `undefined`; `blindData: false` does not discard it. `splats.sceneExtra` is `undefined` for LCC2 inputs.
+For SOG chunks, `hit.object.splats.extra` holds the application-defined `extras` of that chunk's `meta.json`, for example to look up what a Blind ID means; see [Splats](Splats.md). `splats.sceneExtra` is not used for LCC2.
 
 ## Detail and loading
 
-Each region uses its own LOD data or is replaced by its children. Coarse data establishes coverage while finer data loads. A replacement is shown after all its regions are ready; loaded finer data can remain visible while a coarser replacement loads. Changes fade over `fadeDurationMs`.
+The scene first appears at coarse detail and refines as finer data loads. Detail already on screen stays visible until its replacement is ready, and changes fade over `fadeDurationMs`.
 
-`splatBudget` controls requested detail, including enabled environments. It is not a memory limit: coarse coverage, an environment larger than the budget, retained detail during loading, and fades can exceed it. Reducing `maxSh`, the budget, or `cooldownMs` can reduce memory use.
+`splatBudget` sets how much detail is requested, environments included. It is not a hard limit: the visible count can exceed it, for example during loading and fades or with a large environment. To use less memory, reduce `maxSh`, the budget, or `cooldownMs`.
 
 ## Multiple inputs
 
@@ -111,7 +111,7 @@ streaming.removeSource(buildingId); // Returns true; false if already absent.
 
 Detail depends on distance and camera direction, so cameras need no resolution. Regions outside the view remain part of the same budget, with less detail behind the camera. This keeps surrounding content ready for turns, at the cost of some detail in the current view. Register several cameras to load detail for all of them; each region follows the camera requesting the finest detail.
 
-LCC2 uses the full region bounds when measuring LOD distance by default (`lodDistanceShrink: 0`). Increase this option to reduce oversized bounds toward the input's median region size, so large background regions receive less detail. Geometry, rendering bounds, and picking are unaffected by this distance correction.
+Unusually large regions, such as backgrounds, can get more detail than they need whenever one of their edges is near the camera. Raise `lodDistanceShrink`, which is off by default for LCC2, to correct for this; it changes only the chosen detail, not what is drawn or picked.
 
 ### WebXR
 
@@ -127,8 +127,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `splatBudgetMode` | `"target"` | `"target"` refines detail across inputs toward the budget. `"limit"` caps detail at the configured distance bands and reduces it when needed to fit the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
-| `lodBehindPenalty` | `5` | Effective distance multiplier directly behind a camera, increasing smoothly from `1` at its sides. `1` disables directional bias. Must be finite and at least `1` |
-| `lodDistanceShrink` | `0` | Fraction of a region's excess half-size above its input's median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
+| `lodBehindPenalty` | `5` | Content directly behind a camera is treated as this many times farther away, easing off toward its sides. `1` treats all directions alike. Must be finite and at least `1` |
+| `lodDistanceShrink` | `0` | How strongly detail is reduced in regions much larger than the others of their input, from `0` (off) to `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
 | `maxConcurrentLoads` | `4` | Maximum number of chunk downloads/decodes in progress at the same time; input metadata loads independently |
@@ -183,14 +183,12 @@ Temporary chunk download failures are retried automatically, waiting longer afte
 
 Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and are not retried. Parts of the scene that are already on screen stay visible when loading more detail fails.
 
-`firstRenderable` waits for the initial detail selection before deciding that all needed loads have failed permanently. An environment failure alone does not reject it while scene selection is pending.
+`firstRenderable` rejects only when nothing needed for the first image can be loaded.
 
-If detail selection fails, the scheduler calls `onError`, stops loading, and retains the last displayed coverage while its fades finish. Create a new scheduler to try again, and call `dispose()` before discarding the old one.
+If the scheduler can no longer choose detail, it calls `onError`, stops loading, and keeps showing what is on screen. Create a new scheduler to try again, and call `dispose()` on the old one.
 
 ## Coordinates and scope
 
-Data stays in the file's coordinate system. Set the group or input `transform` for your scene; the viewer defaults streamed scenes to Z-up and offers a source-axis override. Reserved metadata fields `offset`, `shift`, and `scale` are not applied automatically.
+Data stays in the file's coordinate system; orient and place it with the group or the input's `transform`. The index's `offset`, `shift`, and `scale` fields are not applied for you.
 
 This loader displays Gaussian splats and the optional splat environment. Collision meshes, BVH files, virtual LOD generation, and rendering hints are not imported. LCC v1 `.lcc` files use a different format and are not supported by this scheduler.
-
-The viewer accepts an HTTP(S) `.lcc2` index URL or a local scene folder containing its index and companion files.

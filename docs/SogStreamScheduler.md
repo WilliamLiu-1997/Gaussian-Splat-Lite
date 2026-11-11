@@ -41,7 +41,7 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields in current and future chunks. Set `blindData: false` if you do not need them: Blind data otherwise adds upload and memory cost to every chunk.
 
-Read an input's application-defined `lod-meta.json.extras` with `streaming.getSceneExtra(sourceId)` after awaiting `addSource()`. Picking exposes the same scene metadata through `hit.object.splats.sceneExtra`, while `hit.object.splats.extra` holds the chunk's own `meta.json.extras`. Both values are kept unchanged and separate; applications decide how to use them together. Each input shares its scene metadata among its chunks. An absent value is `undefined`; both remain available with `blindData: false`.
+Read the application-defined `extras` of an input's `lod-meta.json` with `streaming.getSceneExtra(sourceId)` after awaiting `addSource()`. After picking, `hit.object.splats.sceneExtra` holds the same value, and `hit.object.splats.extra` holds the chunk's own; see [Splats](Splats.md).
 
 ## Multiple inputs
 
@@ -103,7 +103,7 @@ streaming.removeSource(buildingId); // Returns true; false if already absent.
 
 Detail depends on distance and camera direction, so cameras need no resolution. Regions outside the view remain part of the same budget, with less detail behind the camera. This keeps surrounding content ready for turns, at the cost of some detail in the current view. Register several cameras to load detail for all of them; each region follows the camera requesting the finest detail.
 
-Oversized region bounds are reduced toward their input's median region size when measuring LOD distance. This prevents large background regions from receiving excessive detail just because an edge is close to the camera. Geometry, rendering bounds, and picking are unaffected by this distance correction.
+Unusually large regions, such as backgrounds, would otherwise get too much detail whenever one of their edges is near the camera. `lodDistanceShrink` corrects for this; it changes only the chosen detail, not what is drawn or picked.
 
 ### WebXR
 
@@ -119,8 +119,8 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | `splatBudgetMode` | `"target"` | `"target"` scales all inputs' distance bands together to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
-| `lodBehindPenalty` | `5` | Effective distance multiplier directly behind a camera, increasing smoothly from `1` at its sides. `1` disables directional bias. Must be finite and at least `1` |
-| `lodDistanceShrink` | `0.75` | Fraction of a region's excess half-size above its input's median removed when measuring distance, independently on each axis. Higher values reduce detail in oversized regions; `0` disables the correction. Must be finite and between `0` and `1` |
+| `lodBehindPenalty` | `5` | Content directly behind a camera is treated as this many times farther away, easing off toward its sides. `1` treats all directions alike. Must be finite and at least `1` |
+| `lodDistanceShrink` | `0.75` | How strongly detail is reduced in regions much larger than the others of their input, from `0` (off) to `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
 | `maxConcurrentLoads` | `4` | Maximum number of chunk downloads/decodes in progress at the same time; input metadata loads independently |
@@ -176,6 +176,6 @@ Temporary chunk download failures are retried automatically, waiting longer afte
 
 Invalid data, out-of-memory errors, and other HTTP errors are reported to `onError` and are not retried. Parts of the scene that are already on screen stay visible when loading more detail fails.
 
-`firstRenderable` waits for the initial detail selection before deciding that all needed loads have failed permanently. An environment failure alone does not reject it while scene selection is pending.
+`firstRenderable` rejects only when nothing needed for the first image can be loaded.
 
-If detail selection fails, the scheduler calls `onError`, stops loading, and retains the last displayed coverage while its fades finish. Create a new scheduler to try again, and call `dispose()` before discarding the old one.
+If the scheduler can no longer choose detail, it calls `onError`, stops loading, and keeps showing what is on screen. Create a new scheduler to try again, and call `dispose()` on the old one.

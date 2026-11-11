@@ -51,9 +51,11 @@ Attach the edit to a mesh to affect that mesh, or use `scene.add(edit)` for all 
 | `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | Color to apply |
 | `opacity` | `number` | Unassigned | Opacity to apply |
 
-Omit `min` or `max` for a one-sided range. Omit both to select all finite values of the field. A `min` above `max` selects nothing, including with soft edges or smoothing; inverting that empty selection selects everything on meshes with the field. The constructor throws for a missing `field`, a non-finite `value`, or a `value` combined with `min` or `max`; if later changes make the options invalid, the selection has no effect until they are valid again. For a category label, use `new SplatEditBlind({ field: "segment", value: 3, opacity: 0 })` with `SET_RGBA` and `softEdge: 0` to hide that label. Floating-point fields are best selected with a range.
+Omit `min` or `max` for a one-sided range, or both to select every value of the field. Use `value` for category labels and a range for floating-point fields. For example, to hide one label, use `new SplatEditBlind({ field: "segment", value: 3, opacity: 0 })` in an edit with `SET_RGBA` and `softEdge: 0`.
 
-Only assigned color and opacity channels change. The parent edit controls `MULTIPLY_RGBA`, `SET_RGBA`, or `ADD_RGBA`, just as for SDF shapes. Edits change rendered appearance without modifying source Gaussian data; CPU raycasting still reads the stored records.
+A `min` above `max` selects nothing. Invalid options throw from the constructor; if a later change makes them invalid, the selection has no effect until they are valid again.
+
+Only assigned color and opacity channels change. The parent edit controls `MULTIPLY_RGBA`, `SET_RGBA`, or `ADD_RGBA`, just as for SDF shapes. Edits change only how the model is drawn: [picking](SplatMesh.md#raycasting) and `getSplat()` still see the original values, including Gaussians an edit hides.
 
 ## Edges, smoothing, and inversion
 
@@ -66,10 +68,8 @@ Selections can be children of the edit or entries in its explicit `sdfs` list. O
 
 ## Supported fields
 
-SOG v3 archives and split `meta.json` files load Blind fields automatically, following the [SOG v3 proposal](https://github.com/playcanvas/splat-transform/issues/362). Supported types are `u8`, `u16`, `u24`, `u32`, `f16`, `f32`, `unorm8`, and `unorm16`. Integer selection preserves adjacent values throughout the `u32` range. Normalized fields use their declared `range`, or `[0, 1]` when omitted. Non-finite float values fall outside any range. A Blind texture with invalid metadata, such as an unsupported type, is skipped with a console warning; the model still loads.
+SOG v3 files, bundled or split, load their Blind fields automatically, following the [SOG v3 proposal](https://github.com/playcanvas/splat-transform/issues/362). Supported types are `u8`, `u16`, `u24`, `u32`, `f16`, `f32`, `unorm8`, and `unorm16`. Normalized fields are selected in their declared `range`, or `[0, 1]` when omitted. NaN and infinite values are never selected. A field group with invalid metadata, such as an unsupported type, is skipped with a console warning; the model still loads.
 
-Each Blind texture keeps 4 bytes per Gaussian in memory, plus allocation padding, and as much again on the GPU once a Blind selection uses it; streamed chunks always upload it. If you do not need it, set `blindData: false` on [SplatMesh](SplatMesh.md#options), [Splats](Splats.md#options), [SplatLoader](SplatLoader.md), [SogStreamScheduler](SogStreamScheduler.md#options), or [Lcc2StreamScheduler](Lcc2StreamScheduler.md#options) to skip its decoding and storage. Blind selections then have no effect.
+Blind data adds memory and loading cost. If you do not need it, set `blindData: false` on [SplatMesh](SplatMesh.md#options), [Splats](Splats.md#options), [SplatLoader](SplatLoader.md), [SogStreamScheduler](SogStreamScheduler.md#options), or [Lcc2StreamScheduler](Lcc2StreamScheduler.md#options) to skip it; Blind selections then have no effect. If you load streaming chunks with your own `loadChunk` callback, skip Blind data in that loader too.
 
-The built-in loader also skips Blind image downloads for split files and archives served with usable HTTP Range responses. If the server sends the whole archive, its Blind bytes are still downloaded. With a custom streaming `loadChunk` callback, configure that loader separately to skip Blind downloads and decoding; the scheduler discards returned Blind data when `blindData: false`.
-
-After loading, `mesh.splats.blindFields` lists the field definitions grouped as in SOG metadata. Treat these definitions as read-only. Fields remain associated with their Gaussians through reordering and streaming.
+After loading, `mesh.splats.blindFields` lists the field definitions grouped as in SOG metadata. Treat these definitions as read-only.

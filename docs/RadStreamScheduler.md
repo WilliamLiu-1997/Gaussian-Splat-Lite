@@ -74,8 +74,6 @@ streaming.setSourceSettings(building, {
 });
 ```
 
-An input with an SH codebook keeps one copy of it, shared by all of its pages. The codebook counts toward both memory budgets.
-
 `firstRenderable` resolves when the first selected data is displayed; it does not wait for every input to finish loading. `getBoundingBox()` and `stats` describe the combined scene. `splatBudget` and both memory budgets must be large enough to hold the coarsest detail of every nonempty input.
 
 ## Cameras and resolution
@@ -133,9 +131,7 @@ Each `addSource()` call accepts:
 
 Detail already on screen stays visible while its replacement loads, if both memory budgets allow. At the limit, the scene may temporarily show less detail. During a fade, old and new detail overlap, so the visible count can briefly exceed the selection limit. Use both `splatBudgetTolerance: 0` and `fadeDurationMs: 0` to keep new selections and their transitions within `splatBudget`.
 
-Memory is allocated in fixed increments as detail loads, up to the configured budgets. Unused detail is released after `cooldownMs`, including while hidden, and loads again when needed. Empty storage is released as unused detail expires. Remaining capacity is consolidated only when new detail cannot otherwise fit within the memory budgets. Some spare capacity can remain allocated, and a budget may not be fully usable. Increasing the budgets allows more detail to stay ready without allocating the full allowance upfront. `stats.pageBudget` reports an upper bound on resident pages; the actual limit depends on the inputs' SH degrees. `allocatedPages` and `freePages` report allocated page slots and how many are currently unoccupied.
-
-Existing detail remains visible while unused capacity is reclaimed. `stats.pendingBytes` includes temporary preparation data, and `stats.pendingGpuBytes` reports new storage awaiting initialization.
+Memory grows as detail loads, up to the configured budgets; it is not reserved upfront. Detail that is no longer needed is released after `cooldownMs`, also while the scene is hidden, and loads again when needed. Actual use can stay somewhat below a budget.
 
 ## Properties and methods
 

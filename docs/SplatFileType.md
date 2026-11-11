@@ -13,7 +13,7 @@ The model formats you can load:
 
 PLY, SPZ, and SOG v3 support view-dependent color up to SH4 on WebGL, WebGPU, and the WebGL2 fallback, including SOG and LCC2 streaming. RAD and SOG v1/v2 support up to SH3. Models render all their available coefficients by default; set the [`maxSh` constructor option](SplatMesh.md#options) to limit the degree.
 
-Standard PLY accepts the usual `opacity` logit or `opacity_linear`, which takes precedence when present and may exceed 1. Extra scalar PLY properties are ignored. Compressed PLY retains its 0–1 opacity range.
+PLY files can store opacity as the usual `opacity` property or as `opacity_linear`, which may exceed 1 and takes precedence when both are present. Other extra properties are ignored. Compressed PLY keeps opacity within 0–1.
 
 The format is normally detected from the URL or `fileName`, so you rarely need this. Set it when the name does not show the format:
 

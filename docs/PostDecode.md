@@ -59,11 +59,9 @@ const transform = postDecode.define(({ splat, op }) => ({
 
 Rules for the values you return:
 
-- A negative `opacity` becomes 0. Values from 0 to 1 use the ordinary Gaussian profile; values above 1 use a wider kernel with alpha fixed at 1, up to a fixed maximum opacity.
+- A negative `opacity` becomes 0. Values above 1 make the Splat solid over a wider area, up to a fixed maximum.
 - Quaternions are normalized for you. An invalid or zero-length result keeps the original rotation.
 - Values are stored in a compact format, so what you read back later can differ slightly from what you calculated.
-
-`postDecode` preserves shared SH codebooks and does not expand them into per-Splat coefficients.
 
 ## External data
 
