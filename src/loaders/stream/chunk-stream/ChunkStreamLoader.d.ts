@@ -26,6 +26,8 @@ export type ChunkStreamMetadata = Pick<
   "bounds" | "urls" | "counts" | "leafOffsets" | "lods"
 > & {
   hasData: boolean;
+  /** Application-defined JSON from this input's lod-meta.json extras. */
+  extra?: unknown;
   /** Stable global leaf and chunk offsets, never reused after removal. */
   leafBase: number;
   fileBase: number;

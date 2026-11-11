@@ -29,11 +29,13 @@ export function createChunkStreamHandlers(decodeSplats) {
     const value = JSON.parse(new TextDecoder().decode(bytes));
     let index;
     let environment;
+    let extra;
     if (format === "lcc2") {
       index = parseLcc2Index(value, baseUrl);
       environment = index.environment;
     } else {
       const manifest = parseSogLodManifest(value, baseUrl);
+      extra = manifest.extra;
       environment = manifest.environment ? manifest.files.length : -1;
       if (environment >= 0)
         manifest.files.push({ url: manifest.environment, count: -1 });
@@ -67,6 +69,7 @@ export function createChunkStreamHandlers(decodeSplats) {
     nextFile = fileEnd;
     return {
       hasData: index.lods.some((count, i) => i % 4 === 3 && count > 0),
+      extra,
       urls: index.urls,
       counts: index.counts.slice(),
       leafOffsets: index.leafOffsets.slice(),
@@ -160,13 +163,15 @@ export function createChunkStreamHandlers(decodeSplats) {
     // A custom loader may have reordered the whole chunk. Restore file ranges
     // once; each extracted region is reordered independently below.
     restoreSplatOrder(data);
-    const shPalette = data.extra.shPalette;
+    const { shPalette, extra } = data.extra;
     data.extra.shPalette = undefined;
+    data.extra.extra = undefined;
     chunks.set(id, data);
     return {
       numSplats: data.numSplats,
       numSh: getSplatShDegree(data.extra),
       byteLength: getSplatByteLength(data),
+      extra,
       shPalette,
       shDegree: data.extra.shDegree,
       blindTextureCount: data.extra.blind?.length ?? 0,

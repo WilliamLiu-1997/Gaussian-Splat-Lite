@@ -52,8 +52,8 @@ export function getSplatByteLength(data) {
     (data.boundingBox?.byteLength ?? 0) +
     (data.spatialBounds?.byteLength ?? 0);
   for (const array of data.splatArrays) bytes += array.byteLength;
-  for (const array of Object.values(data.extra))
-    bytes += typeof array === "number" ? 0 : (array?.byteLength ?? 0);
+  for (const value of Object.values(data.extra))
+    if (ArrayBuffer.isView(value)) bytes += value.byteLength;
   const blindBuffers = new Set(
     (data.extra.blind ?? []).map(({ data }) => data.buffer),
   );

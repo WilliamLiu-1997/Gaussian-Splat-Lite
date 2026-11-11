@@ -8,6 +8,8 @@ import {
 } from "gaussian-splat-lite";
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
+import { createBlindHover } from "./blindHover.js";
+import { createBlindObjectColors } from "./blindObjectColors.js";
 import { CameraController } from "./cameraController.js";
 import { createFrameGate } from "./frameGate.js";
 import { getModelRotationX } from "./modelOrientation.js";
@@ -35,6 +37,7 @@ const loadUrlButton = document.querySelector("#load-url");
 const renderOptionsContent = document.querySelector("#render-options-content");
 const renderOptionsReset = document.querySelector("#render-options-reset");
 const sourceUpAxis = document.querySelector("#source-up-axis");
+const objectColorsControl = document.querySelector("#object-colors-control");
 
 const ui = createViewerUI({
   onCancelLoad: cancelLoading,
@@ -45,7 +48,7 @@ const ui = createViewerUI({
 
 const EXAMPLE_MODEL = {
   name: "JunkShop-SH3.sog",
-  size: 16389277,
+  size: 16324896,
   url: new URL("../JunkShop-SH3.sog", import.meta.url),
 };
 
@@ -204,6 +207,8 @@ function mountRendererState(state, attachInspector = true) {
 
 let needsRender = true;
 let denoiser = null;
+let blindHover = null;
+let blindObjectColors = null;
 // resizeRenderer() reads it while mounting the first renderer.
 let activeStream = null;
 let renderOnDemand = true;
@@ -237,6 +242,7 @@ function updateStats(time, rendered) {
 function requestRender() {
   needsRender = true;
   denoiser?.invalidate();
+  blindHover?.invalidate();
 }
 
 function renderFrame(time) {
@@ -244,6 +250,7 @@ function renderFrame(time) {
   controls.update(time);
   activeStream?.update();
   drawFrame(time);
+  blindHover.update(time);
 }
 
 function drawFrame(time) {
@@ -288,6 +295,9 @@ function drawFrame(time) {
 }
 
 const renderOptionActions = {
+  objectColors: (value) => {
+    if (blindObjectColors) blindObjectColors.visible = value;
+  },
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
   },
@@ -314,7 +324,7 @@ const renderOptionActions = {
   },
   splatBudgetMode: (value) => {
     if (isChunkStream(activeStream)) activeStream.splatBudgetMode = value;
-    syncStreamOptions();
+    syncModelOptions();
   },
   lodBaseDistance: (value) => {
     if (isChunkStream(activeStream)) activeStream.lodBaseDistance = value;
@@ -400,6 +410,7 @@ async function performRendererSwitch(backend, switchToken) {
   }
 
   syncRendererOption(backend, true);
+  blindHover.clear();
   const previous = rendererState;
   const previousCanvas = previous.renderer.domElement;
   const previousOpacity = previousCanvas.style.opacity;
@@ -516,6 +527,7 @@ function retireDenoiser() {
 const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
 let activeSplat = null;
+let activeExample = false;
 let activeRadSource = null;
 let radReloadQueued = false;
 let modelUpAxis = "auto";
@@ -524,6 +536,14 @@ let cancelActiveLoad = null;
 let activeLoad = 0;
 let dragDepth = 0;
 const remoteRequestByButton = new WeakMap();
+
+blindHover = createBlindHover({
+  viewport,
+  camera,
+  getModel: () => activeSplat,
+  isExample: () => activeExample,
+  requestRender,
+});
 
 const optionsPanel = createRenderOptionsPanel({
   container: renderOptionsContent,
@@ -535,7 +555,10 @@ document
   .append(
     document.querySelector("#render-option-stochastic").closest(".option-row"),
   );
-syncStreamOptions();
+objectColorsControl.append(
+  document.querySelector("#render-option-objectColors").closest(".option-row"),
+);
+syncModelOptions();
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
 optionsPanel.reset({ skip: ["rendererBackend"] });
@@ -547,9 +570,10 @@ function isChunkStream(stream) {
   );
 }
 
-function syncStreamOptions() {
+function syncModelOptions() {
   const isRad = activeStream instanceof RadStreamScheduler;
   const isChunk = isChunkStream(activeStream);
+  objectColorsControl.hidden = !activeExample;
   optionsPanel.setHidden("splatBudget", !activeStream);
   optionsPanel.setHidden("maxResidentCpuBytes", !isRad);
   optionsPanel.setHidden("maxResidentGpuBytes", !isRad);
@@ -586,6 +610,9 @@ function isFileDrag(event) {
 }
 
 function clearActiveModel() {
+  blindHover.clear();
+  blindObjectColors?.removeFromParent();
+  blindObjectColors = null;
   denoiser?.reset();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -593,9 +620,10 @@ function clearActiveModel() {
   disposeActiveSource?.();
   disposeActiveSource = null;
   activeSplat = null;
+  activeExample = false;
   activeStream = null;
   activeRadSource = null;
-  syncStreamOptions();
+  syncModelOptions();
   ui.clearModelInfo();
   requestRender();
 }
@@ -771,13 +799,21 @@ async function loadFile(
 
     applyModelOrientation(model.splat, isChunkStream(model.stream));
     activeSplat = model.splat;
+    activeExample = file === EXAMPLE_MODEL;
     activeStream = model.stream;
     if (activeStream instanceof RadStreamScheduler)
       activeRadSource = { file, url, resolveFile };
     syncStreamResolution();
-    syncStreamOptions();
+    syncModelOptions();
     disposeActiveSource = dispose;
     scene.add(activeSplat);
+    if (activeExample) {
+      blindObjectColors = createBlindObjectColors(
+        activeSplat.splats.extra.labeling.objects,
+      );
+      blindObjectColors.visible = optionsPanel.getValue("objectColors");
+      scene.add(blindObjectColors);
+    }
     requestRender();
     const radStream = model.stream instanceof RadStreamScheduler;
     // SOG has index bounds; RAD needs its first page before framing the scene.
@@ -964,6 +1000,7 @@ window.addEventListener("beforeunload", () => {
   cancelActiveLoad?.();
   clearActiveModel();
   referenceHelpers.dispose();
+  blindHover.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);
   ui.dispose();

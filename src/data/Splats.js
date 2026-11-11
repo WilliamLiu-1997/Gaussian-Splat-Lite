@@ -109,7 +109,7 @@ export class Splats {
     this.maxSplats = 0;
     this.numSplats = 0;
     this.splatArrays = [new Uint32Array(0), new Uint32Array(0)];
-    this.extra = {};
+    this.splatExtra = {};
     this.isInitialized = false;
     this.needsUpdate = true;
     this.shTextures = {};
@@ -162,14 +162,14 @@ export class Splats {
     this.centerOnlyBounds = state.centerOnlyBoundingBox;
     this.bounds = state.boundingBox;
     this.spatialBounds = state.spatialBounds;
-    this.extra = state.extra;
+    this.splatExtra = state.extra;
     this.blindFieldGroups = (state.extra.blind ?? []).map(
       ({ fields }) => fields,
     );
     this.palette = state.extra.shPalette
       ? new ShPalette(state.extra.shPalette, state.extra.shDegree)
       : undefined;
-    if (this.palette) this.extra.shPalette = undefined;
+    if (this.palette) this.splatExtra.shPalette = undefined;
     this.needsUpdate = true;
   }
   /** @internal Adopt a loader result with precomputed bounds. */
@@ -211,14 +211,22 @@ export class Splats {
     return target;
   }
   getNumSh() {
-    return getSplatShDegree(this.extra);
+    return getSplatShDegree(this.splatExtra);
+  }
+  /** Application-defined JSON from the current SOG file's extras. */
+  get extra() {
+    return this.splatExtra.extra;
+  }
+  /** Application-defined JSON from the owning scene's lod-meta.json extras. */
+  get sceneExtra() {
+    return this.splatExtra.sceneExtra;
   }
   /** SOG v3 field definitions, grouped by their packed texture. */
   get blindFields() {
     return this.blindFieldGroups;
   }
   getBlindTexture() {
-    const blind = this.extra.blind;
+    const blind = this.splatExtra.blind;
     if (!this.blindTexture && blind?.length) {
       const { width, height, depth } = getTextureSize(
         this.maxSplats * blind.length,
@@ -245,7 +253,7 @@ export class Splats {
         centerOnlyBoundingBox: this.centerOnlyBounds,
         boundingBox: this.bounds,
         spatialBounds: this.spatialBounds,
-        extra: this.extra,
+        extra: this.splatExtra,
       })
     );
   }
@@ -260,7 +268,7 @@ export class Splats {
       centerOnlyBoundingBox: this.centerOnlyBounds,
       boundingBox: this.bounds,
       spatialBounds: this.spatialBounds,
-      extra: this.extra,
+      extra: this.splatExtra,
     };
     // This source owns its palette and is disposed below, so hand it over.
     if (this.palette) data.extra.shPalette = this.palette.data;
@@ -273,13 +281,14 @@ export class Splats {
     }
 
     const splat = decodeSplat(this.splatArrays, index);
-    if (includeBlind) splat.blind = decodeBlindFields(this.extra.blind, index);
+    if (includeBlind)
+      splat.blind = decodeBlindFields(this.splatExtra.blind, index);
     if (includeSh) {
       splat.sh = decodeSplatSh(
-        this.extra,
+        this.splatExtra,
         index,
         this.getNumSh(),
-        this.extra.shLabels?.[index],
+        this.splatExtra.shLabels?.[index],
         this.palette,
       );
     }
@@ -405,7 +414,7 @@ export class Splats {
       if (this.needsUpdate) current.needsUpdate = true;
       return current;
     }
-    const data = this.extra[key];
+    const data = this.splatExtra[key];
     if (!data) return undefined;
     const stride = key === "shLabels" ? 1 : 4;
     const { width, height, depth, maxSplats } = getTextureSize(
@@ -415,7 +424,7 @@ export class Splats {
     if (data.length < maxSplats * stride) {
       padded = new Uint32Array(maxSplats * stride);
       padded.set(data);
-      this.extra[key] = padded;
+      this.splatExtra[key] = padded;
     }
     return newUintArrayTexture(
       padded,

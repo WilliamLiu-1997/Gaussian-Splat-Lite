@@ -188,7 +188,14 @@ export function parseSogLodManifest(value, baseUrl) {
     root.environment == null ? undefined : resolve(root.environment, baseUrl);
   if (environment && files.some((file) => file.url === environment))
     fail("environment must be separate from LOD chunks");
-  return { tree, leaves, lodLevels: levels, files, environment };
+  return {
+    tree,
+    leaves,
+    lodLevels: levels,
+    files,
+    environment,
+    extra: root.extras,
+  };
 }
 /** Reuse cached refinements up to the target, then split gaps of four or more. */
 export function resolveSogLod(leaf, target, current, isLoaded) {

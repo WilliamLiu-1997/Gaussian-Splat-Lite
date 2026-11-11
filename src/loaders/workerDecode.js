@@ -235,6 +235,7 @@ export async function decodeSplats(args, { sendStatus }) {
     splatArrays: [decoded.splat0, decoded.splat1],
     sortCenters: decoded.sortCenters,
     extra: {
+      extra: decoded.extra,
       blind: decoded.blindData?.map((data, index) => ({
         fields: decoded.blind[index].fields,
         data,

@@ -189,6 +189,12 @@ export class ChunkStreamScheduler {
     const settings = this.sourceSetting(id);
     return { ...settings, transform: settings.transform.clone() };
   }
+  /** Application-defined JSON from this input's lod-meta.json extras. */
+  getSceneExtra(id) {
+    const source = this.sources.get(id);
+    if (!source) throw new Error(`Unknown Streaming source ID ${id}`);
+    return source.metadata?.extra;
+  }
   /**
    * Change an input's settings; omitted keys keep their values, and undefined
    * LOD settings follow the scheduler defaults. Loaded data is kept.
@@ -722,17 +728,19 @@ export class ChunkStreamScheduler {
       // Later regions wait until rendering consumes the queued uploads.
       if (!this.uploads.canAdd(bytes)) break;
       if (!batch) {
-        batch = new ChunkStreamBatch(
-          chunk.batchCapacity,
+        batch = new ChunkStreamBatch({
+          capacity: chunk.batchCapacity,
           numSh,
-          this.group,
-          () => {
+          group: this.group,
+          onEmpty: () => {
             chunk.batch = undefined;
             this.pruneChunk(chunk);
           },
           palette,
-          data.extra.blind?.map(({ fields }) => fields),
-        );
+          blindFields: data.extra.blind?.map(({ fields }) => fields),
+          extra: chunk.data.info.extra,
+          sceneExtra: this.getSceneExtra(chunk.source),
+        });
         batch.matrixAutoUpdate = false;
         batch.matrix.copy(this.sourceSetting(chunk.source).transform);
         batch.matrixWorldNeedsUpdate = true;

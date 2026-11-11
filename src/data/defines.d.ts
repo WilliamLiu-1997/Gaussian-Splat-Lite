@@ -16,6 +16,10 @@ export declare enum SplatFileType {
   RAD = "rad",
 }
 export type SplatExtra = {
+  /** Application-defined JSON from the SOG extras section. */
+  extra?: unknown;
+  /** Application-defined JSON shared by a streamed SOG scene. */
+  sceneExtra?: unknown;
   blind?: SplatBlindTexture[];
   /** Shared SH entries in texture tile order, addressed by one uint32 label per splat. */
   shPalette?: Uint32Array;

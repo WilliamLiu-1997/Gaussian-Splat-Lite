@@ -41,6 +41,8 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields in current and future chunks. Set `blindData: false` if you do not need them: Blind data otherwise adds upload and memory cost to every chunk.
 
+Read an input's application-defined `lod-meta.json.extras` with `streaming.getSceneExtra(sourceId)` after awaiting `addSource()`. Picking exposes the same scene metadata through `hit.object.splats.sceneExtra`, while `hit.object.splats.extra` holds the chunk's own `meta.json.extras`. Both values are kept unchanged and separate; applications decide how to use them together. Each input shares its scene metadata among its chunks. An absent value is `undefined`; both remain available with `blindData: false`.
+
 ## Multiple inputs
 
 Create an empty scheduler, then add inputs individually or concurrently:
@@ -155,6 +157,7 @@ Each `addSource(options)` call accepts:
 | `sourceIds` | Snapshot of the current source IDs in insertion order, including pending additions |
 | `addSource(options)` | Add an input; returns a promise of its stable ID when metadata is ready |
 | `removeSource(id)` | Immediately cancel and release one input; returns whether it existed |
+| `getSceneExtra(id)` | Application-defined JSON from this input's `lod-meta.json.extras`; `undefined` while metadata is pending or if absent. Throws for an unknown or removed ID |
 | `setSourceSettings(id, settings)` / `getSourceSettings(id)` | Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` without reloading, or read a copy of its settings |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
 | `getBoundingBox()` | Box around the scene in the group's coordinates; includes each input once its `addSource()` promise resolves |

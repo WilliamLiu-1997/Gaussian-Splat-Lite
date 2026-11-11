@@ -72,7 +72,7 @@ export class IndexedSplats extends Splats {
       this.sourceArrays = storage.sourceArrays;
       this.sourceCenters = storage.sourceCenters;
       this.sourceTextures = storage.sourceTextures;
-      this.extra.blind = storage.extra.blind;
+      this.splatExtra.blind = storage.splatExtra.blind;
       this.blindTexture = storage.blindTexture;
       this.blindFieldGroups = storage.blindFields;
       this.needsUpdate = true;
@@ -104,7 +104,7 @@ export class IndexedSplats extends Splats {
         layerSize,
       );
       const packed = new Uint32Array(layout.maxSplats);
-      this.extra.blind = blindFields.map((fields, index) => ({
+      this.splatExtra.blind = blindFields.map((fields, index) => ({
         fields,
         data: packed.subarray(index * capacity, (index + 1) * capacity),
       }));
@@ -116,7 +116,7 @@ export class IndexedSplats extends Splats {
         THREE.RedIntegerFormat,
       );
     }
-    this.blindLayout = getBlindLayoutKey(this.extra.blind);
+    this.blindLayout = getBlindLayoutKey(this.splatExtra.blind);
   }
   /** Create one packed texture from its array, which may come from a worker. */
   allocateTexture(array) {
@@ -246,7 +246,7 @@ export class IndexedSplats extends Splats {
       this.sourceTextures[index].needsUpdate = true;
     }
     const blindTexture = this.blindTexture;
-    this.extra.blind?.forEach((group, index) => {
+    this.splatExtra.blind?.forEach((group, index) => {
       group.data.set(data.extra.blind[index].data.subarray(0, count), start);
       group.data.fill(0, start + count, start + allocation);
     });
@@ -254,7 +254,7 @@ export class IndexedSplats extends Splats {
       const { width, height } = blindTexture.image;
       for (const layer of getBlindLayerUpdates(
         this.maxSplats,
-        this.extra.blind.length,
+        this.splatExtra.blind.length,
         start,
         allocation,
         width * height,
@@ -395,7 +395,8 @@ export class IndexedSplats extends Splats {
       [this.sourceArrays[0], this.sourceArrays[1]],
       source,
     );
-    if (includeBlind) splat.blind = decodeBlindFields(this.extra.blind, source);
+    if (includeBlind)
+      splat.blind = decodeBlindFields(this.splatExtra.blind, source);
     if (includeSh) {
       const rgb = [0, 0, 0];
       splat.sh = Array.from(
@@ -473,8 +474,9 @@ export class IndexedSplats extends Splats {
             arrays.slice(2).map((array, index) => [SH_KEYS[index], array]),
           ),
     };
-    if (this.extra.blind?.length)
-      data.extra.blind = this.extra.blind.map(({ fields, data }) => ({
+    data.extra.extra = this.extra;
+    if (this.splatExtra.blind?.length)
+      data.extra.blind = this.splatExtra.blind.map(({ fields, data }) => ({
         fields,
         data: gather(data),
       }));

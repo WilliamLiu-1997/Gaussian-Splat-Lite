@@ -7,6 +7,7 @@ import type { SplatPostDecodeProgram } from "../loaders/postDecode/program.js";
 import type {
   ReorderedSplatResult,
   SplatBlindField,
+  SplatExtra,
   SplatFileType,
   SplatResult,
 } from "./defines.js";
@@ -47,7 +48,7 @@ export declare class Splats {
   protected centerOnlyBounds: Float32Array;
   protected bounds: Float32Array;
   private spatialBounds;
-  private extra;
+  protected splatExtra: SplatExtra;
   protected palette?: ShPalette;
   initialized: Promise<Splats>;
   isInitialized: boolean;
@@ -69,6 +70,10 @@ export declare class Splats {
   /** @internal Copy cached local bounds into the target box. */
   getBoundingBox(centersOnly?: boolean, target?: THREE.Box3): THREE.Box3;
   getNumSh(): 0 | 1 | 2 | 3 | 4;
+  /** Application-defined JSON from the current SOG file's extras. */
+  get extra(): unknown;
+  /** Application-defined JSON from the owning scene's lod-meta.json extras. */
+  get sceneExtra(): unknown;
   /** SOG v3 field definitions, grouped by their packed texture. */
   get blindFields(): SplatBlindField[][];
   /** @internal Packed SOG application data. */

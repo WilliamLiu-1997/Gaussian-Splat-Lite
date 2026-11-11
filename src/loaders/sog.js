@@ -67,8 +67,8 @@ async function decodeSog(args, controller) {
       zip?.meta.crc ?? -1,
     ),
   );
+  const meta = JSON.parse(metadata.replace(/^\uFEFF+/, ""));
   if (args.expectedSogCount !== undefined) {
-    const meta = JSON.parse(metadata.replace(/^\uFEFF+/, ""));
     const count = meta.version >= 2 ? meta.count : meta.means?.shape?.[0];
     if (count !== args.expectedSogCount)
       fail(
@@ -155,6 +155,7 @@ async function decodeSog(args, controller) {
     controller.signal.throwIfAborted();
     consumed = true;
     const result = wasmCall(() => session.finish());
+    result.extra = meta.extras;
     progress(0, loaded);
     return result;
   } finally {

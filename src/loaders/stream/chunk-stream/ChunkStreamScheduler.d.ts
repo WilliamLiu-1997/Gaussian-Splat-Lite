@@ -75,6 +75,8 @@ export declare abstract class ChunkStreamScheduler {
   removeSource(id: number): boolean;
   /** A source's current settings; IDs are never renumbered or reused. */
   getSourceSettings(id: number): ChunkStreamSourceSettings;
+  /** Application-defined JSON from this input's lod-meta.json extras. Throws for unknown IDs. */
+  getSceneExtra(id: number): unknown;
   /**
    * Change an input's settings; omitted keys keep their values, and undefined
    * LOD settings follow the scheduler defaults. Loaded data is kept.

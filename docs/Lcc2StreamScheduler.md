@@ -43,6 +43,8 @@ Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#ray
 
 Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields in current and future chunks. Set `blindData: false` if you do not need them: Blind data otherwise adds upload and memory cost to every chunk.
 
+For SOG chunks, `hit.object.splats.extra` exposes that chunk's application-defined `meta.json.extras`, so Blind IDs can be looked up in the same file's metadata. Each chunk keeps its own value. Missing `extras` returns `undefined`; `blindData: false` does not discard it. `splats.sceneExtra` is `undefined` for LCC2 inputs.
+
 ## Detail and loading
 
 Each region uses its own LOD data or is replaced by its children. Coarse data establishes coverage while finer data loads. A replacement is shown after all its regions are ready; loaded finer data can remain visible while a coarser replacement loads. Changes fade over `fadeDurationMs`.

@@ -7,6 +7,8 @@ import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
 import type { ChunkStreamMetadata } from "./ChunkStreamLoader.js";
 
 export type ChunkInfo = {
+  /** Application-defined JSON from this chunk's SOG extras. */
+  extra?: unknown;
   shPalette?: Uint32Array;
   shDegree?: 1 | 2 | 3 | 4;
   numSplats: number;

@@ -24,17 +24,17 @@ export function sogBatchTextureLayout(count) {
 }
 /** Independently visible regions in fixed source slots. */
 export class SogRegionSplats extends IndexedSplats {
-  constructor(count, numSh, palette, blindFields) {
-    const { capacity, layerSize } = sogBatchTextureLayout(count);
+  constructor({ capacity, numSh, palette, blindFields, extra, sceneExtra }) {
     super({
-      capacity,
-      layerSize,
+      ...sogBatchTextureLayout(capacity),
       numSh,
       blockBits: BLOCK_BITS,
       indexedSh: !!palette,
       palette,
       blindFields,
     });
+    this.splatExtra.extra = extra;
+    this.splatExtra.sceneExtra = sceneExtra;
     this.activeRanges = new Map();
     this.indicesDirty = false;
     this.boundsDirty = true;

@@ -163,12 +163,17 @@ export class ChunkStreamLoader {
           const custom = await options.loadChunk(url, signal);
           try {
             signal.throwIfAborted();
+            const data = custom.takeData();
+            const extra = data.extra.extra;
+            // Keep metadata on the main thread; the worker only processes records.
+            data.extra.extra = undefined;
             info = await worker.call("cacheChunk", {
               id,
-              data: custom.takeData(),
+              data,
               maxSh: this.maxSh,
               blindData: this.blindData,
             });
+            info.extra = extra;
           } finally {
             custom.dispose();
           }

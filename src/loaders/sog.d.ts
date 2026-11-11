@@ -5,5 +5,7 @@ type LoadArgs = SplatSourceArgs & {
 };
 export declare function isSogPrefix(bytes: Uint8Array): boolean;
 /** @internal Loads SOG with range reads and grouped property decoding. */
-export declare function loadSog(args: LoadArgs): Promise<PostDecodeSplatData>;
+export declare function loadSog(
+  args: LoadArgs,
+): Promise<PostDecodeSplatData & { extra?: unknown }>;
 export {};

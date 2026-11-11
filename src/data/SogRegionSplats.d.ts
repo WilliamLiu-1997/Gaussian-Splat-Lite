@@ -4,6 +4,15 @@ import type { ReorderedSplatResult, SplatBlindField } from "./defines.js";
 import type { RaycastRangeCallback, SplatRaycastQuery } from "./raycast.js";
 import type { ShPalette } from "./shPalette.js";
 
+export type SogRegionSplatsOptions = {
+  capacity: number;
+  numSh: number;
+  palette?: ShPalette;
+  blindFields?: SplatBlindField[][];
+  extra?: unknown;
+  sceneExtra?: unknown;
+};
+
 export declare function sogBatchAllocationSize(count: number): number;
 export declare function sogBatchTextureLayout(count: number): {
   capacity: number;
@@ -15,12 +24,7 @@ export declare class SogRegionSplats extends IndexedSplats {
   private indicesDirty;
   private boundsDirty;
   private readonly regionBounds;
-  constructor(
-    count: number,
-    numSh: number,
-    palette?: ShPalette,
-    blindFields?: SplatBlindField[][],
-  );
+  constructor(options: SogRegionSplatsOptions);
   write(start: number, data: ReorderedSplatResult): void;
   setOpacity(
     start: number,

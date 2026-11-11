@@ -28,6 +28,7 @@ export type SogLodManifest = {
   lodLevels: number;
   files: SogLodFile[];
   environment?: string;
+  extra?: unknown;
 };
 export declare const SOG_LOD_STRIDE = 4;
 /** Packed worker index. Float64 preserves source bounds and safe-integer counts. */

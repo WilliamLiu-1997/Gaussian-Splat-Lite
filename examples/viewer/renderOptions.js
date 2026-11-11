@@ -210,6 +210,15 @@ export const renderOptionGroups = [
     description: "Shape, filtering, and screen-space size.",
     options: [
       {
+        property: "objectColors",
+        label: "Object colors",
+        description:
+          "Give each object of the example a stable random color. Off restores original colors.",
+        defaultValue: false,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
         property: "maxStdDev",
         description:
           "Draws more of each Gaussian tail. Higher is softer but costs more fill rate.",

@@ -14,6 +14,8 @@ const item = data.getSplat(0);
 
 For SOG v3 sources, `splats.blindFields` lists the available Blind field definitions. `getSplat(index).blind` returns decoded values by field name, for example `item.blind?.confidence`. It is `undefined` when no Blind data is loaded, including with `blindData: false`. Integer and float fields return their numeric values; normalized fields use their declared `range`, or `[0, 1]` when omitted. If a name appears in multiple groups, the first group is used, matching [SplatEditBlind](SplatEditBlind.md).
 
+`splats.extra` exposes application-defined JSON from the current SOG file's `meta.json.extras`, including SOG chunks loaded through [LCC2](Lcc2StreamScheduler.md). `splats.sceneExtra` exposes the owning [Streamed SOG](SogStreamScheduler.md) input's `lod-meta.json.extras`, shared by that input's chunks. Both values are kept unchanged and separate, whether objects, arrays, or other JSON values. An absent value is `undefined`; both remain available with `blindData: false`.
+
 ## Options
 
 The constructor and `initialize()` accept `SplatsOptions`:
@@ -42,6 +44,8 @@ Choose at most one of `url`, `file`, or `fileBytes`; combining them throws.
 | `getNumSplats()` / `getNumSh()` | Splat count, and the level of view-dependent color (spherical harmonics degree) the model has |
 | `getByteLength()` | Memory used by the data, in bytes |
 | `getSplat(index, includeSh?, includeBlind?)` | Read one Splat; both flags default to `true`. Set `includeSh` or `includeBlind` to `false` to skip decoding and omit `sh` or `blind`, respectively |
+| `extra` | Application-defined JSON from the current SOG file, or `undefined` when absent |
+| `sceneExtra` | Application-defined JSON from the owning streamed SOG scene, or `undefined` when absent |
 | `forEachCenter(callback)` | Visit only the center of every Splat, for example to build a spatial index |
 | `forEachSplat(callback)` | Visit every Splat |
 | `dispose()` | Cancel loading and release the data |
