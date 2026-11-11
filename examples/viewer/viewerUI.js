@@ -335,6 +335,7 @@ export function createViewerUI({
     clearModelInfo,
     setStatus,
     showToast,
+    setSourcePanelOpen,
     setDropOverlayVisible(visible) {
       dropOverlay.hidden = !visible;
     },

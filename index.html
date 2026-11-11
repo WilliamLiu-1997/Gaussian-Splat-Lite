@@ -169,7 +169,7 @@
             <strong>.sog</strong>, <strong>.rad</strong>, or <strong>.lcc2</strong> file from your device,
             or load one from a URL. For split scenes, include SOG meta.json and its
             .webp images, or the RAD header and its .radc files. For Streamed SOG or LCC2,
-            drop the folder containing lod-meta.json or .lcc2 and its chunks, or select all its files.
+            drop or choose the folder containing lod-meta.json or .lcc2 and its chunks.
             The model is decoded in this browser.
           </p>
           <div class="source-actions">
@@ -179,7 +179,14 @@
               type="button"
               data-file-picker
             >
-              Choose a model or scene
+              Choose files
+            </button>
+            <button
+              id="choose-folder"
+              class="button button-large"
+              type="button"
+            >
+              Choose folder
             </button>
             <button
               id="load-example"
@@ -290,6 +297,7 @@
     <div id="performance-tooltip" class="performance-tooltip" role="tooltip" popover="manual"></div>
     <div id="toast" class="toast" role="alert" hidden></div>
     <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp,.lcc2" multiple hidden />
+    <input id="folder-input" type="file" webkitdirectory multiple hidden />
 
     <script type="module" src="/examples/viewer/viewer.js"></script>
   </body>

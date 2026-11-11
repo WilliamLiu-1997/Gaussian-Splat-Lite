@@ -30,6 +30,8 @@ import { createViewerUI } from "./viewerUI.js";
 
 const viewport = document.querySelector("#viewport");
 const fileInput = document.querySelector("#file-input");
+const folderInput = document.querySelector("#folder-input");
+const chooseFolderButton = document.querySelector("#choose-folder");
 const referenceToggle = document.querySelector("#reference-toggle");
 const loadExampleButton = document.querySelector("#load-example");
 const urlForm = document.querySelector("#url-form");
@@ -873,6 +875,11 @@ function openFilePicker() {
   fileInput.click();
 }
 
+function openFolderPicker() {
+  folderInput.value = "";
+  folderInput.click();
+}
+
 function clearDragState() {
   dragDepth = 0;
   ui.setDropOverlayVisible(false);
@@ -900,6 +907,8 @@ for (const button of document.querySelectorAll("[data-file-picker]")) {
   button.addEventListener("click", openFilePicker);
 }
 
+chooseFolderButton.addEventListener("click", openFolderPicker);
+
 loadExampleButton.addEventListener("click", () => {
   loadRemoteModel(EXAMPLE_MODEL, loadExampleButton);
 });
@@ -921,6 +930,22 @@ urlForm.addEventListener("submit", (event) => {
 });
 
 function loadLocalFiles(files) {
+  // Some drag relays replace directories with empty, path-named files.
+  if (
+    files.length === 1 &&
+    files[0].size === 0 &&
+    files[0].name.startsWith("/")
+  ) {
+    ui.clearLoading();
+    ui.setSourcePanelOpen(true);
+    ui.setStatus("Choose the scene folder");
+    ui.showToast(
+      "Could not read the dropped folder. Use Choose folder to open the scene.",
+    );
+    chooseFolderButton.focus();
+    return;
+  }
+
   try {
     const { file, ...source } = modelFromLocalFiles(files);
     void loadFile(file, source);
@@ -929,10 +954,12 @@ function loadLocalFiles(files) {
   }
 }
 
-fileInput.addEventListener("change", () => {
-  const files = Array.from(fileInput.files);
-  if (files.length) loadLocalFiles(files);
-});
+for (const input of [fileInput, folderInput]) {
+  input.addEventListener("change", () => {
+    const files = Array.from(input.files);
+    if (files.length) loadLocalFiles(files);
+  });
+}
 
 referenceToggle.addEventListener("click", () => {
   const visible = !referenceHelpers.visible;
