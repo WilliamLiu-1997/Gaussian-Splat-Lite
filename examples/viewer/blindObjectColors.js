@@ -1,16 +1,16 @@
 import {
-  SplatEdit,
   SplatEditBlind,
+  SplatEditBlindField,
   SplatEditRgbaBlendMode,
 } from "gaussian-splat-lite";
 import { Color } from "three";
 
 export function createBlindObjectColors(objects) {
-  const edit = new SplatEdit({
+  const edit = new SplatEditBlind({
     rgbaBlendMode: SplatEditRgbaBlendMode.SET_RGBA,
-    sdfs: objects.map(
+    fields: objects.map(
       ({ object_id }) =>
-        new SplatEditBlind({
+        new SplatEditBlindField({
           field: "object_id",
           value: object_id,
           color: new Color().setHSL(Math.random(), 0.65, 0.55),

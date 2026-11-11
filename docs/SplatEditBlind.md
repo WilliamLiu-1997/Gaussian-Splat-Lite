@@ -1,24 +1,23 @@
-# SplatEditBlind
+# SplatEditBlind and SplatEditBlindField
 
 [Back to documentation](../README.md#documentation)
 
-Recolor, fade, or hide Gaussians selected by a SOG v3 Blind field. Add a `SplatEditBlind` to [SplatEdit](SplatEdit.md) in place of a spatial `SplatEditSdf` shape.
+Recolor, fade, or hide Gaussians selected by SOG v3 Blind fields. A `SplatEditBlind` holds the edit settings, and one or more `SplatEditBlindField` children select field values or ranges.
 
 ```js
 import {
-  SplatEdit,
   SplatEditBlind,
+  SplatEditBlindField,
   SplatEditRgbaBlendMode,
 } from "gaussian-splat-lite";
 
-const edit = new SplatEdit({
+const edit = new SplatEditBlind({
   rgbaBlendMode: SplatEditRgbaBlendMode.SET_RGBA,
   invert: false,
   softEdge: 0.1,
-  sdfSmooth: 0,
 });
 
-const selection = new SplatEditBlind({
+const selection = new SplatEditBlindField({
   field: "confidence",
   min: 0.5,
   max: 1,
@@ -39,7 +38,21 @@ mesh.remove(edit);
 
 Attach the edit to a mesh to affect that mesh, or use `scene.add(edit)` for all editable meshes, including current and future SOG/LCC2 streaming chunks. A mesh without the named field is unaffected, even when inverted. `editable: false` disables edits.
 
-## Options
+## SplatEditBlind options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | Generated | Object name |
+| `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY_RGBA` | [Blend mode](SplatEdit.md#blend-modes) for color and opacity |
+| `softEdge` | `number` | `0` | Soften range boundaries in field-value units; `0` gives a hard edge |
+| `invert` | `boolean` | `false` | Reverse the combined selection |
+| `fields` | `SplatEditBlindField[]` | `null` | Explicit list of selections, instead of using child objects |
+
+Use `edit.add(selection)` and `edit.remove(selection)` for children. If you set an explicit `fields` list, it is used instead; manage it with `edit.addField(selection)`, which skips duplicates, and `edit.removeField(selection)`.
+
+SDF and Blind edit groups share the same creation order. Change `edit.ordering` to reorder them. Edit groups cannot be nested. Spatial `SplatEditSdf` shapes belong in a separate [SplatEdit](SplatEdit.md) group; the two selection types cannot share an edit group. Blind groups have no `sdfSmooth` option.
+
+## SplatEditBlindField options
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -51,20 +64,18 @@ Attach the edit to a mesh to affect that mesh, or use `scene.add(edit)` for all 
 | `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | Color to apply |
 | `opacity` | `number` | Unassigned | Opacity to apply |
 
-Omit `min` or `max` for a one-sided range, or both to select every value of the field. Use `value` for category labels and a range for floating-point fields. For example, to hide one label, use `new SplatEditBlind({ field: "segment", value: 3, opacity: 0 })` in an edit with `SET_RGBA` and `softEdge: 0`.
+Omit `min` or `max` for a one-sided range, or both to select every value of the field. Use `value` for category labels and a range for floating-point fields. For example, to hide one label, add `new SplatEditBlindField({ field: "segment", value: 3, opacity: 0 })` to a Blind edit with `SET_RGBA` and `softEdge: 0`.
 
 A `min` above `max` selects nothing. Invalid options throw from the constructor; if a later change makes them invalid, the selection has no effect until they are valid again.
 
 Only assigned color and opacity channels change. The parent edit controls `MULTIPLY_RGBA`, `SET_RGBA`, or `ADD_RGBA`, just as for SDF shapes. Edits change only how the model is drawn: [picking](SplatMesh.md#raycasting) and `getSplat()` still see the original values, including Gaussians an edit hides.
 
-## Edges, smoothing, and inversion
+## Edges and inversion
 
 - `softEdge` softens the range boundaries; `0` gives a hard edge. Its width uses the field's value units.
-- `sdfSmooth` smooths transitions between selections and has no effect with only one selection. Overlapping selections blend their color and opacity even when it is `0`.
+- A group selects Gaussians matching any of its field selections. Overlapping selections within the group blend their color and opacity; separate groups apply in order.
 - `selection.invert` reverses that selection; `edit.invert` reverses the combined selection.
 - Object position, rotation, and scale do not affect Blind values or their ranges.
-
-Selections can be children of the edit or entries in its explicit `sdfs` list. Ordering, visibility, and attachment follow the same rules as `SplatEditSdf`.
 
 ## Supported fields
 

@@ -23,3 +23,4 @@ export { SplatFileType } from "./data/defines.js";
 export * as defines from "./data/defines.js";
 
 export { SplatEditBlind } from "./scene/SplatEditBlind.js";
+export { SplatEditBlindField } from "./scene/SplatEditBlindField.js";

@@ -47,7 +47,7 @@ export function decodeBlindFields(blind, index) {
     for (const [name, { shift, mask, encoding, range }] of getBlindFieldLayout(
       fields,
     ).lookup) {
-      // Match SplatEditBlind's first group when a name occurs more than once.
+      // Match SplatEditBlindField's first group when a name occurs more than once.
       if (values.has(name)) continue;
       const bits = ((word >>> shift) & mask) >>> 0;
       let value = bits;

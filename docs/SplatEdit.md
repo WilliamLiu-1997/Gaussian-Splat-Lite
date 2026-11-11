@@ -39,7 +39,7 @@ scene.add(edit);
 
 A mesh created with `editable: false` ignores edits. Edits also work on [streamed scenes](RadStreamScheduler.md).
 
-Use [SplatEditBlind](SplatEditBlind.md) to select a SOG v3 field by value or range instead of a spatial shape. It shares the same blend modes, inversion, soft edges, smoothing, and attachment rules.
+Use a separate [SplatEditBlind](SplatEditBlind.md) group with `SplatEditBlindField` selections to edit by SOG v3 field values or ranges. `SplatEdit` accepts only `SplatEditSdf` selections; the two selection types cannot share an edit group.
 
 ## SplatEdit options
 
@@ -48,13 +48,13 @@ Use [SplatEditBlind](SplatEditBlind.md) to select a SOG v3 field by value or ran
 | `name` | `string` | Generated | Object name |
 | `rgbaBlendMode` | `SplatEditRgbaBlendMode` | `MULTIPLY_RGBA` | How the shapes' color and opacity combine with the model's; see [blend modes](#blend-modes) |
 | `softEdge` | `number` | `0` | Soften the edge of the edited region; `0` gives a hard edge |
-| `sdfSmooth` | `number` | `0` | Smooth transitions between selections; `0` disables smoothing |
+| `sdfSmooth` | `number` | `0` | Smooth transitions between shapes; needs at least two shapes. `0` disables smoothing |
 | `invert` | `boolean` | `false` | Affect the outside of the shapes instead of the inside |
-| `sdfs` | `(SplatEditSdf \| SplatEditBlind)[]` | `null` | Explicit list of selections, instead of using child objects |
+| `sdfs` | `SplatEditSdf[]` | `null` | Explicit list of shapes, instead of using child objects |
 
 Shapes are normally children of the edit: use `edit.add(sdf)` and `edit.remove(sdf)`. If you set an explicit `sdfs` list, it is used instead of the children; manage it with `edit.addSdf(sdf)`, which skips duplicates, and `edit.removeSdf(sdf)`.
 
-Edits apply in the order they were created. Change `edit.ordering` to reorder them.
+SDF and Blind edit groups apply in the order they were created. Change `edit.ordering` to reorder them. Edit groups cannot be nested.
 
 ## Blend modes
 

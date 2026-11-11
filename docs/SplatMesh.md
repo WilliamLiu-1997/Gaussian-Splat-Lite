@@ -62,7 +62,7 @@ Choose at most one of `url`, `file`, `fileBytes`, or `splats`; combining them th
 | `recolor` | `THREE.Color(1, 1, 1)` | Color multiplier for the whole model |
 | `opacity` | `1` | Opacity multiplier for the whole model |
 | `maxSh` | Read-only, default `4` | SH limit chosen at construction; effective rendering is also limited by the data's degree |
-| `edits` | `SplatEdit[] \| null` | Explicit list of [edits](SplatEdit.md) for this mesh |
+| `edits` | `(SplatEdit \| SplatEditBlind)[] \| null` | Explicit list of [SDF](SplatEdit.md) and [Blind](SplatEditBlind.md) edit groups for this mesh |
 | `splats` | `Splats \| undefined` | The model's [Splats](Splats.md) data |
 | `needsUpdate` | `boolean` setter | Set to `true` to force a refresh |
 

@@ -10,6 +10,7 @@ import { SplatRaycastQuery } from "../data/raycast.js";
 import * as wasm from "../runtime/wasm.js";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit.js";
 import { SplatEditBlind } from "./SplatEditBlind.js";
+import { SplatEditBlindField } from "./SplatEditBlindField.js";
 let raycastVisibleIndices = new Uint32Array(0);
 const raycastWorldToMesh = new THREE.Matrix4();
 const raycastDirectionMatrix = new THREE.Matrix3();
@@ -188,7 +189,10 @@ export class SplatMesh extends THREE.Object3D {
     } else if (groups.length > 0 && !this.sdfEdits) {
       this.sdfEdits = new SplatEdits({
         maxEdits: groups.length,
-        maxSdfs: groups.reduce((total, group) => total + group.sdfs.length, 0),
+        maxSdfs: groups.reduce(
+          (total, group) => total + group.selections.length,
+          0,
+        ),
       });
       updated = true;
     }
@@ -212,7 +216,7 @@ export class SplatMesh extends THREE.Object3D {
       if (centersUpdated) this.centerVersion += 1;
     }
   }
-  /** Edits applying to this mesh, in order, each with its SDF shapes. */
+  /** Edits applying to this mesh, in order, each with its selections. */
   collectEditGroups(globalEdits) {
     if (!this.editable) return NO_EDIT_GROUPS;
     const local = this.edits;
@@ -227,20 +231,30 @@ export class SplatMesh extends THREE.Object3D {
       for (const edit of local) edits.add(edit);
     } else {
       this.traverseVisible((node) => {
-        if (node instanceof SplatEdit) edits.add(node);
+        if (node instanceof SplatEdit || node instanceof SplatEditBlind)
+          edits.add(node);
       });
     }
     const orderedEdits = Array.from(edits).sort(
       (left, right) => left.ordering - right.ordering,
     );
     return orderedEdits.map((edit) => {
-      if (edit.sdfs) return { edit, sdfs: edit.sdfs };
-      const sdfs = [];
+      const explicit = edit instanceof SplatEditBlind ? edit.fields : edit.sdfs;
+      const selections = explicit ?? [];
       edit.traverseVisible((node) => {
-        if (node instanceof SplatEditSdf || node instanceof SplatEditBlind)
-          sdfs.push(node);
+        if (
+          node !== edit &&
+          (node instanceof SplatEdit || node instanceof SplatEditBlind)
+        ) {
+          throw new Error("Edit groups cannot be nested");
+        }
+        if (
+          !explicit &&
+          (node instanceof SplatEditSdf || node instanceof SplatEditBlindField)
+        )
+          selections.push(node);
       });
-      return { edit, sdfs };
+      return { edit, selections };
     });
   }
   updateVersion({ sort = true } = {}) {

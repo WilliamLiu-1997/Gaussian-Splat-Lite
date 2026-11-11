@@ -1,5 +1,8 @@
 import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines.js";
-import { BLIND_ACTIVE, BLIND_SDF_TYPE } from "../../scene/SplatEditBlind.js";
+import {
+  BLIND_ACTIVE,
+  BLIND_SDF_TYPE,
+} from "../../scene/SplatEditBlindField.js";
 import { createBlindSelection } from "./BlindSelection.js";
 import {
   decodeQuatSmallestThree32,
@@ -283,7 +286,7 @@ const evaluateSH4 = N.Fn(([previous, first, second, direction]) => {
   ],
 });
 export function createGenerateProgram({ uniforms }) {
-  const blindDistance = createBlindSelection(uniforms);
+  const sampleBlind = createBlindSelection(uniforms);
   const bindUniform = (name, type) => uniformBinding(uniforms, name, type);
   const bindTexture = (name) => textureBinding(uniforms, name, true);
   const targetCount = bindUniform("targetCount", "uint");
@@ -330,7 +333,9 @@ export function createGenerateProgram({ uniforms }) {
       active.assign(flags.bitAnd(BLIND_ACTIVE).notEqual(N.uint(0)));
       N.If(active, () => {
         const bounds = loadSdf(2, index).toVar();
-        distance.assign(blindDistance(sourceIndex, data0.xyz, flags, bounds));
+        const selection = sampleBlind(sourceIndex, data0.xyz, flags, bounds);
+        active.assign(selection.active);
+        distance.assign(selection.distance);
         N.If(flags.bitAnd(0x100).notEqual(N.uint(0)), () => {
           distance.negateAssign();
         });

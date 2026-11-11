@@ -1,8 +1,9 @@
 import {
+  BLIND_EMPTY_RANGE,
   BLIND_ENCODING_SHIFT,
   BLIND_HAS_LOWER,
   BLIND_HAS_UPPER,
-} from "../../scene/SplatEditBlind.js";
+} from "../../scene/SplatEditBlindField.js";
 import { N, loadArray, textureBinding, uniformBinding } from "./shaderUtils.js";
 
 const DISTANCE_LIMIT = 1e20;
@@ -65,15 +66,18 @@ export function createBlindSelection(uniforms) {
       ),
     ).toVar();
     // Inclusive range endpoints must become exclusive when inverted.
-    return N.select(
-      nonFinite,
-      DISTANCE_LIMIT,
-      N.select(
-        distance.equal(0),
-        -1e-20,
-        distance.clamp(-DISTANCE_LIMIT, DISTANCE_LIMIT),
+    return {
+      active: nonFinite.not(),
+      distance: N.select(
+        nonFinite.or(flags.bitAnd(BLIND_EMPTY_RANGE).notEqual(N.uint(0))),
+        DISTANCE_LIMIT,
+        N.select(
+          distance.equal(0),
+          -1e-20,
+          distance.clamp(-DISTANCE_LIMIT, DISTANCE_LIMIT),
+        ),
       ),
-    );
+    };
   };
 }
 

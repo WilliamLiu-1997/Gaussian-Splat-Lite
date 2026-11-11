@@ -60,7 +60,6 @@ export {
   SplatEdits,
   type SplatEditGroup,
   type SplatEditOptions,
-  type SplatEditSelection,
   type SplatEditSdfColor,
   type SplatEditSdfOptions,
 } from "./scene/SplatEdit.js";
@@ -79,3 +78,7 @@ export {
   SplatEditBlind,
   type SplatEditBlindOptions,
 } from "./scene/SplatEditBlind.js";
+export {
+  SplatEditBlindField,
+  type SplatEditBlindFieldOptions,
+} from "./scene/SplatEditBlindField.js";

@@ -59,12 +59,13 @@ layout(location = 2) out uint targetSeed;
 // must not evaluate exp(inf - inf).
 const float SDF_DISTANCE_LIMIT = 1e20;
 
-// Blind selection record flags; see SplatEditBlind.js.
+// Blind selection record flags; see SplatEditBlindField.js.
 const uint BLIND_SDF_TYPE = 8u;
 const uint BLIND_ACTIVE = 0x200u;
 const uint BLIND_ENCODING_SHIFT = 10u;
 const uint BLIND_HAS_LOWER = 0x1000u;
 const uint BLIND_HAS_UPPER = 0x2000u;
+const uint BLIND_EMPTY_RANGE = 0x4000u;
 
 float decodeSemanticOpacity(float alpha, float shapeAmount) {
     if (shapeAmount <= 0.0) return alpha;
@@ -207,11 +208,19 @@ float blindUintDifference(uint a, uint b) {
     return a >= b ? float(a - b) : -float(b - a);
 }
 
-float blindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds) {
+bool sampleBlindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds, out float distance) {
     uint address = sourceIndex + field.x * blindStride;
     ivec3 coord = ivec3(address & 2047u, (address & blindLayerMask) >> 11u, address >> blindLayerBits);
     uint bits = (texelFetch(blindTexture, coord, 0).r >> field.y) & field.z;
     uint encoding = (flags >> BLIND_ENCODING_SHIFT) & 3u;
+    // Test exponent bits: compilers may fold float NaN comparisons away.
+    if (encoding == 1u ? (bits & 0x7c00u) == 0x7c00u
+                       : encoding == 2u && (bits & 0x7f800000u) == 0x7f800000u)
+        return false;
+    if ((flags & BLIND_EMPTY_RANGE) != 0u) {
+        distance = SDF_DISTANCE_LIMIT;
+        return true;
+    }
     float lower;
     float upper;
     if (encoding == 0u) {
@@ -219,10 +228,6 @@ float blindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds) {
         lower = blindUintDifference(bounds.x, bits) + residual.x;
         upper = blindUintDifference(bits, bounds.y) - residual.y;
     } else {
-        // Test exponent bits: compilers may fold float NaN comparisons away.
-        if (encoding == 1u ? (bits & 0x7c00u) == 0x7c00u
-                           : encoding == 2u && (bits & 0x7f800000u) == 0x7f800000u)
-            return SDF_DISTANCE_LIMIT;
         float value;
         if (encoding == 1u) value = unpackHalf2x16(bits).x;
         else if (encoding == 2u) value = uintBitsToFloat(bits);
@@ -235,12 +240,13 @@ float blindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds) {
         upper = value - range.y;
     }
     // Missing bounds are flags, never infinities.
-    float distance = max(
+    distance = max(
         (flags & BLIND_HAS_LOWER) != 0u ? lower : -SDF_DISTANCE_LIMIT,
         (flags & BLIND_HAS_UPPER) != 0u ? upper : -SDF_DISTANCE_LIMIT
     );
     // Inclusive range endpoints must become exclusive when inverted.
-    return distance == 0.0 ? -1e-20 : clamp(distance, -SDF_DISTANCE_LIMIT, SDF_DISTANCE_LIMIT);
+    distance = distance == 0.0 ? -1e-20 : clamp(distance, -SDF_DISTANCE_LIMIT, SDF_DISTANCE_LIMIT);
+    return true;
 }
 
 vec4 sdfRgbaMask(uint flags) {
@@ -259,7 +265,7 @@ bool sampleSdfDistance(int index, uint sourceIndex, vec3 position, out float dis
     if (type == BLIND_SDF_TYPE) {
         if ((flags & BLIND_ACTIVE) == 0u) return false;
         uvec4 bounds = texelFetch(sdfTexture, ivec2(2, index), 0);
-        distance = blindDistance(sourceIndex, data0.xyz, flags, bounds);
+        if (!sampleBlindDistance(sourceIndex, data0.xyz, flags, bounds, distance)) return false;
         if ((flags & 0x100u) != 0u) distance = -distance;
         return true;
     }

@@ -1,14 +1,14 @@
 import {
-  SplatEdit,
   SplatEditBlind,
+  SplatEditBlindField,
   SplatEditRgbaBlendMode,
 } from "gaussian-splat-lite";
 
 export function createBlindHighlight(brightness, onChange) {
-  const edit = new SplatEdit({
+  const edit = new SplatEditBlind({
     rgbaBlendMode: SplatEditRgbaBlendMode.ADD_RGBA,
   });
-  const selection = new SplatEditBlind({
+  const selection = new SplatEditBlindField({
     field: "object_id",
     value: 0,
     color: { r: brightness, g: brightness, b: brightness },

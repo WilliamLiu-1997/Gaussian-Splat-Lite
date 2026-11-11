@@ -3,6 +3,7 @@ import { SPLAT_TEX_WIDTH } from "../data/defines.js";
 import { PENDING_UPLOADS } from "../data/pendingUploads.js";
 import { emptySplatTexture, getTextureSize } from "../data/textureLayout.js";
 import { SplatEdit, SplatEdits } from "../scene/SplatEdit.js";
+import { SplatEditBlind } from "../scene/SplatEditBlind.js";
 import { SplatMesh } from "../scene/SplatMesh.js";
 import { threeRevision } from "../utils/three.js";
 import { decomposeSplatTransform } from "../utils/transforms.js";
@@ -411,7 +412,11 @@ function collectSceneNodes(
       nodes.meshes[nodes.meshCount++] = node;
       if (visible) nodes.shownMeshes[nodes.shownCount++] = node;
     }
-  } else if (visible && !insideMesh && node instanceof SplatEdit) {
+  } else if (
+    visible &&
+    !insideMesh &&
+    (node instanceof SplatEdit || node instanceof SplatEditBlind)
+  ) {
     nodes.edits[nodes.editCount++] = node;
   }
   const children = node.children;

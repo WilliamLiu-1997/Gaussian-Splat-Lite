@@ -11,7 +11,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Added SOG v3 loading for bundled and split models, including opacity above 1 and SH4. SOG and LCC2 streaming also accept v3 chunks and keep SH4 by default; their `maxSh` option now accepts `0`–`4` and defaults to `4`. See [supported formats](docs/SplatFileType.md).
 - Added support for the PLY `opacity_linear` property, including values above 1. It takes precedence over `opacity` when both are present.
-- Added [SplatEditBlind](docs/SplatEditBlind.md) to recolor, fade, or hide Gaussians by a SOG v3 Blind field value or range, with the same blend modes, inversion, soft edges, and smoothing as SDF shapes. It works on ordinary loads and SOG/LCC2 streaming. `splats.blindFields` lists a model's Blind fields. Blind fields with invalid metadata are skipped with a warning instead of failing the load.
+- Added [SplatEditBlind](docs/SplatEditBlind.md) groups with `SplatEditBlindField` selections to recolor, fade, or hide Gaussians by SOG v3 field values or ranges, including SOG/LCC2 streaming. Blind and SDF edits use separate groups with shared ordering and blend modes. `splats.blindFields` lists available fields; invalid field metadata is skipped with a warning.
 - Added the `blindData` option to `SplatMesh`, `Splats`, `SplatLoader`, `SogStreamScheduler`, and `Lcc2StreamScheduler`. Set it to `false` to skip downloading, decoding, and storing SOG v3 Blind data.
 - Added decoded SOG v3 field values as `blind` on `getSplat()` results, including streamed models. Pass `false` as `getSplat()`'s third argument (`includeBlind`) to skip Blind decoding and omit the field. After raycasting, read fields on demand with `hit.object.splats.getSplat(hit.index, false, true).blind`.
 

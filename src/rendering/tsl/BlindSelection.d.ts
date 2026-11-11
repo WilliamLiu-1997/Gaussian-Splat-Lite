@@ -8,4 +8,4 @@ export declare function createBlindSelection(
   field: Node<"uvec3">,
   flags: Node<"uint">,
   bounds: Node<"uvec4">,
-) => Node<"float">;
+) => { active: Node<"bool">; distance: Node<"float"> };

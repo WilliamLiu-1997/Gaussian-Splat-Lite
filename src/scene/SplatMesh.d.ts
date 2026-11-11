@@ -7,6 +7,7 @@ import type {
 } from "../loaders/loadTypes.js";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program.js";
 import type { SplatEdit, SplatEdits } from "./SplatEdit.js";
+import type { SplatEditBlind } from "./SplatEditBlind.js";
 export type SplatMeshOptions = {
   url?: string;
   file?: Blob;
@@ -35,15 +36,15 @@ export type SplatMeshOptions = {
 export type SplatMeshFrameContext = {
   time: number;
   deltaTime: number;
-  globalEdits: SplatEdit[];
-  /** Compact SDF edit storage during an explicit renderer shrink. */
+  globalEdits: (SplatEdit | SplatEditBlind)[];
+  /** Compact edit storage during an explicit renderer shrink. */
   shrinkResources?: boolean;
 };
 export type SplatIntersection = THREE.Intersection<SplatMesh> & {
   /** Current readable index in this mesh's Splats. */
   index: number;
 };
-/** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
+/** A scene object backed by a fixed encoded splat source and RGBA edits. */
 export declare class SplatMesh extends THREE.Object3D {
   private lastInitialization?;
   private readiness;
@@ -58,7 +59,7 @@ export declare class SplatMesh extends THREE.Object3D {
   opacity: number;
   /** SH limit fixed at construction; loading a file also caps its stored SH data. */
   get maxSh(): number;
-  edits: SplatEdit[] | null;
+  edits: (SplatEdit | SplatEditBlind)[] | null;
   editable: boolean;
   raycastable: boolean;
   minRaycastOpacity: number;

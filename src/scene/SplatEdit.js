@@ -3,9 +3,9 @@ import { emptyUintTexture } from "../data/textureLayout.js";
 import { rebaseAffineTransform } from "../utils/transforms.js";
 import {
   BLIND_ACTIVE,
-  SplatEditBlind,
+  SplatEditBlindField,
   encodeBlindSelection,
-} from "./SplatEditBlind.js";
+} from "./SplatEditBlindField.js";
 export const SplatEditSdfType = {
   ALL: "all",
   PLANE: "plane",
@@ -33,7 +33,7 @@ export class SplatEditSdf extends THREE.Object3D {
     this.radius = options.radius ?? 0;
   }
 }
-/** An ordered RGBA operation evaluated over SDF shapes or Blind selections. */
+/** An ordered RGBA operation evaluated over spatial SDF shapes. */
 export class SplatEdit extends THREE.Object3D {
   static nextOrdering = 1;
   constructor(options = {}) {
@@ -84,36 +84,53 @@ export class SplatEdits {
     this.editTexture.dispose();
   }
   update(groups, coordinateOrigin, shrinkResources = false, blindFields = []) {
+    const selectionCount = groups.reduce((total, { edit, selections }) => {
+      const spatial = edit instanceof SplatEdit;
+      const selectionType = spatial ? SplatEditSdf : SplatEditBlindField;
+      if (
+        selections.some((selection) => !(selection instanceof selectionType))
+      ) {
+        throw new Error(
+          spatial
+            ? "SplatEdit only accepts SplatEditSdf selections"
+            : "SplatEditBlind only accepts SplatEditBlindField selections",
+        );
+      }
+      return total + selections.length;
+    }, 0);
     this.hasBlind = false;
-    const sdfCount = groups.reduce(
-      (total, group) => total + group.sdfs.length,
-      0,
+    let updated = this.ensureCapacity(
+      selectionCount,
+      groups.length,
+      shrinkResources,
     );
-    let updated = this.ensureCapacity(sdfCount, groups.length, shrinkResources);
-    if (this.numSdfs !== sdfCount || this.numEdits !== groups.length) {
-      this.numSdfs = sdfCount;
+    if (this.numSdfs !== selectionCount || this.numEdits !== groups.length) {
+      this.numSdfs = selectionCount;
       this.numEdits = groups.length;
       updated = true;
     }
     const sizes = scratchSizes;
     const inverseOwnScale = scratchScale;
     const worldToSdf = scratchMatrix;
-    let sdfIndex = 0;
+    let selectionIndex = 0;
     let sdfUpdated = false;
     let editUpdated = false;
-    groups.forEach(({ edit, sdfs }, editIndex) => {
+    groups.forEach(({ edit, selections }, editIndex) => {
+      const spatial = edit instanceof SplatEdit;
       editUpdated =
-        this.encodeEdit(editIndex, edit, sdfIndex, sdfs.length) || editUpdated;
-      for (const sdf of sdfs) {
-        if (sdf instanceof SplatEditBlind) {
-          const record = encodeBlindSelection(sdf, blindFields);
+        this.encodeEdit(editIndex, edit, selectionIndex, selections.length) ||
+        editUpdated;
+      for (const selection of selections) {
+        if (!spatial) {
+          const record = encodeBlindSelection(selection, blindFields);
           this.hasBlind ||= (record[3] & BLIND_ACTIVE) !== 0;
-          const base = sdfIndex++ * SDF_TEXELS * 4;
+          const base = selectionIndex++ * SDF_TEXELS * 4;
           for (let word = 0; word < record.length; word++)
             sdfUpdated =
               this.setSdfUint(base + word, record[word]) || sdfUpdated;
           continue;
         }
+        const sdf = selection;
         sdf.updateWorldMatrix(true, false);
         worldToSdf.copy(sdf.matrixWorld);
         // These shapes already use scale as dimensions. Preserve their
@@ -195,9 +212,14 @@ export class SplatEdits {
         }
 
         sdfUpdated =
-          this.encodeSdf(sdfIndex, sdf, worldToSdf, distanceScale, sizes) ||
-          sdfUpdated;
-        sdfIndex += 1;
+          this.encodeSdf(
+            selectionIndex,
+            sdf,
+            worldToSdf,
+            distanceScale,
+            sizes,
+          ) || sdfUpdated;
+        selectionIndex += 1;
       }
     });
     if (sdfUpdated) {
@@ -208,9 +230,9 @@ export class SplatEdits {
     }
     return { updated: updated || sdfUpdated || editUpdated };
   }
-  ensureCapacity(sdfs, edits, shrinkResources) {
+  ensureCapacity(selections, edits, shrinkResources) {
     let updated = false;
-    const maxSdfs = getEditCapacity(sdfs, this.maxSdfs, shrinkResources);
+    const maxSdfs = getEditCapacity(selections, this.maxSdfs, shrinkResources);
     const maxEdits = getEditCapacity(edits, this.maxEdits, shrinkResources);
     if (maxSdfs !== this.maxSdfs) {
       this.maxSdfs = maxSdfs;
@@ -228,9 +250,9 @@ export class SplatEdits {
     }
     return updated;
   }
-  encodeEdit(index, edit, sdfFirst, sdfCount) {
-    if (sdfFirst > 0xffff || sdfCount > 0xffff) {
-      throw new Error("An SDF edit supports at most 65535 shapes");
+  encodeEdit(index, edit, selectionFirst, selectionCount) {
+    if (selectionFirst > 0xffff || selectionCount > 0xffff) {
+      throw new Error("An edit supports at most 65535 selections");
     }
     const base = index * 4;
     const blend = rgbaBlendModeToNumber(edit.rgbaBlendMode);
@@ -238,11 +260,14 @@ export class SplatEdits {
     // Zero keeps hard edges/unions; nonzero parameters are stored as reciprocals.
     const invSoftEdge = edit.softEdge === 0 ? 0 : 1 / edit.softEdge;
     const invSmoothAmount =
-      sdfCount > 1 && edit.sdfSmooth !== 0 ? 1 / edit.sdfSmooth : 0;
+      edit instanceof SplatEdit && selectionCount > 1 && edit.sdfSmooth !== 0
+        ? 1 / edit.sdfSmooth
+        : 0;
 
     let updated = this.setEditUint(base, flags);
     updated =
-      this.setEditUint(base + 1, sdfFirst | (sdfCount << 16)) || updated;
+      this.setEditUint(base + 1, selectionFirst | (selectionCount << 16)) ||
+      updated;
     updated = this.setEditFloat(base + 2, invSoftEdge) || updated;
     updated = this.setEditFloat(base + 3, invSmoothAmount) || updated;
     return updated;
