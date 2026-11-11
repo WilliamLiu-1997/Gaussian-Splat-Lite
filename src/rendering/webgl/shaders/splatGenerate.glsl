@@ -215,14 +215,6 @@ bool sampleBlindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds
     ivec3 coord = ivec3(address & 2047u, (address & blindLayerMask) >> 11u, address >> blindLayerBits);
     uint bits = (texelFetch(blindTexture, coord, 0).r >> field.y) & field.z;
     uint encoding = (flags >> BLIND_ENCODING_SHIFT) & 3u;
-    // Test exponent bits: compilers may fold float NaN comparisons away.
-    if (encoding == 1u ? (bits & 0x7c00u) == 0x7c00u
-                       : encoding == 2u && (bits & 0x7f800000u) == 0x7f800000u)
-        return false;
-    if ((flags & BLIND_EMPTY_RANGE) != 0u) {
-        distance = SDF_DISTANCE_LIMIT;
-        return true;
-    }
     float lower;
     float upper;
     if (encoding == 0u) {
@@ -230,6 +222,10 @@ bool sampleBlindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds
         lower = blindUintDifference(bounds.x, bits) + residual.x;
         upper = blindUintDifference(bits, bounds.y) - residual.y;
     } else {
+        // Test exponent bits: compilers may fold float NaN comparisons away.
+        if (encoding == 1u ? (bits & 0x7c00u) == 0x7c00u
+                           : encoding == 2u && (bits & 0x7f800000u) == 0x7f800000u)
+            return false;
         float value;
         if (encoding == 1u) value = unpackHalf2x16(bits).x;
         else if (encoding == 2u) value = uintBitsToFloat(bits);
@@ -248,6 +244,7 @@ bool sampleBlindDistance(uint sourceIndex, uvec3 field, uint flags, uvec4 bounds
     );
     // Inclusive range endpoints must become exclusive when inverted.
     distance = distance == 0.0 ? -1e-20 : clamp(distance, -SDF_DISTANCE_LIMIT, SDF_DISTANCE_LIMIT);
+    if ((flags & BLIND_EMPTY_RANGE) != 0u) distance = SDF_DISTANCE_LIMIT;
     return true;
 }
 
