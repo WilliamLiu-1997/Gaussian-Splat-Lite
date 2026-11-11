@@ -650,112 +650,118 @@ export function createGenerateProgram({ uniforms }) {
             ),
           );
         });
-        const sourceB = loadArray(sourceSplats2, coord).toVar();
-        // Deleted scales are three packed -infinity half floats. Inspect their
-        // bits before unpacking so the shader never has to compare infinities.
-        const isDeleted = sourceB.y
-          .shiftRight(16)
-          .equal(N.uint(0xfc00))
-          .and(sourceB.z.equal(N.uint(0xfc00fc00)));
-        N.If(isDeleted.not().and(blockOpacity.greaterThan(0)), () => {
-          const alphaShape = decodeAlphaShape(sourceA);
-          valid.assign(true);
-          lnScales.assign(decodeLnScales(sourceB).add(objectLnScale));
-          const sourceQuaternion = decodeQuatSmallestThree32(sourceB.w).toVar();
-          N.If(objectReflected, () => {
-            sourceQuaternion.yz.negateAssign();
-          });
-          quaternion.assign(quatQuat(objectQuaternion, sourceQuaternion));
-          rgba.assign(decodeRgba(sourceB, alphaShape.x));
-          shapeAmount.assign(alphaShape.y);
-          if (deferredColor) {
-            deferredColor.coord.assign(coord);
-            deferredColor.center.assign(position);
-          } else {
-            addShColor(rgba.rgb, coord, position);
-          }
-          const semanticOpacityDecoded = N.bool(false).toVar();
-          N.Loop(
-            { start: N.int(0), end: numEdits, type: "int", condition: "<" },
-            ({ i: editIndex }) => {
-              const edit = load2D(
-                editTexture,
-                N.ivec2(N.int(0), editIndex),
-              ).toVar();
-              const blendMode = edit.x.bitAnd(0xff);
-              const {
-                rgba: sdfRgba,
-                mask: sdfMask,
-                factor,
-              } = evaluateEdit(edit, sourceIndex, position);
-              const editOpacity = factor
-                .greaterThan(0)
-                .and(sdfMask.a.greaterThan(0));
-              N.If(editOpacity.and(semanticOpacityDecoded.not()), () => {
+        N.If(blockOpacity.greaterThan(0), () => {
+          const sourceB = loadArray(sourceSplats2, coord).toVar();
+          // Deleted scales are three packed -infinity half floats. Inspect their
+          // bits before unpacking so the shader never has to compare infinities.
+          const isDeleted = sourceB.y
+            .shiftRight(16)
+            .equal(N.uint(0xfc00))
+            .and(sourceB.z.equal(N.uint(0xfc00fc00)));
+          N.If(isDeleted.not(), () => {
+            const alphaShape = decodeAlphaShape(sourceA);
+            valid.assign(true);
+            lnScales.assign(decodeLnScales(sourceB).add(objectLnScale));
+            const sourceQuaternion = decodeQuatSmallestThree32(
+              sourceB.w,
+            ).toVar();
+            N.If(objectReflected, () => {
+              sourceQuaternion.yz.negateAssign();
+            });
+            quaternion.assign(quatQuat(objectQuaternion, sourceQuaternion));
+            rgba.assign(decodeRgba(sourceB, alphaShape.x));
+            shapeAmount.assign(alphaShape.y);
+            if (deferredColor) {
+              deferredColor.coord.assign(coord);
+              deferredColor.center.assign(position);
+            } else {
+              addShColor(rgba.rgb, coord, position);
+            }
+            const semanticOpacityDecoded = N.bool(false).toVar();
+            N.Loop(
+              { start: N.int(0), end: numEdits, type: "int", condition: "<" },
+              ({ i: editIndex }) => {
+                const edit = load2D(
+                  editTexture,
+                  N.ivec2(N.int(0), editIndex),
+                ).toVar();
+                const blendMode = edit.x.bitAnd(0xff);
+                const {
+                  rgba: sdfRgba,
+                  mask: sdfMask,
+                  factor,
+                } = evaluateEdit(edit, sourceIndex, position);
+                const editOpacity = factor
+                  .greaterThan(0)
+                  .and(sdfMask.a.greaterThan(0));
+                N.If(editOpacity.and(semanticOpacityDecoded.not()), () => {
+                  rgba.a.assign(
+                    decodeSemanticOpacity(rgba.a.clamp(0, 1), shapeAmount),
+                  );
+                  semanticOpacityDecoded.assign(true);
+                });
+                // Alpha keeps the original per-edit operations. Native rendering
+                // composes RGB edits so SH can wait for the final visibility test.
+                const input = deferredColor ? rgba.a : rgba;
+                const value = deferredColor ? sdfRgba.a : sdfRgba;
+                const mask = deferredColor ? sdfMask.a : sdfMask;
+                const one = deferredColor ? N.float(1) : N.vec4(1);
+                const target = input.toVar();
+                N.If(blendMode.equal(N.uint(0)), () => {
+                  target.assign(input.mul(one.add(value).sub(mask)));
+                  if (deferredColor) {
+                    const scale = N.vec3(1)
+                      .add(sdfRgba.rgb.sub(sdfMask.rgb).mul(factor))
+                      .toVar();
+                    deferredColor.scale.mulAssign(scale);
+                    deferredColor.offset.mulAssign(scale);
+                  }
+                })
+                  .ElseIf(blendMode.equal(N.uint(1)), () => {
+                    target.assign(input.mul(one.sub(mask)).add(value));
+                    if (deferredColor) {
+                      const scale = N.vec3(1)
+                        .sub(sdfMask.rgb.mul(factor))
+                        .toVar();
+                      deferredColor.scale.mulAssign(scale);
+                      deferredColor.offset.assign(
+                        deferredColor.offset
+                          .mul(scale)
+                          .add(sdfRgba.rgb.mul(factor)),
+                      );
+                    }
+                  })
+                  .ElseIf(blendMode.equal(N.uint(2)), () => {
+                    target.assign(input.add(value));
+                    if (deferredColor)
+                      deferredColor.offset.addAssign(sdfRgba.rgb.mul(factor));
+                  });
+                input.assign(N.mix(input, target, factor));
+              },
+            );
+            if (!deferredColor) rgba.rgb.mulAssign(recolor.rgb);
+            const opacityScale = recolor.a.mul(blockOpacity);
+            N.If(
+              semanticOpacityDecoded
+                .not()
+                .and(opacityScale.greaterThanEqual(1)),
+              () => {
+                rgba.a.assign(rgba.a.clamp(0, 1));
+              },
+            ).Else(() => {
+              N.If(semanticOpacityDecoded.not(), () => {
                 rgba.a.assign(
                   decodeSemanticOpacity(rgba.a.clamp(0, 1), shapeAmount),
                 );
-                semanticOpacityDecoded.assign(true);
               });
-              // Alpha keeps the original per-edit operations. Native rendering
-              // composes RGB edits so SH can wait for the final visibility test.
-              const input = deferredColor ? rgba.a : rgba;
-              const value = deferredColor ? sdfRgba.a : sdfRgba;
-              const mask = deferredColor ? sdfMask.a : sdfMask;
-              const one = deferredColor ? N.float(1) : N.vec4(1);
-              const target = input.toVar();
-              N.If(blendMode.equal(N.uint(0)), () => {
-                target.assign(input.mul(one.add(value).sub(mask)));
-                if (deferredColor) {
-                  const scale = N.vec3(1)
-                    .add(sdfRgba.rgb.sub(sdfMask.rgb).mul(factor))
-                    .toVar();
-                  deferredColor.scale.mulAssign(scale);
-                  deferredColor.offset.mulAssign(scale);
-                }
-              })
-                .ElseIf(blendMode.equal(N.uint(1)), () => {
-                  target.assign(input.mul(one.sub(mask)).add(value));
-                  if (deferredColor) {
-                    const scale = N.vec3(1)
-                      .sub(sdfMask.rgb.mul(factor))
-                      .toVar();
-                    deferredColor.scale.mulAssign(scale);
-                    deferredColor.offset.assign(
-                      deferredColor.offset
-                        .mul(scale)
-                        .add(sdfRgba.rgb.mul(factor)),
-                    );
-                  }
-                })
-                .ElseIf(blendMode.equal(N.uint(2)), () => {
-                  target.assign(input.add(value));
-                  if (deferredColor)
-                    deferredColor.offset.addAssign(sdfRgba.rgb.mul(factor));
-                });
-              input.assign(N.mix(input, target, factor));
-            },
-          );
-          if (!deferredColor) rgba.rgb.mulAssign(recolor.rgb);
-          const opacityScale = recolor.a.mul(blockOpacity);
-          N.If(
-            semanticOpacityDecoded.not().and(opacityScale.greaterThanEqual(1)),
-            () => {
-              rgba.a.assign(rgba.a.clamp(0, 1));
-            },
-          ).Else(() => {
-            N.If(semanticOpacityDecoded.not(), () => {
-              rgba.a.assign(
-                decodeSemanticOpacity(rgba.a.clamp(0, 1), shapeAmount),
-              );
-            });
-            const semanticOpacity = rgba.a.mul(opacityScale);
-            N.If(semanticOpacity.lessThanEqual(1), () => {
-              rgba.a.assign(semanticOpacity.clamp(0, 1));
-              shapeAmount.assign(0);
-            }).Else(() => {
-              rgba.a.assign(1);
-              shapeAmount.assign(encodeWideSemanticOpacity(semanticOpacity));
+              const semanticOpacity = rgba.a.mul(opacityScale);
+              N.If(semanticOpacity.lessThanEqual(1), () => {
+                rgba.a.assign(semanticOpacity.clamp(0, 1));
+                shapeAmount.assign(0);
+              }).Else(() => {
+                rgba.a.assign(1);
+                shapeAmount.assign(encodeWideSemanticOpacity(semanticOpacity));
+              });
             });
           });
         });
