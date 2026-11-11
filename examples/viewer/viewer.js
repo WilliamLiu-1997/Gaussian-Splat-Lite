@@ -22,6 +22,7 @@ import {
 import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
 import { createRenderOptionsPanel } from "./renderOptionsPanel.js";
+import { getLcc2FrameBounds, getSogFrameBounds } from "./streamFrameBounds.js";
 import { createViewerDenoise } from "./viewerDenoise.js";
 import { createViewerHalfFloat } from "./viewerHalfFloat.js";
 import { ViewerInspector } from "./viewerInspector.js";
@@ -645,11 +646,13 @@ function applyModelOrientation(splat, streamed) {
 function frameSplat(splat) {
   denoiser?.reset();
   const streamed = activeStream?.group === splat;
-  const bounds = streamed
+  const sourceBounds = streamed
     ? activeStream.getBoundingBox()
     : splat.getBoundingBox();
   splat.updateWorldMatrix(true, false);
+  const bounds = splat.userData.frameBounds?.clone() ?? sourceBounds.clone();
   bounds.applyMatrix4(splat.matrixWorld);
+  sourceBounds.applyMatrix4(splat.matrixWorld);
   bounds.getSize(frameSize);
   if (streamed && !bounds.isEmpty()) bounds.getCenter(frameCenter);
   else frameCenter.set(0, 0, 0);
@@ -668,7 +671,8 @@ function frameSplat(splat) {
     : Math.min(defaultCameraDistance, radius);
 
   camera.near = Math.min(radius * 0.001, 0.1);
-  camera.far = radius * 100;
+  camera.far =
+    Math.max(radius, sourceBounds.getSize(new THREE.Vector3()).length()) * 100;
   camera.updateProjectionMatrix();
   camera.position
     .set(0, 5, 5 * Math.sqrt(3))
@@ -746,6 +750,13 @@ async function initializeModel(
       manager,
       environment: optionsPanel.getValue("environment"),
     });
+    const manifest = await new THREE.FileLoader(manager)
+      .setResponseType("json")
+      .loadAsync(url);
+    const frameBounds = lcc2Stream
+      ? getLcc2FrameBounds(manifest.root)
+      : getSogFrameBounds(manifest.tree);
+    if (!frameBounds.isEmpty()) model.splat.userData.frameBounds = frameBounds;
   } else {
     model.splat = new SplatMesh({
       ...source,
