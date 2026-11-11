@@ -1,5 +1,5 @@
 /** Walk only the refinements reached by the shared distance/budget scale. */
-export function selectLcc2Lods(inputs, request) {
+export function selectLodTree(inputs, request) {
   const heap = [];
   const push = (item) => {
     let i = heap.length;
@@ -51,7 +51,7 @@ export function selectLcc2Lods(inputs, request) {
       request.lodBehindPenalty,
       request.lodDistanceShrink,
     );
-    const level = index.lods[node * 4];
+    const level = index.ranges[node * 4];
     const key = Math.max(
       parentKey,
       Math.log(distance / settings.lodBaseDistance) -
@@ -66,10 +66,10 @@ export function selectLcc2Lods(inputs, request) {
     return item;
   };
   for (const state of states) {
-    const { index, leafBase } = state;
+    const { index, nodeBase } = state;
     for (const n of index.roots) {
-      selected.set(leafBase + n, visit(state, n));
-      total += index.lods[n * 4 + 3];
+      selected.set(nodeBase + n, visit(state, n));
+      total += index.ranges[n * 4 + 3];
     }
   }
   while (heap.length) {
@@ -82,7 +82,7 @@ export function selectLcc2Lods(inputs, request) {
       const { state, node } = item;
       const { index } = state;
       const children = [];
-      delta -= index.lods[node * 4 + 3];
+      delta -= index.ranges[node * 4 + 3];
       for (
         let i = index.childOffsets[node];
         i < index.childOffsets[node + 1];
@@ -90,14 +90,14 @@ export function selectLcc2Lods(inputs, request) {
       ) {
         const child = index.children[i];
         children.push(visit(state, child, key));
-        delta += index.lods[child * 4 + 3];
+        delta += index.ranges[child * 4 + 3];
       }
       changes.push({ item, children });
     } while (heap.length && heap[0].key === key);
     if (total + delta > request.budget) break;
     total += delta;
     for (const { item, children } of changes) {
-      const base = item.state.leafBase;
+      const base = item.state.nodeBase;
       selected.delete(base + item.node);
       for (const child of children) selected.set(base + child.node, child);
     }
@@ -108,9 +108,9 @@ export function selectLcc2Lods(inputs, request) {
       a.state.source - b.state.source ||
       a.node - b.node,
   );
-  const result = new Uint32Array(ordered.length * 3);
+  const result = new Uint32Array(ordered.length * 2);
   ordered.forEach(({ state, node }, i) =>
-    result.set([state.settings.id, state.leafBase + node, 0], i * 3),
+    result.set([state.settings.id, state.nodeBase + node], i * 2),
   );
   return result;
 }

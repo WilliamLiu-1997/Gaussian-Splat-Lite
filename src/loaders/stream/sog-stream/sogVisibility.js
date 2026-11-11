@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { streamViews } from "../StreamCameras.js";
-import { readSogLodLeaf } from "./sogLod.js";
 /**
  * Capture the cameras that see the group without traversing the manifest or
  * reducing matrix precision. WebXR selects detail from each eye's current pose.
@@ -35,11 +34,10 @@ export function getSogViewKey(view) {
     .map((camera) => `${camera.modelView.join(",")}/${camera.fovScale}`)
     .join(";");
 }
-/** One input's region bounds, median size and stable leaf identities. */
+/** One input's tree bounds and median region size. */
 export class SogVisibility {
   constructor(manifest) {
     this.manifest = manifest;
-    this.leaves = [];
     this.cameras = [];
     this.bound = new THREE.Box3();
     this.typicalHalfSize = new THREE.Vector3();
@@ -47,13 +45,13 @@ export class SogVisibility {
     this.closest = new THREE.Vector3();
     this.inverseModelView = new THREE.Matrix4();
     this.sourceTransform = new THREE.Matrix4();
-    const { leafBounds } = manifest;
-    const halfSizes = new Float64Array(leafBounds.length / 6);
+    const { nodeBounds } = manifest;
+    const halfSizes = new Float64Array(nodeBounds.length / 6);
     for (let axis = 0; axis < 3; axis++) {
       for (let id = 0; id < halfSizes.length; id++) {
         const offset = id * 6;
         halfSizes[id] =
-          (leafBounds[offset + axis + 3] - leafBounds[offset + axis]) * 0.5;
+          (nodeBounds[offset + axis + 3] - nodeBounds[offset + axis]) * 0.5;
       }
       halfSizes.sort();
       this.typicalHalfSize.setComponent(
@@ -86,10 +84,10 @@ export class SogVisibility {
     return cameras;
   }
   measure(id, cameras, lodBehindPenalty, lodDistanceShrink) {
-    const { leafBounds } = this.manifest;
+    const { nodeBounds } = this.manifest;
     const offset = id * 6;
-    this.bound.min.fromArray(leafBounds, offset);
-    this.bound.max.fromArray(leafBounds, offset + 3);
+    this.bound.min.fromArray(nodeBounds, offset);
+    this.bound.max.fromArray(nodeBounds, offset + 3);
     // Only the distance box shrinks; source and rendering bounds stay intact.
     this.bound
       .getSize(this.shrink)
@@ -117,22 +115,5 @@ export class SogVisibility {
       );
     }
     return distance;
-  }
-  collect({ view, lodBehindPenalty, lodDistanceShrink, transform }) {
-    const cameras = this.prepareCameras(view, transform);
-    const regions = [];
-    const { shown } = view;
-    const { leafBounds } = this.manifest;
-    for (let id = 0; shown && id < leafBounds.length / 6; id++) {
-      const distance = this.measure(
-        id,
-        cameras,
-        lodBehindPenalty,
-        lodDistanceShrink,
-      );
-      this.leaves[id] ??= readSogLodLeaf(this.manifest, id);
-      regions.push({ leaf: this.leaves[id], distance });
-    }
-    return regions;
   }
 }

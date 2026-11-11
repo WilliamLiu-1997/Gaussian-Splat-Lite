@@ -9,21 +9,17 @@ import {
 import { extractSplatRange } from "../../../data/splatRange.js";
 import { reorderSplats, restoreSplatOrder } from "../../morton.js";
 import { parseLcc2Index } from "../lcc2-stream/lcc2Index.js";
-import { selectLcc2Lods } from "../lcc2-stream/lcc2Select.js";
-import {
-  SOG_LOD_STRIDE,
-  packSogLodIndex,
-  parseSogLodManifest,
-  selectSogLods,
-} from "../sog-stream/sogLod.js";
+import { parseSogLodManifest } from "../sog-stream/sogLod.js";
+import { buildSogLodTree } from "../sog-stream/sogLodTree.js";
 import { SogVisibility } from "../sog-stream/sogVisibility.js";
+import { selectLodTree } from "./selectLodTree.js";
 /** LOD workers parse the index once before selection; other workers own chunk caches. */
 export function createChunkStreamHandlers(decodeSplats) {
   const chunks = new Map();
   const loads = new Map();
   // Each input keeps its own bounds and median region size for LOD distance.
   const sources = new Map();
-  let nextLeaf = 0;
+  let nextNode = 0;
   let nextFile = 0;
   function parseIndex({ id, bytes, baseUrl, format = "sog" }) {
     const value = JSON.parse(new TextDecoder().decode(bytes));
@@ -39,106 +35,71 @@ export function createChunkStreamHandlers(decodeSplats) {
       environment = manifest.environment ? manifest.files.length : -1;
       if (environment >= 0)
         manifest.files.push({ url: manifest.environment, count: -1 });
-      index = packSogLodIndex(manifest);
+      index = buildSogLodTree(manifest);
     }
-    const leafBase = nextLeaf;
+    const nodeBase = nextNode;
     const fileBase = nextFile;
     // IDs are never reused, including after removal. Selection uses uint32 IDs.
-    const leafEnd = leafBase + index.leafOffsets.length - 1;
+    const nodeEnd = nodeBase + index.parents.length;
     const fileEnd = fileBase + index.urls.length;
-    if (leafEnd > 0x100000000 || !Number.isSafeInteger(fileEnd))
+    if (nodeEnd > 0x100000000 || !Number.isSafeInteger(fileEnd))
       throw new Error("Streaming index capacity exceeded");
-    const lods = index.lods.slice();
-    const batchStarts = new Float64Array(lods.length / SOG_LOD_STRIDE);
+    const ranges = index.ranges.slice();
+    const batchStarts = new Float64Array(index.parents.length);
     const batchCapacities = new Float64Array(index.urls.length);
     // Manifest validation guarantees disjoint ranges within each chunk.
     // Preserve stable slots without rebuilding per-range Maps on the main thread.
-    for (let offset = 0; offset < lods.length; offset += SOG_LOD_STRIDE) {
-      const file = lods[offset + 1];
+    for (let offset = 0; offset < ranges.length; offset += 4) {
+      const file = ranges[offset + 1];
       if (file < 0) continue;
-      batchStarts[offset / SOG_LOD_STRIDE] = batchCapacities[file];
-      batchCapacities[file] += sogBatchAllocationSize(lods[offset + 3]);
-      lods[offset + 1] += fileBase;
+      batchStarts[offset / 4] = batchCapacities[file];
+      batchCapacities[file] += sogBatchAllocationSize(ranges[offset + 3]);
+      ranges[offset + 1] += fileBase;
     }
     sources.set(id, {
       index,
       visibility: new SogVisibility(index),
-      leafBase,
+      nodeBase,
     });
-    nextLeaf = leafEnd;
+    nextNode = nodeEnd;
     nextFile = fileEnd;
     return {
-      hasData: index.lods.some((count, i) => i % 4 === 3 && count > 0),
+      hasData: index.ranges.some((count, i) => i % 4 === 3 && count > 0),
       extra,
       urls: index.urls,
       counts: index.counts.slice(),
-      leafOffsets: index.leafOffsets.slice(),
-      lods,
+      ranges,
       batchStarts,
       batchCapacities,
       bounds: index.bounds.slice(),
-      leafBase,
+      nodeBase,
       fileBase,
       environment: environment < 0 ? -1 : fileBase + environment,
-      ...(index.parents
-        ? {
-            parents: index.parents.slice(),
-            emptyCoverage: index.emptyCoverage.slice(),
-            roots: index.roots.slice(),
-            childOffsets: index.childOffsets.slice(),
-            children: index.children.slice(),
-          }
-        : {}),
+      parents: index.parents.slice(),
+      emptyCoverage: index.emptyCoverage.slice(),
+      roots: index.roots.slice(),
+      childOffsets: index.childOffsets.slice(),
+      children: index.children.slice(),
       retainedIndexBytes:
         index.bounds.byteLength +
-        index.leafBounds.byteLength +
-        index.leafOffsets.byteLength +
-        index.lods.byteLength +
+        index.nodeBounds.byteLength +
+        index.ranges.byteLength +
         index.counts.byteLength +
-        (index.parents?.byteLength ?? 0) +
-        (index.emptyCoverage?.byteLength ?? 0) +
-        (index.roots?.byteLength ?? 0) +
-        (index.childOffsets?.byteLength ?? 0) +
-        (index.children?.byteLength ?? 0),
+        index.parents.byteLength +
+        index.emptyCoverage.byteLength +
+        index.roots.byteLength +
+        index.childOffsets.byteLength +
+        index.children.byteLength,
     };
   }
   function releaseIndex({ id }) {
     sources.delete(id);
   }
   function selectLod(request) {
-    if (request.format === "lcc2")
-      return selectLcc2Lods(
-        request.sources.map(({ id }) => sources.get(id)),
-        request,
-      );
-    const regions = [];
-    let lodLevels = 0;
-    request.sources.forEach(({ id, transform }, source) => {
-      const { index, visibility, leafBase } = sources.get(id);
-      const collected = visibility.collect({
-        ...request,
-        transform,
-      });
-      collected.forEach((region, local) => {
-        region.leaf.id = leafBase + local;
-        region.source = source;
-        regions.push(region);
-      });
-      lodLevels = Math.max(lodLevels, index.lodLevels);
-    });
-    const targets = selectSogLods(regions, lodLevels, request);
-    regions.sort((a, b) => a.distance - b.distance || a.leaf.id - b.leaf.id);
-    // Stable source/leaf IDs let the scheduler retain other inputs unchanged.
-    const result = new Uint32Array(targets.size * 3);
-    let offset = 0;
-    for (const { leaf, source } of regions) {
-      const target = targets.get(leaf.id);
-      if (!target) continue;
-      result[offset++] = request.sources[source].id;
-      result[offset++] = leaf.id;
-      result[offset++] = leaf.lods.indexOf(target);
-    }
-    return result;
+    return selectLodTree(
+      request.sources.map(({ id }) => sources.get(id)),
+      request,
+    );
   }
   function cacheChunk({ id, data, maxSh, blindData = true }) {
     // Custom loaders may return Blind data this scheduler skips.

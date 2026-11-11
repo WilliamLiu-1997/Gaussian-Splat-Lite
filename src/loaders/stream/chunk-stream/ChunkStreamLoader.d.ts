@@ -2,10 +2,9 @@ import type { Matrix4 } from "three";
 import type { Splats } from "../../../data/Splats.js";
 import type { ReorderedSplatResult } from "../../../data/defines.js";
 import type { ShPalette } from "../../../data/shPalette.js";
-import type { SogLodIndex } from "../sog-stream/sogLod.js";
-import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
 import type { StreamRequestOptions } from "../streamOptions.js";
 import type { ChunkStreamWorker } from "./ChunkStreamWorker.js";
+import type { LodTreeIndex, LodTreeRequest } from "./lodTree.js";
 import type { ChunkInfo } from "./workerHandlers.js";
 
 export type ChunkStreamSourceOptions = StreamRequestOptions & {
@@ -21,28 +20,20 @@ export type ChunkStreamSourceOptions = StreamRequestOptions & {
   /** Returns owned Splats; the loader restores their decoded record order before slicing. */
   loadChunk?: (url: string, signal: AbortSignal) => Promise<Splats>;
 };
-export type ChunkStreamMetadata = Pick<
-  SogLodIndex,
-  "bounds" | "urls" | "counts" | "leafOffsets" | "lods"
-> & {
+export type ChunkStreamMetadata = Omit<LodTreeIndex, "nodeBounds"> & {
   hasData: boolean;
   /** Application-defined JSON from this input's lod-meta.json extras. */
   extra?: unknown;
-  /** Stable global leaf and chunk offsets, never reused after removal. */
-  leafBase: number;
+  /** Stable global node and chunk offsets, never reused after removal. */
+  nodeBase: number;
   fileBase: number;
   /** Global environment chunk ID, or -1. */
   environment: number;
-  /** Stable batch slot per LOD record, prepared in the worker. */
+  /** Stable batch slot per node, prepared in the worker. */
   batchStarts: Float64Array;
   /** Aligned batch capacity per local chunk; environments are sized on load. */
   batchCapacities: Float64Array;
   retainedIndexBytes: number;
-  parents?: Int32Array;
-  emptyCoverage?: Uint8Array;
-  roots?: Uint32Array;
-  childOffsets?: Uint32Array;
-  children?: Uint32Array;
 };
 /** A retained worker cache; extraction transfers owned packed arrays to the caller. */
 export declare class ChunkSource {
@@ -98,7 +89,7 @@ export declare class ChunkStreamLoader {
   ): Promise<ChunkStreamMetadata>;
   removeSource(id: number): void;
   private readIndex;
-  selectLod(request: SogLodRequest): Promise<Uint32Array>;
+  selectLod(request: LodTreeRequest): Promise<Uint32Array>;
   load(
     sourceId: number,
     url: string,

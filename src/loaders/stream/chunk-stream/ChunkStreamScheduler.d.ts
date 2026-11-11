@@ -1,19 +1,19 @@
 import type * as THREE from "three";
-import type { SogBudgetMode } from "../sog-stream/sogLod.js";
 import type { StreamSchedulerOptions, StreamStats } from "../streamOptions.js";
 import type { ChunkStreamSourceOptions } from "./ChunkStreamLoader.js";
+import type { LodBudgetMode } from "./lodTree.js";
 export type ChunkStreamSchedulerOptions = StreamSchedulerOptions & {
   /** Load SOG v3 Blind data for SplatEditBlind; false skips its decoding and storage with the built-in loader. Defaults to true. */
   blindData?: boolean;
   /** Defaults to "target". "limit" caps detail at the configured distance bands. */
-  splatBudgetMode?: SogBudgetMode;
+  splatBudgetMode?: LodBudgetMode;
   /** Default base LOD distance in world units; defaults to 100. In "target" mode it only sets inputs' relative detail. Must be finite and positive. */
   lodBaseDistance?: number;
   /** Distance multiplier between LOD levels in both modes; defaults to 2. Must be finite and at least 1. */
   lodMultiplier?: number;
   /** Effective distance multiplier directly behind a camera; defaults to 5. Must be finite and at least 1. */
   lodBehindPenalty?: number;
-  /** Shrinks oversized regions toward their median size for LOD distance only; defaults to 0.75. Must be between 0 and 1. */
+  /** Shrinks oversized regions toward their median size for LOD distance only; defaults to 0. Must be between 0 and 1. */
   lodDistanceShrink?: number;
 };
 export type ChunkStreamStats = StreamStats & {
@@ -48,17 +48,20 @@ export declare abstract class ChunkStreamScheduler {
   private readonly loader;
   private readonly abort;
   private readonly streamCameras;
-  private readonly lodLeaves;
+  private readonly nodeRanges;
   private view?;
   private lastRequestedKey;
   private selecting;
   private refinementStopped;
   private selection;
+  private selectionPending;
+  private regionsDirty;
+  private releaseAt;
   private chunks;
   /** Chunks with a batch, cached source or in-flight load. */
   private readonly activeChunks;
   private environments;
-  private leaves;
+  private regions;
   private wanted;
   private readonly fades;
   private shown;
@@ -93,8 +96,8 @@ export declare abstract class ChunkStreamScheduler {
   /** Maximum decoded and stored SH degree (0–4), fixed at construction. */
   get maxSh(): number;
   /** Fill the budget, or limit detail to the configured distance bands. */
-  get splatBudgetMode(): SogBudgetMode;
-  set splatBudgetMode(value: SogBudgetMode);
+  get splatBudgetMode(): LodBudgetMode;
+  set splatBudgetMode(value: LodBudgetMode);
   /** Default base LOD distance in world units for inputs without their own. */
   get lodBaseDistance(): number;
   set lodBaseDistance(value: number);
@@ -128,18 +131,16 @@ export declare abstract class ChunkStreamScheduler {
   deleteCamera(camera: THREE.Camera): boolean;
   /**
    * Call before rendering. Returns whether the displayed data changed. Each
-   * leaf uses the smallest effective distance across registered cameras.
+   * region uses the smallest effective distance across registered cameras.
    */
   update(): boolean;
   private requestSelection;
-  protected updateRequests(refinements: unknown[], now: number): void;
-  protected abstract selectRegions(): {
-    selected: unknown[];
-    refinements: unknown[];
-  };
-  private rangeLeaf;
-  protected isRangeVisible(range: { leaf: number }): boolean;
-  private leafState;
+  protected updateRequests(now: number): void;
+  /** Regions to load and show, in loading order. */
+  protected abstract selectRegions(): unknown[];
+  private nodeRange;
+  protected isRangeVisible(range: { node: number }): boolean;
+  private regionState;
   private applySelection;
   private updateRegionVisibility;
   private attachPendingRegions;

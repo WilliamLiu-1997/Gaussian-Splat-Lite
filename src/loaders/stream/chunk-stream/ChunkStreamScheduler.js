@@ -12,7 +12,6 @@ import {
 } from "../../../data/splatData.js";
 import { RetryTimer } from "../../../runtime/retry.js";
 import { StreamCameras } from "../StreamCameras.js";
-import { readSogLodLeaf } from "../sog-stream/sogLod.js";
 import { captureSogView, getSogViewKey } from "../sog-stream/sogVisibility.js";
 import {
   checkStreamTransform,
@@ -25,6 +24,7 @@ import {
 import { ChunkStreamBatch } from "./ChunkStreamBatch.js";
 import { ChunkStreamLoader } from "./ChunkStreamLoader.js";
 const EMPTY_SELECTION = new Uint32Array(0);
+const MAX_REGION_WRITES = 64;
 function* retryDeadlines(chunks) {
   for (const chunk of chunks) yield chunk.retryAt;
 }
@@ -65,24 +65,29 @@ export class ChunkStreamScheduler {
     this.format = format;
     this.abort = new AbortController();
     this.streamCameras = new StreamCameras();
-    this.lodLeaves = new Map();
+    this.nodeRanges = new Map();
     this.lastRequestedKey = "";
     this.selecting = false;
     this.refinementStopped = false;
     this.selection = EMPTY_SELECTION;
+    this.selectionPending = false;
+    this.regionsDirty = true;
+    this.releaseAt = Number.POSITIVE_INFINITY;
     this.sources = new Map();
     this.nextSourceId = 0;
     this.chunks = new Map();
     this.environments = [];
     /** Chunks with a batch, cached source or in-flight load. */
     this.activeChunks = new Set();
-    // Each leaf keeps at most one previous LOD until its fade-out finishes.
-    this.leaves = new Map();
+    this.regions = new Map();
     this.wanted = new Set();
     this.fades = new Map();
     this.shown = true;
     this.disposed = false;
-    this.retryTimer = new RetryTimer(() => this.changed());
+    this.retryTimer = new RetryTimer(() => {
+      this.regionsDirty = true;
+      this.changed();
+    });
     this.options = { onChange: options.onChange, onError: options.onError };
     this.group = new THREE.Group();
     this.uploads = new PendingUploads(this.group);
@@ -96,7 +101,7 @@ export class ChunkStreamScheduler {
     this.lodBaseDistance = options.lodBaseDistance ?? 100;
     this.lodMultiplier = options.lodMultiplier ?? 2;
     this.lodBehindPenalty = options.lodBehindPenalty ?? 5;
-    this.lodDistanceShrink = options.lodDistanceShrink ?? 0.75;
+    this.lodDistanceShrink = options.lodDistanceShrink ?? 0;
     this.sourceLodVersion = 0;
     this.cooldownMs = settings.cooldownMs;
     this.fadeDurationMs = settings.fadeDurationMs;
@@ -148,22 +153,21 @@ export class ChunkStreamScheduler {
     this.loader.removeSource(id);
     const metadata = source.metadata;
     if (metadata) {
-      const { leafBase, leafOffsets, environment } = metadata;
-      const leafEnd = leafBase + leafOffsets.length - 1;
-      for (const [leafId, leaf] of this.leaves) {
+      const { nodeBase, parents, environment } = metadata;
+      const nodeEnd = nodeBase + parents.length;
+      for (const [nodeId, region] of this.regions) {
         if (
-          (leafId < leafBase || leafId >= leafEnd) &&
-          (environment < 0 || leafId !== -1 - environment)
+          (nodeId < nodeBase || nodeId >= nodeEnd) &&
+          (environment < 0 || nodeId !== -1 - environment)
         )
           continue;
-        leaf.pending = undefined;
-        if (leaf.current) this.releaseRegion(leaf.current);
-        if (leaf.outgoing) this.releaseRegion(leaf.outgoing);
-        this.leaves.delete(leafId);
+        region.pending = undefined;
+        if (region.current) this.releaseRegion(region.current);
+        this.regions.delete(nodeId);
       }
-      for (const leafId of this.lodLeaves.keys())
-        if (leafId >= leafBase && leafId < leafEnd)
-          this.lodLeaves.delete(leafId);
+      for (const nodeId of this.nodeRanges.keys())
+        if (nodeId >= nodeBase && nodeId < nodeEnd)
+          this.nodeRanges.delete(nodeId);
     }
     for (const chunk of source.chunks) {
       chunk.controller?.abort();
@@ -173,7 +177,7 @@ export class ChunkStreamScheduler {
       this.chunks.delete(chunk.index);
     }
     this.selection = this.selection.filter(
-      (_, offset, selection) => selection[offset - (offset % 3)] !== id,
+      (_, offset, selection) => selection[offset - (offset % 2)] !== id,
     );
     if (!this.selection.length) this.selection = EMPTY_SELECTION;
     this.sourceLodVersion++;
@@ -336,16 +340,15 @@ export class ChunkStreamScheduler {
       }
       stats.residentCpuBytes +=
         metadata.bounds.byteLength +
-        metadata.leafOffsets.byteLength +
-        metadata.lods.byteLength +
+        metadata.ranges.byteLength +
         metadata.counts.byteLength +
         metadata.batchStarts.byteLength +
         metadata.batchCapacities.byteLength +
-        (metadata.parents?.byteLength ?? 0) +
-        (metadata.emptyCoverage?.byteLength ?? 0) +
-        (metadata.roots?.byteLength ?? 0) +
-        (metadata.childOffsets?.byteLength ?? 0) +
-        (metadata.children?.byteLength ?? 0);
+        metadata.parents.byteLength +
+        metadata.emptyCoverage.byteLength +
+        metadata.roots.byteLength +
+        metadata.childOffsets.byteLength +
+        metadata.children.byteLength;
     }
     for (const { batch, data, controller } of this.activeChunks) {
       if (batch) {
@@ -368,30 +371,28 @@ export class ChunkStreamScheduler {
       }
       if (controller) stats.loadingChunks++;
     }
-    for (const { current, outgoing, pending } of this.leaves.values()) {
+    for (const { current, pending } of this.regions.values()) {
       stats.pendingBytes += pending?.bytes ?? 0;
-      if (this.shown) {
-        if (current && Math.fround(current.opacity) > 0) stats.visibleRegions++;
-        if (outgoing && Math.fround(outgoing.opacity) > 0)
-          stats.visibleRegions++;
-      }
+      if (this.shown && current && Math.fround(current.opacity) > 0)
+        stats.visibleRegions++;
     }
     if (this.shown) {
-      let targetRegions = this.selection.length / 3 + pendingSources;
+      let targetRegions = this.selection.length / 2 + pendingSources;
       let readyRegions = 0;
-      for (let offset = 0; offset < this.selection.length; offset += 3) {
+      for (let offset = 0; offset < this.selection.length; offset += 2) {
+        const source = this.selection[offset];
         const id = this.selection[offset + 1];
-        const target = this.lodLeaves.get(id).lods[this.selection[offset + 2]];
+        const target = this.nodeRange(source, id);
         if (
           target.count === 0 ||
-          this.leaves.get(id)?.current?.range === target
+          this.regions.get(id)?.current?.range === target
         )
           readyRegions++;
       }
       for (const chunk of this.environments) {
         if (chunk.count === 0) continue;
         targetRegions++;
-        if (this.leaves.get(-1 - chunk.index)?.current) readyRegions++;
+        if (this.regions.get(-1 - chunk.index)?.current) readyRegions++;
       }
       stats.loadProgress =
         this.hasLods && this.selection === EMPTY_SELECTION
@@ -458,6 +459,7 @@ export class ChunkStreamScheduler {
   }
   /** Environment chunks of the inputs that enable theirs. */
   updateEnvironments() {
+    this.regionsDirty = true;
     this.environments = [];
     for (const { settings, metadata } of this.sources.values()) {
       if (settings.environment && metadata && metadata.environment >= 0)
@@ -492,7 +494,7 @@ export class ChunkStreamScheduler {
   }
   /**
    * Call before rendering. Returns whether the displayed data changed. Each
-   * leaf uses the distance of the nearest registered camera that sees it.
+   * region uses the distance of the nearest registered camera that sees it.
    */
   update() {
     if (this.disposed) return false;
@@ -507,11 +509,15 @@ export class ChunkStreamScheduler {
     if (view.shown && !view.cameras.length) return false;
     this.view = view;
     const { shown } = this.view;
+    if (shown !== this.shown) this.regionsDirty = true;
     this.shown = shown;
     const now = performance.now();
     if (this.refinementStopped) {
       const changed = this.updateFades(now);
-      this.releaseUnused(now, true);
+      if (this.regionsDirty || now >= this.releaseAt) {
+        this.regionsDirty = false;
+        this.releaseUnused(now, true);
+      }
       if (changed) this.changed();
       return changed;
     }
@@ -519,21 +525,29 @@ export class ChunkStreamScheduler {
       this.selection = EMPTY_SELECTION;
       this.lastRequestedKey = "";
     }
-    const { selected, refinements } = this.selectRegions();
-    const changed = this.applySelection(selected, now);
-    this.updateRequests(refinements, now);
+    const refresh = this.regionsDirty;
+    const selectionPending = this.selectionPending;
+    let changed;
+    if (refresh) {
+      this.regionsDirty = false;
+      this.selectionPending = false;
+      changed = this.applySelection(this.selectRegions(), now);
+      this.updateRequests(now);
+    } else changed = this.updateFades(now);
+    if (refresh || changed) {
+      if (
+        shown &&
+        [...this.regions.values()].some(({ current }) => current?.opacity > 0)
+      )
+        this.resolveFirst(this);
+      else this.rejectFirstIfUnavailable();
+    }
     // Start the new view's decision before retiring caches it may reuse.
     void this.requestSelection();
-    this.releaseUnused(now, !shown || !this.selecting);
-    if (
-      shown &&
-      [...this.leaves.values()].some(
-        ({ current, outgoing }) =>
-          (current?.opacity ?? 0) > 0 || (outgoing?.opacity ?? 0) > 0,
-      )
-    )
-      this.resolveFirst(this);
-    else this.rejectFirstIfUnavailable();
+    // Applied decisions must retire caches even during continuous camera motion.
+    const allowRelease = selectionPending || !shown || !this.selecting;
+    if (refresh || this.regionsDirty || (allowRelease && now >= this.releaseAt))
+      this.releaseUnused(now, allowRelease);
     if (changed) this.changed();
     return changed;
   }
@@ -567,7 +581,6 @@ export class ChunkStreamScheduler {
     if (key === this.lastRequestedKey) return;
     this.lastRequestedKey = key;
     this.selecting = true;
-    let accepted = false;
     try {
       const sources = [...this.sources.values()].filter(
         (source) => source.metadata,
@@ -597,64 +610,53 @@ export class ChunkStreamScheduler {
         lodDistanceShrink !== this.lodDistanceShrink
       )
         return;
-      // Keep one completed result; accepting camera lag avoids starving motion.
-      // Resolve it against current caches, never worker-time resource snapshots.
+      // Coalesce results; update() applies the latest one against current caches.
       this.selection = selection;
-      const { selected, refinements } = this.selectRegions();
-      const now = performance.now();
-      this.queueExtractions(selected, now);
-      this.updateRequests(refinements, now);
-      // Retire after every accepted decision so motion cannot postpone cleanup.
-      this.releaseUnused(now, true);
-      accepted = true;
+      this.selectionPending = true;
+      this.regionsDirty = true;
       this.changed();
     } catch (error) {
       if (sourceLodVersion === this.sourceLodVersion)
         this.stopRefinement(error);
     } finally {
       this.selecting = false;
-      // Check completed decisions before camera motion starts another one.
-      if (accepted) this.rejectFirstIfUnavailable();
-      // Updates replace the latest view while this task runs; no request queue.
-      void this.requestSelection();
     }
   }
-  updateRequests(refinements, now) {
-    // Establish coverage before starting the next LOD request.
-    for (const [leaf, chunk] of refinements) {
-      if (leaf.current?.range === leaf.target) this.wanted.add(chunk);
-    }
+  updateRequests(now) {
     for (const chunk of this.activeChunks) {
       if (chunk.controller && !this.wanted.has(chunk)) chunk.controller.abort();
     }
     this.pump(now);
   }
-  rangeLeaf(sourceId, id) {
-    let leaf = this.lodLeaves.get(id);
-    if (!leaf) {
+  nodeRange(sourceId, id) {
+    let range = this.nodeRanges.get(id);
+    if (!range) {
       const metadata = this.sources.get(sourceId).metadata;
-      const local = id - metadata.leafBase;
-      leaf = readSogLodLeaf(metadata, local);
-      leaf.id = id;
-      let record = metadata.leafOffsets[local];
-      for (const range of leaf.lods) {
-        range.leaf = id;
-        range.batchStart = metadata.batchStarts[record++];
-      }
-      this.lodLeaves.set(id, leaf);
+      const local = id - metadata.nodeBase;
+      const offset = local * 4;
+      range = {
+        source: sourceId,
+        node: id,
+        level: metadata.ranges[offset],
+        file: metadata.ranges[offset + 1],
+        offset: metadata.ranges[offset + 2],
+        count: metadata.ranges[offset + 3],
+        batchStart: metadata.batchStarts[local],
+      };
+      this.nodeRanges.set(id, range);
     }
-    return leaf;
+    return range;
   }
   isRangeVisible(range) {
-    return !!this.leaves.get(range.leaf)?.target;
+    return !!this.regions.get(range.node)?.target;
   }
-  leafState(id) {
-    let leaf = this.leaves.get(id);
-    if (!leaf) {
-      leaf = {};
-      this.leaves.set(id, leaf);
+  regionState(id) {
+    let region = this.regions.get(id);
+    if (!region) {
+      region = {};
+      this.regions.set(id, region);
     }
-    return leaf;
+    return region;
   }
   applySelection(selected, now) {
     // Advance an existing fade before reversing it to avoid opacity jumps.
@@ -667,35 +669,32 @@ export class ChunkStreamScheduler {
   }
   updateRegionVisibility(now) {
     let changed = false;
-    for (const leaf of this.leaves.values()) {
-      const { current, outgoing } = leaf;
+    for (const { current } of this.regions.values())
       if (current)
         changed =
           this.fadeRegion(current, this.isRangeVisible(current.range), now) ||
           changed;
-      if (outgoing) changed = this.fadeRegion(outgoing, false, now) || changed;
-    }
     return changed;
   }
   attachPendingRegions(selected, now) {
     let changed = false;
-    for (const leaf of selected) {
-      const { current, pending, target: range } = leaf;
-      // Finish a crossfade before admitting another LOD for this region.
-      if (
-        !range ||
-        current?.range === range ||
-        leaf.outgoing ||
-        pending?.range !== range ||
-        !pending.data
-      )
+    let written = 0;
+    for (const region of selected) {
+      const { current, pending, target: range } = region;
+      // A region has one range; it is written once and kept until released.
+      if (!range || current || pending?.range !== range || !pending.data)
         continue;
+      if (written >= MAX_REGION_WRITES) {
+        this.regionsDirty = true;
+        break;
+      }
       const { data, chunk } = pending;
       const start = range.batchStart;
       if (start === undefined) throw new Error("Missing chunk region slot");
       let batch = chunk.batch;
       const palette = batch?.source.palette ?? chunk.data.palette;
       if (palette && !palette.prepareUpload(this.uploads)) {
+        this.regionsDirty = true;
         changed = true;
         continue;
       }
@@ -726,7 +725,10 @@ export class ChunkStreamScheduler {
             lastLayer,
           );
       // Later regions wait until rendering consumes the queued uploads.
-      if (!this.uploads.canAdd(bytes)) break;
+      if (!this.uploads.canAdd(bytes)) {
+        this.regionsDirty = true;
+        break;
+      }
       if (!batch) {
         batch = new ChunkStreamBatch({
           capacity: chunk.batchCapacity,
@@ -752,22 +754,20 @@ export class ChunkStreamScheduler {
         this.activeChunks.add(chunk);
       }
       batch.writeRegion(start, data);
-      leaf.pending = undefined;
-      if (current) {
-        leaf.outgoing = current;
-        this.fadeRegion(current, false, now);
-      }
-      leaf.current = { batch, start, range, opacity: 0 };
-      this.fadeRegion(leaf.current, this.isRangeVisible(range), now);
+      written++;
+      region.pending = undefined;
+      region.current = { batch, start, range, opacity: 0 };
+      this.fadeRegion(region.current, this.isRangeVisible(range), now);
+      this.regionsDirty = true;
       changed = true;
     }
     return changed;
   }
   queueExtractions(selected, now) {
     const batches = new Map();
-    for (const leaf of selected) {
-      const range = leaf.target;
-      if (!range || leaf.current?.range === range || leaf.pending) continue;
+    for (const region of selected) {
+      const range = region.target;
+      if (!range || region.current?.range === range || region.pending) continue;
       const chunk = this.chunks.get(range.file);
       const source = chunk.data;
       if (!source?.alive || now < chunk.retryAt) continue;
@@ -781,7 +781,7 @@ export class ChunkStreamScheduler {
         chunk,
         bytes: bytes + range.count * (source.info.blindTextureCount ?? 0) * 4,
       };
-      leaf.pending = pending;
+      region.pending = pending;
       const batch = batches.get(chunk) ?? { source, regions: [] };
       batch.regions.push(pending);
       batches.set(chunk, batch);
@@ -814,8 +814,7 @@ export class ChunkStreamScheduler {
       }
       if (progress === 1) {
         this.fades.delete(region);
-        if (this.leaves.get(region.range.leaf)?.outgoing === region)
-          this.releaseRegion(region);
+        this.regionsDirty = true;
         changed = true;
       }
     }
@@ -833,16 +832,16 @@ export class ChunkStreamScheduler {
         const pending = batch[index];
         const { range } = pending;
         const data = results[index];
-        const leaf = this.leaves.get(range.leaf);
-        if (leaf?.pending === pending && leaf.target === range) {
+        const region = this.regions.get(range.node);
+        if (region?.pending === pending && region.target === range) {
           pending.data = data;
           pending.bytes = getSplatByteLength(data);
-        } else if (leaf?.pending === pending) leaf.pending = undefined;
+        } else if (region?.pending === pending) region.pending = undefined;
       }
     } catch (error) {
       for (const pending of batch) {
-        const leaf = this.leaves.get(pending.range.leaf);
-        if (leaf?.pending === pending) leaf.pending = undefined;
+        const region = this.regions.get(pending.range.node);
+        if (region?.pending === pending) region.pending = undefined;
       }
       if (
         !this.disposed &&
@@ -860,34 +859,31 @@ export class ChunkStreamScheduler {
       }
     } finally {
       if (!this.disposed) {
+        this.regionsDirty = true;
         this.pump(performance.now());
         this.changed();
       }
     }
   }
   releaseUnused(now, allowRelease) {
+    this.releaseAt = Number.POSITIVE_INFINITY;
     const referenced = new Set(this.wanted);
-    for (const [id, leaf] of this.leaves) {
-      const { current, outgoing, pending } = leaf;
+    for (const [id, region] of this.regions) {
+      const { current, pending } = region;
       if (pending) referenced.add(pending.chunk);
-      if (outgoing) referenced.add(this.chunks.get(outgoing.range.file));
       if (current) {
-        if (
-          leaf.target ||
-          current.opacity > 0 ||
-          this.fades.has(current) ||
-          outgoing
-        ) {
+        if (region.target || current.opacity > 0 || this.fades.has(current)) {
           current.expiresAt = undefined;
           referenced.add(this.chunks.get(current.range.file));
         } else {
           current.expiresAt ??= now + this.cooldownMs;
           if (allowRelease && now >= current.expiresAt)
             this.releaseRegion(current);
+          else this.releaseAt = Math.min(this.releaseAt, current.expiresAt);
         }
       }
-      if (!leaf.target && !leaf.current && !leaf.outgoing && !leaf.pending)
-        this.leaves.delete(id);
+      if (!region.target && !region.current && !region.pending)
+        this.regions.delete(id);
     }
     for (const chunk of this.activeChunks) {
       if (referenced.has(chunk) || chunk.controller || !chunk.data) {
@@ -897,7 +893,7 @@ export class ChunkStreamScheduler {
         if (allowRelease && now >= chunk.expiresAt) {
           this.releaseChunkData(chunk);
           this.pruneChunk(chunk);
-        }
+        } else this.releaseAt = Math.min(this.releaseAt, chunk.expiresAt);
       }
     }
   }
@@ -937,7 +933,8 @@ export class ChunkStreamScheduler {
         chunk.batchCapacity = sogBatchAllocationSize(chunk.count);
         chunk.environmentRange = chunk.count
           ? {
-              leaf: -1 - chunk.index,
+              source: chunk.source,
+              node: -1 - chunk.index,
               level: 0,
               file: chunk.index,
               offset: 0,
@@ -972,6 +969,7 @@ export class ChunkStreamScheduler {
       chunk.controller = undefined;
       this.pruneChunk(chunk);
       if (!this.disposed) {
+        this.regionsDirty = true;
         this.pump(performance.now());
         // Loading the environment changes the budget available to LOD.
         if (chunk.environment) void this.requestSelection();
@@ -982,9 +980,10 @@ export class ChunkStreamScheduler {
   releaseChunkData(chunk) {
     const data = chunk.data;
     if (!data) return;
+    this.regionsDirty = true;
     // Pending regions depend on this cache's palette, even after extraction.
-    for (const leaf of this.leaves.values())
-      if (leaf.pending?.chunk === chunk) leaf.pending = undefined;
+    for (const region of this.regions.values())
+      if (region.pending?.chunk === chunk) region.pending = undefined;
     // Displayed regions can outlive the worker cache that supplied their palette.
     if (data.palette !== chunk.batch?.source.palette) data.palette?.dispose();
     data.dispose();
@@ -997,11 +996,11 @@ export class ChunkStreamScheduler {
       this.activeChunks.delete(chunk);
   }
   releaseRegion(region) {
+    this.regionsDirty = true;
     this.fades.delete(region);
     region.batch.releaseRegion(region.start);
-    const leaf = this.leaves.get(region.range.leaf);
-    if (leaf?.current === region) leaf.current = undefined;
-    if (leaf?.outgoing === region) leaf.outgoing = undefined;
+    const state = this.regions.get(region.range.node);
+    if (state?.current === region) state.current = undefined;
   }
   changed() {
     if (!this.disposed) notifyStreamChange(this.options);
@@ -1014,7 +1013,11 @@ export class ChunkStreamScheduler {
       return;
     for (const source of this.sources.values()) if (!source.metadata) return;
     // A failed refinement does not invalidate already renderable coverage.
-    if ([...this.leaves.values()].some((leaf) => leaf.current || leaf.pending))
+    if (
+      [...this.regions.values()].some(
+        (region) => region.current || region.pending,
+      )
+    )
       return;
     const wanted = [...this.wanted].filter((chunk) => chunk.count !== 0);
     if (
@@ -1028,7 +1031,7 @@ export class ChunkStreamScheduler {
     this.refinementStopped = true;
     this.retryTimer.dispose();
     this.wanted.clear();
-    for (const leaf of this.leaves.values()) leaf.pending = undefined;
+    for (const region of this.regions.values()) region.pending = undefined;
     for (const chunk of this.activeChunks) {
       chunk.controller?.abort(error);
       this.releaseChunkData(chunk);
@@ -1051,18 +1054,17 @@ export class ChunkStreamScheduler {
       chunk.controller?.abort();
       this.releaseChunkData(chunk);
     }
-    for (const leaf of this.leaves.values()) {
-      if (leaf.current) this.releaseRegion(leaf.current);
-      if (leaf.outgoing) this.releaseRegion(leaf.outgoing);
+    for (const region of this.regions.values()) {
+      if (region.current) this.releaseRegion(region.current);
     }
-    this.leaves.clear();
+    this.regions.clear();
     this.fades.clear();
     this.wanted.clear();
     this.chunks.clear();
     this.activeChunks.clear();
     this.environments = [];
     this.sources.clear();
-    this.lodLeaves.clear();
+    this.nodeRanges.clear();
     this.view = undefined;
     this.selection = EMPTY_SELECTION;
   }

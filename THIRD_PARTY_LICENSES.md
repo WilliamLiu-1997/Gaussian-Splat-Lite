@@ -26,9 +26,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-## SuperSplat
+## PlayCanvas Engine and SuperSplat
 
-Gaussian Splat Lite includes software adapted from SuperSplat.
+Gaussian Splat Lite includes software adapted from SuperSplat and the PlayCanvas Engine SOG LOD hierarchy algorithm.
 
 MIT License
 

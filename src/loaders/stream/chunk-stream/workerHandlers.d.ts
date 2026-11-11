@@ -3,8 +3,8 @@ import type {
   SplatResult,
 } from "../../../data/defines.js";
 import type { SplatLoadArgs, SplatLoadStatus } from "../../loadTypes.js";
-import type { SogLodRequest } from "../sog-stream/sogVisibility.js";
 import type { ChunkStreamMetadata } from "./ChunkStreamLoader.js";
+import type { LodTreeRequest } from "./lodTree.js";
 
 export type ChunkInfo = {
   /** Application-defined JSON from this chunk's SOG extras. */
@@ -70,7 +70,5 @@ export declare function createChunkStreamHandlers(
     format?: "sog" | "lcc2";
   }) => ChunkStreamMetadata;
   releaseIndex: (request: { id: number }) => void;
-  selectLod: (
-    request: SogLodRequest & { format?: "sog" | "lcc2" },
-  ) => Uint32Array<ArrayBufferLike>;
+  selectLod: (request: LodTreeRequest) => Uint32Array<ArrayBufferLike>;
 };

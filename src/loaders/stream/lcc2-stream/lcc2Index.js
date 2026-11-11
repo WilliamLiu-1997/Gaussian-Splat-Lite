@@ -1,4 +1,5 @@
 import { Box3, Vector3 } from "three";
+import { packLodTree } from "../chunk-stream/lodTree.js";
 
 function fail(message) {
   throw new Error(`LCC2: ${message}`);
@@ -96,45 +97,12 @@ export function parseLcc2Index(value, baseUrl) {
         fail("overlapping node ranges");
   }
   if (environment >= 0) counts[environment] = -1;
-  const n = nodes.length;
-  const leafBounds = new Float64Array(n * 6);
-  const lods = new Float64Array(n * 4);
-  const parents = new Int32Array(n);
-  const emptyCoverage = new Uint8Array(n);
-  const childOffsets = new Uint32Array(n + 1);
-  const childList = [];
-  for (let id = n - 1; id >= 0; id--) {
-    const node = nodes[id];
-    emptyCoverage[id] =
-      !node.count ||
-      (node.children.length > 0 &&
-        node.children.every((child) => emptyCoverage[child]));
-  }
-  nodes.forEach((node, id) => {
-    node.bound.min.toArray(leafBounds, id * 6);
-    node.bound.max.toArray(leafBounds, id * 6 + 3);
-    lods.set([node.level, node.file, node.start, node.count], id * 4);
-    parents[id] = node.parent;
-    childOffsets[id] = childList.length;
-    childList.push(...node.children);
-  });
-  childOffsets[n] = childList.length;
   return {
-    bounds: Float64Array.from([
-      ...rootBound.min.toArray(),
-      ...rootBound.max.toArray(),
-    ]),
-    leafBounds,
-    leafOffsets: Uint32Array.from({ length: n + 1 }, (_, i) => i),
-    lods,
-    lodLevels: levels,
-    urls,
-    counts,
-    parents,
-    emptyCoverage,
-    roots: Uint32Array.from(roots),
-    childOffsets,
-    children: Uint32Array.from(childList),
+    ...packLodTree(nodes, roots, {
+      bounds: rootBound,
+      urls,
+      counts,
+    }),
     environment,
   };
 }

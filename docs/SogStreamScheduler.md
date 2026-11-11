@@ -39,9 +39,13 @@ To display a streamed scene:
 
 Streamed models support [SDF edits](SplatEdit.md) and [picking](SplatMesh.md#raycasting). Their data is read-only. Read a hit with `hit.object.splats.getSplat(hit.index)` before the streaming selection updates.
 
-Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields in current and future chunks. Set `blindData: false` if you do not need them: Blind data otherwise adds upload and memory cost to every chunk.
+Use a scene-level [SplatEditBlind](SplatEditBlind.md) edit to select SOG v3 Blind fields throughout the streamed scene. Set `blindData: false` if you do not need them, to reduce memory use.
 
 Read the application-defined `extras` of an input's `lod-meta.json` with `streaming.getSceneExtra(sourceId)` after awaiting `addSource()`. After picking, `hit.object.splats.sceneExtra` holds the same value, and `hit.object.splats.extra` holds the chunk's own; see [Splats](Splats.md).
+
+## Detail and loading
+
+The scene first appears at coarse detail and refines as finer data loads. Detail already on screen stays visible until its replacement is ready, and changes fade over `fadeDurationMs`.
 
 ## Multiple inputs
 
@@ -66,7 +70,7 @@ const [buildingsId, landscapeId] = await Promise.all([
 ]);
 ```
 
-Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. The inputs share one detail selection, splat budget, budget mode, and chunk loading concurrency, while `lodBaseDistance` and `lodMultiplier` can differ per input; omitted ones follow the scheduler's values. Set an input's `environment` to `false` to skip its environment. Enabled environments share the splat budget with all inputs' detail.
+Each input can set `transform: THREE.Matrix4` to place its model relative to `streaming.group`; omitting it uses the identity. The matrix must be finite and invertible. The same URL can appear more than once as independent instances. Inputs share a splat budget, budget mode, and loading limit. Each input can override `lodBaseDistance` and `lodMultiplier`; omitted values follow the scheduler's settings. Set `environment: false` to skip an input's environment. Enabled environments count toward the shared splat budget.
 
 Each `addSource()` call supplies its own `url`, `loadChunk`, `manager`, `requestHeader`, and `withCredentials` options. Use separate schedulers for inputs that need independent budgets.
 
@@ -97,13 +101,13 @@ streaming.removeSource(buildingId); // Returns true; false if already absent.
 
 `removeSource(id)` immediately removes that input, cancels its requests, and releases its data. `sourceIds` includes pending additions; removing one rejects its promise with `AbortError`. An empty scheduler accepts new additions.
 
-`firstRenderable` stays pending after construction until data is displayed or additions/removals leave an empty scene. It does not wait for every input or reset for later additions. Keep updating and rendering while waiting. Await `addSource()` for metadata; there is no `initialized` promise.
+`firstRenderable` stays pending after construction until data is displayed or additions/removals leave an empty scene. It does not wait for every input or reset for later additions. Keep updating and rendering while waiting. Await `addSource()` for metadata.
 
 ## Cameras
 
 Detail depends on distance and camera direction, so cameras need no resolution. Regions outside the view remain part of the same budget, with less detail behind the camera. This keeps surrounding content ready for turns, at the cost of some detail in the current view. Register several cameras to load detail for all of them; each region follows the camera requesting the finest detail.
 
-Unusually large regions, such as backgrounds, would otherwise get too much detail whenever one of their edges is near the camera. `lodDistanceShrink` corrects for this; it changes only the chosen detail, not what is drawn or picked.
+If large regions, such as backgrounds, stay too detailed at a distance, increase `lodDistanceShrink`. It is off by default.
 
 ### WebXR
 
@@ -114,16 +118,16 @@ In WebXR, register `renderer.xr.getCamera()` in place of your camera, as shown f
 | Option | Default | Description |
 | --- | --- | --- |
 | `splatBudget` | `3_000_000` | Splat budget, including the environment when enabled. Higher values allow more detail and use more memory |
-| `maxSh` | `4` | Maximum SH degree to decode and store, an integer from `0` to `4`. Set at creation; `0` keeps only the base color |
-| `blindData` | `true` | Load SOG v3 Blind data for [SplatEditBlind](SplatEditBlind.md). Set at creation; `false` skips its decoding and storage with the built-in loader |
-| `splatBudgetMode` | `"target"` | `"target"` scales all inputs' distance bands together to fill the budget. `"limit"` uses the configured distance bands and only reduces detail when they exceed the budget |
+| `maxSh` | `4` | Maximum SH degree, an integer from `0` to `4`. Lower values use less memory; `0` keeps only the base color. Set at creation |
+| `blindData` | `true` | Load SOG v3 Blind data for [SplatEditBlind](SplatEditBlind.md). Set at creation; `false` omits it when using the built-in loader |
+| `splatBudgetMode` | `"target"` | `"target"` refines detail across inputs toward the budget. `"limit"` caps detail at the configured distance bands and reduces it when needed to fit the budget |
 | `lodBaseDistance` | `100` | Default base LOD distance in world units, compensated for the camera's field of view. Sets the requested detail in `"limit"` mode and the relative detail between inputs in `"target"` mode. Must be finite and positive |
 | `lodMultiplier` | `2` | Default distance multiplier between successive LOD levels in both modes. Must be finite and at least `1` |
 | `lodBehindPenalty` | `5` | Content directly behind a camera is treated as this many times farther away, easing off toward its sides. `1` treats all directions alike. Must be finite and at least `1` |
-| `lodDistanceShrink` | `0.75` | How strongly detail is reduced in regions much larger than the others of their input, from `0` (off) to `1` |
+| `lodDistanceShrink` | `0` | How strongly detail is reduced in regions much larger than the others of their input, from `0` (off) to `1` |
 | `fadeDurationMs` | `200` | Duration of the fade when the scene first appears and when detail changes; `0` switches instantly |
 | `cooldownMs` | `2000` | How long detail that is no longer shown stays in memory, ready for reuse; `0` releases it at once |
-| `maxConcurrentLoads` | `4` | Maximum number of chunk downloads/decodes in progress at the same time; input metadata loads independently |
+| `maxConcurrentLoads` | `4` | Maximum number of chunk files loading at once; input metadata loads independently |
 | `onChange` | — | Called when the scene needs a redraw |
 | `onError` | Logs to the console | Called when loading fails: `(error, url)` |
 
@@ -146,7 +150,7 @@ Each `addSource(options)` call accepts:
 | --- | --- |
 | `group` | Group created by this scheduler to hold the streamed scene |
 | `splatBudget` | Change it at any time to adjust detail. Must be a positive integer; includes the environment when enabled |
-| `maxSh` | Read-only SH decoding and storage limit chosen at creation |
+| `maxSh` | Read-only maximum SH degree chosen at creation |
 | `splatBudgetMode` | Switch between `"target"` and `"limit"` without reloading |
 | `lodBaseDistance` | Change the default base LOD distance without reloading; inputs with their own value keep it |
 | `lodMultiplier` | Change the default spacing between LOD levels without reloading; inputs with their own value keep it |
@@ -161,12 +165,12 @@ Each `addSource(options)` call accepts:
 | `setSourceSettings(id, settings)` / `getSourceSettings(id)` | Change an input's `transform`, `environment`, `lodBaseDistance`, or `lodMultiplier` without reloading, or read a copy of its settings |
 | `update()` | Advance detail selection, loading, and fades. Call it before every render; it throws if no camera is registered |
 | `getBoundingBox()` | Box around the scene in the group's coordinates; includes each input once its `addSource()` promise resolves |
-| `stats` | Visible Splats, loading progress, and estimated CPU/GPU cache sizes (`residentCpuBytes` / `residentGpuBytes`) |
+| `stats` | Visible Splats, loading progress, and estimated CPU/GPU memory use (`residentCpuBytes` / `residentGpuBytes`) |
 | `dispose()` | Stop loading and release the scene. Pending readiness and addition promises reject with `AbortError` |
 
 ### On-demand rendering
 
-Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render. Loading, retries, and fades only make progress inside `update()`.
+Request a redraw from `onChange`, and keep calling `update()` on every animation tick, also when you skip the render.
 
 New data reaches the screen only when you render, so keep rendering while waiting for `firstRenderable`, even before anything is visible.
 

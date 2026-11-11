@@ -1,26 +1,10 @@
 import type * as THREE from "three";
-import type { SogLodIndex, SogLodOptions, SogVisibleLeaf } from "./sogLod.js";
+import type { LodTreeIndex, LodView } from "../chunk-stream/lodTree.js";
 
 type PreparedCamera = {
   modelView: THREE.Matrix4;
   cameraPosition: THREE.Vector3;
   fovScale: number;
-};
-export type SogCamera = {
-  modelView: number[];
-  fovScale: number;
-};
-export type SogView = {
-  /** The registered cameras that see the group; selection serves all of them. */
-  cameras: SogCamera[];
-  shown: boolean;
-};
-export type SogLodRequest = Omit<SogLodOptions, "sources"> & {
-  /** Each input's stable ID and current LOD settings. */
-  sources: (SogLodOptions["sources"][number] & { id: number })[];
-  view: SogView;
-  lodBehindPenalty: number;
-  lodDistanceShrink: number;
 };
 /**
  * Capture the cameras that see the group without traversing the manifest or
@@ -29,13 +13,12 @@ export type SogLodRequest = Omit<SogLodOptions, "sources"> & {
 export declare function captureSogView(
   cameras: readonly THREE.Camera[],
   group: THREE.Object3D,
-): SogView;
+): LodView;
 /** Stable key of a view, for skipping unchanged selection requests. */
-export declare function getSogViewKey(view: SogView): string;
-/** One input's octree, median region size and stable leaf identities. */
+export declare function getSogViewKey(view: LodView): string;
+/** One input's tree bounds and median region size. */
 export declare class SogVisibility {
   private readonly manifest;
-  private readonly leaves;
   private readonly cameras;
   private readonly bound;
   private readonly typicalHalfSize;
@@ -43,22 +26,14 @@ export declare class SogVisibility {
   private readonly closest;
   private readonly inverseModelView;
   private readonly sourceTransform;
-  constructor(
-    manifest: Pick<SogLodIndex, "leafBounds" | "leafOffsets" | "lods">,
-  );
-  prepareCameras(view: SogView, transform: number[]): PreparedCamera[];
+  constructor(manifest: Pick<LodTreeIndex, "nodeBounds">);
+  prepareCameras(view: LodView, transform: number[]): PreparedCamera[];
   measure(
     id: number,
     cameras: PreparedCamera[],
     lodBehindPenalty: number,
     lodDistanceShrink: number,
   ): number;
-  collect(
-    request: Pick<
-      SogLodRequest,
-      "view" | "lodBehindPenalty" | "lodDistanceShrink"
-    > & { transform: number[] },
-  ): Omit<SogVisibleLeaf, "source">[];
 }
 
 export {};

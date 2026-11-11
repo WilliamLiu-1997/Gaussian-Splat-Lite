@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-11-12
+
+### Changed
+
+- Streamed SOG models with many regions, such as large SOG v3 scenes, render at a higher frame rate while streaming and while the camera moves.
+- Streamed SOG now shows coarse detail for the whole scene first and refines it level by level; reaching full detail after a cold start loads more data than before. SOG and LCC2 streaming load regions without coverage first, then detail changes, then prefetched detail. Within each priority, coarser levels load first and nearer regions come first at the same level; inputs share this order.
+- `SogStreamScheduler`'s `lodDistanceShrink` now defaults to `0` (previously `0.75`), matching `Lcc2StreamScheduler`. Set it to `0.75` to keep the earlier detail reduction for oversized regions.
+
 ## [1.8.0] - 2026-11-11
 
 ### Added
@@ -810,7 +818,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.1...v1.6.2

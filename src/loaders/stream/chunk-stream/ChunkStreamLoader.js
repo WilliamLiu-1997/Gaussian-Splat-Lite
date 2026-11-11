@@ -141,10 +141,7 @@ export class ChunkStreamLoader {
   }
   async selectLod(request) {
     this.assertActive();
-    return this.lodWorker.call("selectLod", {
-      ...request,
-      format: this.format,
-    });
+    return this.lodWorker.call("selectLod", request);
   }
   async load(sourceId, url, count, signal) {
     this.assertActive();
