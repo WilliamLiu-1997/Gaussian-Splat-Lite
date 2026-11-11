@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-11
+
 ### Added
 
 - Added SOG v3 loading for bundled and split models, including opacity above 1 and SH4. SOG and LCC2 streaming also accept v3 chunks and keep SH4 by default; their `maxSh` option now accepts `0`–`4` and defaults to `4`. See [supported formats](docs/SplatFileType.md).
@@ -808,7 +810,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.0...v1.6.1
