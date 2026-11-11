@@ -59,8 +59,10 @@ layout(location = 2) out uint targetSeed;
 // must not evaluate exp(inf - inf).
 const float SDF_DISTANCE_LIMIT = 1e20;
 
+// Edit group flags; see SplatEdit.js.
+const uint EDIT_BLIND = 0x200u;
+
 // Blind selection record flags; see SplatEditBlindField.js.
-const uint BLIND_SDF_TYPE = 8u;
 const uint BLIND_ACTIVE = 0x200u;
 const uint BLIND_ENCODING_SHIFT = 10u;
 const uint BLIND_HAS_LOWER = 0x1000u;
@@ -258,17 +260,20 @@ vec4 sdfRgbaMask(uint flags) {
     );
 }
 
-bool sampleSdfDistance(int index, uint sourceIndex, vec3 position, out float distance, out uint flags) {
+bool sampleBlindSelection(int index, uint sourceIndex, out float distance, out uint flags) {
+    uvec4 data0 = texelFetch(sdfTexture, ivec2(0, index), 0);
+    flags = data0.w;
+    if ((flags & BLIND_ACTIVE) == 0u) return false;
+    uvec4 bounds = texelFetch(sdfTexture, ivec2(2, index), 0);
+    if (!sampleBlindDistance(sourceIndex, data0.xyz, flags, bounds, distance)) return false;
+    if ((flags & 0x100u) != 0u) distance = -distance;
+    return true;
+}
+
+bool sampleSdfDistance(int index, vec3 position, out float distance, out uint flags) {
     uvec4 data0 = texelFetch(sdfTexture, ivec2(0, index), 0);
     flags = data0.w;
     uint type = flags & 0xffu;
-    if (type == BLIND_SDF_TYPE) {
-        if ((flags & BLIND_ACTIVE) == 0u) return false;
-        uvec4 bounds = texelFetch(sdfTexture, ivec2(2, index), 0);
-        if (!sampleBlindDistance(sourceIndex, data0.xyz, flags, bounds, distance)) return false;
-        if ((flags & 0x100u) != 0u) distance = -distance;
-        return true;
-    }
     uvec4 data5 = texelFetch(sdfTexture, ivec2(5, index), 0);
     float distanceScale = uintBitsToFloat(data5.w);
     if (distanceScale == 0.0) return false;
@@ -288,10 +293,54 @@ float sdfEditAmount(float distance, float invSoftEdge) {
 }
 
 // Return the blend factor for the RGBA and mask values (unnormalized for unions).
+float evaluateBlind(
+    int fieldFirst,
+    int fieldCount,
+    uint sourceIndex,
+    float invSoftEdge,
+    bool invert,
+    out vec4 resultRgba,
+    out vec4 resultRgbaMask
+) {
+    resultRgba = vec4(0.0);
+    resultRgbaMask = vec4(0.0);
+
+    if (fieldCount == 1) {
+        if (fieldFirst >= numSdfs) return 0.0;
+        float distance;
+        uint flags;
+        if (!sampleBlindSelection(fieldFirst, sourceIndex, distance, flags)) return 0.0;
+        float amount = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
+        if (amount > 0.0) {
+            resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, fieldFirst), 0));
+            resultRgbaMask = sdfRgbaMask(flags);
+        }
+        return amount;
+    }
+
+    int fieldLast = min(fieldFirst + fieldCount, numSdfs);
+    float distance = SDF_DISTANCE_LIMIT;
+    float weightSum = 0.0;
+    for (int index = fieldFirst; index < fieldLast; ++index) {
+        float valueDistance;
+        uint flags;
+        if (!sampleBlindSelection(index, sourceIndex, valueDistance, flags)) continue;
+        distance = min(distance, valueDistance);
+        float weight = invert ? 1.0 : sdfEditAmount(valueDistance, invSoftEdge);
+        if (weight > 0.0) {
+            resultRgba += weight * uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
+            resultRgbaMask += weight * sdfRgbaMask(flags);
+            weightSum += weight;
+        }
+    }
+
+    if (weightSum == 0.0) return 0.0;
+    return sdfEditAmount(invert ? -distance : distance, invSoftEdge) / weightSum;
+}
+
 float evaluateSdfs(
     int sdfFirst,
     int sdfCount,
-    uint sourceIndex,
     vec3 position,
     float invSmoothAmount,
     float invSoftEdge,
@@ -306,7 +355,7 @@ float evaluateSdfs(
         if (sdfFirst >= numSdfs) return 0.0;
         float distance;
         uint flags;
-        if (!sampleSdfDistance(sdfFirst, sourceIndex, position, distance, flags)) return 0.0;
+        if (!sampleSdfDistance(sdfFirst, position, distance, flags)) return 0.0;
         float amount = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
         if (amount > 0.0) {
             resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, sdfFirst), 0));
@@ -322,7 +371,7 @@ float evaluateSdfs(
         for (int index = sdfFirst; index < sdfLast; ++index) {
             float valueDistance;
             uint flags;
-            if (!sampleSdfDistance(index, sourceIndex, position, valueDistance, flags)) continue;
+            if (!sampleSdfDistance(index, position, valueDistance, flags)) continue;
             distance = min(distance, valueDistance);
             // Parent inversion uses the edge of the combined region below.
             float weight = invert ? 1.0 : sdfEditAmount(valueDistance, invSoftEdge);
@@ -337,7 +386,7 @@ float evaluateSdfs(
         for (int index = sdfFirst; index < sdfLast; ++index) {
             float valueDistance;
             uint flags;
-            if (!sampleSdfDistance(index, sourceIndex, position, valueDistance, flags)) continue;
+            if (!sampleSdfDistance(index, position, valueDistance, flags)) continue;
             float exponent = -valueDistance * invSmoothAmount;
             bool dominant = weightSum == 0.0 || exponent > maxExponent;
             float relativeWeight = exp(-abs(exponent - maxExponent));
@@ -370,24 +419,21 @@ bool applySdfEdits(
         uvec4 edit = texelFetch(editTexture, ivec2(0, editIndex), 0);
         uint blendMode = edit.x & 0xffu;
         bool invert = (edit.x & 0x100u) != 0u;
-        int sdfFirst = int(edit.y & 0xffffu);
-        int sdfCount = int(edit.y >> 16u);
+        int selectionFirst = int(edit.y & 0xffffu);
+        int selectionCount = int(edit.y >> 16u);
         float invSoftEdge = uintBitsToFloat(edit.z);
-        float invSmoothAmount = uintBitsToFloat(edit.w);
-
         vec4 sdfRgba;
         vec4 sdfRgbaMask;
-        float factor = evaluateSdfs(
-            sdfFirst,
-            sdfCount,
-            sourceIndex,
-            position,
-            invSmoothAmount,
-            invSoftEdge,
-            invert,
-            sdfRgba,
-            sdfRgbaMask
-        );
+        float factor;
+        if ((edit.x & EDIT_BLIND) != 0u) {
+            factor = evaluateBlind(
+                selectionFirst, selectionCount, sourceIndex, invSoftEdge, invert, sdfRgba, sdfRgbaMask
+            );
+        } else {
+            factor = evaluateSdfs(
+                selectionFirst, selectionCount, position, uintBitsToFloat(edit.w), invSoftEdge, invert, sdfRgba, sdfRgbaMask
+            );
+        }
         bool editOpacity = factor > 0.0 && sdfRgbaMask.a > 0.0;
         if (editOpacity && !semanticOpacityDecoded) {
             // SDF opacity values operate on semantic opacity, not on the alpha

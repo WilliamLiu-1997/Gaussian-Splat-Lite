@@ -31,8 +31,6 @@ export declare class SplatEditBlindField extends Object3D {
 }
 
 /** @internal Blind record flags shared with the generate shaders. */
-export declare const BLIND_SDF_TYPE: 8;
-/** @internal */
 export declare const BLIND_ACTIVE: number;
 /** @internal */
 export declare const BLIND_ENCODING_SHIFT: 10;

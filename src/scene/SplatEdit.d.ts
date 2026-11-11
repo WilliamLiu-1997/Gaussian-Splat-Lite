@@ -18,6 +18,9 @@ export declare enum SplatEditRgbaBlendMode {
   SET_RGBA = "set_rgba",
   ADD_RGBA = "add_rgba",
 }
+/** @internal Edit group flag shared with the generate shaders. */
+export declare const EDIT_BLIND: number;
+
 export type SplatEditSdfColor = {
   r?: number;
   g?: number;

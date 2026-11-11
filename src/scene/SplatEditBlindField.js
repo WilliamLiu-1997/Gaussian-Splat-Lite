@@ -2,9 +2,8 @@ import { Object3D } from "three";
 import { getBlindFieldLayout } from "../data/blindFields.js";
 
 // A Blind selection fills one SplatEdits record (six RGBA32UI texels). Its
-// header flags keep the SDF type, invert and RGBA mask bits; the generate
+// header flags keep the invert and RGBA mask bits; the generate
 // shaders read the Blind bits below, and splatGenerate.glsl repeats them.
-export const BLIND_SDF_TYPE = 8;
 /** The field exists and the options are valid; shaders skip other records. */
 export const BLIND_ACTIVE = 1 << 9;
 export const BLIND_ENCODING_SHIFT = 10;
@@ -73,8 +72,7 @@ export function encodeBlindSelection(selection, fields) {
     (color.g === undefined ? 0 : 2) |
     (color.b === undefined ? 0 : 4) |
     (opacity === undefined ? 0 : 8);
-  record[3] =
-    BLIND_SDF_TYPE | (invert ? SDF_INVERT : 0) | (mask << SDF_RGBA_MASK_SHIFT);
+  record[3] = (invert ? SDF_INVERT : 0) | (mask << SDF_RGBA_MASK_SHIFT);
   floats[16] = color.r ?? 0;
   floats[17] = color.g ?? 0;
   floats[18] = color.b ?? 0;

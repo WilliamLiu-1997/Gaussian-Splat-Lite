@@ -22,6 +22,9 @@ export const SplatEditRgbaBlendMode = {
   SET_RGBA: "set_rgba",
   ADD_RGBA: "add_rgba",
 };
+/** @internal Edit group flag shared with the generate shaders. */
+export const EDIT_BLIND = 1 << 9;
+
 /** A signed-distance shape carrying optional color and opacity channels. */
 export class SplatEditSdf extends THREE.Object3D {
   constructor(options = {}) {
@@ -256,11 +259,13 @@ export class SplatEdits {
     }
     const base = index * 4;
     const blend = rgbaBlendModeToNumber(edit.rgbaBlendMode);
-    const flags = blend | (edit.invert ? 1 << 8 : 0);
+    const spatial = edit instanceof SplatEdit;
+    const flags =
+      blend | (edit.invert ? 1 << 8 : 0) | (spatial ? 0 : EDIT_BLIND);
     // Zero keeps hard edges/unions; nonzero parameters are stored as reciprocals.
     const invSoftEdge = edit.softEdge === 0 ? 0 : 1 / edit.softEdge;
     const invSmoothAmount =
-      edit instanceof SplatEdit && selectionCount > 1 && edit.sdfSmooth !== 0
+      spatial && selectionCount > 1 && edit.sdfSmooth !== 0
         ? 1 / edit.sdfSmooth
         : 0;
 
