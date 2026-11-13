@@ -641,7 +641,7 @@ mod tests {
             for fast in [true, true, false, true, false] {
                 buffers.ensure_size(len);
                 let mut expected = Vec::with_capacity(len);
-                for index in 0..len {
+                for (index, key) in buffers.keys.iter_mut().take(len).enumerate() {
                     state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                     let bits = match index % 31 {
                         0 => f32::NAN.to_bits(),
@@ -654,7 +654,7 @@ mod tests {
                             base | (state & 0x7fff)
                         }
                     };
-                    buffers.keys[index] = if fast { bits >> FAST_KEY_SHIFT } else { bits };
+                    *key = if fast { bits >> FAST_KEY_SHIFT } else { bits };
                     if bits < DEPTH_INFINITY_F32 {
                         expected.push(index as u32);
                     }
