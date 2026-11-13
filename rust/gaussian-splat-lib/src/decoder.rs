@@ -83,6 +83,11 @@ pub trait SplatReceiver: 'static {
     /// palette with the first chunk only and later chunks through `set_sh_labels`.
     const SHARED_SH: bool = false;
 
+    /// Construction tools retain linear mass instead of renderer kernel opacity.
+    fn raw_mass(&self) -> bool {
+        false
+    }
+
     /// Reserve the decoder's estimated live working memory before allocation.
     /// Budgeted receivers can spill their output storage to make room.
     fn reserve_decoder_memory(&mut self, _bytes: usize) -> anyhow::Result<()> {

@@ -1,24 +1,19 @@
 #!/usr/bin/env node
 
 import path from "node:path";
-import {
-  Worker,
-  isMainThread,
-  parentPort,
-  workerData,
-} from "node:worker_threads";
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { start } from "./cli-worker.js";
 import { clusterSh, codebookKernel } from "./rad/cluster.js";
 import { readInput } from "./rad/input.js";
 import { buildLod } from "./rad/lod.js";
 import { Pool } from "./rad/parallel.js";
 import { checkOutput, writeRad } from "./rad/rad.js";
 import { GIB, Workspace } from "./rad/storage.js";
-import { syncFiles } from "./rad/writeback.js";
 
 const help = `Convert PLY or SPZ files to RAD with levels of detail (LOD).
 
-Usage: gsl-build-lod <input> [more inputs...] [options]
-       npm run build-lod -- <input> [more inputs...] [options]
+Usage: gsl-build-rad <input> [more inputs...] [options]
+       npm run build-rad -- <input> [more inputs...] [options]
 
 Inputs: PLY, SPZ.
 Output: <input-stem>-lod.rad. Existing files are not overwritten.
@@ -228,61 +223,6 @@ async function run(options, cancelled) {
   if (failed) throw new Error(`${failed} conversion(s) failed`);
 }
 
-// Keep signal handling responsive while the conversion runs synchronous code.
-// The worker observes cancellation and unwinds its existing catch/finally blocks.
-// Cleanup finishes submitted writeback before closing files and exiting.
-async function start(options) {
-  const cancelled = new Int32Array(new SharedArrayBuffer(4));
-  let progressLine = "";
-  const endProgress = () => {
-    if (progressLine) process.stdout.write("\n");
-    progressLine = "";
-  };
-  const print = ({ method, args }) => {
-    if (method === "writeback") return syncFiles(...args, cancelled);
-    if (method === "progress") {
-      const [line, done] = args;
-      if (process.stdout.isTTY) {
-        const width = process.stdout.columns;
-        const text = !done && width ? line.slice(0, width - 1) : line;
-        process.stdout.write(`\r\x1b[2K${text}${done ? "\n" : ""}`);
-        progressLine = done ? "" : text;
-      } else console.log(line);
-    } else {
-      // Insert logs above the live progress instead of leaving a stale row.
-      if (progressLine) process.stdout.write("\r\x1b[2K");
-      console[method](...args);
-      if (progressLine) process.stdout.write(progressLine);
-    }
-  };
-  const interrupt = (signal) => {
-    const code = signal === "SIGINT" ? 130 : 143;
-    if (Atomics.compareExchange(cancelled, 0, 0, code) === 0) {
-      endProgress();
-      console.error(
-        `${signal}: cancelling conversion; waiting for active disk I/O before cleanup...`,
-      );
-    }
-  };
-  process.on("SIGINT", interrupt);
-  process.on("SIGTERM", interrupt);
-  try {
-    const code = await new Promise((resolve, reject) => {
-      const worker = new Worker(new URL(import.meta.url), {
-        workerData: { options, cancelled },
-      });
-      worker.on("message", print);
-      worker.once("error", reject);
-      worker.once("exit", resolve);
-    });
-    process.exitCode = Atomics.load(cancelled, 0) || code;
-  } finally {
-    endProgress();
-    process.off("SIGINT", interrupt);
-    process.off("SIGTERM", interrupt);
-  }
-}
-
 try {
   if (!isMainThread) {
     // Worker stdout buffers later writes until its event loop yields.
@@ -293,10 +233,10 @@ try {
   } else {
     const [major, minor] = process.versions.node.split(".").map(Number);
     if (major < 22 || (major === 22 && minor < 12))
-      throw new Error("gsl-build-lod requires Node.js 22.12 or later");
+      throw new Error("gsl-build-rad requires Node.js 22.12 or later");
     const options = parse(process.argv.slice(2));
     if (!options) console.log(help);
-    else await start(options);
+    else await start(new URL(import.meta.url), options);
   }
 } catch (error) {
   console.error(error.message);

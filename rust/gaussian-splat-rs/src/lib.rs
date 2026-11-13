@@ -4,6 +4,10 @@ use wasm_bindgen::prelude::*;
 mod allocation;
 #[cfg(feature = "cli")]
 mod cli;
+#[cfg(feature = "cli")]
+mod sog_bounds;
+#[cfg(feature = "cli")]
+mod webp;
 
 #[cfg(not(feature = "cli"))]
 mod bounds;

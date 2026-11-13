@@ -203,6 +203,7 @@ Keep the index and its companion files together. See [LCC2 streaming](docs/Lcc2S
 **Large scenes**
 
 - [Building RAD files](docs/BuildRad.md) — Convert models to streamable RAD with quality LOD.
+- [Building SOG files](docs/BuildSog.md) — Convert PLY or SPZ to streamed SOG v3 with LOD and SH4.
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
 - [SogStreamScheduler](docs/SogStreamScheduler.md) — Large SOG scenes with adaptive detail.
 - [Lcc2StreamScheduler](docs/Lcc2StreamScheduler.md) — LCC2 scenes with adaptive detail.

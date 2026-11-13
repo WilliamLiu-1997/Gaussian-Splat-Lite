@@ -1,6 +1,7 @@
 // Candidate search adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
 import { HALF, halfBits } from "./math.js";
 import { Progress } from "./progress.js";
+import { LATER } from "./splats.js";
 import { IndexArray, PagedArray, Permutation } from "./storage.js";
 export const NONE = 0xffffffff;
 // Files over which the tables of searches spread: worker threads read their
@@ -9,6 +10,13 @@ const STRIPES = 8;
 // The share of slots that cells may take. Fuller tables mean longer probes
 // but fewer pages to read and write back once they no longer fit the cache.
 const LOAD = 0.75;
+// Sort keys that a sort reads at a time, and keys of a bucket that it
+// writes at a time.
+const KEYS = 4096;
+const RUN = 32;
+// What a sort reads and has yet to write, made by the thread that first
+// sorts: worker threads search grids and never sort them.
+let sorting;
 
 // An entry holds Similarities.get()'s 13 terms: the center, covariance and
 // log determinant as floats and the color as halves, which it is exactly.
@@ -91,6 +99,35 @@ function copy(source, from, target, to) {
   const out = target.at(to * STRIDE, true).words;
   const at = (to * STRIDE) & target.mask;
   for (let w = 0; w < STRIDE; w++) out[at + w] = scratch[w];
+}
+
+// Writes the entry of splat `node` at `offset` of `values` and `words`, the
+// float and word views of one memory: its terms `tuple` and its weight.
+export function writeEntry(values, words, offset, node, tuple, weight) {
+  for (let d = 0; d < 3; d++) values[offset + d] = tuple[d];
+  for (let d = 0; d < 7; d++) values[offset + 3 + d] = tuple[6 + d];
+  words[offset + COLOR] = halfBits(tuple[3]) | (halfBits(tuple[4]) << 16);
+  words[offset + COLOR + 1] = halfBits(tuple[5]);
+  words[offset + NODE] = node;
+  words[offset + LINK] = NONE;
+  double[0] = weight;
+  words[offset + WEIGHT] = pair[0];
+  words[offset + WEIGHT + 1] = pair[1];
+}
+
+// Appends the `count` entries in `words` to `table` after its first `length`
+// entries, the words of a page at a time: as words, every field keeps its
+// bits.
+function store(table, length, words, count) {
+  for (let done = 0; done < count; ) {
+    const index = (length + done) * STRIDE;
+    const within = index & table.mask;
+    const size = Math.min((count - done) * STRIDE, table.items - within);
+    table
+      .at(index, true)
+      .words.set(words.subarray(done * STRIDE, done * STRIDE + size), within);
+    done += size / STRIDE;
+  }
 }
 
 // A cell's hash XORs one term per axis. Above three bits for the cell in its
@@ -309,6 +346,8 @@ export class Grid extends Lookup {
     this.sorted = 0;
     this.removed = 0;
     this.count = 0;
+    // The blocks of the entries last sorted; see sort().
+    this.cells = 0;
     // The slot, cell and cell hash of the last linked entry; -1 for none.
     this.last = -1;
     this.lastX = 0;
@@ -352,17 +391,40 @@ export class Grid extends Lookup {
     return out;
   }
 
-  // Adds the active splats that are not removed, in heap order.
+  // Adds the active splats that are not removed, in heap order: a batch at
+  // a time, whose entries the pool's threads compute from the splats'
+  // records. This thread computes those of records that are not cached.
   build(active, removed, label) {
     const progress = label && new Progress(`${label} grid`, active.length);
+    const { pool, similarities } = this;
+    const { nodes, results, records: values, recordWords: words } = pool;
+    let count = 0;
+    const flush = () => {
+      if (count < 64) results.fill(LATER, 0, count);
+      else pool.enter(similarities.splats, count);
+      for (let i = 0; i < count; i++) {
+        if (results[i] !== LATER) continue;
+        const tuple = similarities.get(nodes[i], this.tuple);
+        writeEntry(values, words, i * STRIDE, nodes[i], tuple, tuple[13]);
+      }
+      store(this.entries, this.length, words, count);
+      this.length += count;
+      count = 0;
+    };
     for (let i = 0; i < active.length; i++) {
       const node = active.index(i);
-      if (!removed.get(node)) this.add(node);
+      if (!removed.get(node)) {
+        nodes[count++] = node;
+        if (count === nodes.length) flush();
+      }
       if ((i & 4095) === 0) progress?.update(i);
     }
+    flush();
     progress?.finish();
     this.entries = this.sort(this.entries, this.length, label);
     this.sorted = this.length;
+    // The cells that the sort counted size the table of slots at once.
+    this.count = this.cells;
     this.relink(label);
   }
 
@@ -380,20 +442,14 @@ export class Grid extends Lookup {
     const entry = this.length++;
     const { values, words } = this.entries.at(entry * STRIDE, true);
     const offset = (entry * STRIDE) & this.entries.mask;
-    for (let d = 0; d < 3; d++) values[offset + d] = tuple[d];
-    for (let d = 0; d < 7; d++) values[offset + 3 + d] = tuple[6 + d];
-    words[offset + COLOR] = halfBits(tuple[3]) | (halfBits(tuple[4]) << 16);
-    words[offset + COLOR + 1] = halfBits(tuple[5]);
-    words[offset + NODE] = node;
-    words[offset + LINK] = NONE;
-    double[0] = terms ? weight : tuple[13];
-    words[offset + WEIGHT] = pair[0];
-    words[offset + WEIGHT + 1] = pair[1];
+    writeEntry(values, words, offset, node, tuple, terms ? weight : tuple[13]);
   }
 
   // Returns the first `length` entries of `table` stably sorted by block,
-  // disposing `table` if they moved. Sorts each entry's block and position,
-  // four words, and then moves the entries once.
+  // disposing `table` if they moved, and counts their blocks in `cells`.
+  // Sorts each entry's block and position, four words, and then moves the
+  // entries once. Keys are read a block at a time, and those of a bucket
+  // written a run at a time: one by one, every key would look up its page.
   sort(table, length, label) {
     const passes = this.passes;
     const progress =
@@ -404,18 +460,29 @@ export class Grid extends Lookup {
       (SPREAD[(words[o + 2] >>> (pass * 4)) & 15] << 2);
     const counts = Array.from({ length: passes }, () => new Float64Array(4096));
     const block = this.a;
+    sorting ??= {
+      chunk: new Uint32Array(KEYS * 4),
+      runs: new Uint32Array(4096 * RUN * 4),
+      filled: new Uint16Array(4096),
+      list: new Uint32Array(KEYS),
+    };
+    const { chunk, runs, filled, list } = sorting;
+    this.cells = 0;
     let keys = new IndexArray(this.workspace);
-    for (let entry = 0; entry < length; entry++) {
-      this.block(table, entry, block);
-      const words = keys.page(entry * 4, true);
-      const o = (entry * 4) & keys.mask;
-      words[o] = block[0];
-      words[o + 1] = block[1];
-      words[o + 2] = block[2];
-      words[o + 3] = entry;
-      for (let pass = 0; pass < passes; pass++)
-        counts[pass][digit(words, o, pass)]++;
-      if ((entry & 4095) === 0) progress?.update(entry);
+    for (let base = 0; base < length; base += KEYS) {
+      const size = Math.min(KEYS, length - base);
+      for (let i = 0; i < size; i++) {
+        this.block(table, base + i, block);
+        const o = i * 4;
+        chunk[o] = block[0];
+        chunk[o + 1] = block[1];
+        chunk[o + 2] = block[2];
+        chunk[o + 3] = base + i;
+        for (let pass = 0; pass < passes; pass++)
+          counts[pass][digit(chunk, o, pass)]++;
+      }
+      keys.write(base * 4, chunk, size * 4);
+      progress?.update(base + size);
     }
     let moved = false;
     for (let pass = 0; pass < passes; pass++) {
@@ -427,22 +494,29 @@ export class Grid extends Lookup {
         sum += count;
       }
       const sorted = new IndexArray(this.workspace);
-      for (let i = 0; i < length; i++) {
-        const words = keys.page(i * 4);
-        const o = (i * 4) & keys.mask;
-        const x = words[o];
-        const y = words[o + 1];
-        const z = words[o + 2];
-        const entry = words[o + 3];
-        const t = cursor[digit(words, o, pass)]++ * 4;
-        const out = sorted.page(t, true);
-        const at = t & sorted.mask;
-        out[at] = x;
-        out[at + 1] = y;
-        out[at + 2] = z;
-        out[at + 3] = entry;
-        if ((i & 4095) === 0) progress?.update(length * (pass + 1) + i);
+      const flush = (b) => {
+        sorted.write(cursor[b] * 4, runs.subarray(b * RUN * 4), filled[b] * 4);
+        cursor[b] += filled[b];
+        filled[b] = 0;
+      };
+      // A sort that failed may have left keys behind.
+      filled.fill(0);
+      for (let base = 0; base < length; base += KEYS) {
+        const size = Math.min(KEYS, length - base);
+        keys.read(base * 4, chunk, size * 4);
+        for (let i = 0; i < size; i++) {
+          const o = i * 4;
+          const b = digit(chunk, o, pass);
+          const at = (b * RUN + filled[b]) * 4;
+          runs[at] = chunk[o];
+          runs[at + 1] = chunk[o + 1];
+          runs[at + 2] = chunk[o + 2];
+          runs[at + 3] = chunk[o + 3];
+          if (++filled[b] === RUN) flush(b);
+        }
+        progress?.update(length * (pass + 1) + base + size);
       }
+      for (let b = 0; b < 4096; b++) if (filled[b]) flush(b);
       keys.dispose();
       keys = sorted;
       moved = true;
@@ -453,9 +527,25 @@ export class Grid extends Lookup {
       return table;
     }
     const indices = new IndexArray(this.workspace);
-    for (let i = 0; i < length; i++) {
-      indices.push(keys.get(i * 4 + 3));
-      if ((i & 4095) === 0) progress?.update(length * (passes + 1) + i);
+    // The block of the key before, to count where blocks change.
+    let x = -1;
+    let y = -1;
+    let z = -1;
+    for (let base = 0; base < length; base += KEYS) {
+      const size = Math.min(KEYS, length - base);
+      keys.read(base * 4, chunk, size * 4);
+      for (let i = 0; i < size; i++) {
+        const o = i * 4;
+        if (chunk[o] !== x || chunk[o + 1] !== y || chunk[o + 2] !== z) {
+          x = chunk[o];
+          y = chunk[o + 1];
+          z = chunk[o + 2];
+          this.cells++;
+        }
+        list[i] = chunk[o + 3];
+      }
+      indices.write(base, list, size);
+      progress?.update(length * (passes + 1) + base + size);
     }
     keys.dispose();
     progress?.finish();

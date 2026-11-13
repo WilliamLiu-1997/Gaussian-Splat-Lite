@@ -276,7 +276,12 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                     state.output.center[i3 + d] = state.xyz[d].get_f32(&self.buffer, base);
                 }
                 state.output.opacity[i] = if state.opacity_is_linear {
-                    mass_to_opacity(state.opacity.get_raw_f32(&self.buffer, base))
+                    let mass = state.opacity.get_raw_f32(&self.buffer, base);
+                    if self.splats.raw_mass() {
+                        mass
+                    } else {
+                        mass_to_opacity(mass)
+                    }
                 } else {
                     let logit = state.opacity.get_f32(&self.buffer, base);
                     1.0 / (1.0 + (-logit).exp())

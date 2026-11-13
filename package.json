@@ -9,7 +9,8 @@
   "module": "./dist/gaussian-splat-lite.module.js",
   "types": "./dist/types/index.d.mts",
   "bin": {
-    "gsl-build-lod": "./bin/build-lod.js"
+    "gsl-build-rad": "./bin/build-rad.js",
+    "gsl-build-sog": "./bin/build-sog.js"
   },
   "exports": {
     ".": {
@@ -31,7 +32,7 @@
     "build:types": "node scripts/check-declarations.js && node scripts/build-types.js",
     "build:wasm": "node rust/build_wasm.js",
     "build:wasm:lod": "node rust/build_wasm.js --lod",
-    "build-lod": "node bin/build-lod.js",
+    "build-rad": "node bin/build-rad.js",
     "check": "node scripts/check-js.js && tsc --noEmit && node scripts/check-declarations.js",
     "check:rust": "cargo fmt --manifest-path rust/Cargo.toml --all -- --check",
     "clean": "rm -rf dist/ bin/decoder/ node_modules/ rust/target/ rust/gaussian-splat-rs/pkg/",
@@ -46,7 +47,8 @@
     "start": "npm run dev",
     "test": "npm run test:js && npm run test:rust",
     "test:js": "node --test test/*.test.js",
-    "test:rust": "cargo test --manifest-path rust/Cargo.toml --workspace --locked"
+    "test:rust": "cargo test --manifest-path rust/Cargo.toml --workspace --locked",
+    "build-sog": "node bin/build-sog.js"
   },
   "files": [
     "bin",

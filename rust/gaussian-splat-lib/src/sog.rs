@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::{
     decoder::{QuantizedProperty, ScalarLookup, SplatInit, SplatReceiver},
     opacity::sog_opacity_lookup,
-    splat_encode::{decode_quat_sog_v3, ShLookup},
+    splat_encode::{decode_position_sog, decode_quat_sog_v3, ShLookup},
 };
 
 const BATCH: usize = 65536;
@@ -628,10 +628,8 @@ impl<T: SplatReceiver> SogDecoder<T> {
             }
             "means" => {
                 let (mins, maxs) = self.meta.means;
-                let position = |d: usize, code: usize| {
-                    let value = mins[d] + (maxs[d] - mins[d]) * (code as f32 / 65535.0);
-                    value.signum() * value.abs().exp_m1()
-                };
+                let position =
+                    |d: usize, code: usize| decode_position_sog(code as u16, mins[d], maxs[d]);
                 if self.meta.count >= BATCH && self.positions.is_empty() {
                     self.positions = (0..3 * 65536)
                         .map(|index| position(index / 65536, index % 65536))

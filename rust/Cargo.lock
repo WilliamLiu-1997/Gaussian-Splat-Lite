@@ -110,6 +110,7 @@ dependencies = [
  "console_error_panic_hook",
  "gaussian-splat-lib",
  "half",
+ "image-webp",
  "js-sys",
  "serde_json",
  "wasm-bindgen",

@@ -184,9 +184,16 @@ export class Queue {
   }
 }
 
+// Items that a sort reads at a time, and items of a bucket that it writes
+// at a time.
+const BLOCK = 8192;
+const RUN = 256;
+
 // The first `count` (key, index) items of `items`, sorted by descending key
 // and then index, or by key alone if `byKey`, keeping the order of items with
 // equal keys: a radix sort by byte, skipping bytes that all items share.
+// Items are read a block at a time, and those of a bucket written a run at
+// a time: one by one, every item would look up its page.
 function sortItems(items, count, workspace, byKey = false, label = undefined) {
   const first = byKey ? 4 : 0;
   const progress = label && new Progress(label, count * (10 - first));
@@ -194,13 +201,18 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
   // Byte `pass` of the index, then of the key, inverted to sort descending.
   const digit = (key, index, pass) =>
     255 - (((pass < 4 ? index : key) >>> ((pass & 3) * 8)) & 255);
-  for (let i = 0; i < count; i++) {
-    const words = items.page(i * 2);
-    const offset = (i * 2) & items.mask;
-    for (let pass = first; pass < 8; pass++)
-      counts[pass][digit(words[offset], words[offset + 1], pass)]++;
-    if ((i & 4095) === 0) progress?.update(i);
+  const block = new Uint32Array(BLOCK * 2);
+  for (let base = 0; base < count; base += BLOCK) {
+    const size = Math.min(BLOCK, count - base);
+    items.read(base * 2, block, size * 2);
+    for (let i = 0; i < size; i++)
+      for (let pass = first; pass < 8; pass++)
+        counts[pass][digit(block[i * 2], block[i * 2 + 1], pass)]++;
+    progress?.update(base + size);
   }
+  // The items of each bucket that wait to be written.
+  const runs = new Uint32Array(256 * RUN * 2);
+  const filled = new Uint32Array(256);
   let source = items;
   for (let pass = first; pass < 8; pass++) {
     const cursor = counts[pass];
@@ -211,17 +223,26 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
       sum += size;
     }
     const sorted = new IndexArray(workspace);
-    for (let i = 0; i < count; i++) {
-      const words = source.page(i * 2);
-      const offset = (i * 2) & source.mask;
-      const key = words[offset];
-      const index = words[offset + 1];
-      const target = cursor[digit(key, index, pass)]++ * 2;
-      const out = sorted.page(target, true);
-      out[target & sorted.mask] = key;
-      out[(target & sorted.mask) + 1] = index;
-      if ((i & 4095) === 0) progress?.update(count * (1 + pass - first) + i);
+    const flush = (b) => {
+      sorted.write(cursor[b] * 2, runs.subarray(b * RUN * 2), filled[b] * 2);
+      cursor[b] += filled[b];
+      filled[b] = 0;
+    };
+    for (let base = 0; base < count; base += BLOCK) {
+      const size = Math.min(BLOCK, count - base);
+      source.read(base * 2, block, size * 2);
+      for (let i = 0; i < size; i++) {
+        const key = block[i * 2];
+        const index = block[i * 2 + 1];
+        const b = digit(key, index, pass);
+        const at = (b * RUN + filled[b]) * 2;
+        runs[at] = key;
+        runs[at + 1] = index;
+        if (++filled[b] === RUN) flush(b);
+      }
+      progress?.update(count * (1 + pass - first) + base + size);
     }
+    for (let b = 0; b < 256; b++) if (filled[b]) flush(b);
     if (source !== items) source.dispose();
     source = sorted;
   }
@@ -230,15 +251,18 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
     return source;
   }
   const copy = new IndexArray(workspace);
-  for (let i = 0; i < count * 2; i++) {
-    copy.set(i, items.get(i));
-    if ((i & 4095) === 0) progress?.update(count * (9 - first) + i / 2);
+  for (let base = 0; base < count; base += BLOCK) {
+    const size = Math.min(BLOCK, count - base);
+    items.read(base * 2, block, size * 2);
+    copy.write(base * 2, block, size * 2);
+    progress?.update(count * (9 - first) + base + size);
   }
   progress?.finish();
   return copy;
 }
 
-// Sorts the splats by feature size, and splats of equal size by index.
+// Sorts the splats by feature size, and splats of equal size by index. Sizes,
+// items and the order go a block at a time, as in sortItems().
 export function sortSplats(splats, pool) {
   const workspace = splats.workspace;
   const count = splats.length;
@@ -246,22 +270,30 @@ export function sortSplats(splats, pool) {
   // Sorted by descending rank, the smallest feature comes first; sorting by
   // rank alone keeps splats of equal size in index order.
   const items = new IndexArray(workspace);
-  for (let i = 0; i < count; i++) {
-    const key = rank(-splats.sizes.get(i));
-    const words = items.page(i * 2, true);
-    const offset = (i * 2) & items.mask;
-    words[offset] = key;
-    words[offset + 1] = i;
-    if ((i & 4095) === 0) progress.update(i);
+  const sizes = new Float32Array(BLOCK);
+  const block = new Uint32Array(BLOCK * 2);
+  for (let base = 0; base < count; base += BLOCK) {
+    const size = Math.min(BLOCK, count - base);
+    splats.sizes.read(base, sizes, size);
+    for (let i = 0; i < size; i++) {
+      block[i * 2] = rank(-sizes[i]);
+      block[i * 2 + 1] = base + i;
+    }
+    items.write(base * 2, block, size * 2);
+    progress.update(base + size);
   }
   progress.finish();
   const sorted = sortItems(items, count, workspace, true, "Sorting splats");
   items.dispose();
   const order = new IndexArray(workspace);
   const ordering = new Progress("Collecting splat order", count);
-  for (let i = 0; i < count; i++) {
-    order.push(sorted.get(i * 2 + 1));
-    if ((i & 4095) === 0) ordering.update(i);
+  const indices = new Uint32Array(BLOCK);
+  for (let base = 0; base < count; base += BLOCK) {
+    const size = Math.min(BLOCK, count - base);
+    sorted.read(base * 2, block, size * 2);
+    for (let i = 0; i < size; i++) indices[i] = block[i * 2 + 1];
+    order.write(base, indices, size);
+    ordering.update(base + size);
   }
   sorted.dispose();
   ordering.finish();

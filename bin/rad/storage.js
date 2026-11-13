@@ -32,6 +32,17 @@ export function collect() {
   globalThis.gc();
 }
 
+// Shared memory of at least `bytes`, as WebAssembly memory like the arenas
+// below: it returns to the system once collected on every platform.
+export function sharedBuffer(bytes) {
+  const pages = Math.ceil(bytes / PAGE_BYTES);
+  return new WebAssembly.Memory({
+    initial: pages,
+    maximum: pages,
+    shared: true,
+  }).buffer;
+}
+
 // All large arrays consist of 64 KiB pages. Neither one ArrayBuffer nor one
 // WebAssembly memory has to hold the model, even with a 16+ GiB budget. Pages
 // live in arenas of shared WebAssembly memory: worker threads can read the
@@ -40,9 +51,16 @@ export function collect() {
 // which a SharedArrayBuffer does not on every platform. The cache takes what
 // the budget leaves after the rest of the process, measured as it runs.
 export class Workspace {
-  constructor(budget, sync, parent = tmpdir(), cancelled = null) {
+  constructor(
+    budget,
+    sync,
+    parent = tmpdir(),
+    cancelled = null,
+    prefix = "gsl-build-rad-",
+  ) {
     this.budget = budget;
     this.parent = parent;
+    this.prefix = prefix;
     this.cancelled = cancelled;
     this.accesses = 0;
     this.directory = undefined;
@@ -168,7 +186,7 @@ export class Workspace {
   file() {
     if (!this.directory) {
       mkdirSync(this.parent, { recursive: true });
-      this.directory = mkdtempSync(join(this.parent, "gsl-build-rad-"));
+      this.directory = mkdtempSync(join(this.parent, this.prefix));
       console.log(`Temporary files: ${this.directory}`);
     }
     const file = join(this.directory, `${this.nextFile++}.tmp`);

@@ -307,6 +307,14 @@ pub fn decode_quat_sog(code: [u8; 4]) -> Option<[f32; 4]> {
     })
 }
 
+/// A SOG center coordinate from its 16-bit code and the range of the
+/// coordinate's log-encoded values, `min` to `max`.
+#[inline]
+pub fn decode_position_sog(code: u16, min: f32, max: f32) -> f32 {
+    let value = min + (max - min) * (code as f32 / 65535.0);
+    value.signum() * value.abs().exp_m1()
+}
+
 #[inline]
 pub fn decode_quat_sog_v3(code: [u8; 3]) -> [f32; 4] {
     let p: [f32; 3] = array::from_fn(|d| (code[d] as f32 - 128.0) / 127.0);

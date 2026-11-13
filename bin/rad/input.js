@@ -14,7 +14,7 @@ let wasm;
 // A trapped WebAssembly instance is unusable, and this process cannot load a
 // second copy of the module, so later inputs fail with this error instead.
 let crashed;
-function initialize() {
+export function initialize() {
   wasm ??= init({
     module_or_path: readFileSync(
       new URL("../decoder/decoder_bg.wasm", import.meta.url),
@@ -23,7 +23,7 @@ function initialize() {
   return wasm;
 }
 
-export async function readInput(input, maxSh, workspace) {
+export async function readInput(input, maxSh, workspace, Receiver = Splats) {
   const extension = path.extname(input).toLowerCase();
   if (extension !== ".ply" && extension !== ".spz") {
     throw new Error("Input must be a .ply or .spz file");
@@ -34,7 +34,7 @@ export async function readInput(input, maxSh, workspace) {
     );
   }
   const backend = await initialize();
-  const splats = new Splats(workspace, maxSh);
+  const splats = new Receiver(workspace, maxSh);
   // The decoder asks for `base` bytes of linear memory for each batch; the
   // workspace measures that memory with the rest of the process once it
   // has grown.
@@ -47,7 +47,7 @@ export async function readInput(input, maxSh, workspace) {
   try {
     const size = fstatSync(fd).size;
     const progress = new Progress("Reading input", size);
-    const decoder = new RawDecoder(input, size, callback);
+    const decoder = new RawDecoder(input, size, callback, splats.rawMass);
     try {
       const bytes = Buffer.allocUnsafe(1024 * 1024);
       let read = 0;

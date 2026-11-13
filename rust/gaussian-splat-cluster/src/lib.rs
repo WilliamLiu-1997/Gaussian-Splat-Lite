@@ -1,4 +1,4 @@
-//! Nearest SH codebook entries for `gsl-build-lod --cluster-sh`, as a
+//! Nearest SH codebook entries for `gsl-build-rad --cluster-sh`, as a
 //! WebAssembly module without imports. Each point is compared with every
 //! code. Distances expand to |c|² − 2x·c: |x|² is the same for all codes of
 //! a point. The products use relaxed SIMD multiply-adds, which the browser

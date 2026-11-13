@@ -171,13 +171,21 @@ function mergeLevels(splats, pool) {
   // 4 cells per axis next to them: queries in other blocks skip the check.
   const added = new Cells(18);
   const near = new Cells(20);
-  for (
-    let level = Math.ceil(Math.log2(Math.max(sizes.get(0), 0.000001)));
-    ;
-    level++
-  ) {
+  // Levels double the size of the splats that merge, from the smallest
+  // leaf's. Progress numbers them and shows about how many there are: until
+  // all leaves are in and a level spans the scene, which can be one off.
+  const first = Math.ceil(Math.log2(Math.max(sizes.get(0), 0.000001)));
+  const span = Math.hypot(
+    bounds.max[0] - bounds.min[0],
+    bounds.max[1] - bounds.min[1],
+    bounds.max[2] - bounds.min[2],
+  );
+  const reach = Math.max(sizes.get(initial - 1), span, 0.000001);
+  const levels = Math.max(1, Math.ceil(Math.log2(reach)) - first + 1);
+  for (let level = first; ; level++) {
     const step = 2 ** level;
     if (!Number.isFinite(step)) throw new Error("LOD scale overflow");
+    const name = `LOD level ${level - first + 1}/≈${levels}`;
     // The leaves are sorted by feature, so find this level's range without
     // an extra linear pass just to count its work.
     let low = frontier;
@@ -188,7 +196,7 @@ function mergeLevels(splats, pool) {
       else high = middle;
     }
     const { grid, queue } = Progress.inline(() => {
-      const adding = new Progress(`Preparing level ${level}`, low - frontier);
+      const adding = new Progress(`Preparing ${name}`, low - frontier);
       const previous = frontier;
       while (frontier < low) {
         active.push(frontier, -sizes.get(frontier));
@@ -197,19 +205,16 @@ function mergeLevels(splats, pool) {
       }
       adding.finish();
       const grid = new Grid(similarities, step, bounds, pool);
-      grid.build(active, removed, `Level ${level}`);
-      const queue = new Queue(
-        active,
-        workspace,
-        `Sorting level ${level} queue`,
-      );
+      grid.build(active, removed, name);
+      const queue = new Queue(active, workspace, `Sorting ${name} queue`);
       return { grid, queue };
     });
     active.dispose();
     const next = new Heap(workspace);
-    const detail = () =>
-      `${frontier}/${initial} leaves, ${queue.length} pending, ${splats.length} splats`;
-    const progress = new Progress(`Level ${level}`, queue.length, detail());
+    // Every merge makes one splat of two: all leaves take one less than
+    // there are.
+    const detail = () => `${splats.length - initial}/${initial - 1} merges`;
+    const progress = new Progress(`Merging ${name}`, queue.length, detail());
     // Rounds of merges in heap order. Workers search for the candidates of
     // the next popped splats against the grid at the start of the round.
     // Committing them in order, a search still holds unless its candidate is

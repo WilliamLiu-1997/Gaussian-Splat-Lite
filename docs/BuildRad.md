@@ -6,7 +6,7 @@ Convert PLY or SPZ models into RAD files with levels of detail (LOD), ready for 
 
 ```sh
 npm install --global gaussian-splat-lite
-gsl-build-lod scene.ply
+gsl-build-rad scene.ply
 ```
 
 This writes `scene-lod.rad` beside the input. Large models can take a long time to convert.
@@ -14,10 +14,10 @@ This writes `scene-lod.rad` beside the input. Large models can take a long time 
 To run without a global installation:
 
 ```sh
-npx --package gaussian-splat-lite gsl-build-lod scene.ply
+npx --package gaussian-splat-lite gsl-build-rad scene.ply
 ```
 
-From a repository checkout, first build the decoder with `npm run build:wasm:lod` (requires Rust), then use `npm run build-lod -- <input>` with the same options. The full `npm run build:wasm` command also builds the decoder.
+From a repository checkout, first build the decoder with `npm run build:wasm:lod` (requires Rust), then use `npm run build-rad -- <input>` with the same options. The full `npm run build:wasm` command also builds the decoder.
 
 ## Inputs and output
 
@@ -25,13 +25,13 @@ Inputs must be `.ply` or `.spz` files. Splats with NaN or infinite values, or a 
 
 ```sh
 # Convert several files, each to its own RAD file.
-gsl-build-lod room.ply garden.spz
+gsl-build-rad room.ply garden.spz
 
 # Choose an output path for a single input.
-gsl-build-lod scene.ply -o output/scene.rad
+gsl-build-rad scene.ply -o output/scene.rad
 
 # Keep only the base color, reducing file size and memory use.
-gsl-build-lod scene.ply --max-sh 0
+gsl-build-rad scene.ply --max-sh 0
 ```
 
 The output directory must exist. Existing output files, including matching `.radc` files when using `--rad-chunked`, are never overwritten. Choose a different output name or remove the old files before converting again. Output files appear only once the whole conversion has succeeded. Failed conversions return a nonzero exit code and leave no output files; if a file cannot be removed, a warning shows its path.
@@ -41,7 +41,7 @@ The output keeps up to SH3. SH4 inputs are accepted and converted to SH3 or the 
 ## LOD spacing
 
 ```sh
-gsl-build-lod scene.ply --lod-base 1.75
+gsl-build-rad scene.ply --lod-base 1.75
 ```
 
 `--lod-base` controls the spacing between detail levels (default `1.75`, range `1.1`–`16`). Smaller values produce more intermediate levels and usually larger files; larger values produce fewer levels and usually smaller files. This setting does not discard input splats.
@@ -50,13 +50,13 @@ gsl-build-lod scene.ply --lod-base 1.75
 
 ```sh
 # Use the default SH codebook with 10 refinement iterations.
-gsl-build-lod scene.ply
+gsl-build-rad scene.ply
 
 # Change the number of refinement iterations.
-gsl-build-lod scene.ply --cluster-sh=20
+gsl-build-rad scene.ply --cluster-sh=20
 
 # Store SH coefficients without a codebook.
-gsl-build-lod scene.ply --no-cluster-sh
+gsl-build-rad scene.ply --no-cluster-sh
 ```
 
 By default, splats share their SH coefficients through a codebook of up to 262144 entries per SH level, instead of each storing its own. This can make large models much smaller; small models can grow. View-dependent color becomes approximate, so highlights and reflections can lose some detail. Positions, shapes, base colors and LOD are unchanged. Use `--no-cluster-sh` to disable the codebook.
@@ -68,7 +68,7 @@ Models without SH, or converted with `--max-sh 0`, are written without a codeboo
 ## Memory and temporary storage
 
 ```sh
-gsl-build-lod scene.ply --memory-budget 16 --temp-dir /fast-disk/rad-temp
+gsl-build-rad scene.ply --memory-budget 16 --temp-dir /fast-disk/rad-temp
 ```
 
 `--memory-budget` sets a target in GiB (default `4`, minimum `1`, fractional values accepted). Values such as `16` are supported when enough RAM is available. Lower targets may make conversion slower and require more temporary disk space; output quality is unchanged. If conversion reports insufficient memory, increase this value.
@@ -80,7 +80,7 @@ The target covers the whole conversion. Leave room for the operating system and 
 ## Split files
 
 ```sh
-gsl-build-lod scene.ply --rad-chunked
+gsl-build-rad scene.ply --rad-chunked
 ```
 
 This writes `scene-lod.rad` plus `scene-lod-0.radc`, `scene-lod-1.radc`, and so on.

@@ -207,14 +207,13 @@ unsafe fn scan(
 }
 
 /// Sizes in bytes of the parts of the scratch memory of `probed`, each
-/// rounded to 16 bytes: distances to the centers of four points, the groups
-/// of each point, the points of each group, the gathered points of a group
-/// with their nearest codes, and each point's best distance.
-fn parts(count: usize, dims: usize, groups: usize, probes: usize) -> [usize; 8] {
+/// rounded to 16 bytes: distances to the centers of four points, the points
+/// of each group, the gathered points of a group with their nearest codes,
+/// and each point's best distance.
+fn parts(count: usize, dims: usize, groups: usize, probes: usize) -> [usize; 7] {
     let rows = count + 4;
     [
         4 * groups.next_multiple_of(BLOCK) * 4,
-        count * probes * 4,
         (groups + 1) * 4,
         count * probes * 4,
         rows * dims * 4,
@@ -232,16 +231,19 @@ pub extern "C" fn probed_scratch(count: usize, dims: usize, groups: usize, probe
 }
 
 /// Like `nearest`, but each of `count` points, a multiple of 4, searches
-/// only the codes of the `probes` groups whose centers are nearest to it,
-/// at most `groups`. Group g holds `sizes[g]` blocks of `codes` from block
-/// `starts[g]`; the `groups` centers lie in blocks in `centers`, padded and
-/// empty ones with infinite norms. Writes the position of each point's code
-/// in `codes` to `labels`. Points are processed by group, so that each
-/// group's codes are read once for all points that search them.
+/// only the codes of `probes` groups, at most `groups`: the groups whose
+/// centers are nearest to it, which are written to `picks`, or with `reuse`
+/// the groups that `picks` holds from an earlier call. Group g holds
+/// `sizes[g]` blocks of `codes` from block `starts[g]`; the `groups` centers
+/// lie in blocks in `centers`, padded and empty ones with infinite norms.
+/// Writes the position of each point's code in `codes` to `labels`. Points
+/// are processed by group, so that each group's codes are read once for all
+/// points that search them.
 ///
 /// # Safety
 ///
-/// As for `nearest`; `scratch` has `probed_scratch` bytes, aligned to 16.
+/// As for `nearest`; `picks` has room for `count * probes` groups, and
+/// `scratch` has `probed_scratch` bytes, aligned to 16.
 #[no_mangle]
 #[target_feature(enable = "simd128,relaxed-simd")]
 #[allow(clippy::too_many_arguments)]
@@ -257,13 +259,15 @@ pub unsafe extern "C" fn probed(
     starts: *const u32,
     sizes: *const u32,
     probes: usize,
+    picks: *mut u32,
+    reuse: usize,
     scratch: *mut u8,
     labels: *mut u32,
 ) {
     let center_blocks = groups.div_ceil(BLOCK);
     let width = center_blocks * BLOCK;
     let mut at = scratch;
-    let [row, chosen, ends, lists, gathered, found, index, best] =
+    let [row, ends, lists, gathered, found, index, best] =
         parts(count, dims, groups, probes).map(|bytes| {
             let part = at;
             at = at.add(bytes);
@@ -275,43 +279,40 @@ pub unsafe extern "C" fn probed(
         found as *mut f32,
         best as *mut f32,
     );
-    let (chosen, ends, lists, index) = (
-        chosen as *mut u32,
-        ends as *mut u32,
-        lists as *mut u32,
-        index as *mut u32,
-    );
-    // The nearest `probes` groups of each point, nearest first, and the
-    // number of points of each group.
+    let (ends, lists, index) = (ends as *mut u32, lists as *mut u32, index as *mut u32);
+    // The nearest `probes` groups of each point, nearest first, unless they
+    // are reused, and the number of points of each group.
     for g in 0..=groups {
         *ends.add(g) = 0;
     }
     for i in 0..count {
-        if i % 4 == 0 {
-            distances(
-                points.add(i * dims),
-                dims,
-                centers,
-                center_norms,
-                center_blocks,
-                row,
-            );
-        }
-        let row = row.add((i % 4) * width);
-        let pick = chosen.add(i * probes);
-        let mut filled = 0;
-        for g in 0..groups {
-            let d = *row.add(g);
-            if filled == probes && d >= *row.add(*pick.add(probes - 1) as usize) {
-                continue;
+        let pick = picks.add(i * probes);
+        if reuse == 0 {
+            if i % 4 == 0 {
+                distances(
+                    points.add(i * dims),
+                    dims,
+                    centers,
+                    center_norms,
+                    center_blocks,
+                    row,
+                );
             }
-            let mut slot = filled.min(probes - 1);
-            while slot > 0 && d < *row.add(*pick.add(slot - 1) as usize) {
-                *pick.add(slot) = *pick.add(slot - 1);
-                slot -= 1;
+            let row = row.add((i % 4) * width);
+            let mut filled = 0;
+            for g in 0..groups {
+                let d = *row.add(g);
+                if filled == probes && d >= *row.add(*pick.add(probes - 1) as usize) {
+                    continue;
+                }
+                let mut slot = filled.min(probes - 1);
+                while slot > 0 && d < *row.add(*pick.add(slot - 1) as usize) {
+                    *pick.add(slot) = *pick.add(slot - 1);
+                    slot -= 1;
+                }
+                *pick.add(slot) = g as u32;
+                filled = (filled + 1).min(probes);
             }
-            *pick.add(slot) = g as u32;
-            filled = (filled + 1).min(probes);
         }
         for k in 0..probes {
             *ends.add(*pick.add(k) as usize + 1) += 1;
@@ -325,7 +326,7 @@ pub unsafe extern "C" fn probed(
     }
     for i in 0..count {
         for k in 0..probes {
-            let g = *chosen.add(i * probes + k) as usize;
+            let g = *picks.add(i * probes + k) as usize;
             *lists.add(*ends.add(g) as usize) = i as u32;
             *ends.add(g) += 1;
         }

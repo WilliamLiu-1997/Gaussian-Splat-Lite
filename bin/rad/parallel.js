@@ -6,7 +6,7 @@ import {
   receiveMessageOnPort,
   workerData,
 } from "node:worker_threads";
-import { Lookup, NONE } from "./grid.js";
+import { Lookup, NONE, writeEntry } from "./grid.js";
 import { HALF, halfBits } from "./math.js";
 import {
   INVALID,
@@ -48,6 +48,7 @@ const BLEND = 1;
 const COPY = 2;
 const CHECK = 3;
 const COLLECT = 4;
+const ENTER = 5;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
@@ -65,15 +66,17 @@ const CLUSTER_BYTES = 32 * 1024 ** 2;
 const STREAM_BYTES = 64 * 1024 ** 2;
 export const YOUNG_MB = 8;
 
-// Worker threads with `bytes` each: at most 8, using at most `share` of the
-// budget and half the room left besides `extra`, as measured now.
+// Worker threads with `bytes` each: one for every other core, using at most
+// `share` of the budget and half the room left besides `extra`, as measured
+// now. Between the threads' searches this thread commits the merges, so
+// more threads gain ever less: 14 instead of 8 took a quarter off the
+// searches of a 12M-splat model, 4% of its conversion.
 function threads(workspace, bytes, extra, share = 1 / 4) {
   workspace.settle();
   return Math.max(
     0,
     Math.min(
       availableParallelism() - 1,
-      8,
       Math.floor((workspace.budget * share) / bytes),
       Math.floor((workspace.room - extra) / 2 / bytes),
     ),
@@ -91,52 +94,69 @@ export function encoders(workspace, chunks) {
   return count;
 }
 
-// Makes room for SH clustering worker threads that take `bytes` each besides
-// the thread itself, and `extra` bytes on this thread, and returns how many
-// there are, at most `jobs`. They only compute, so they may use every other
-// core and all the room but a small cache.
-export function clusterers(workspace, bytes, extra, jobs) {
+// How many worker threads that only compute fit, at most `jobs`: each takes
+// `bytes` besides the thread itself, and this thread `extra` bytes. They may
+// use every other core and all the room but a small cache.
+export function computers(workspace, bytes, extra, jobs) {
   workspace.settle();
-  const each = CLUSTER_BYTES + bytes;
-  const count = Math.max(
+  return Math.max(
     0,
     Math.min(
       availableParallelism() - 1,
       jobs,
-      Math.floor((workspace.room - extra - STREAM_BYTES) / each),
+      Math.floor(
+        (workspace.room - extra - STREAM_BYTES) / (CLUSTER_BYTES + bytes),
+      ),
     ),
   );
-  workspace.expect(count * each + extra);
+}
+
+// Makes room for SH clustering worker threads, as many as computers() finds,
+// and returns how many there are.
+export function clusterers(workspace, bytes, extra, jobs) {
+  const count = computers(workspace, bytes, extra, jobs);
+  workspace.expect(count * (CLUSTER_BYTES + bytes) + extra);
   return count;
+}
+
+// Answers a worker's requests in their order, and fails its pending and
+// later requests once it fails or ends. Kept out of WorkerGroup's
+// constructor: the error made when a worker ends keeps the functions that
+// made it, and with them all that they can see. Within the constructor that
+// was the worker data, so large shared arrays stayed in memory after their
+// threads had ended, until the worker itself was collected.
+function watch(worker, name) {
+  worker.waiting = [];
+  worker.on("message", (result) => worker.waiting.shift().resolve(result));
+  const fail = (error) => {
+    worker.failed ??= error;
+    for (const job of worker.waiting.splice(0)) job.reject(worker.failed);
+  };
+  worker.on("error", fail);
+  worker.on("exit", (code) =>
+    fail(new Error(`${name} worker exited (${code})`)),
+  );
+  return worker;
 }
 
 // Ordered request/reply workers for clustering and encoding. Their callers
 // schedule the jobs and close the workers; without workers, requests use the
 // local handler. Keep workers referenced so exit events can reject requests.
 export class WorkerGroup {
-  constructor(url, count, workerData, local, name) {
+  constructor(url, count, workerData, local, name, oldMb = 64) {
     this.local = local;
-    this.workers = Array.from({ length: count }, () => {
-      const worker = new Worker(url, {
-        workerData,
-        resourceLimits: {
-          maxOldGenerationSizeMb: 64,
-          maxYoungGenerationSizeMb: YOUNG_MB,
-        },
-      });
-      worker.waiting = [];
-      worker.on("message", (result) => worker.waiting.shift().resolve(result));
-      // A failed worker fails its pending and later requests.
-      const fail = (error) => {
-        worker.failed ??= error;
-        for (const job of worker.waiting.splice(0)) job.reject(worker.failed);
-      };
-      worker.on("error", fail);
-      worker.on("exit", (code) =>
-        fail(new Error(`${name} worker exited (${code})`)),
-      );
-      return worker;
-    });
+    this.workers = Array.from({ length: count }, () =>
+      watch(
+        new Worker(url, {
+          workerData,
+          resourceLimits: {
+            maxOldGenerationSizeMb: oldMb,
+            maxYoungGenerationSizeMb: YOUNG_MB,
+          },
+        }),
+        name,
+      ),
+    );
   }
 
   get threads() {
@@ -224,6 +244,8 @@ export class Pool {
       later: shared(Uint8Array, ROUND),
       blended: shared(Uint16Array, ROUND * MAX_DIMS),
     };
+    // The records as words, for the entries of a grid; see enter().
+    this.shared.recordWords = new Uint32Array(this.shared.records.buffer);
     Object.assign(this, this.shared);
     this.generation = 0;
     // The workspace version and the arrays last sent, and the messages sent.
@@ -319,6 +341,14 @@ export class Pool {
     });
     Atomics.store(this.control, BASE, base);
     this.run(CHECK, count, 1024);
+  }
+
+  // Writes the grid entries of the first `count` splats in `nodes` to
+  // `records`, 16 words each as Grid.add() writes them, and marks them 0 in
+  // `results`. A splat whose record is not cached is marked LATER.
+  enter(splats, count) {
+    this.share({ splatRecords: splats.records.share().directory });
+    this.run(ENTER, count, 1024);
   }
 
   // Makes the workers drop their views of arenas that the workspace
@@ -453,7 +483,7 @@ class Task {
         state.splatRecords,
         Float32Array,
       );
-      this.splatSh = state.splatSh.map(
+      this.splatSh = (state.splatSh ?? []).map(
         (directory) => new SharedColumn(views, directory, Uint16Array),
       );
     }
@@ -489,6 +519,7 @@ class Task {
       else if (job === BLEND)
         this.blend(start, end, Atomics.load(control, DIMS));
       else if (job === COPY) this.copy(start, end);
+      else if (job === ENTER) this.enter(start, end);
       else {
         const base = Atomics.load(control, BASE);
         for (let i = start; i < end; i++)
@@ -529,6 +560,30 @@ class Task {
         if (!Number.isFinite(HALF[row[at + d]])) return INVALID;
     }
     return filterRecord(record, this.withinDist);
+  }
+
+  enter(start, end) {
+    const { splatRecords: column, nodes, results, merged: record } = this;
+    for (let i = start; i < end; i++) {
+      const index = nodes[i] * 16;
+      column.missed = false;
+      const values = column.page(index);
+      const offset = column.offset(index);
+      if (column.missed) {
+        results[i] = LATER;
+        continue;
+      }
+      for (let d = 0; d < 16; d++) record[d] = values[offset + d];
+      writeEntry(
+        this.records,
+        this.recordWords,
+        i * 16,
+        nodes[i],
+        this.similarities.terms(record, this.tuple),
+        record[15] * record[3],
+      );
+      results[i] = 0;
+    }
   }
 
   copy(from, to) {

@@ -14,9 +14,10 @@ Check WebGPU, WebGL2, and WebGPU · WebGL2 in the viewer. For rendering changes,
 
 Implementations and build scripts use JavaScript. Keep TypeScript declarations in adjacent `.d.ts` files and update them whenever the corresponding API changes. `src/index.js` and `src/index.d.ts` define the package's runtime and type exports.
 
-### RAD command-line tool
+### RAD and SOG command-line tools
 
 See [Building RAD files](docs/BuildRad.md) for installation, conversion commands, and options.
+See [Building SOG files](docs/BuildSog.md) for SOG v3 conversion commands and options.
 
 Before running the CLI from a checkout, and after changing the decoder, its dependencies, or its build settings, rebuild the decoder:
 

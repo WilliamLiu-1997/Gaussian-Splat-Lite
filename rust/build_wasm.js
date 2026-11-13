@@ -102,7 +102,7 @@ try {
   for (const file of ["decoder.js", "decoder_bg.wasm"]) {
     cpSync(join(decoderOutput, file), new URL(file, decoderDestination));
   }
-  // The SH codebook kernel of `gsl-build-lod --cluster-sh` is a module of
+  // The SH codebook kernel of `gsl-build-rad --cluster-sh` is a module of
   // its own: it needs relaxed SIMD, which the decoder must not.
   run(
     "cargo",

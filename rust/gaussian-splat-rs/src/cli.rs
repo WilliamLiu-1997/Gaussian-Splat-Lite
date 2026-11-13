@@ -16,13 +16,15 @@ fn js_error(error: impl std::fmt::Display) -> JsValue {
 struct Receiver {
     callback: Function,
     error: Rc<RefCell<Option<JsValue>>>,
+    raw_mass: bool,
 }
 
 impl Receiver {
-    fn new(callback: Function) -> Self {
+    fn new(callback: Function, raw_mass: bool) -> Self {
         Self {
             callback,
             error: Rc::new(RefCell::new(None)),
+            raw_mass,
         }
     }
     fn emit(&self, name: &str, base: usize, values: &[f32]) {
@@ -54,6 +56,10 @@ impl Receiver {
 
 impl SplatReceiver for Receiver {
     const SUPPORTS_COMPRESSED_PLY: bool = false;
+
+    fn raw_mass(&self) -> bool {
+        self.raw_mass
+    }
 
     fn reserve_decoder_memory(&mut self, bytes: usize) -> anyhow::Result<()> {
         self.emit("memory", bytes, &[]);
@@ -108,10 +114,11 @@ impl SplatReceiver for Receiver {
     fn set_quat(&mut self, base: usize, _: usize, values: &[f32]) {
         self.emit("quat", base, values);
     }
-    fn set_sh(&mut self, base: usize, count: usize, a: &[f32], b: &[f32], c: &[f32], _: &[f32]) {
+    fn set_sh(&mut self, base: usize, count: usize, a: &[f32], b: &[f32], c: &[f32], d: &[f32]) {
         self.set_sh1(base, count, a);
         self.set_sh2(base, count, b);
         self.set_sh3(base, count, c);
+        self.set_sh4(base, count, d);
     }
     fn set_sh1(&mut self, base: usize, _: usize, values: &[f32]) {
         self.emit("sh1", base, values);
@@ -121,6 +128,9 @@ impl SplatReceiver for Receiver {
     }
     fn set_sh3(&mut self, base: usize, _: usize, values: &[f32]) {
         self.emit("sh3", base, values);
+    }
+    fn set_sh4(&mut self, base: usize, _: usize, values: &[f32]) {
+        self.emit("sh4", base, values);
     }
 }
 
@@ -133,8 +143,13 @@ pub struct RawDecoder {
 #[wasm_bindgen]
 impl RawDecoder {
     #[wasm_bindgen(constructor)]
-    pub fn new(path: &str, size: f64, callback: Function) -> Result<Self, JsValue> {
-        let receiver = Receiver::new(callback);
+    pub fn new(
+        path: &str,
+        size: f64,
+        callback: Function,
+        raw_mass: Option<bool>,
+    ) -> Result<Self, JsValue> {
+        let receiver = Receiver::new(callback, raw_mass.unwrap_or(false));
         let mut decoder = MultiDecoder::new(receiver.clone(), None, Some(path));
         receiver.check(decoder.set_expected_input_size(size as u64))?;
         Ok(Self { decoder, receiver })
