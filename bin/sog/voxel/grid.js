@@ -1,5 +1,4 @@
 import { roundHalfToEven } from "./utils.js";
-const ADAPTIVE_VOXEL_MAX_DEPTH = 16;
 const ADAPTIVE_VOXEL_NEIGHBOR_EPSILON = 1e-12;
 
 function chooseGridDimsForExtents(extents, targetCount) {
@@ -190,33 +189,60 @@ function splitAdaptiveVoxel(group, normalizedPositions) {
   }
 
   let childCount = 0;
-  let onlySlot = -1;
   for (let slot = 0; slot < 8; slot++) {
     if (counts[slot] > 0) {
       childCount += 1;
-      onlySlot = slot;
     }
   }
   if (childCount === 1) {
-    const child = adaptiveVoxelChildFromSlot(
-      group,
-      group.rows,
-      onlySlot,
-      mid0,
-      mid1,
-      mid2,
-    );
-    if (
-      child.min0 === group.min0 &&
-      child.max0 === group.max0 &&
-      child.min1 === group.min1 &&
-      child.max1 === group.max1 &&
-      child.min2 === group.min2 &&
-      child.max2 === group.max2
-    ) {
-      return null;
+    const first = group.rows[0] * 3;
+    const min = Array.from(normalizedPositions.subarray(first, first + 3));
+    const max = min.slice();
+    for (let i = 1; i < rowCount; i++) {
+      const at = group.rows[i] * 3;
+      for (let d = 0; d < 3; d++) {
+        min[d] = Math.min(min[d], normalizedPositions[at + d]);
+        max[d] = Math.max(max[d], normalizedPositions[at + d]);
+      }
     }
-    return [child];
+    if (min.every((value, d) => value === max[d])) return null;
+
+    // Skip single-child levels using point bounds, preserving octree cells.
+    let cell = group;
+    while (true) {
+      const mid0 = (cell.min0 + cell.max0) * 0.5;
+      const mid1 = (cell.min1 + cell.max1) * 0.5;
+      const mid2 = (cell.min2 + cell.max2) * 0.5;
+      if (
+        (min[0] < mid0 && max[0] >= mid0) ||
+        (min[1] < mid1 && max[1] >= mid1) ||
+        (min[2] < mid2 && max[2] >= mid2)
+      )
+        return [cell];
+
+      const slot =
+        (min[0] >= mid0 ? 1 : 0) |
+        (min[1] >= mid1 ? 2 : 0) |
+        (min[2] >= mid2 ? 4 : 0);
+      const child = adaptiveVoxelChildFromSlot(
+        cell,
+        group.rows,
+        slot,
+        mid0,
+        mid1,
+        mid2,
+      );
+      if (
+        child.min0 === cell.min0 &&
+        child.max0 === cell.max0 &&
+        child.min1 === cell.min1 &&
+        child.max1 === cell.max1 &&
+        child.min2 === cell.min2 &&
+        child.max2 === cell.max2
+      )
+        return null;
+      cell = child;
+    }
   }
 
   const childRows = new Array(8);
@@ -404,7 +430,6 @@ function refineAdaptiveVoxels(
     const group = groups[groupIndex];
     if (
       group.rows.length > splitThreshold &&
-      group.depth < ADAPTIVE_VOXEL_MAX_DEPTH &&
       activeGroupCount < maxGroupCount
     ) {
       const children = splitAdaptiveVoxel(group, normalizedPositions);
