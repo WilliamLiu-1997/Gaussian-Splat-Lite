@@ -8,7 +8,6 @@ import {
 import path from "node:path";
 import init, { RawDecoder } from "../decoder/decoder.js";
 import { Progress } from "./progress.js";
-import { Splats } from "./splats.js";
 
 let wasm;
 // A trapped WebAssembly instance is unusable, and this process cannot load a
@@ -23,7 +22,7 @@ export function initialize() {
   return wasm;
 }
 
-export async function readInput(input, maxSh, workspace, Receiver = Splats) {
+export async function readInput(input, maxSh, workspace, Receiver, filter) {
   const extension = path.extname(input).toLowerCase();
   if (extension !== ".ply" && extension !== ".spz") {
     throw new Error("Input must be a .ply or .spz file");
@@ -34,20 +33,38 @@ export async function readInput(input, maxSh, workspace, Receiver = Splats) {
     );
   }
   const backend = await initialize();
-  const splats = new Receiver(workspace, maxSh);
+  const splats = new Receiver(workspace, maxSh, filter);
   // The decoder asks for `base` bytes of linear memory for each batch; the
   // workspace measures that memory with the rest of the process once it
-  // has grown.
+  // has grown. The filter may also reserve its checking pool's growth.
+  let memory = 0;
+  const reserve = () => {
+    const current = backend.memory.buffer.byteLength;
+    const bytes = Math.max(0, memory - current);
+    if (filter.reserve) filter.reserve(bytes, current);
+    else workspace.expect(bytes);
+  };
   const callback = (name, base, values) => {
-    if (name !== "memory") splats.receive(name, base, values);
-    else if (base > backend.memory.buffer.byteLength)
-      workspace.expect(base - backend.memory.buffer.byteLength);
+    if (name === "memory") {
+      memory = base;
+      if (base > backend.memory.buffer.byteLength) reserve();
+    } else {
+      splats.receive(name, base, values);
+      // init may create the pool after a decoder reservation was made.
+      if (name === "init") reserve();
+    }
   };
   const fd = openSync(input, "r");
   try {
     const size = fstatSync(fd).size;
     const progress = new Progress("Reading input", size);
-    const decoder = new RawDecoder(input, size, callback, splats.rawMass);
+    const decoder = new RawDecoder(
+      input,
+      size,
+      callback,
+      splats.rawMass,
+      maxSh,
+    );
     try {
       const bytes = Buffer.allocUnsafe(1024 * 1024);
       let read = 0;
@@ -69,6 +86,8 @@ export async function readInput(input, maxSh, workspace, Receiver = Splats) {
       throw error;
     }
     decoder.free();
+    // Decoding has no further allocations; keep only the pool's allowance.
+    filter.reserve?.(0, backend.memory.buffer.byteLength);
     progress.finish(`${splats.length} splats, SH${splats.inputSh}`);
     return splats;
   } catch (error) {

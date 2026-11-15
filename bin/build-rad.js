@@ -8,6 +8,7 @@ import { readInput } from "./rad/input.js";
 import { buildLod } from "./rad/lod.js";
 import { Pool } from "./rad/parallel.js";
 import { checkOutput, writeRad } from "./rad/rad.js";
+import { Splats } from "./rad/splats.js";
 import { GIB, Workspace } from "./rad/storage.js";
 
 const help = `Convert PLY or SPZ files to RAD with levels of detail (LOD).
@@ -23,16 +24,17 @@ Options:
   --max-sh <0..3>        Maximum SH degree (default: 3)
   --within-dist <x,y,z,radius>
                         Keep splat centers within this sphere (input coordinates)
-  --cluster-sh[=<n>]     Store SH as a codebook of up to 262144 entries for
-                        SH1/SH2/SH3, refined in n iterations
-                        (default: enabled, 10 iterations)
-  --no-cluster-sh        Store SH coefficients without a codebook
+  --cluster-sh[=<n>]     SH codebook refinement iterations (default: 10)
+  --sh-codebook <K>      Maximum SH entries, 0..256 K (default: automatic)
+                        0 stores SH coefficients without a codebook
   --rad-chunked          Write a .rad header and separate .radc files
   --memory-budget <GiB>  Target memory in GiB (default: 4, minimum: 1)
   --temp-dir <path>      Temporary file location (default: system temp)
   -o, --output <path>    Output .rad path (one input only)
   -h, --help             Show this help
 
+K is a nonnegative integer; 1 K = 1024 codebook entries.
+Automatic SH codebooks use one entry per 8 LOD splats, rounded up, at most 256 K.
 SH4 inputs are accepted; coefficients above --max-sh are discarded.
 The memory target covers the conversion, worker threads and pending disk writes included.
 Requires Node.js 22.12 or later. No compilation is required.`;
@@ -57,10 +59,6 @@ function parse(args) {
       options.chunked = true;
       continue;
     }
-    if (arg === "--no-cluster-sh") {
-      options.clusterSh = undefined;
-      continue;
-    }
     if (arg === "--cluster-sh" || arg.startsWith("--cluster-sh=")) {
       const value = arg === "--cluster-sh" ? "10" : arg.slice(13);
       options.clusterSh = value.trim() ? Number(value) : Number.NaN;
@@ -79,6 +77,7 @@ function parse(args) {
     const key = {
       "--lod-base": "lodBase",
       "--max-sh": "maxSh",
+      "--sh-codebook": "shCodebook",
       "--within-dist": "withinDist",
       "--memory-budget": "budget",
       "--temp-dir": "tempDir",
@@ -87,8 +86,8 @@ function parse(args) {
     }[name];
     if (!key) throw new Error(`Unknown option: ${arg}`);
     const value = equal < 0 ? args[++i] : arg.slice(equal + 1);
-    if (!value) throw new Error(`${name} requires a value`);
-    options[key] = ["lodBase", "maxSh", "budget"].includes(key)
+    if (!value?.trim()) throw new Error(`${name} requires a value`);
+    options[key] = ["lodBase", "maxSh", "shCodebook", "budget"].includes(key)
       ? Number(value) * (key === "budget" ? GIB : 1)
       : value;
   }
@@ -104,6 +103,15 @@ function parse(args) {
     options.maxSh > 3
   )
     throw new Error("--max-sh must be an integer between 0 and 3");
+  if (options.shCodebook !== undefined) {
+    if (
+      !Number.isInteger(options.shCodebook) ||
+      options.shCodebook < 0 ||
+      options.shCodebook > 256
+    )
+      throw new Error("--sh-codebook must be an integer between 0 and 256 K");
+    options.shCodebook *= 1024;
+  }
   if (options.withinDist !== undefined) {
     const values = options.withinDist
       .split(",")
@@ -151,10 +159,19 @@ async function convert(input, options, kernel, cancelled) {
   let pool;
   try {
     workspace.check();
-    const splats = await readInput(input, options.maxSh, workspace);
+    // The pool checks the splats as they arrive, and builds the LOD.
+    const splats = await readInput(input, options.maxSh, workspace, Splats, {
+      withinDist: options.withinDist,
+      start: (count) => {
+        pool = new Pool(workspace, count);
+        pool.ready();
+        return pool;
+      },
+      reserve: (bytes, memory) =>
+        pool ? pool.reserve(bytes, memory) : workspace.expect(bytes),
+    });
     const count = splats.length;
-    pool = new Pool(workspace, count);
-    splats.retain(pool, options.withinDist);
+    splats.retain();
     console.log(
       `Read ${count} splats, SH${splats.inputSh}, in ${((performance.now() - start) / 1000).toFixed(2)}s`,
     );
@@ -173,7 +190,7 @@ async function convert(input, options, kernel, cancelled) {
     if (!splats.length) throw new Error("Input contains no usable splats");
     const leaves = splats.length;
     const lodStart = performance.now();
-    buildLod(splats, options.lodBase, pool);
+    buildLod(splats, options.lodBase, pool, options.shCodebook);
     await pool.close();
     console.log(
       `Built ${splats.length} LOD splats from ${leaves} leaves in ${((performance.now() - lodStart) / 1000).toFixed(2)}s`,
@@ -183,9 +200,15 @@ async function convert(input, options, kernel, cancelled) {
       console.log("No SH coefficients to cluster; writing without a codebook");
     else if (kernel) {
       const clusterStart = performance.now();
-      codebook = await clusterSh(splats, options.clusterSh, kernel);
+      codebook = await clusterSh(
+        splats,
+        options.clusterSh,
+        kernel,
+        options.shCodebook,
+      );
       // RAD encoding now reads only the codebook and labels.
       for (const column of splats.sh) column.dispose();
+      splats.weight.dispose();
       console.log(
         `Clustered SH into ${codebook.count} codes in ${((performance.now() - clusterStart) / 1000).toFixed(2)}s`,
       );
@@ -208,7 +231,8 @@ async function convert(input, options, kernel, cancelled) {
 
 async function run(options, cancelled) {
   // Load the requested codebook kernel before converting any inputs.
-  const kernel = options.clusterSh === undefined ? undefined : codebookKernel();
+  const kernel =
+    options.maxSh && options.shCodebook !== 0 ? codebookKernel() : undefined;
   let failed = 0;
   for (const input of options.inputs) {
     if (Atomics.load(cancelled, 0)) return;

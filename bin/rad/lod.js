@@ -1,15 +1,20 @@
 // LOD construction adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
 import { Cells, Grid, NONE, cellHash } from "./grid.js";
 import { Heap, Queue, sortSplats } from "./heap.js";
-import { SCALE, halfBits, rotation } from "./math.js";
+import { HALF, SCALE, rotation } from "./math.js";
 import { MISS, ROUND, hint } from "./parallel.js";
 import { Progress } from "./progress.js";
-import { SH_DIMS, Similarities } from "./splats.js";
+import { SHAPE_WORDS, SH_DIMS, Similarities, shCodeCount } from "./splats.js";
 import { IndexArray, PagedArray, Permutation } from "./storage.js";
 
-export function buildLod(splats, lodBase, pool) {
+// Records that the weights of SH clustering are taken from at a time.
+const BLOCK = 4096;
+
+export function buildLod(splats, lodBase, pool, shCodebook) {
   const initial = splats.length;
   const workspace = splats.workspace;
+  // Every splat's shape, written as it is sorted or merged, for chunkTree().
+  splats.shapes = new PagedArray(workspace, Uint32Array);
   sortSplats(splats, pool);
   mergeLevels(splats, pool);
   splats.mergeSh(initial, pool);
@@ -19,14 +24,12 @@ export function buildLod(splats, lodBase, pool) {
   // `index` are entries 2 * (index - initial) and the next of `children`. A
   // merged splat is kept if its weight is at least lodBase times its
   // children's largest feature; one that is not passes that feature on, and
-  // its kept descendants become children of its kept ancestor.
-  const features = new PagedArray(workspace, Float64Array);
+  // its kept descendants become children of its kept ancestor. Once read,
+  // each weight can be replaced by the feature it passes on.
+  const features = splats.weight;
   const selection = new Progress("Selecting LOD nodes", splats.length);
   let retainedCount = initial;
-  for (let index = 0; index < initial; index++) {
-    features.set(index, splats.weight.get(index));
-    if ((index & 4095) === 0) selection.update(index);
-  }
+  selection.update(initial);
   // A bit for each merged splat.
   const kept = new IndexArray(workspace);
   for (let index = initial; index < splats.length; index++) {
@@ -35,18 +38,16 @@ export function buildLod(splats, lodBase, pool) {
       const child = splats.children.get((index - initial) * 2 + c);
       maximum = Math.max(maximum, features.get(child));
     }
-    const feature = splats.weight.get(index);
+    const feature = features.get(index);
     const retained = index === root || feature >= maximum * lodBase;
-    features.set(index, retained ? feature : maximum);
     if (retained) {
       retainedCount++;
       const bit = index - initial;
       kept.set(bit >>> 5, kept.get(bit >>> 5) | (1 << (bit & 31)));
-    }
+    } else features.set(index, maximum);
     if ((index & 4095) === 0) selection.update(index);
   }
   features.dispose();
-  splats.weight.dispose();
   selection.finish(`${retainedCount} nodes retained`);
 
   // Ordering reads sizes at random, from a column without the rest of each
@@ -144,8 +145,10 @@ export function buildLod(splats, lodBase, pool) {
   sizes.dispose();
   kept.dispose();
   ordering.finish();
-  chunkTree(splats, order, first, counts, ordered, pool);
+  splats.children.dispose();
+  const chunks = chunkTree(splats, order, first, counts, ordered, pool);
   order.dispose();
+  reorderChunks(splats, chunks, pool, shCodebook);
 }
 
 // Merges the splats level by level into a binary tree, adding the merged
@@ -392,30 +395,34 @@ function sort(values, count) {
   }
 }
 
-// Lays out the tree in chunks of 65536 splats and moves every column into
-// that order. Children become consecutive rows: childStart is then the row of
-// a splat's first child. `sizes` are the splats' sizes in logical order.
+// Lays out the tree in chunks of 65536 splats and returns their original
+// indices in chunk order. Children become consecutive rows: childStart is
+// then the row of a splat's first child. `sizes` are in logical order.
 function chunkTree(splats, order, first, counts, sizes, pool) {
   const workspace = splats.workspace;
   const nodes = splats.length;
-  for (const column of [splats.childStart, splats.childCount, splats.children])
-    column.dispose();
-  // Chunking reads records at random by logical index, so it reads them in
-  // logical order, where splats of a subtree lie close together.
+  for (const column of [splats.childStart, splats.childCount]) column.dispose();
+  // Chunking reads shapes at random by logical index, so it reads them in
+  // logical order, where splats of a subtree lie close together. The
+  // records move once, into chunk order.
+  splats.writeShapes();
   const logical = new Permutation(
     workspace,
     order,
     nodes,
     "Preparing LOD order",
   );
-  splats.records = logical.apply(
-    splats.records,
-    16,
+  const shapes = logical.apply(
+    splats.shapes,
+    SHAPE_WORDS,
     pool,
     false,
-    "Reordering LOD nodes",
+    "Reordering LOD shapes",
   );
+  splats.shapes = undefined;
   logical.dispose();
+  const shape = new Uint32Array(SHAPE_WORDS);
+  const center = new Float32Array(shape.buffer, 0, 3);
   // The row of each splat's first child.
   const starts = new PagedArray(workspace, Float64Array);
   const indices = new IndexArray(workspace);
@@ -528,12 +535,17 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
       const centers = new PagedArray(workspace, Float32Array);
       for (let i = 0; i < rest; i++) {
         if ((i & 4095) === 0) chunking.update(indices.length);
-        splats.read(item(i), record);
+        shapes.read(item(i) * SHAPE_WORDS, shape, SHAPE_WORDS);
+        for (let d = 0; d < 3; d++) record[d] = center[d];
+        record[10] = HALF[shape[4] >>> 16];
+        record[11] = HALF[shape[5] & 0xffff];
+        record[12] = HALF[shape[5] >>> 16];
+        record[13] = HALF[shape[6]];
         centers.write(i * 3, record, 3);
         rotation(record, r);
-        const sx = Math.max(0.001, SCALE[halfBits(record[7])]) * 1.5;
-        const sy = Math.max(0.001, SCALE[halfBits(record[8])]) * 1.5;
-        const sz = Math.max(0.001, SCALE[halfBits(record[9])]) * 1.5;
+        const sx = Math.max(0.001, SCALE[shape[3] & 0xffff]) * 1.5;
+        const sy = Math.max(0.001, SCALE[shape[3] >>> 16]) * 1.5;
+        const sz = Math.max(0.001, SCALE[shape[4] & 0xffff]) * 1.5;
         for (let d = 0; d < 3; d++) {
           const half =
             Math.abs(r[d]) * sx +
@@ -581,6 +593,8 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
     chunking.update(indices.length);
   }
   sizes.dispose();
+  shapes.dispose();
+  first.dispose();
   if (indices.length !== order.length)
     throw new Error("Incomplete LOD tree ordering");
   chunking.finish();
@@ -589,13 +603,6 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
     indices,
     order.length,
     "Preparing chunk order",
-  );
-  splats.records = chunked.apply(
-    splats.records,
-    16,
-    pool,
-    false,
-    "Reordering chunk splats",
   );
   splats.childCount = chunked.apply(
     counts,
@@ -612,11 +619,65 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
     "Reordering child offsets",
   );
   chunked.dispose();
+  // The splat of each row: the records are still in the order of the tree's
+  // merges. The logical indices are no longer needed, so replace them.
+  const collecting = new Progress(
+    "Collecting chunk splat order",
+    indices.length,
+  );
+  for (let i = 0; i < indices.length; i++) {
+    indices.set(i, order.get(indices.get(i)));
+    if ((i & 4095) === 0) collecting.update(i);
+  }
+  collecting.finish();
+  return indices;
+}
+
+// Moves records and SH into chunk order, collecting clustering weights
+// while records are cached, unless every row gets its own SH codebook entry.
+function reorderChunks(splats, indices, pool, shCodebook) {
+  const workspace = splats.workspace;
+  const nodes = splats.length;
+  const length = indices.length;
+  const moved = new Permutation(
+    workspace,
+    indices,
+    nodes,
+    "Preparing chunk splat order",
+  );
+  if (!splats.maxSh) indices.dispose();
+  let writeWeights;
+  if (
+    splats.maxSh &&
+    shCodebook !== 0 &&
+    shCodeCount(length, shCodebook) < length
+  ) {
+    const rows = new Float32Array(BLOCK * 16);
+    const values = new Float64Array(BLOCK);
+    writeWeights = (records, start, end) => {
+      for (let base = start; base < end; base += BLOCK) {
+        const count = Math.min(BLOCK, end - base);
+        records.read(base * 16, rows, count * 16);
+        for (let i = 0; i < count; i++)
+          values[i] = rows[i * 16 + 15] * rows[i * 16 + 3];
+        splats.weight.write(base, values, count);
+      }
+    };
+  }
+  splats.records = moved.apply(
+    splats.records,
+    16,
+    pool,
+    false,
+    "Reordering chunk splats",
+    writeWeights,
+  );
+  moved.dispose();
   // The SH coefficients are still in the order of mergeSh().
   if (splats.maxSh) {
-    const shOrder = new Progress("Collecting LOD SH order", indices.length);
-    for (let i = 0; i < indices.length; i++) {
-      indices.set(i, splats.shRow(order.get(indices.get(i))));
+    const shOrder = new Progress("Collecting LOD SH order", length);
+    for (let i = 0; i < length; i++) {
+      indices.set(i, splats.shRow(indices.get(i)));
       if ((i & 4095) === 0) shOrder.update(i);
     }
     shOrder.finish();
@@ -627,6 +688,7 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
       nodes,
       "Preparing LOD SH order",
     );
+    indices.dispose();
     for (let band = 0; band < splats.maxSh; band++)
       splats.sh[band] = nodeOrder.apply(
         splats.sh[band],
@@ -637,7 +699,5 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
       );
     nodeOrder.dispose();
   }
-  first.dispose();
-  splats.length = indices.length;
-  indices.dispose();
+  splats.length = length;
 }

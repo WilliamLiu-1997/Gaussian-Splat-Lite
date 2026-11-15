@@ -253,7 +253,12 @@ export class Pool {
     this.state = {};
     this.sent = 0;
     this.task = new Task(this.shared);
-    workspace.expect(count * WORKER_BYTES + MAIN_BYTES);
+    // What the threads and this thread may take, and the rest of the
+    // process before the workers start; see reserve().
+    this.reserved = count * WORKER_BYTES + MAIN_BYTES;
+    workspace.expect(this.reserved);
+    this.base = workspace.outside;
+    this.decoderBase = undefined;
     this.workers = Array.from({ length: count }, () => {
       const worker = new Worker(new URL(import.meta.url), {
         workerData: this.shared,
@@ -356,6 +361,24 @@ export class Pool {
   collect() {
     this.share({});
     this.run(COLLECT, 0, 1);
+  }
+
+  // Waits until every thread runs, and measures the process after startup.
+  ready() {
+    if (!this.workers.length) return;
+    this.collect();
+    this.workspace.settle();
+  }
+
+  // Measured pool growth uses its original allowance. Decoder memory that
+  // has grown since the pool started is separate, as are the `extra` bytes
+  // the decoder is about to allocate.
+  reserve(extra, memory) {
+    this.decoderBase ??= memory;
+    this.workspace.expect(
+      extra,
+      this.base + this.reserved + memory - this.decoderBase,
+    );
   }
 
   run(job, count, size) {

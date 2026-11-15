@@ -44,6 +44,34 @@ export function halfBits(value) {
 export function half(value) {
   return HALF[halfBits(value)];
 }
+
+// Converts a Float32Array directly from its bits, as halfBits() does.
+export function halfArray(values, bits, count) {
+  const words = new Uint32Array(values.buffer, values.byteOffset, count);
+  for (let i = 0; i < count; i++) {
+    const word = words[i];
+    const sign = (word >>> 16) & 32768;
+    const exponent = (word >>> 23) & 255;
+    let mantissa = word & 0x7fffff;
+    const e = exponent - 112;
+    if (exponent === 255) bits[i] = sign | (mantissa ? 0x7e00 : 0x7c00);
+    else if (e >= 31) bits[i] = sign | 0x7c00;
+    else if (e > 0) {
+      bits[i] =
+        sign |
+        ((e << 10) + ((mantissa + 4095 + ((mantissa >>> 13) & 1)) >>> 13));
+    } else if (e < -10) bits[i] = sign;
+    else {
+      mantissa |= 0x800000;
+      const shift = 14 - e;
+      bits[i] =
+        sign |
+        ((mantissa + ((1 << (shift - 1)) - 1) + ((mantissa >>> shift) & 1)) >>>
+          shift);
+    }
+  }
+  return bits;
+}
 export function area(x, y, z) {
   return (
     4 *

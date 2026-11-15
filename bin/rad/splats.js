@@ -7,6 +7,7 @@ import {
   determinant,
   eigens,
   half,
+  halfArray,
   halfBits,
   opacityRadius,
   quaternion,
@@ -15,6 +16,17 @@ import { Progress } from "./progress.js";
 import { IndexArray, PAGE_BYTES, PagedArray, Permutation } from "./storage.js";
 
 export const SH_DIMS = [9, 15, 21];
+// One SH code per eight rows unless a size is requested, capped at the
+// row count and 256K entries.
+export const shCodeCount = (count, entries) =>
+  Math.min(count, 262144, entries ?? Math.ceil(count / 8));
+// Words of a splat's shape, what chunkTree() reads of its record: the
+// center as three floats, then the half bits of the log scales and the
+// rotation, two to a word. All but the center are half values; see receive()
+// and Merger.run().
+export const SHAPE_WORDS = 7;
+// Consecutive splats whose shapes are written at a time.
+const SHAPE_BLOCK = 4096;
 
 // What retain() finds a splat to be.
 export const KEEP = 0;
@@ -57,13 +69,28 @@ export function filterRecord(record, withinDist) {
 }
 
 export class Splats {
-  constructor(workspace, maxSh) {
+  // `filter.start(count)` creates the Pool once the decoder knows the count;
+  // arrived() checks complete batches with `filter.withinDist` as the crop.
+  constructor(workspace, maxSh, filter) {
     this.workspace = workspace;
     this.maxSh = maxSh;
     this.inputSh = 0;
     this.length = 0;
     this.invalid = 0;
     this.cropped = 0;
+    // What retain() checks: the Pool and crop, the fields that every splat
+    // needs and how far each has arrived, the splats checked, and the first
+    // `kept` of them, which stay.
+    this.filter = filter;
+    this.pool = undefined;
+    this.withinDist = filter.withinDist;
+    this.fields = [];
+    this.received = {};
+    this.checked = 0;
+    this.kept = 0;
+    this.columns = undefined;
+    this.record = new Float64Array(16);
+    this.rows = SH_DIMS.map((dims) => new Uint16Array(dims));
     this.records = new PagedArray(workspace, Float32Array);
     this.sh = SH_DIMS.map(() => new PagedArray(workspace, Uint16Array));
     // The two children of the i-th merged splat are entries 2i and 2i + 1 of
@@ -72,8 +99,8 @@ export class Splats {
     this.childStart = new PagedArray(workspace, Float64Array);
     this.childCount = new IndexArray(workspace);
     this.children = new IndexArray(workspace);
-    // Each splat's merge weight, area × opacity, which merge() reads instead
-    // of two records.
+    // Area × opacity for merging and, after selection clears the column,
+    // for SH clustering in chunk order.
     this.weight = new PagedArray(workspace, Float64Array);
     // Each splat's feature size, for the passes that read nothing else of a
     // record, and the bounds of the centers; see reorder().
@@ -81,11 +108,19 @@ export class Splats {
     this.bounds = undefined;
     // The two child weights of each merged splat, for mergeSh().
     this.blend = new PagedArray(workspace, Float64Array);
+    // Each splat's shape while buildLod() builds the tree; see shape().
+    this.shapes = undefined;
+    // Pending shapes: rows of words with a float view for their centers,
+    // and the seven half-valued fields as floats and half bits.
+    this.shapeCount = 0;
+    this.shapeRows = new Uint32Array(SHAPE_BLOCK * SHAPE_WORDS);
+    this.shapeFloats = new Float32Array(this.shapeRows.buffer);
+    this.shapeFields = new Float32Array(SHAPE_BLOCK * 7);
+    this.shapeBits = new Uint16Array(SHAPE_BLOCK * 7);
     // Each decoded splat's row in the SH columns: as decoded, and from
     // mergeSh() on, in the order merges read them; see shRow().
     this.shOrder = undefined;
     this.merged = new Float64Array(16);
-    this.bits = new Uint16Array(0);
     this.merger = new Merger();
     this.shLeft = new Uint16Array(21);
     this.shRight = new Uint16Array(21);
@@ -101,18 +136,18 @@ export class Splats {
       this.maxSh = Math.min(this.maxSh, this.inputSh, 3);
       for (let band = 0; band < this.maxSh; band++)
         this.sh[band].length = base * SH_DIMS[band];
+      this.pool = this.filter.start(base);
+      this.fields = ["center", "opacity", "rgb", "scale", "quat"];
+      for (let band = 0; band < this.maxSh; band++)
+        this.fields.push(`sh${band + 1}`);
       return;
     }
     if (!values.length) return;
-    // `bits` is reused, so reading leaves no freed buffers behind.
     if (name.startsWith("sh")) {
       const band = Number(name[2]) - 1;
       if (band >= this.maxSh) return;
-      if (this.bits.length < values.length)
-        this.bits = new Uint16Array(values.length);
-      for (let i = 0; i < values.length; i++)
-        this.bits[i] = halfBits(values[i]);
-      this.sh[band].write(base * SH_DIMS[band], this.bits, values.length);
+      this.sh[band].write(base * SH_DIMS[band], values);
+      this.arrived(name, base + values.length / SH_DIMS[band]);
       return;
     }
     const [field, dims] = {
@@ -135,6 +170,10 @@ export class Splats {
         page[offset + d] = field === 0 ? value : half(value);
       }
     }
+    this.arrived(
+      name === "lnScale" ? "scale" : name,
+      base + values.length / dims,
+    );
   }
 
   read(index, output) {
@@ -144,70 +183,90 @@ export class Splats {
   // Skips empty splats and counts invalid ones in `invalid`: NaN or infinite
   // values, including a zero rotation, which the decoder normalizes to NaN.
   // Optionally keeps only centers within [x, y, z, radius], counting the
-  // otherwise usable splats outside this sphere in `cropped`.
-  // Workers refresh, check and crop blocks of splats; the main thread
-  // checks those they leave, and moves kept splats after skipped ones.
-  retain(pool, withinDist) {
-    const progress = new Progress("Filtering splats", this.length);
-    const { results } = pool;
-    const block = results.length;
-    const record = new Float64Array(16);
-    const rows = SH_DIMS.map((dims) => new Uint16Array(dims));
-    const columns = [
-      [this.records.share(), 16],
-      ...this.sh
-        .slice(0, this.maxSh)
-        .map((column, band) => [column.share(), SH_DIMS[band]]),
-    ];
-    let count = 0;
-    this.invalid = 0;
-    this.cropped = 0;
-    for (let base = 0; base < this.length; base += block) {
-      const size = Math.min(block, this.length - base);
-      for (const [column, stride] of columns)
-        column.load(
-          base * stride,
-          (base + size) * stride,
-          column === this.records,
-        );
-      pool.check(this, base, size, withinDist);
-      for (let i = 0; i < size; i++) {
-        const index = base + i;
-        let state = results[i];
-        const later = state === LATER;
-        if (later) {
-          this.read(index, record);
-          refresh(record);
-          state = !this.valid(index, record, rows)
-            ? INVALID
-            : filterRecord(record, withinDist);
-        }
-        if (state === INVALID) this.invalid++;
-        if (state === CROPPED) this.cropped++;
-        if (state !== KEEP) continue;
-        if (count !== index || later) {
-          if (!later) this.read(index, record);
-          this.records.write(count * 16, record);
-        }
-        if (count !== index) {
-          for (let band = 0; band < this.maxSh; band++) {
-            const dims = SH_DIMS[band];
-            this.sh[band].read(index * dims, rows[band]);
-            this.sh[band].write(count * dims, rows[band]);
-          }
-        }
-        // The record's page is cached.
-        this.sizes.set(count, this.records.get(count * 16 + 14));
-        count++;
-      }
-      progress.update(base + size);
+  // otherwise usable splats outside this sphere in `cropped`. Most splats
+  // are checked as their fields arrive, see arrived(); this checks the rest.
+  retain() {
+    const { length, pool } = this;
+    const from = this.checked;
+    const progress = new Progress("Filtering splats", length - from);
+    const block = pool.results.length;
+    while (this.checked < length) {
+      this.check(Math.min(block, length - this.checked));
+      progress.update(this.checked - from);
     }
+    const count = this.kept;
     this.length = count;
     this.records.length = count * 16;
     for (let band = 0; band < this.maxSh; band++)
       this.sh[band].length = count * SH_DIMS[band];
     progress.finish(`${count} usable splats`);
   }
+
+  // Notes that the splats before `end` have `field`, and checks those that
+  // have every field, a block at a time while their pages are cached.
+  arrived(field, end) {
+    this.received[field] = Math.max(this.received[field] ?? 0, end);
+    let complete = this.length;
+    for (const key of this.fields)
+      complete = Math.min(complete, this.received[key] ?? 0);
+    const block = this.pool.results.length;
+    while (complete - this.checked >= block) this.check(block);
+  }
+
+  // Workers refresh, check and crop the next `size` splats; this thread
+  // checks those they leave, and moves kept splats after the splats kept so
+  // far.
+  check(size) {
+    const { pool, withinDist, record, rows } = this;
+    const { results } = pool;
+    this.columns ??= [
+      [this.records.share(), 16],
+      ...this.sh
+        .slice(0, this.maxSh)
+        .map((column, band) => [column.share(), SH_DIMS[band]]),
+    ];
+    const base = this.checked;
+    for (const [column, stride] of this.columns)
+      column.load(
+        base * stride,
+        (base + size) * stride,
+        column === this.records,
+      );
+    pool.check(this, base, size, withinDist);
+    let count = this.kept;
+    for (let i = 0; i < size; i++) {
+      const index = base + i;
+      let state = results[i];
+      const later = state === LATER;
+      if (later) {
+        this.read(index, record);
+        refresh(record);
+        state = !this.valid(index, record, rows)
+          ? INVALID
+          : filterRecord(record, withinDist);
+      }
+      if (state === INVALID) this.invalid++;
+      if (state === CROPPED) this.cropped++;
+      if (state !== KEEP) continue;
+      if (count !== index || later) {
+        if (!later) this.read(index, record);
+        this.records.write(count * 16, record);
+      }
+      if (count !== index) {
+        for (let band = 0; band < this.maxSh; band++) {
+          const dims = SH_DIMS[band];
+          this.sh[band].read(index * dims, rows[band]);
+          this.sh[band].write(count * dims, rows[band]);
+        }
+      }
+      // The record's page is cached.
+      this.sizes.set(count, this.records.get(count * 16 + 14));
+      count++;
+    }
+    this.kept = count;
+    this.checked += size;
+  }
+
   // Also reads the splat's SH coefficients into `rows`.
   valid(index, record, rows) {
     if (!validRecord(record)) return false;
@@ -227,10 +286,39 @@ export class Splats {
     return this.append(a, b, this.merged, merger.w, merger.v);
   }
 
+  // Appends shapes in row order: sorted leaves, then merged splats.
+  // buildLod() creates the column before sorting; writeShapes() flushes it.
+  shape(record) {
+    if (this.shapeCount === SHAPE_BLOCK) this.writeShapes();
+    const i = this.shapeCount++;
+    for (let d = 0; d < 3; d++)
+      this.shapeFloats[i * SHAPE_WORDS + d] = record[d];
+    for (let d = 0; d < 7; d++) this.shapeFields[i * 7 + d] = record[7 + d];
+  }
+
+  // Writes the shapes that shape() noted.
+  writeShapes() {
+    const count = this.shapeCount;
+    if (!count) return;
+    const bits = halfArray(this.shapeFields, this.shapeBits, count * 7);
+    const rows = this.shapeRows;
+    for (let i = 0; i < count; i++) {
+      const row = i * SHAPE_WORDS;
+      const at = i * 7;
+      rows[row + 3] = bits[at] | (bits[at + 1] << 16);
+      rows[row + 4] = bits[at + 2] | (bits[at + 3] << 16);
+      rows[row + 5] = bits[at + 4] | (bits[at + 5] << 16);
+      rows[row + 6] = bits[at + 6];
+    }
+    this.shapes.write(this.shapes.length, rows, count * SHAPE_WORDS);
+    this.shapeCount = 0;
+  }
+
   // Adds the merge `out` of splats `a` and `b`, blended with weights w and v.
   append(a, b, out, w, v) {
     const index = this.length++;
     this.records.write(index * 16, out);
+    this.shape(out);
     this.weight.set(index, out[15] * out[3]);
     this.sizes.set(index, out[14]);
     this.children.push(a);
@@ -374,8 +462,8 @@ export class Splats {
 
   // Moves row indices[i] of the records to row i, and keeps `indices` for
   // the SH rows, which move once merging has built the tree; see mergeSh().
-  // The splats' sizes and weights, and the bounds of their centers, come
-  // from the records while each window of them is cached.
+  // The splats' sizes, weights and shapes, and the bounds of their centers,
+  // come from the records while each window of them is cached.
   reorder(indices, pool) {
     const permutation = new Permutation(
       this.workspace,
@@ -405,6 +493,7 @@ export class Splats {
           }
           this.weight.set(i, record[15] * record[3]);
           sizes.set(i, record[14]);
+          this.shape(record);
         }
       },
     );
@@ -434,6 +523,7 @@ export class Splats {
       this.blend,
     ])
       column.dispose();
+    this.shapes?.dispose();
   }
 }
 

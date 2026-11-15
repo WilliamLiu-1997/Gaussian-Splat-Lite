@@ -5,11 +5,9 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { HALF } from "./math.js";
 import { WorkerGroup, clusterers } from "./parallel.js";
 import { Progress } from "./progress.js";
-import { SH_DIMS } from "./splats.js";
+import { SH_DIMS, shCodeCount } from "./splats.js";
 import { PAGE_BYTES, PagedArray } from "./storage.js";
 
-// Maximum entries for each retained SH degree, excluding the base color.
-const MAX_CODES = [0, 262144, 262144, 262144];
 // Training reads SAMPLE_SHARE of the splats, and at least SAMPLES_PER_CODE
 // per entry; larger models train on a sample by weight, and only the final
 // assignment reads all. Entries start at evenly spaced training splats.
@@ -477,7 +475,7 @@ function fitting(bytes, row, columns) {
 }
 
 // Reads splats' SH as rows of half bits, the bands one after another, with
-// their weights, area × opacity as merging weighs them.
+// their weights, area × opacity, from the column buildLod() made.
 class Rows {
   constructor(splats, dims) {
     this.Type = Uint16Array;
@@ -486,11 +484,10 @@ class Rows {
     this.length = splats.length;
     this.kept = Number.POSITIVE_INFINITY;
     this.column = new Uint16Array(JOB * SH_DIMS[SH_DIMS.length - 1]);
-    this.records = new Float32Array(JOB * 16);
   }
 
   keep(bytes) {
-    this.kept = fitting(bytes, this.dims * 2 + 64, this.splats.maxSh + 1);
+    this.kept = fitting(bytes, this.dims * 2 + 8, this.splats.maxSh + 1);
   }
 
   read(base, count, bits, weights) {
@@ -513,14 +510,7 @@ class Rows {
   }
 
   weigh(base, count, weights) {
-    const records = this.splats.records.scan(
-      base * 16,
-      this.records,
-      count * 16,
-      this.kept * 16,
-    );
-    for (let i = 0; i < count; i++)
-      weights[i] = records[i * 16 + 15] * records[i * 16 + 3];
+    this.splats.weight.scan(base, weights, count, this.kept);
   }
 }
 
@@ -865,8 +855,8 @@ class Grouper {
   }
 }
 
-// Clusters SH into up to 262144 entries for SH1/SH2/SH3
-// with weighted k-means as Spark does: entries start at evenly spaced splats,
+// Clusters SH into shCodeCount(length, shCodebook) entries with weighted
+// k-means as Spark does: entries start at evenly spaced splats,
 // each of `iterations` moves them to the weighted mean of their splats, an
 // entry without any stays, and a final pass labels each splat with its
 // nearest entry. Weights are area × opacity. Training uses 10% of the
@@ -874,10 +864,10 @@ class Grouper {
 // with many entries, passes search only groups of them, and most iterations
 // the groups that an earlier one found. Returns the entries, `count` rows
 // of `dims` SH coefficients, and the labels.
-export async function clusterSh(splats, iterations, module) {
+export async function clusterSh(splats, iterations, module, shCodebook) {
   const { workspace, length } = splats;
   const dims = SH_DIMS.slice(0, splats.maxSh).reduce((a, b) => a + b, 0);
-  const count = Math.min(length, MAX_CODES[splats.maxSh]);
+  const count = shCodeCount(length, shCodebook);
   const rows = new Rows(splats, dims);
   // With room for an entry per splat, the codebook is the splats' SH.
   if (count === length) return everyRow(rows, workspace);

@@ -1,5 +1,5 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { WorkerGroup, clusterers } from "../rad/parallel.js";
+import { WorkerGroup, clusterers, computers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import { IndexArray, PagedArray, sharedBuffer } from "../rad/storage.js";
 import { sortMorton } from "./morton.js";
@@ -16,9 +16,10 @@ const BUFFERED = 4096;
 // Rows of a large node that a thread takes at a time.
 const STRETCH = 1 << 20;
 // Rows of a batch that a thread takes of a pass over the centers, and the
-// bytes of a row in it: its center and its part.
+// bytes of a row in it, and of each row while cutting: its center and its
+// part.
 const SCAN = 1 << 18;
-const SCANNED_BYTES = 20;
+const SCANNED_BYTES = 16;
 // The most a splitting thread's heap may grow to, in MiB, and what
 // clusterers() counts for a thread besides: 12 MiB before any work and a
 // young generation of 8 MiB, measured. The heap holds little but the nodes.
@@ -388,19 +389,12 @@ function tally(part, values, at) {
   }
 }
 
-// Passes over a batch of centers, four values a row, with the part of each
+// Passes over a batch of centers, three values a row, with the part of each
 // row in `which`. Threads take batches at once: boxes, bins and counts of
 // the batches add up to those of all rows.
 class Scanner {
   constructor(check) {
     this.check = check;
-  }
-
-  // The rows and the box of the batch.
-  box({ values, rows }) {
-    const part = newPart();
-    for (let i = 0; i < rows; i++) tally(part, values, i * 4);
-    return part;
   }
 
   // The bins of the batch's rows of each part in `cuts`, with the box of
@@ -410,7 +404,7 @@ class Scanner {
     for (const { part, bound } of cuts) of[part] = new Cut(bound);
     for (let i = 0; i < rows; i++) {
       const cut = of[which[i]];
-      if (cut) cut.add(values, i * 4);
+      if (cut) cut.add(values, i * 3);
     }
     return cuts.map(({ part }) => {
       const { sizes, mins, maxs } = of[part];
@@ -432,10 +426,10 @@ class Scanner {
       const cut = of[which[i]];
       if (!cut) continue;
       const before =
-        cut.axis < 0 ? cut.half-- > 0 : values[i * 4 + cut.axis] < cut.value;
+        cut.axis < 0 ? cut.half-- > 0 : values[i * 3 + cut.axis] < cut.value;
       const side = before ? 0 : 1;
       which[i] = cut.first + side;
-      tally(cut.parts[side], values, i * 4);
+      tally(cut.parts[side], values, i * 3);
       moved = true;
     }
     return {
@@ -470,11 +464,22 @@ function add(part, other) {
 async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
   const { length } = positions;
   const check = () => workspace.check();
+  const bytes = HEAP_MB * 1024 ** 2 + SCAN * SCANNED_BYTES;
+  const most = Math.min(job.most, Math.ceil(length / SCAN));
+  // As many threads as leave the centers and parts of all rows cached, so
+  // that the passes read them from memory. If none do, the passes read
+  // files whatever the threads, and as many as there is room for go.
+  const cached = computers(
+    workspace,
+    bytes,
+    (SCAN + length) * SCANNED_BYTES,
+    most,
+  );
   const threads = clusterers(
     workspace,
-    HEAP_MB * 1024 ** 2 + SCAN * SCANNED_BYTES,
+    bytes,
     SCAN * SCANNED_BYTES,
-    Math.min(job.most, Math.ceil(length / SCAN)),
+    cached || most,
   );
   const group = new WorkerGroup(
     new URL(import.meta.url),
@@ -492,14 +497,14 @@ async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
     const pass = async (scan, taken, ordered = false) => {
       let base = 0;
       const batches = async (worker, thread) => {
-        const values = new Float32Array(buffers[thread], 0, SCAN * 4);
-        const which = new Uint32Array(buffers[thread], SCAN * 16, SCAN);
+        const values = new Float32Array(buffers[thread], 0, SCAN * 3);
+        const which = new Uint32Array(buffers[thread], SCAN * 12, SCAN);
         while (base < length) {
           const from = base;
           const rows = Math.min(SCAN, length - from);
           base += rows;
           positions.read(from, values, rows);
-          if (scan.cuts) where.read(from, which, rows);
+          where.read(from, which, rows);
           const batch = { ...scan, values, which, rows };
           taken(await group.request(worker, batch), from, which, rows);
           advance(rows);
@@ -508,7 +513,12 @@ async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
       if (ordered) await batches(group.threads[0], 0);
       else await Promise.all(group.threads.map(batches));
     };
-    await pass({ kind: "box" }, (batch) => add(parts[0], batch));
+    // The root holds all rows, in the box that their centers gave.
+    parts[0].rows = length;
+    parts[0].box = {
+      min: [...positions.box.min],
+      max: [...positions.box.max],
+    };
     for (let open = [parts[0]]; open.length; ) {
       for (const part of open) part.cut = new Cut(part.box);
       const bins = open.map((part) => ({
@@ -573,8 +583,10 @@ async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
 
 // Divides `root`, the `length` splats of `levels` one level after another,
 // into parts of at most `job.limit`; see Splitter.tree(). Returns the order
-// of rows with each part's side by side: with `job.starts`, as
-// Splitter.arrange() leaves them.
+// of rows with each part's side by side; with `job.starts`, each level's
+// rows where the level's lie, every part's after those of the parts
+// before, as Splitter.arrange() sorts them, and every part's `lods` with
+// the `start` of its rows of each level.
 //
 // Rows are split in memory, on at most `job.most` worker threads whose
 // number follows the memory budget as for SH clustering. More rows than fit
@@ -587,34 +599,34 @@ async function split(workspace, levels, length, root, job) {
     job.limit,
     Math.min(MOST, Math.floor((workspace.room * SHARE) / GATHERED_BYTES)),
   );
-  // Progress counts passes over the rows: one each to read their centers,
-  // to put the parts side by side and to split them. Cutting what does not
-  // fit takes a pass for the box and two a level; it is counted with twice
-  // the levels that even halves take, and never beyond.
+  // Progress counts passes over the rows: one each to put the parts side by
+  // side and to split them. Cutting what does not fit takes two passes a
+  // level; it is counted with twice the levels that even halves take, and
+  // never beyond.
   const cutting =
-    length > fit ? length * (1 + 4 * Math.ceil(Math.log2(length / fit))) : 0;
-  const progress = new Progress(job.label, 3 * length + cutting);
+    length > fit ? length * 4 * Math.ceil(Math.log2(length / fit)) : 0;
+  const progress = new Progress(job.label, 2 * length + cutting);
   let done = 0;
   const advance = (rows, most = Number.POSITIVE_INFINITY) => {
     done = Math.min(done + rows, most);
     progress.update(done);
   };
-  const order = new IndexArray(workspace);
+  let order = new IndexArray(workspace);
   order.length = length;
-  let positions;
   let where;
   let gathered;
+  let arranged;
   try {
-    positions = new Positions(workspace, levels, length, advance);
+    const positions = new Positions(levels, length);
     // Every row starts in the root's part, 0.
     where = new PagedArray(workspace, Uint32Array, length);
     const parts = [newPart()];
     parts[0].node = root;
     if (length > fit)
       await cutLarge(workspace, positions, where, parts, job, fit, (rows) =>
-        advance(rows, length + cutting),
+        advance(rows, cutting),
       );
-    done = length + cutting;
+    done = cutting;
     const which = new Uint32Array(BATCH);
     // Every part's centers go to its place in `gathered`, and its rows to
     // its place in the order, through a small buffer for each part.
@@ -637,9 +649,9 @@ async function split(workspace, levels, length, root, job) {
       for (let i = 0; i < rows; i++) {
         const part = parts[which[i]];
         const place = part.buffered++;
-        part.centers[place * 3] = values[i * 4];
-        part.centers[place * 3 + 1] = values[i * 4 + 1];
-        part.centers[place * 3 + 2] = values[i * 4 + 2];
+        part.centers[place * 3] = values[i * 3];
+        part.centers[place * 3 + 1] = values[i * 3 + 1];
+        part.centers[place * 3 + 2] = values[i * 3 + 2];
         part.ids[place] = base + i;
         if (part.buffered === BUFFERED) flush(part);
       }
@@ -652,8 +664,15 @@ async function split(workspace, levels, length, root, job) {
       nodes.push(part.node);
     }
     nodes.sort((a, b) => a.start - b.start);
-    positions.dispose();
-    positions = undefined;
+    // By level, the parts' rows go to `arranged` at each level's next row,
+    // `cursors`; the order keeps the rows of the parts still to split.
+    const cursors = job.starts && [...job.starts];
+    if (job.starts) {
+      arranged = new IndexArray(workspace);
+      arranged.length = length;
+    }
+    // The regions' split is the last to read the levels' centers.
+    if (job.starts) for (const level of levels) level.centers.dispose();
     where.dispose();
     where = undefined;
     // Splits the parts from `first` up to `last`, `rows` rows, in memory. A
@@ -686,9 +705,28 @@ async function split(workspace, levels, length, root, job) {
         shift(node, start);
         Object.assign(nodes[first + i], node);
       });
-      // Parts that are arranged by level hold their rows already.
-      if (!job.starts) for (let i = 0; i < rows; i++) local[i] = ids[local[i]];
-      order.write(start, local, rows);
+      if (!job.starts) {
+        for (let i = 0; i < rows; i++) local[i] = ids[local[i]];
+        order.write(start, local, rows);
+        return;
+      }
+      // Parts arranged by level hold each row's place in its level.
+      const stack = [];
+      for (let i = last - 1; i >= first; i--) stack.push(nodes[i]);
+      while (stack.length) {
+        const node = stack.pop();
+        if (node.children) {
+          stack.push(node.children[1], node.children[0]);
+          continue;
+        }
+        for (const level in node.lods) {
+          const { offset, count } = node.lods[level];
+          const at = node.start - start + offset;
+          arranged.write(cursors[level], local.subarray(at, at + count), count);
+          node.lods[level] = { start: cursors[level], count };
+          cursors[level] += count;
+        }
+      }
     };
     for (let first = 0; first < nodes.length; ) {
       let last = first + 1;
@@ -701,15 +739,20 @@ async function split(workspace, levels, length, root, job) {
       first = last;
     }
     progress.finish();
+    if (arranged) {
+      order.dispose();
+      order = arranged;
+      arranged = undefined;
+    }
     // The centers and the threads are gone: the cache may take their memory.
     workspace.settle();
     workspace.expect(0);
     return order;
   } catch (error) {
     order.dispose();
+    arranged?.dispose();
     throw error;
   } finally {
-    positions?.dispose();
     where?.dispose();
     gathered?.dispose();
   }

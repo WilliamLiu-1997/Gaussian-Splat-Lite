@@ -150,10 +150,11 @@ export class Workspace {
   }
 
   // Makes room for `bytes` that the process is about to take besides the
-  // cache.
-  expect(bytes) {
+  // cache. `floor` includes earlier reservations that measured growth uses
+  // up, rather than adding them to that growth again.
+  expect(bytes, floor = 0) {
     this.measure();
-    this.floor = this.outside + bytes;
+    this.floor = Math.max(this.outside, floor) + bytes;
     if (
       this.budget - MARGIN - this.writeback.limit - this.floor <
       this.arenaBytes
@@ -260,7 +261,9 @@ export class Workspace {
     this.unmap(page);
   }
 
-  allocate(array, index) {
+  // Without `restore`, the caller writes all of the page: it is neither read
+  // from its file nor cleared.
+  allocate(array, index, restore = true) {
     if (++this.allocations % 64 === 0) this.adjust();
     if (this.used + PAGE_BYTES > this.capacity && this.used) this.evict();
     let slot = this.free.pop();
@@ -302,8 +305,10 @@ export class Workspace {
     }
     const page = reuse.page;
     const bytes = page.bytes;
-    if (array.restore(index, bytes)) this.readBytes += PAGE_BYTES;
-    else bytes.set(ZERO);
+    if (restore) {
+      if (array.restore(index, bytes)) this.readBytes += PAGE_BYTES;
+      else bytes.set(ZERO);
+    }
     const { views, offset } = reuse;
     const name = array.Type.name;
     views[name] ??= new array.Type(arena, offset, array.items);
@@ -455,6 +460,17 @@ export class PagedArray {
     return page;
   }
 
+  // The values of the page of `index`, for writing all of them.
+  whole(index) {
+    if ((++this.workspace.accesses & 4095) === 0) this.workspace.check();
+    const block = Math.floor(index * this.inverse);
+    const page =
+      this.pages[block] ?? this.workspace.allocate(this, block, false);
+    page.used = true;
+    page.dirty = true;
+    return page.values;
+  }
+
   get(index) {
     return this.page(index)[index & this.mask];
   }
@@ -536,9 +552,11 @@ export class PagedArray {
     let offset = 0;
     while (offset < count) {
       const index = base + offset;
-      const page = this.page(index, true);
       const within = index & this.mask;
       const size = Math.min(count - offset, this.items - within);
+      // A page that the values cover is not read first.
+      const page =
+        size === this.items ? this.whole(index) : this.page(index, true);
       if (size > 64) page.set(values.subarray(offset, offset + size), within);
       else for (let i = 0; i < size; i++) page[within + i] = values[offset + i];
       offset += size;

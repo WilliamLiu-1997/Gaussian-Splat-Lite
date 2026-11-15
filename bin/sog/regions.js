@@ -14,10 +14,9 @@ export class Levels {
 }
 
 // Divides the splats of all levels into regions of at most `limit`. Returns
-// the tree, its leaves, and `order`: each leaf's splats side by side, level
-// by level, as the rows of their levels in the Morton order of their
-// centers, which is how its chunks hold them; `lods` of a leaf gives their
-// place for each level. A leaf's box holds only its splats' centers until
+// the tree, its leaves, and `order`: level by level, each leaf's rows in
+// Morton order, indexed within their level. A leaf's `lods` gives their
+// place in `order`. A leaf's box holds only its splats' centers until
 // writeScene() has measured the splats of its chunks.
 export async function buildRegions(rows, limit) {
   const root = { start: 0, count: rows.length };
@@ -29,10 +28,6 @@ export async function buildRegions(rows, limit) {
     if (node.children) {
       stack.push(node.children[1], node.children[0]);
       continue;
-    }
-    for (const level in node.lods) {
-      const { offset, count } = node.lods[level];
-      node.lods[level] = { start: node.start + offset, count };
     }
     leaves.push(node);
   }

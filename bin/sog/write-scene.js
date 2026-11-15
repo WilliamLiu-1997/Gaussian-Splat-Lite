@@ -100,17 +100,16 @@ export async function writeScene(rows, regions, output, options, kernel) {
         largest = Math.max(largest, size);
       }
     }
-    // A chunk with as many SH entries as splats keeps its SH as they are:
-    // there is nothing to cluster but labels to write, 4 bytes a splat.
+    // An entry per splat needs float codes and labels, but no clustering.
     const codes = dims ? entries(largest, options) : 0;
     const chunkBytes =
-      largest * (124 + dims * 4) +
+      largest * (124 + dims * 2) +
       encodeBytes(largest, dims, codes) +
       (!dims
         ? 0
         : codes < largest
           ? clusterBytes(kernel, largest, dims, codes)
-          : largest * 4);
+          : largest * (4 + dims * 4));
     const threads = clusterers(workspace, chunkBytes, 0, total);
     if (!threads) workspace.expect(chunkBytes);
     encoder = new WorkerGroup(

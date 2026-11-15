@@ -1,5 +1,5 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { opacityRadius } from "../rad/math.js";
+import { HALF, halfBits, opacityRadius } from "../rad/math.js";
 import { collect, sharedBuffer } from "../rad/storage.js";
 import { SH_C0, SH_DIMS } from "./splats.js";
 import {
@@ -17,21 +17,23 @@ import { planSimplifyCloudVoxel } from "./voxel/plan.js";
 // Memory that simplifying a block of `count` splats into `target` takes: its
 // arrays, see blockArrays(), and the planner's.
 export function blockBytes(count, target, dims) {
-  return (count + target) * 256 + (count * 4 + target * 12) * dims;
+  return (count + target) * 256 + (count * 2 + target * 10) * dims;
 }
 
 // A thread's arrays for blocks of up to `count` splats that simplify into up
 // to `target`: the splats, the simplified splats, and the working arrays
-// whose sizes are known beforehand. Like the cache's arenas, they lie in
-// shared WebAssembly memory: the thread that simplifies a block shares them,
-// and the memory returns to the system once collected, which freed heap
-// memory does not on every platform.
+// whose sizes are known beforehand; SH as half bits, last, after the arrays
+// of wider values. Like the cache's arenas, they lie in shared WebAssembly
+// memory: the thread that simplifies a block shares them, and the memory
+// returns to the system once collected, which freed heap memory does not on
+// every platform.
 export function blockArrays(count, target, maxSh) {
   const bands = SH_DIMS.slice(0, maxSh);
   const dims = bands.reduce((a, b) => a + b, 0);
   const bytes =
     (target * (12 + dims) + count) * 8 +
-    (count * (31 + dims) + target * (16 + dims)) * 4;
+    (count * 31 + target * 16) * 4 +
+    (count + target) * dims * 2;
   const buffer = sharedBuffer(bytes);
   let offset = 0;
   const take = (size, Type = Float32Array) => {
@@ -45,9 +47,7 @@ export function blockArrays(count, target, maxSh) {
     // The merge weight of each splat; see loadCore().
     mergeWeight: take(count, Float64Array),
     records: take(count * 16),
-    sh: bands.map((size) => take(count * size)),
     merged: take(target * 16),
-    mergedSh: bands.map((size) => take(target * size)),
     // What the planner reads of the splats; see loadCore().
     core: {
       positions: take(count * 3),
@@ -57,6 +57,8 @@ export function blockArrays(count, target, maxSh) {
       radius: take(count),
       weight: take(count),
     },
+    sh: bands.map((size) => take(count * size, Uint16Array)),
+    mergedSh: bands.map((size) => take(target * size, Uint16Array)),
   };
 }
 
@@ -204,7 +206,7 @@ function merge(block, plan) {
       const values = sh[band];
       const end = (i + 1) * SH_DIMS[band];
       for (let d = i * SH_DIMS[band]; d < end; d++)
-        sums[offset++] += weight * values[d];
+        sums[offset++] += weight * HALF[values[d]];
     }
     weights[slot] = total;
   }
@@ -238,7 +240,7 @@ function merge(block, plan) {
       const values = mergedSh[band];
       const end = (slot + 1) * SH_DIMS[band];
       for (let d = slot * SH_DIMS[band]; d < end; d++)
-        values[d] = sums[offset++] / weights[slot];
+        values[d] = halfBits(sums[offset++] / weights[slot]);
     }
   }
 }
@@ -280,8 +282,9 @@ function simplify(block, check) {
 }
 
 // Simplifies the first `count` splats in the block's arrays, `records` and a
-// `sh` array per band, into `target` splats in `merged` and `mergedSh`; see
-// blockArrays(). A block depends on nothing else, so any thread may do it.
+// `sh` array of half bits per band, into `target` splats in `merged` and
+// `mergedSh`; see blockArrays(). A block depends on nothing else, so any
+// thread may do it.
 export function simplifyBlock(block, check) {
   // Before the next block allocates its working arrays.
   if (simplify(block, check)) collect();

@@ -34,8 +34,10 @@ async function convert(input, options, kernel, cancelled) {
     console.log(
       `${input} → ${output}\nMemory target: ${(options.budget / GIB).toFixed(3)} GiB`,
     );
-    splats = await readInput(input, options.maxSh, workspace, Splats);
-    splats.retain(options.withinDist);
+    splats = await readInput(input, options.maxSh, workspace, Splats, {
+      withinDist: options.withinDist,
+    });
+    splats.retain();
     if (splats.maxSh < splats.inputSh)
       console.log(`Keeping SH0–SH${splats.maxSh}`);
     levels = await buildLevels(splats, options.rootSplats, options.lodFactor);

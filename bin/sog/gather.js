@@ -9,8 +9,8 @@ const PLACES = 2 ** 21;
 let sorted = new Float64Array(0);
 
 // Bytes of a gathered splat with SH of `dims` coefficients: its record, its
-// SH clustering weight and its SH.
-export const chunkRowBytes = (dims) => 72 + dims * 4;
+// SH clustering weight and its SH as half bits.
+export const chunkRowBytes = (dims) => 72 + dims * 2;
 
 // Shared memory for a thread's chunks of up to `count` splats, like a
 // simplifier's blocks: gather() fills it chunk after chunk and the thread
@@ -30,7 +30,7 @@ export function gather(source, order, weigh, buffer) {
   const recordBytes = count * 64;
   const weights = new Float64Array(buffer, 0, weigh ? count : 0);
   const records = new Float32Array(buffer, weightBytes, count * 16);
-  const sh = new Float32Array(buffer, weightBytes + recordBytes, count * dims);
+  const sh = new Uint16Array(buffer, weightBytes + recordBytes, count * dims);
   // Pages are read in the order of the rows: the places sorted by row, as
   // numbers of row and place where those fit.
   let places;

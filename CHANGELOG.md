@@ -14,6 +14,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **Breaking:** Renamed the RAD converter from `gsl-build-lod` to `gsl-build-rad`, and the repository command from `npm run build-lod` to `npm run build-rad`.
+- **Breaking:** Replaced `gsl-build-rad --no-cluster-sh` with `--sh-codebook 0`. Use `--sh-codebook <K>` to choose a size in 1–256 K entries (1 K = 1024); the default is now one entry per 8 splats in the completed LOD tree, rounded up, up to 256K. See [SH codebook](docs/BuildRad.md#sh-codebook).
 - **Breaking:** Updated SOG v3 rotations to `quats.webp`; re-export files using the earlier alpha-channel layout. SOG v1/v2 rotation decoding is unchanged. The bundled JunkShop example has been updated.
 - **Breaking:** SOG loading now uses libwebp and accepts only lossless WebP property images. PNG property images are no longer supported.
 - `gsl-build-sog` compresses output more tightly, at the cost of slower chunk encoding. Chunks whose SH coefficients are all zero use a single SH entry.

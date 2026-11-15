@@ -1,11 +1,13 @@
-//! Bounded PLY/SPZ decode batches for the Node.js RAD builder. Model storage and LOD
+//! Bounded PLY/SPZ decode batches for the Node.js RAD/SOG builders. Model storage and LOD
 //! construction belong to JavaScript, outside this module's linear memory.
 use std::{cell::RefCell, rc::Rc};
 
-use gaussian_splat_lib::decoder::{
-    ChunkReceiver, MultiDecoder, SplatInit, SplatProps, SplatReceiver,
+use gaussian_splat_lib::{
+    decoder::{ChunkReceiver, MultiDecoder, SplatInit, SplatProps, SplatReceiver},
+    splat_encode::decode_splat_sh_rgb,
 };
-use js_sys::{Float32Array, Function};
+use half::f16;
+use js_sys::{Float32Array, Function, Uint16Array};
 use wasm_bindgen::prelude::*;
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
@@ -17,34 +19,64 @@ struct Receiver {
     callback: Function,
     error: Rc<RefCell<Option<JsValue>>>,
     raw_mass: bool,
+    max_sh: usize,
+    sh: Vec<u16>,
 }
 
 impl Receiver {
-    fn new(callback: Function, raw_mass: bool) -> Self {
+    fn new(callback: Function, raw_mass: bool, max_sh: usize) -> Self {
         Self {
             callback,
             error: Rc::new(RefCell::new(None)),
             raw_mass,
+            max_sh,
+            sh: Vec::new(),
         }
     }
-    fn emit(&self, name: &str, base: usize, values: &[f32]) {
+    fn emit_values(&self, name: &str, base: usize, values: &JsValue) {
         if self.error.borrow().is_some() {
             return;
         }
-        // A view of this module's memory rather than a copy: the copies'
-        // freed buffers stayed in the process and took room from the
-        // builder's cache.
-        // SAFETY: the callback uses the values before it returns and calls
-        // nothing here, so the memory cannot grow while the view is in use.
-        let values = unsafe { Float32Array::view(values) };
         if let Err(error) = self.callback.call3(
             &JsValue::UNDEFINED,
             &name.into(),
             &JsValue::from_f64(base as f64),
-            &values,
+            values,
         ) {
             *self.error.borrow_mut() = Some(error);
         }
+    }
+    fn emit(&self, name: &str, base: usize, values: &[f32]) {
+        // SAFETY: the callback consumes the view synchronously and never
+        // reenters this module, so its memory cannot grow during the call.
+        let values = unsafe { Float32Array::view(values) };
+        self.emit_values(name, base, &values);
+    }
+    fn emit_sh(
+        &mut self,
+        band: usize,
+        base: usize,
+        length: usize,
+        values: impl Iterator<Item = f32>,
+    ) {
+        if band > self.max_sh || length == 0 || self.error.borrow().is_some() {
+            return;
+        }
+        let saturate = self.raw_mass;
+        self.sh.clear();
+        self.sh.reserve_exact(length);
+        self.sh.extend(values.map(|value| {
+            // SOG saturates finite overflow; RAD filters those splats.
+            let value = if saturate && value.is_finite() {
+                value.clamp(-65504.0, 65504.0)
+            } else {
+                value
+            };
+            f16::from_f32(value).to_bits()
+        }));
+        // SAFETY: as in emit(); the buffer is reused only after the callback.
+        let values = unsafe { Uint16Array::view(&self.sh) };
+        self.emit_values(["sh1", "sh2", "sh3", "sh4"][band - 1], base, &values);
     }
     fn check<T>(&self, result: anyhow::Result<T>) -> Result<T, JsValue> {
         if let Some(error) = self.error.borrow_mut().take() {
@@ -62,7 +94,9 @@ impl SplatReceiver for Receiver {
     }
 
     fn reserve_decoder_memory(&mut self, bytes: usize) -> anyhow::Result<()> {
-        self.emit("memory", bytes, &[]);
+        // The reusable SH half buffer and its growth during a batch.
+        let sh_bytes = if self.max_sh > 0 { 8 * 1024 * 1024 } else { 0 };
+        self.emit("memory", bytes.saturating_add(sh_bytes), &[]);
         anyhow::ensure!(
             self.error.borrow().is_none(),
             "Decoder memory reservation failed"
@@ -70,6 +104,7 @@ impl SplatReceiver for Receiver {
         Ok(())
     }
     fn init_splats(&mut self, init: &SplatInit) -> anyhow::Result<()> {
+        self.max_sh = self.max_sh.min(init.max_sh_degree);
         self.emit("init", init.num_splats, &[init.max_sh_degree as f32]);
         anyhow::ensure!(
             self.error.borrow().is_none(),
@@ -121,16 +156,29 @@ impl SplatReceiver for Receiver {
         self.set_sh4(base, count, d);
     }
     fn set_sh1(&mut self, base: usize, _: usize, values: &[f32]) {
-        self.emit("sh1", base, values);
+        self.emit_sh(1, base, values.len(), values.iter().copied());
     }
     fn set_sh2(&mut self, base: usize, _: usize, values: &[f32]) {
-        self.emit("sh2", base, values);
+        self.emit_sh(2, base, values.len(), values.iter().copied());
     }
     fn set_sh3(&mut self, base: usize, _: usize, values: &[f32]) {
-        self.emit("sh3", base, values);
+        self.emit_sh(3, base, values.len(), values.iter().copied());
     }
     fn set_sh4(&mut self, base: usize, _: usize, values: &[f32]) {
-        self.emit("sh4", base, values);
+        self.emit_sh(4, base, values.len(), values.iter().copied());
+    }
+    fn set_sh_packed<F: Fn(usize, usize) -> u32>(
+        &mut self,
+        base: usize,
+        count: usize,
+        band: usize,
+        word: F,
+    ) {
+        let coefficients = [3, 5, 7, 9][band - 1];
+        let word = &word;
+        let values = (0..count)
+            .flat_map(|i| (0..coefficients).flat_map(move |k| decode_splat_sh_rgb(word(i, k))));
+        self.emit_sh(band, base, count * coefficients * 3, values);
     }
 }
 
@@ -148,8 +196,9 @@ impl RawDecoder {
         size: f64,
         callback: Function,
         raw_mass: Option<bool>,
+        max_sh: usize,
     ) -> Result<Self, JsValue> {
-        let receiver = Receiver::new(callback, raw_mass.unwrap_or(false));
+        let receiver = Receiver::new(callback, raw_mass.unwrap_or(false), max_sh);
         let mut decoder = MultiDecoder::new(receiver.clone(), None, Some(path));
         receiver.check(decoder.set_expected_input_size(size as u64))?;
         Ok(Self { decoder, receiver })
