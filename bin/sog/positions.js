@@ -30,6 +30,14 @@ export class Positions {
     }
   }
 
+  // Centers gathered elsewhere, `data` with four values a row.
+  static of(data, length) {
+    const positions = Object.create(Positions.prototype);
+    positions.length = length;
+    positions.data = data;
+    return positions;
+  }
+
   // Reads the centers of `rows` rows from row `base`, four values a row.
   read(base, values, rows) {
     return this.data.read(base * 4, values, rows * 4);

@@ -38,6 +38,19 @@ The output directory must exist. Existing output files, including matching `.rad
 
 The output keeps up to SH3. SH4 inputs are accepted and converted to SH3 or the level chosen with `--max-sh`. Higher SH levels retain more view-dependent color and increase file size. Conversion is lossy, so colors and shape can differ slightly from the source.
 
+## LOD construction
+
+The default `--lod-mode rad` builds LOD by repeatedly merging similar pairs of splats.
+
+```sh
+# Try representative-based merging, keeping a separate output for comparison.
+gsl-build-rad scene.ply --lod-mode representative -o scene-representative.rad
+```
+
+`--lod-mode representative` is an experimental alternative using the SOG voxel representative method. Large rounds are divided into spatial working blocks that fit the memory budget. Within each block, it selects representatives in uniform cells sized from splat features, assigns splats to representatives in their own or neighboring cells, and merges each group together. Rounds reduce the active splat count by approximately half, repartitioning the results until the whole tree reaches one root. All input splats remain available at full detail, and the output supports the same RAD loaders and streaming.
+
+The two modes can produce different appearances, node counts and conversion times. Compare them at similar displayed splat counts; the same `--lod-base` does not ensure the same display budget. Working blocks limit merging within a round; their results can merge across those boundaries in subsequent rounds.
+
 ## LOD spacing
 
 ```sh
@@ -71,11 +84,13 @@ Models without SH, or converted with `--max-sh 0`, are written without a codeboo
 gsl-build-rad scene.ply --memory-budget 16 --temp-dir /fast-disk/rad-temp
 ```
 
-`--memory-budget` sets a target in GiB (default `4`, minimum `1`, fractional values accepted). Values such as `16` are supported when enough RAM is available. Lower targets may make conversion slower and require more temporary disk space; output quality is unchanged. If conversion reports insufficient memory, increase this value.
+`--memory-budget` sets a target in GiB (default `4`, minimum `1`, fractional values accepted). Values such as `16` are supported when enough RAM is available. Lower targets may make conversion slower and require more temporary disk space. The default `rad` mode preserves output quality across budgets; `representative` may use smaller working blocks at low budgets, which can change the result. If conversion reports insufficient memory, increase this value.
 
 The target covers the whole conversion. Leave room for the operating system and other applications.
 
 `--temp-dir` chooses where temporary working files are stored; the default is the system temporary directory. Use a fast disk with enough free space, as temporary files can be much larger than the input. Each conversion keeps them in its own `gsl-build-rad-*` folder there, which is removed when the conversion finishes or fails; if it cannot be removed, a warning shows its path.
+
+`ENOSPC` means the drive is full. For a large model on an external drive, set `--temp-dir` to a folder on that drive if it has more free space. The output drive also needs room for the final file; increasing `--memory-budget` does not add disk space.
 
 ## Split files
 
@@ -100,6 +115,7 @@ See [RadStreamScheduler](RadStreamScheduler.md) for the complete loading and dis
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--lod-mode <mode>` | `rad` | LOD construction: `rad` for similar-pair merging, or experimental `representative` for voxel representative merging. |
 | `--lod-base <base>` | `1.75` | LOD spacing, from `1.1` to `16`; smaller values retain more detail levels. |
 | `--max-sh <0..3>` | `3` | Highest SH degree to keep, limited by the input. |
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere before building LOD, in input coordinates. |

@@ -605,7 +605,8 @@ async function split(workspace, levels, length, root, job) {
   let where;
   let gathered;
   try {
-    positions = new Positions(workspace, levels, length, advance);
+    positions =
+      job.positions ?? new Positions(workspace, levels, length, advance);
     // Every row starts in the root's part, 0.
     where = new PagedArray(workspace, Uint32Array, length);
     const parts = [newPart()];
@@ -723,6 +724,7 @@ export const splitBlocks = (source, root, limit, most) =>
     most,
     bounds: false,
     label: "Dividing voxel blocks",
+    positions: source.positions,
   });
 
 // Divides all levels' splats into regions of at most `limit`, every node

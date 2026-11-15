@@ -4,19 +4,24 @@ import { Heap, Queue, sortSplats } from "./heap.js";
 import { SCALE, halfBits, rotation } from "./math.js";
 import { MISS, ROUND, hint } from "./parallel.js";
 import { Progress } from "./progress.js";
+import { mergeRepresentatives } from "./representatives.js";
 import { SH_DIMS, Similarities } from "./splats.js";
 import { IndexArray, PagedArray, Permutation } from "./storage.js";
 
-export function buildLod(splats, lodBase, pool) {
+export async function buildLod(splats, lodBase, pool, mode = "rad") {
   const initial = splats.length;
   const workspace = splats.workspace;
-  sortSplats(splats, pool);
-  mergeLevels(splats, pool);
-  splats.mergeSh(initial, pool);
+  const representative = mode === "representative";
+  if (representative) await mergeRepresentatives(splats, pool);
+  else {
+    sortSplats(splats, pool);
+    mergeLevels(splats, pool);
+    splats.mergeSh(initial, pool);
+  }
   const root = splats.length - 1;
 
-  // Children always precede their binary parent: the two of merged splat
-  // `index` are entries 2 * (index - initial) and the next of `children`. A
+  // Children always precede their parent. Greedy merges store pairs;
+  // representative merges store ranges in childStart/childCount. A
   // merged splat is kept if its weight is at least lodBase times its
   // children's largest feature; one that is not passes that feature on, and
   // its kept descendants become children of its kept ancestor.
@@ -31,8 +36,12 @@ export function buildLod(splats, lodBase, pool) {
   const kept = new IndexArray(workspace);
   for (let index = initial; index < splats.length; index++) {
     let maximum = Number.NEGATIVE_INFINITY;
-    for (let c = 0; c < 2; c++) {
-      const child = splats.children.get((index - initial) * 2 + c);
+    const start = representative
+      ? splats.childStart.get(index)
+      : (index - initial) * 2;
+    const count = representative ? splats.childCount.get(index) : 2;
+    for (let c = 0; c < count; c++) {
+      const child = splats.children.get(start + c);
       maximum = Math.max(maximum, features.get(child));
     }
     const feature = splats.weight.get(index);
@@ -97,9 +106,13 @@ export function buildLod(splats, lodBase, pool) {
         let depth = 0;
         walk[depth++] = index;
         while (depth) {
-          const pair = (walk[--depth] - initial) * 2;
-          for (let c = 0; c < 2; c++) {
-            const child = splats.children.get(pair + c);
+          const parent = walk[--depth];
+          const start = representative
+            ? splats.childStart.get(parent)
+            : (parent - initial) * 2;
+          const children = representative ? splats.childCount.get(parent) : 2;
+          for (let c = 0; c < children; c++) {
+            const child = splats.children.get(start + c);
             const bit = child - initial;
             if (child < initial || (kept.get(bit >>> 5) >>> (bit & 31)) & 1) {
               if (count === list.length) list = grow(list, count);

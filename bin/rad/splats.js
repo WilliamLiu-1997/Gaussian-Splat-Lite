@@ -66,8 +66,8 @@ export class Splats {
     this.cropped = 0;
     this.records = new PagedArray(workspace, Float32Array);
     this.sh = SH_DIMS.map(() => new PagedArray(workspace, Uint16Array));
-    // The two children of the i-th merged splat are entries 2i and 2i + 1 of
-    // `children`. Once buildLod() has laid out the tree, a splat's children
+    // Greedy merges store child pairs in `children`; representative merges
+    // use childStart/childCount to index that list. After buildLod(), children
     // are the childCount consecutive rows from row childStart.
     this.childStart = new PagedArray(workspace, Float64Array);
     this.childCount = new IndexArray(workspace);
@@ -79,10 +79,10 @@ export class Splats {
     // record, and the bounds of the centers; see reorder().
     this.sizes = new PagedArray(workspace, Float32Array);
     this.bounds = undefined;
-    // The two child weights of each merged splat, for mergeSh().
+    // The weight of each entry of `children`, for blending the SH.
     this.blend = new PagedArray(workspace, Float64Array);
     // Each decoded splat's row in the SH columns: as decoded, and from
-    // mergeSh() on, in the order merges read them; see shRow().
+    // shReads() on, in the order merges read them; see shRow().
     this.shOrder = undefined;
     this.merged = new Float64Array(16);
     this.bits = new Uint16Array(0);
@@ -243,24 +243,22 @@ export class Splats {
     return index;
   }
 
-  // Blend each SH band in creation order, children before parents. Reorder
-  // leaves for sequential reads; only merged children need random reads.
-  // Batches use at most half the cache for child pages. Workers handle
-  // earlier children; children within the batch are blended below in order.
-  mergeSh(initial, pool) {
-    if (!this.maxSh) return;
-    const { nodes, entries, later, blends, blended, results } = pool;
-    // Each leaf occurs once, as a merge child or the lone root. Replace its
-    // decoded SH row with its position in merge-read order.
+  // The permutation of the decoded SH rows into the order merges read them:
+  // each leaf occurs once in `children`, as a merge child, or is the lone
+  // root. shOrder then holds each leaf's place in that order.
+  shReads(initial) {
     const reads = new IndexArray(this.workspace);
-    const collecting = new Progress("Collecting SH order", this.length);
-    for (let k = 0; k < (this.length - initial) * 2; k++) {
+    const collecting = new Progress(
+      "Collecting SH order",
+      this.children.length,
+    );
+    for (let k = 0; k < this.children.length; k++) {
       const child = this.children.get(k);
       if (child < initial) {
         reads.push(this.shOrder.get(child));
         this.shOrder.set(child, reads.length - 1);
       }
-      if ((k & 4095) === 0) collecting.update(k / 2);
+      if ((k & 4095) === 0) collecting.update(k);
     }
     if (this.length === initial) {
       reads.push(this.shOrder.get(0));
@@ -274,6 +272,17 @@ export class Splats {
       "Preparing SH order",
     );
     reads.dispose();
+    return leafRows;
+  }
+
+  // Blend each SH band in creation order, children before parents. Reorder
+  // leaves for sequential reads; only merged children need random reads.
+  // Batches use at most half the cache for child pages. Workers handle
+  // earlier children; children within the batch are blended below in order.
+  mergeSh(initial, pool) {
+    if (!this.maxSh) return;
+    const { nodes, entries, later, blends, blended, results } = pool;
+    const leafRows = this.shReads(initial);
     // Splats per batch.
     const size = later.length;
     const rows = [this.shLeft, this.shRight];
@@ -373,7 +382,7 @@ export class Splats {
   }
 
   // Moves row indices[i] of the records to row i, and keeps `indices` for
-  // the SH rows, which move once merging has built the tree; see mergeSh().
+  // the SH rows, which move once merging has built the tree; see shReads().
   // The splats' sizes and weights, and the bounds of their centers, come
   // from the records while each window of them is cached.
   reorder(indices, pool) {
@@ -415,7 +424,7 @@ export class Splats {
     else indices.dispose();
   }
 
-  // The row of splat `index` in the SH columns after mergeSh(): merged
+  // The row of splat `index` in the SH columns once they are blended: merged
   // splats keep theirs, and the decoded ones are in the order merges read
   // them.
   shRow(index) {

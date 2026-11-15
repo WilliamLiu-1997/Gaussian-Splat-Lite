@@ -19,6 +19,7 @@ Inputs: PLY, SPZ.
 Output: <input-stem>-lod.rad. Existing files are not overwritten.
 
 Options:
+  --lod-mode <mode>      LOD construction: rad (default) or representative
   --lod-base <base>      LOD spacing (default: 1.75, range: 1.1..16)
   --max-sh <0..3>        Maximum SH degree (default: 3)
   --within-dist <x,y,z,radius>
@@ -40,6 +41,7 @@ Requires Node.js 22.12 or later. No compilation is required.`;
 function parse(args) {
   const options = {
     inputs: [],
+    lodMode: "rad",
     lodBase: 1.75,
     maxSh: 3,
     clusterSh: 10,
@@ -77,6 +79,7 @@ function parse(args) {
     const equal = arg.indexOf("=");
     const name = equal < 0 ? arg : arg.slice(0, equal);
     const key = {
+      "--lod-mode": "lodMode",
       "--lod-base": "lodBase",
       "--max-sh": "maxSh",
       "--within-dist": "withinDist",
@@ -92,6 +95,8 @@ function parse(args) {
       ? Number(value) * (key === "budget" ? GIB : 1)
       : value;
   }
+  if (!["rad", "representative"].includes(options.lodMode))
+    throw new Error("--lod-mode must be rad or representative");
   if (
     !Number.isFinite(options.lodBase) ||
     options.lodBase < 1.1 ||
@@ -173,7 +178,7 @@ async function convert(input, options, kernel, cancelled) {
     if (!splats.length) throw new Error("Input contains no usable splats");
     const leaves = splats.length;
     const lodStart = performance.now();
-    buildLod(splats, options.lodBase, pool);
+    await buildLod(splats, options.lodBase, pool, options.lodMode);
     await pool.close();
     console.log(
       `Built ${splats.length} LOD splats from ${leaves} leaves in ${((performance.now() - lodStart) / 1000).toFixed(2)}s`,
@@ -217,6 +222,10 @@ async function run(options, cancelled) {
     } catch (error) {
       if (Atomics.load(cancelled, 0)) return;
       console.error(`${input}: ${error.message ?? error}`);
+      if (error.code === "ENOSPC")
+        console.error(
+          "Disk full: use --temp-dir <path> on a drive with more free space, and check free space on the output drive.",
+        );
       failed++;
     }
   }
