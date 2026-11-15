@@ -1,14 +1,7 @@
 import { assignRowsToNeighborGroupsRgbCov } from "./assignment.js";
 import { GroupCandidateHeap } from "./candidate-heap.js";
 import { fillExactTarget } from "./exact-target.js";
-import {
-  buildAdaptiveVoxelIndex,
-  buildInitialAdaptiveVoxelNeighborSets,
-  buildInitialAdaptiveVoxels,
-  chooseInitialAdaptiveVoxelGrid,
-  computeNormalizedPositions,
-  refineAdaptiveVoxels,
-} from "./grid.js";
+import { buildVoxelGrid } from "./grid.js";
 import {
   SCORE_SLACK,
   candidateDistanceFromLog,
@@ -18,15 +11,14 @@ import {
   prepareBhattacharyyaTerms,
 } from "./metrics.js";
 import {
+  allocateRepresentatives,
   buildRepGroupBounds,
-  computeAdaptiveMaxRepsByGroup,
   representativeIndexForGroupRange,
 } from "./representatives.js";
 
 const REPRESENTATIVES_PER_VOXEL = 24;
-const ADAPTIVE_VOXEL_SPLIT_FACTOR = 8;
 
-function planSimplifyCloudVoxel(cloud, target, bounds, check) {
+function planSimplifyCloudVoxel(cloud, target, check) {
   check();
   const n = cloud.length;
   const voxelTarget = Math.max(
@@ -34,54 +26,14 @@ function planSimplifyCloudVoxel(cloud, target, bounds, check) {
     Math.floor(target / REPRESENTATIVES_PER_VOXEL),
   );
   const { positions: pos, rgb, covariance } = cloud;
-  const ext = bounds.extents().map((v) => Math.max(v, 1e-6));
-  const mins = bounds.minimum;
-  const invExtents = [1.0 / ext[0], 1.0 / ext[1], 1.0 / ext[2]];
-  const normalizedPositions = computeNormalizedPositions(
-    pos,
-    n,
-    mins,
-    invExtents,
-  );
-  const {
-    dims,
-    cellCounts: initialCellCounts,
-    pointFlats: initialPointFlats,
-  } = chooseInitialAdaptiveVoxelGrid(
-    bounds,
+  const { groupOffsets, groupIndices, neighborGroupsByGroup } = buildVoxelGrid(
+    cloud,
     voxelTarget,
-    normalizedPositions,
-    n,
+    check,
   );
-  const expectedRowsPerVoxel = n / Math.max(1, voxelTarget);
-  const splitThreshold = Math.max(
-    2,
-    Math.ceil(expectedRowsPerVoxel * ADAPTIVE_VOXEL_SPLIT_FACTOR),
-  );
-  const {
-    groups: initialGroups,
-    groupKeys: initialGroupKeys,
-    groupForFlat: initialGroupForFlat,
-  } = buildInitialAdaptiveVoxels(n, dims, initialCellCounts, initialPointFlats);
-  const initialNeighborSets = buildInitialAdaptiveVoxelNeighborSets(
-    initialGroups,
-    initialGroupKeys,
-    initialGroupForFlat,
-    dims,
-  );
-  const { groups: adaptiveGroups, neighborGroupsByGroup } =
-    refineAdaptiveVoxels(
-      initialGroups,
-      initialNeighborSets,
-      normalizedPositions,
-      splitThreshold,
-      target,
-    );
-  const groupCount = adaptiveGroups.length;
-  const { groupOffsets, groupIndices } = buildAdaptiveVoxelIndex(
-    adaptiveGroups,
-    n,
-  );
+  const groupCount = groupOffsets.length - 1;
+  // Keep the existing first-representative search budget for dense cells.
+  const candidateLimit = Math.ceil((n / voxelTarget) * 8) * 8;
 
   const origRadius = cloud.radius;
   const coarseWeights = cloud.weight;
@@ -104,7 +56,7 @@ function planSimplifyCloudVoxel(cloud, target, bounds, check) {
       origRadius,
       covarianceTerms,
       rgb,
-      splitThreshold * 8,
+      candidateLimit,
       check,
     );
     const coarseOutIdx = selected.length;
@@ -113,7 +65,7 @@ function planSimplifyCloudVoxel(cloud, target, bounds, check) {
     groupReps[group] = [coarseOutIdx];
   }
 
-  const maxRepsByGroup = computeAdaptiveMaxRepsByGroup(
+  const maxRepsByGroup = allocateRepresentatives(
     groupIndices,
     groupOffsets,
     target,

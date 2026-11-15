@@ -13,6 +13,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- SOG conversion now uses uniform voxel sizes within each working block and avoids repeated representative scoring for identical splats. Generated LODs may differ from earlier versions.
 - **Breaking:** Renamed the RAD converter from `gsl-build-lod` to `gsl-build-rad`, and the repository command from `npm run build-lod` to `npm run build-rad`.
 - Optimized `gsl-build-rad` SH codebook generation and LOD building, including models with many identical SH coefficients. Generated SH codebooks may differ from earlier versions.
 

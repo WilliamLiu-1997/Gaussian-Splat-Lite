@@ -1,4 +1,5 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { opacityRadius } from "../rad/math.js";
 import { collect, sharedBuffer } from "../rad/storage.js";
 import { SH_C0, SH_DIMS } from "./splats.js";
 import {
@@ -64,6 +65,12 @@ export function blockArrays(count, target, maxSh) {
 function loadCore(records, count, core, mergeWeight) {
   const cloud = {
     length: count,
+    minFeature: Number.POSITIVE_INFINITY,
+    origin: [
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+      Number.POSITIVE_INFINITY,
+    ],
     positions: core.positions.subarray(0, count * 3),
     mergeWeight: mergeWeight.subarray(0, count),
     opacity: core.opacity.subarray(0, count),
@@ -74,16 +81,6 @@ function loadCore(records, count, core, mergeWeight) {
   };
   const covariance = new Float64Array(6);
   const scales = new Float64Array(3);
-  const minimum = [
-    Number.POSITIVE_INFINITY,
-    Number.POSITIVE_INFINITY,
-    Number.POSITIVE_INFINITY,
-  ];
-  const maximum = [
-    Number.NEGATIVE_INFINITY,
-    Number.NEGATIVE_INFINITY,
-    Number.NEGATIVE_INFINITY,
-  ];
   for (let i = 0; i < count; i++) {
     const row = i * 16;
     for (let d = 0; d < 3; d++) {
@@ -92,8 +89,7 @@ function loadCore(records, count, core, mergeWeight) {
         0,
         Math.min(1, 0.5 + ((records[row + 4 + d] - 0.5) / SH_C0) * 0.15),
       );
-      minimum[d] = Math.min(minimum[d], records[row + d]);
-      maximum[d] = Math.max(maximum[d], records[row + d]);
+      cloud.origin[d] = Math.min(cloud.origin[d], records[row + d]);
     }
     cloud.opacity[i] = records[row + 3];
     covarianceComponentsFromValuesWithScales(
@@ -109,6 +105,12 @@ function loadCore(records, count, core, mergeWeight) {
       scales,
     );
     for (let d = 0; d < 6; d++) cloud.covariance[i * 6 + d] = covariance[d];
+    cloud.minFeature = Math.min(
+      cloud.minFeature,
+      2 *
+        Math.max(scales[0], scales[1], scales[2]) *
+        opacityRadius(cloud.opacity[i]),
+    );
     // In double precision and before the planner regularizes the
     // covariance: the blended radius of the box of three standard
     // deviations, from the variances along the axes, and the weights.
@@ -127,11 +129,7 @@ function loadCore(records, count, core, mergeWeight) {
       records[row + 3] *
       ellipsoidAreaFromScales(scales[0], scales[1], scales[2]);
   }
-  const bounds = {
-    minimum,
-    extents: () => maximum.map((v, d) => v - minimum[d]),
-  };
-  return { cloud, bounds };
+  return cloud;
 }
 
 function merge(block, plan) {
@@ -276,13 +274,8 @@ function simplify(block, check) {
     merge(block, { selected: [0], assignment: new Int32Array(count) });
     return false;
   }
-  const { cloud, bounds } = loadCore(
-    records,
-    count,
-    block.core,
-    block.mergeWeight,
-  );
-  merge(block, planSimplifyCloudVoxel(cloud, target, bounds, check));
+  const cloud = loadCore(records, count, block.core, block.mergeWeight);
+  merge(block, planSimplifyCloudVoxel(cloud, target, check));
   return true;
 }
 

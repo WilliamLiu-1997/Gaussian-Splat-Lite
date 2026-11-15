@@ -8,6 +8,19 @@ import {
 } from "./assignment.js";
 import { candidateDistanceFromLog, gaussianLogSimilarity } from "./metrics.js";
 
+function sameGaussian(a, b, positions, rgb, terms) {
+  for (let d = 0; d < 3; d++)
+    if (
+      positions[a * 3 + d] !== positions[b * 3 + d] ||
+      rgb[a * 3 + d] !== rgb[b * 3 + d]
+    )
+      return false;
+  for (let d = 0; d < 6; d++)
+    if (terms.components[a * 6 + d] !== terms.components[b * 6 + d])
+      return false;
+  return terms.logDetQuarter[a] === terms.logDetQuarter[b];
+}
+
 function representativeIndexForGroupRange(
   cloud,
   groupIndices,
@@ -65,6 +78,8 @@ function representativeIndexForGroupRange(
   const candidateCount = Math.min(count, candidateLimit);
   const sampled = candidateCount < count;
   let comparisons = 0;
+  let cachedRow = -1;
+  let cachedCost = 0;
   for (let p = 0; p < candidateCount; p++) {
     let idx;
     if (!sampled) idx = groupIndices[start + p];
@@ -79,24 +94,37 @@ function representativeIndexForGroupRange(
       : Number.NEGATIVE_INFINITY;
     const rawWeight = weights[idx];
     const w = Number.isFinite(rawWeight) ? Math.max(rawWeight, 1e-12) : 1e-12;
-    let cost = 0.0;
-    for (let q = start; q < end; q++) {
-      if ((comparisons++ & 4095) === 0) check();
-      const other = groupIndices[q];
-      const otherRawWeight = weights[other];
-      const otherWeight = Number.isFinite(otherRawWeight)
-        ? Math.max(otherRawWeight, 1e-12)
-        : 1e-12;
-      const logSimilarity = gaussianLogSimilarity(
-        covarianceTerms,
-        pos,
-        rgb,
-        idx,
-        other,
-      );
-      cost += otherWeight * candidateDistanceFromLog(logSimilarity);
-      if (cost * invTotalWeight > (bestCost + 1e-12) * w) {
-        break;
+    let cost;
+    if (
+      cachedRow >= 0 &&
+      sameGaussian(idx, cachedRow, pos, rgb, covarianceTerms)
+    ) {
+      cost = cachedCost;
+    } else {
+      cost = 0;
+      let q = start;
+      for (; q < end; q++) {
+        if ((comparisons++ & 4095) === 0) check();
+        const other = groupIndices[q];
+        const otherRawWeight = weights[other];
+        const otherWeight = Number.isFinite(otherRawWeight)
+          ? Math.max(otherRawWeight, 1e-12)
+          : 1e-12;
+        const logSimilarity = gaussianLogSimilarity(
+          covarianceTerms,
+          pos,
+          rgb,
+          idx,
+          other,
+        );
+        cost += otherWeight * candidateDistanceFromLog(logSimilarity);
+        if (cost * invTotalWeight > (bestCost + 1e-12) * w) break;
+      }
+      // The sum depends only on position, color and covariance. Only a
+      // complete sum is reusable; a pruned search is merely a lower bound.
+      if (q === end) {
+        cachedRow = idx;
+        cachedCost = cost;
       }
     }
     const medoidCost = cost * invTotalWeight;
@@ -121,7 +149,7 @@ function representativeIndexForGroupRange(
   return rep;
 }
 
-function computeAdaptiveMaxRepsByGroup(
+function allocateRepresentatives(
   groupIndices,
   groupOffsets,
   target,
@@ -159,14 +187,10 @@ function computeAdaptiveMaxRepsByGroup(
     }
   }
 
-  const averageBudget = Math.max(
-    groupCount,
-    groupCount * representativesPerVoxelTarget,
-  );
   const localBudget = Math.min(
     target,
     groupCount + capacityTotal,
-    averageBudget,
+    groupCount * representativesPerVoxelTarget,
   );
   let remaining = Math.max(0, localBudget - groupCount);
   if (remaining <= 0 || capacityTotal <= 0) {
@@ -347,6 +371,6 @@ function buildRepGroupBounds(groupReps, selected, pos, rgb, covarianceTerms) {
 
 export {
   representativeIndexForGroupRange,
-  computeAdaptiveMaxRepsByGroup,
+  allocateRepresentatives,
   buildRepGroupBounds,
 };
