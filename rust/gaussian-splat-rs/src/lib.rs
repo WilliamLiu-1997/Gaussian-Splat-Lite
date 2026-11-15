@@ -6,8 +6,6 @@ mod allocation;
 mod cli;
 #[cfg(feature = "cli")]
 mod sog_bounds;
-#[cfg(feature = "cli")]
-mod webp;
 
 #[cfg(not(feature = "cli"))]
 mod bounds;
@@ -29,6 +27,8 @@ mod sog;
 mod sort;
 #[cfg(not(feature = "cli"))]
 mod splats;
+#[cfg(all(target_arch = "wasm32", not(feature = "cli")))]
+mod webp;
 
 #[wasm_bindgen(start)]
 pub fn wasm_start() {

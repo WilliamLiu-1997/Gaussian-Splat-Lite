@@ -43,6 +43,18 @@ jobs:
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
+      - name: Setup Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Cache WASM tools and sources
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/gaussian-splat-lite
+          key: wasm-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ hashFiles('rust/build_wasm.js', 'c/build_wasm.js', 'c/**/CMakeLists.txt') }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -71,3 +83,42 @@ jobs:
       - run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --features cli --locked -- -D warnings
       - if: matrix.toolchain == 'stable'
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+
+      - name: Setup Node.js
+        if: matrix.toolchain == '1.87.0'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup Python
+        if: matrix.toolchain == '1.87.0'
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Cache C WASM tools and sources
+        if: matrix.toolchain == '1.87.0'
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/gaussian-splat-lite/c
+          key: c-wasm-${{ runner.os }}-${{ runner.arch }}-python-${{ steps.python.outputs.python-version }}-${{ hashFiles('c/build_wasm.js', 'c/**/CMakeLists.txt') }}
+
+      - name: Link C decoder with Rust WASM
+        if: matrix.toolchain == '1.87.0'
+        run: |
+          rustup target add wasm32-unknown-unknown
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { buildCWasm } from './c/build_wasm.js';
+          const directory = buildCWasm(process.env.RUNNER_TEMP, ['decoder']);
+          execFileSync('cargo', [
+            'build', '--package', 'gaussian-splat-rs',
+            '--target', 'wasm32-unknown-unknown',
+            '--release', '--locked',
+          ], {
+            cwd: 'rust',
+            stdio: 'inherit',
+            env: { ...process.env, GSL_WEBP_LIB_DIR: directory },
+          });
+          JS

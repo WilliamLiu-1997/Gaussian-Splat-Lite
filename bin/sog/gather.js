@@ -1,3 +1,4 @@
+import { sharedBuffer } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
 import { ellipsoidAreaFromScales } from "./voxel/extents.js";
 
@@ -7,15 +8,29 @@ const PLACES = 2 ** 21;
 // as garbage, each chunk's would take room from the cache until collected.
 let sorted = new Float64Array(0);
 
-// Reads the splats `order` of `source` into arrays, each splat at its place
-// in `order`: 100 bytes a splat and its SH, which the caller has room for.
-// With `weigh`, also each splat's SH clustering weight.
-export function gather(source, order, weigh) {
+// Bytes of a gathered splat with SH of `dims` coefficients: its record, its
+// SH clustering weight and its SH.
+export const chunkRowBytes = (dims) => 72 + dims * 4;
+
+// Shared memory for a thread's chunks of up to `count` splats, like a
+// simplifier's blocks: gather() fills it chunk after chunk and the thread
+// reads it in place. Arrays made for each chunk stayed in memory: handed
+// over, as freed heap on macOS; shared, until this thread collected its own
+// reference to them, which it rarely does.
+export const chunkBuffer = (count, dims) =>
+  sharedBuffer(count * chunkRowBytes(dims));
+
+// Reads the splats `order` of `source` into arrays in `buffer`, each splat
+// at its place in `order`; see chunkBuffer(). With `weigh`, also each
+// splat's SH clustering weight.
+export function gather(source, order, weigh, buffer) {
   const count = order.length;
   const dims = SH_DIMS.slice(0, source.maxSh).reduce((a, b) => a + b, 0);
-  const records = new Float32Array(count * 16);
-  const sh = new Float32Array(count * dims);
-  const weights = new Float64Array(weigh ? count : 0);
+  const weightBytes = weigh ? count * 8 : 0;
+  const recordBytes = count * 64;
+  const weights = new Float64Array(buffer, 0, weigh ? count : 0);
+  const records = new Float32Array(buffer, weightBytes, count * 16);
+  const sh = new Float32Array(buffer, weightBytes + recordBytes, count * dims);
   // Pages are read in the order of the rows: the places sorted by row, as
   // numbers of row and place where those fit.
   let places;

@@ -1,7 +1,10 @@
 //! JavaScript bridge for SOG property decoding through the shared SplatReceiver.
+#[cfg(target_arch = "wasm32")]
 use anyhow::Context;
 use gaussian_splat_lib::sog::{self, SogDecoder};
-use js_sys::{Array, Object, Reflect, Uint8Array};
+#[cfg(target_arch = "wasm32")]
+use js_sys::Array;
+use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 use crate::splats::SplatsData;
@@ -18,6 +21,32 @@ pub fn decode_sog_meta(
     crc: f64,
 ) -> Result<String, JsValue> {
     sog::decode_sog_meta(bytes.to_vec(), method, size, crc).map_err(js_error)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn unpack_asset(
+    chunks: Array<Uint8Array>,
+    method: u32,
+    size: usize,
+    crc: f64,
+) -> Result<Vec<u8>, JsValue> {
+    let length = chunks
+        .iter()
+        .try_fold(0usize, |length, chunk| {
+            length
+                .checked_add(chunk.length() as usize)
+                .context("asset input length overflow")
+        })
+        .map_err(js_error)?;
+    let mut bytes = vec![0; length];
+    let mut offset = 0;
+    for chunk in chunks.iter() {
+        let end = offset + chunk.length() as usize;
+        chunk.copy_to(&mut bytes[offset..end]);
+        offset = end;
+    }
+    chunks.set_length(0);
+    sog::unpack(bytes, method, size, crc).map_err(js_error)
 }
 
 #[wasm_bindgen]
@@ -48,32 +77,18 @@ impl SogDecodeSession {
         serde_json::to_string(self.decoder.warnings()).expect("warnings are serializable")
     }
 
+    #[cfg(target_arch = "wasm32")]
     pub fn decode_asset(
         &mut self,
         chunks: Array<Uint8Array>,
         method: u32,
-        uncompressed_size: usize,
+        size: usize,
         crc: f64,
     ) -> Result<(), JsValue> {
-        let length = chunks
-            .iter()
-            .try_fold(0usize, |length, chunk| {
-                length
-                    .checked_add(chunk.length() as usize)
-                    .context("asset input length overflow")
-            })
-            .map_err(js_error)?;
-        let mut bytes = vec![0; length];
-        let mut offset = 0;
-        for chunk in chunks.iter() {
-            let end = offset + chunk.length() as usize;
-            chunk.copy_to(&mut bytes[offset..end]);
-            offset = end;
-        }
-        // Release compressed JS chunks before decoding their WASM copy.
-        chunks.set_length(0);
+        let bytes = unpack_asset(chunks, method, size, crc)?;
+        let (pixels, width, height, channels) = crate::webp::decode(&bytes).map_err(js_error)?;
         self.decoder
-            .decode_asset(bytes, method, uncompressed_size, crc)
+            .decode_image(pixels, width, height, channels)
             .map_err(js_error)
     }
 

@@ -8,7 +8,7 @@ Convert PLY or SPZ into streamed SOG v3 with levels of detail (LOD), ready for [
 gsl-build-sog scene.ply -o output --memory-budget 4
 ```
 
-From a repository checkout, first run `npm run build:wasm:lod` (requires Rust), then use:
+From a repository checkout, follow the [development setup](../CONTRIBUTING.md#development-setup), run `npm run build:wasm:lod`, then use:
 
 ```sh
 npm run build-sog -- scene.ply -o output
@@ -36,13 +36,15 @@ gsl-build-sog scene.ply \
 
 The finest LOD retains the usable input splats. Each coarser level reduces the point count by approximately `--lod-factor`, until the whole scene fits within `--root-splats`. An input already within this limit needs no additional LOD. Smaller factors produce more levels and usually larger output; larger factors produce fewer levels.
 
-`--region-splats` limits the count across all LODs in each spatial region, independently of the LOD settings. `--lod-chunk-count` controls output chunk size; chunks may be smaller to fit the memory budget. If a region cannot fit in a chunk, reduce `--region-splats` or increase the chunk or memory limit.
+`--region-splats` limits the count across all LODs in each spatial region, independently of the LOD settings. `--lod-chunk-count` controls output chunk size; chunks may be smaller to fit the memory budget or encoder limits. If a region cannot fit, reduce `--region-splats` or increase `--lod-chunk-count` when suggested by the error.
 
 ## Color and quality
 
 The output supports up to SH4. Use `--max-sh 0` to keep only the base color and reduce file size. Higher SH levels retain more view-dependent color.
 
 Without `--sh-codebook`, each chunk uses one SH entry per 8 splats, rounded up, with at most 256K entries. A full 256K-splat chunk therefore uses 32K entries. Specify `--sh-codebook <K>` to override this automatic size; the entry count never exceeds the chunk's splat count. Larger codebooks can preserve more color detail at the cost of file size; more `--sh-iterations` can improve color matching but take longer.
+
+Chunks whose SH coefficients are all zero use a single SH entry.
 
 Conversion is lossy, so colors and shape can differ from the source. SOG v3 limits linear opacity to **1.5625**; larger values are clamped and reported.
 
@@ -71,7 +73,7 @@ See [SOG streaming](SogStreamScheduler.md) for loading and display options.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--lod-chunk-count <K>` | `256` | Maximum splats per output chunk in K, subject to the memory budget. |
+| `--lod-chunk-count <K>` | `256` | Maximum splats per output chunk in K, subject to the memory budget and encoder limits. |
 | `--region-splats <K>` | `8` | Maximum count across all LODs in each region, in K. |
 | `--root-splats <K>` | `256` | Maximum count in the coarsest scene LOD, in K. |
 | `--lod-factor <n>` | `2` | Point-count reduction factor, greater than 1. |

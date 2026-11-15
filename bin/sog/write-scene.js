@@ -14,9 +14,10 @@ import { clusterBytes } from "../rad/cluster.js";
 import { initialize } from "../rad/input.js";
 import { WorkerGroup, clusterers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
-import { removePath } from "../rad/storage.js";
+import { GIB, removePath } from "../rad/storage.js";
 import { entries } from "./cluster.js";
-import { encodeBytes, encodeChunk } from "./encode.js";
+import { MAX_CHUNK_SPLATS, encodeBytes, encodeChunk } from "./encode.js";
+import { chunkBuffer, chunkRowBytes } from "./gather.js";
 import { finishTree } from "./regions.js";
 import { SH_DIMS } from "./splats.js";
 import { writeChunk, writeFile } from "./write-chunk.js";
@@ -50,6 +51,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
   const filenames = [];
   const counts = rows.levels.map((level) => level.length);
   const progress = new Progress("Writing SOG chunks", rows.length);
+  let chunkDetail = "";
   let written = 0;
   let bytes = 0;
   let clipped = 0;
@@ -64,36 +66,51 @@ export async function writeScene(rows, regions, output, options, kernel) {
       (a, b) => a + b,
       0,
     );
-    const limit = Math.min(
-      options.lodChunkCount,
+    // Both the gathered rows and the WebP encoder must fit their own memory.
+    const capacity = Math.min(
       Math.floor((workspace.room * 0.3) / (160 + dims * 8)),
+      Math.floor((4 * GIB) / chunkRowBytes(dims)),
+      MAX_CHUNK_SPLATS,
     );
+    const limit = Math.min(options.lodChunkCount, capacity);
     if (limit < 1) throw new Error("Memory budget too small for SOG encoding");
     // The chunks that the levels' regions fill, as the loop below fills them.
     let total = 0;
+    let largest = 0;
     for (let level = 0; level < rows.levels.length; level++) {
       let size = 0;
       for (const leaf of regions.leaves) {
         const count = leaf.lods[level]?.count ?? 0;
+        if (count > limit) {
+          const increase =
+            count <= capacity ? " or increase --lod-chunk-count" : "";
+          throw new Error(
+            `A region has ${count} splats, more than the chunk limit of ${limit}; reduce --region-splats${increase}`,
+          );
+        }
         if (size && size + count > limit) {
           total++;
+          largest = Math.max(largest, size);
           size = 0;
         }
         size += count;
       }
-      if (size) total++;
+      if (size) {
+        total++;
+        largest = Math.max(largest, size);
+      }
     }
     // A chunk with as many SH entries as splats keeps its SH as they are:
     // there is nothing to cluster but labels to write, 4 bytes a splat.
-    const codes = dims ? entries(limit, options) : 0;
+    const codes = dims ? entries(largest, options) : 0;
     const chunkBytes =
-      limit * (124 + dims * 4) +
-      encodeBytes(limit, dims, codes) +
+      largest * (124 + dims * 4) +
+      encodeBytes(largest, dims, codes) +
       (!dims
         ? 0
-        : codes < limit
-          ? clusterBytes(kernel, limit, dims, codes)
-          : limit * 4);
+        : codes < largest
+          ? clusterBytes(kernel, largest, dims, codes)
+          : largest * 4);
     const threads = clusterers(workspace, chunkBytes, 0, total);
     if (!threads) workspace.expect(chunkBytes);
     encoder = new WorkerGroup(
@@ -103,12 +120,16 @@ export async function writeScene(rows, regions, output, options, kernel) {
       { handle: (job) => encodeChunk(job, kernel, () => workspace.check()) },
       "SOG encoding",
     );
-    // The threads without a chunk, and the chunks in work.
-    const idle = [...encoder.threads];
+    // Idle threads keep their chunk buffers for reuse.
+    const idle = encoder.threads.map((worker) => ({
+      worker,
+      buffer: chunkBuffer(largest, dims),
+    }));
     const active = new Set();
+
     // The rows of the chunk that is being filled, kept from chunk to chunk:
     // as garbage, each chunk's would take room from the cache.
-    const order = new Uint32Array(limit);
+    const order = new Uint32Array(largest);
     for (let level = 0; level < rows.levels.length; level++) {
       const source = rows.levels[level];
       // The chunk's splats so far, and the regions that they belong to with
@@ -124,10 +145,9 @@ export async function writeScene(rows, regions, output, options, kernel) {
         const path = join(staging, name);
         mkdirSync(path);
         while (!idle.length) await Promise.race(active);
-        const worker = idle.pop();
-        console.log(
-          `Writing SOG LOD ${level}/${rows.levels.length - 1}, chunk ${filenames.length}/${total - 1}: ${size} splats`,
-        );
+        const thread = idle.pop();
+        chunkDetail = `LOD ${level}/${rows.levels.length - 1}, chunk ${filenames.length}/${total - 1}, ${count} splats`;
+        progress.update(written, chunkDetail);
         // The chunk's rows are read before the call returns.
         const chunk = writeChunk(
           source,
@@ -136,7 +156,8 @@ export async function writeScene(rows, regions, output, options, kernel) {
           path,
           options,
           encoder,
-          worker,
+          thread.worker,
+          thread.buffer,
         ).then((result) => {
           bytes += result.bytes;
           clipped += result.clipped;
@@ -151,8 +172,8 @@ export async function writeScene(rows, regions, output, options, kernel) {
             }
           });
           written += count;
-          progress.update(written);
-          idle.push(worker);
+          progress.update(written, chunkDetail);
+          idle.push(thread);
           active.delete(chunk);
         });
         // A failure shows to what waits for the chunk.
@@ -166,10 +187,6 @@ export async function writeScene(rows, regions, output, options, kernel) {
       for (const leaf of regions.leaves) {
         const range = leaf.lods[level];
         if (!range) continue;
-        if (range.count > limit)
-          throw new Error(
-            "A region exceeds the chunk limit; reduce --region-splats or increase --lod-chunk-count / --memory-budget",
-          );
         if (size + range.count > limit) await flush();
         // In the order of the chunk; see buildRegions().
         regions.order.read(range.start, order, range.count, size);
@@ -185,8 +202,9 @@ export async function writeScene(rows, regions, output, options, kernel) {
       await flush();
     }
     await Promise.all(active);
-    // The manifest may take the threads' memory.
+    // The manifest may take the threads' memory and their chunks'.
     await encoder.close();
+    idle.length = 0;
     workspace.settle();
     workspace.expect(
       regions.leaves.length * (1536 + counts.length * 256) +

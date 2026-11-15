@@ -1,14 +1,24 @@
 import { closeSync, fdatasyncSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { encodeWebp, sogBounds } from "../decoder/decoder.js";
+import { sogBounds } from "../decoder/decoder.js";
 import { initialize } from "../rad/input.js";
 import { collect } from "../rad/storage.js";
 import { cluster } from "./cluster.js";
 import { QUANTIZE_BYTES, encodeRotation, label, quantize } from "./quantize.js";
 import { SH_C0 } from "./splats.js";
+import {
+  WEBP_MAX_PIXELS,
+  encodeWebp,
+  initializeWebp,
+  webpBytes,
+} from "./webp.js";
 
 const logPosition = (v) => Math.sign(v) * Math.log1p(Math.abs(v));
+
+// imageSize() rounds both sides up to multiples of four.
+export const MAX_CHUNK_SPLATS =
+  (Math.floor(Math.sqrt(WEBP_MAX_PIXELS) / 4) * 4) ** 2;
 
 // The side lengths of an image with a pixel for each of `count` splats.
 function imageSize(count) {
@@ -22,6 +32,13 @@ function paletteSize(entries, dims) {
   return { width: 64 * (dims / 3), height: Math.ceil(entries / 64) };
 }
 
+function opaqueImage(width, height) {
+  const image = new Uint8Array(width * height * 4);
+  // Padding must also be opaque for WebP to omit the alpha channel.
+  for (let i = 3; i < image.length; i += 4) image[i] = 255;
+  return image;
+}
+
 // Encodes the centers, rotations, scales, colors and opacities of a chunk's
 // `count` splats in `records`, and hands each image to `write` as its file
 // name and bytes. Returns what meta.json says of them, how many splats have
@@ -32,7 +49,7 @@ function paletteSize(entries, dims) {
 function encodeGeometry({ records, count, ranges }, write) {
   const rotation = new Uint8Array(count * 3);
   const { width, height } = imageSize(count);
-  const image = new Uint8Array(width * height * 4);
+  const image = opaqueImage(width, height);
   const values = new Float32Array(count * 3);
   const min = [
     Number.POSITIVE_INFINITY,
@@ -67,12 +84,9 @@ function encodeGeometry({ records, count, ranges }, write) {
               (65535 * (records[i * 16 + d] - min[d])) / (max[d] - min[d]),
             );
   for (let part = 0; part < 2; part++) {
-    image.fill(0);
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < count; i++)
       for (let d = 0; d < 3; d++)
         image[i * 4 + d] = (positions[i * 3 + d] >>> (part * 8)) & 255;
-      image[i * 4 + 3] = rotation[i * 3 + part];
-    }
     write(
       part ? "means_u.webp" : "means_l.webp",
       encodeWebp(image, width, height),
@@ -82,15 +96,15 @@ function encodeGeometry({ records, count, ranges }, write) {
     for (let d = 0; d < 3; d++) values[i * 3 + d] = records[i * 16 + 7 + d];
   const scales = quantize(values, 0.25);
   const scaleLabels = new Uint8Array(count * 3);
-  image.fill(0);
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count; i++)
     for (let d = 0; d < 3; d++) {
       scaleLabels[i * 3 + d] = label(values[i * 3 + d], scales);
       image[i * 4 + d] = scaleLabels[i * 3 + d];
     }
-    image[i * 4 + 3] = rotation[i * 3 + 2];
-  }
   write("scales.webp", encodeWebp(image, width, height));
+  for (let i = 0; i < count; i++)
+    for (let d = 0; d < 3; d++) image[i * 4 + d] = rotation[i * 3 + d];
+  write("quats.webp", encodeWebp(image, width, height));
   // With the reader's own decoding: the boxes hold the three standard
   // deviations of the Gaussians that a reader decodes from these codes.
   const boxes = sogBounds(
@@ -106,7 +120,7 @@ function encodeGeometry({ records, count, ranges }, write) {
     for (let d = 0; d < 3; d++)
       values[i * 3 + d] = (records[i * 16 + 4 + d] - 0.5) / SH_C0;
   const colors = quantize(values);
-  image.fill(0);
+  image.fill(0, count * 4);
   for (let i = 0; i < count; i++) {
     for (let d = 0; d < 3; d++)
       image[i * 4 + d] = label(values[i * 3 + d], colors);
@@ -138,23 +152,21 @@ function encodeSh({ codes, labels, dims, entries, count }, write) {
     entries,
     dims,
   );
-  const palette = new Uint8Array(paletteWidth * paletteHeight * 4);
+  const palette = opaqueImage(paletteWidth, paletteHeight);
   for (let entry = 0; entry < entries; entry++)
     for (let c = 0; c < coefficients; c++) {
       const pixel = (entry * coefficients + c) * 4;
       for (let d = 0; d < 3; d++)
         palette[pixel + d] = label(codes[entry * dims + c * 3 + d], scalar);
-      palette[pixel + 3] = 255;
     }
   write("shN_centroids.webp", encodeWebp(palette, paletteWidth, paletteHeight));
   const { width, height } = imageSize(count);
-  const image = new Uint8Array(width * height * 4);
+  const image = opaqueImage(width, height);
   for (let i = 0; i < count; i++) {
     const value = labels[i];
     image[i * 4] = value & 255;
     image[i * 4 + 1] = (value >>> 8) & 255;
     image[i * 4 + 2] = (value >>> 16) & 255;
-    image[i * 4 + 3] = 255;
   }
   write("shN_labels.webp", encodeWebp(image, width, height));
   return Array.from(scalar);
@@ -169,6 +181,7 @@ function encodeSh({ codes, labels, dims, entries, count }, write) {
 // splats have more mass than SOG holds, and the boxes of the job's `ranges`
 // of splats; see encodeGeometry(). Needs the encoder of initialize().
 export async function encodeChunk(job, kernel, check) {
+  await initializeWebp();
   const { records, sh, weights, dims, count, options, directory, maxSh } = job;
   let bytes = 0;
   const write = (name, data) => {
@@ -192,6 +205,7 @@ export async function encodeChunk(job, kernel, check) {
     count,
     means: { ...means, files: ["means_l.webp", "means_u.webp"] },
     scales: { codebook: scales, files: ["scales.webp"] },
+    quats: { files: ["quats.webp"] },
     sh0: { codebook: sh0, files: ["sh0.webp"] },
   };
   if (opacityMax > 204) meta.opacity = { max: (opacityMax / 204) ** 2 };
@@ -219,9 +233,8 @@ export async function encodeChunk(job, kernel, check) {
 // SH of `dims` coefficients in a codebook of `entries` codes: the images of
 // the splats, of which the geometry's and the labels' may both be alive,
 // the codebook's image, and an encoded image; the encoder's own memory,
-// which grows with the largest image and stays, counted as 8 bytes a byte
-// of it (measured with its copy of the image: 6.3 for noise, 2 for smooth
-// images); the scalar codebooks' histogram; and 36 bytes a splat of work
+// which grows with the largest image and stays; see webpBytes().
+// Also count the scalar codebooks' histogram and 36 bytes a splat of work
 // arrays: rotations and values to quantize, center codes and scale labels,
 // and the decoder module's copies of the codes for the bounds.
 export function encodeBytes(count, dims, entries) {
@@ -234,7 +247,12 @@ export function encodeBytes(count, dims, entries) {
   }
   const largest = Math.max(points, codebook);
   return (
-    2 * points + codebook + 9 * largest + QUANTIZE_BYTES + count * (15 + 9 + 12)
+    2 * points +
+    codebook +
+    largest +
+    webpBytes(largest) +
+    QUANTIZE_BYTES +
+    count * (15 + 9 + 12)
   );
 }
 
@@ -247,7 +265,8 @@ if (!isMainThread && workerData?.encoder) {
   await initialize();
   parentPort.on("message", async (job) => {
     const result = await encodeChunk(job, kernel, check);
-    // The job's arrays would otherwise stay until the next job's are there.
+    // The chunk's images and codebook would otherwise stay until the next
+    // chunk's are there.
     collect();
     parentPort.postMessage(result);
   });

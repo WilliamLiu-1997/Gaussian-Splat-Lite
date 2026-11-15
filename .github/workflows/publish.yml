@@ -53,6 +53,11 @@ jobs:
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Run release checks
         run: npm run release:check
 

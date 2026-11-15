@@ -29,6 +29,7 @@ files.push(
   path.join(root, "vite.config.js"),
   path.join(root, "vite.site.config.js"),
   path.join(root, "rust/build_wasm.js"),
+  path.join(root, "c/build_wasm.js"),
 );
 
 for (const file of files) {

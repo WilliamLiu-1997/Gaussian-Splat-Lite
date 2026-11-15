@@ -1,10 +1,6 @@
-//! SOG metadata, image and property decoding into a SplatReceiver.
+//! SOG metadata and property decoding into a SplatReceiver.
 //! Only the current property group and packed SH palette remain in the decoder.
-use std::{
-    array,
-    collections::HashSet,
-    io::{Cursor, Read},
-};
+use std::{array, collections::HashSet, io::Read};
 
 use anyhow::{bail, ensure, Context, Result};
 use flate2::read::DeflateDecoder;
@@ -173,17 +169,13 @@ impl Metadata {
                 })
                 .collect()
         };
-        let mut means_files = files("means", 2)?;
         let mut scales_files = files("scales", 1)?;
-        let mut groups = if version == 3 {
-            // Rotation spans all three alpha channels, decoded in the same batch.
-            means_files.extend(scales_files);
-            vec![("means", means_files)]
-        } else {
-            scales_files.extend(files("quats", 1)?);
-            vec![("means", means_files), ("scales", scales_files)]
-        };
-        groups.push(("sh0", files("sh0", 1)?));
+        scales_files.extend(files("quats", 1)?);
+        let mut groups = vec![
+            ("means", files("means", 2)?),
+            ("scales", scales_files),
+            ("sh0", files("sh0", 1)?),
+        ];
         let (mut degree, mut palette_count, mut sh) = (0, 0, [0.0; 256]);
         if let Some(section) = root.get("shN").filter(|value| !value.is_null()) {
             let names = files("shN", 2)?;
@@ -333,75 +325,33 @@ struct Image {
 
 impl Image {
     fn channel(&self, pixel: usize, channel: usize) -> u8 {
-        match (self.channels, channel) {
-            (1 | 3, 3) => 255,
-            (2, 3) => self.bytes[pixel * 2 + 1],
-            (1 | 2, _) => self.bytes[pixel * self.channels],
-            _ => self.bytes[pixel * self.channels + channel],
+        if self.channels == 3 && channel == 3 {
+            255
+        } else {
+            self.bytes[pixel * self.channels + channel]
         }
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            let mut decoder = png::Decoder::new_with_limits(
-                Cursor::new(bytes),
-                png::Limits { bytes: usize::MAX },
-            );
-            decoder.set_transformations(png::Transformations::EXPAND);
-            let mut reader = decoder.read_info().context("invalid PNG")?;
-            ensure!(
-                reader.info().bit_depth != png::BitDepth::Sixteen,
-                "16-bit PNG is unsupported"
-            );
-            ensure!(
-                reader.info().animation_control.is_none(),
-                "animated PNG is unsupported"
-            );
-            let size = reader.output_buffer_size();
-            let mut bytes = vec![0; size];
-            let frame = reader.next_frame(&mut bytes).context("PNG decode failed")?;
-            ensure!(
-                frame.bit_depth == png::BitDepth::Eight,
-                "PNG must decode to 8-bit samples"
-            );
-            let channels = frame.color_type.samples();
-            bytes.truncate(frame.buffer_size());
-            return Ok(Self {
-                width: frame.width as usize,
-                height: frame.height as usize,
-                channels,
-                bytes,
-            });
-        }
+    fn new(bytes: Vec<u8>, width: usize, height: usize, channels: usize) -> Result<Self> {
         ensure!(
-            bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
-            "asset must be a lossless WebP or 8-bit PNG"
+            width > 0 && height > 0 && matches!(channels, 3 | 4),
+            "invalid image dimensions or channels"
         );
-        let mut decoder =
-            image_webp::WebPDecoder::new(Cursor::new(bytes)).context("invalid WebP")?;
-        ensure!(
-            !decoder.is_animated() && !decoder.is_lossy(),
-            "animated or lossy WebP is unsupported"
-        );
-        let (width, height) = decoder.dimensions();
-        let size = decoder
-            .output_buffer_size()
-            .context("WebP dimensions overflow")?;
-        let channels = if decoder.has_alpha() { 4 } else { 3 };
-        let mut bytes = vec![0; size];
-        decoder
-            .read_image(&mut bytes)
-            .context("WebP decode failed")?;
+        let size = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(channels))
+            .context("image dimensions overflow")?;
+        ensure!(bytes.len() == size, "image byte length mismatch");
         Ok(Self {
-            width: width as usize,
-            height: height as usize,
+            width,
+            height,
             channels,
             bytes,
         })
     }
 }
 
-fn unpack(bytes: Vec<u8>, method: u32, size: usize, crc: f64) -> Result<Vec<u8>> {
+pub fn unpack(bytes: Vec<u8>, method: u32, size: usize, crc: f64) -> Result<Vec<u8>> {
     ensure!(
         crc == -1.0
             || (crc.is_finite() && crc >= 0.0 && crc.fract() == 0.0 && crc <= u32::MAX as f64),
@@ -513,12 +463,12 @@ impl<T: SplatReceiver> SogDecoder<T> {
 }
 
 impl<T: SplatReceiver> SogDecoder<T> {
-    pub fn decode_asset(
+    pub fn decode_image(
         &mut self,
         bytes: Vec<u8>,
-        method: u32,
-        size: usize,
-        crc: f64,
+        width: usize,
+        height: usize,
+        channels: usize,
     ) -> Result<()> {
         ensure!(
             self.base == 0
@@ -526,8 +476,7 @@ impl<T: SplatReceiver> SogDecoder<T> {
                 && self.images.len() < self.meta.groups[self.group].1.len(),
             "invalid asset sequence"
         );
-        let bytes = unpack(bytes, method, size, crc)?;
-        let image = Image::decode(&bytes)?;
+        let image = Image::new(bytes, width, height, channels)?;
         if self.meta.groups[self.group].0 != "centroids" {
             ensure!(
                 image.width * image.height >= self.meta.count,
@@ -648,26 +597,6 @@ impl<T: SplatReceiver> SogDecoder<T> {
                     }
                 }
                 splats.set_center(self.base, count, &self.floats);
-                if self.meta.version == 3 {
-                    let scales = &self.images[2];
-                    splats.set_quantized(
-                        self.base,
-                        count,
-                        QuantizedProperty::LnScale,
-                        &self.meta.scales,
-                        |i, d| scales.channel(self.base + i, d),
-                    );
-                    splats.set_quat_from(
-                        self.base,
-                        count,
-                        |i| {
-                            decode_quat_sog_v3(array::from_fn(|d| {
-                                self.images[d].channel(self.base + i, 3)
-                            }))
-                        },
-                        &mut self.floats,
-                    );
-                }
             }
             "scales" => {
                 let quat_image = &self.images[1];
@@ -678,12 +607,26 @@ impl<T: SplatReceiver> SogDecoder<T> {
                     &self.meta.scales,
                     |i, d| image.channel(self.base + i, d),
                 );
-                splats.set_quat_sog(
-                    self.base,
-                    count,
-                    |i| array::from_fn(|d| quat_image.channel(self.base + i, d)),
-                    &mut self.floats,
-                )?;
+                // v3 keeps an exponential map in RGB, v1 and v2 smallest-three.
+                if self.meta.version == 3 {
+                    splats.set_quat_from(
+                        self.base,
+                        count,
+                        |i| {
+                            decode_quat_sog_v3(array::from_fn(|d| {
+                                quat_image.channel(self.base + i, d)
+                            }))
+                        },
+                        &mut self.floats,
+                    );
+                } else {
+                    splats.set_quat_sog(
+                        self.base,
+                        count,
+                        |i| array::from_fn(|d| quat_image.channel(self.base + i, d)),
+                        &mut self.floats,
+                    )?;
+                }
             }
             "sh0" => {
                 splats.set_quantized(
@@ -741,44 +684,89 @@ impl<T: SplatReceiver> SogDecoder<T> {
 }
 
 #[cfg(test)]
-mod image_tests {
-    use super::Image;
+mod rotation_tests {
+    use super::*;
+    use crate::decoder::SplatProps;
+    use serde_json::json;
 
-    #[test]
-    fn decodes_png_and_webp_with_large_padding() {
-        let pixels = vec![255; 512 * 512 * 4];
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, 512, 512);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder
-                .write_header()
-                .unwrap()
-                .write_image_data(&pixels)
-                .unwrap();
+    #[derive(Default)]
+    struct Rotations(Vec<f32>);
+    impl SplatReceiver for Rotations {
+        fn set_batch(&mut self, _: usize, _: usize, _: &SplatProps) {}
+        fn set_center(&mut self, _: usize, _: usize, _: &[f32]) {}
+        fn set_opacity(&mut self, _: usize, _: usize, _: &[f32]) {}
+        fn set_rgb(&mut self, _: usize, _: usize, _: &[f32]) {}
+        fn set_scale(&mut self, _: usize, _: usize, _: &[f32]) {}
+        fn set_quat(&mut self, _: usize, _: usize, values: &[f32]) {
+            self.0.extend_from_slice(values);
         }
-        let image = Image::decode(&bytes).unwrap();
-        assert_eq!((image.width, image.height), (512, 512));
-        assert_eq!(image.bytes, pixels);
+    }
 
-        bytes.clear();
-        image_webp::WebPEncoder::new(&mut bytes)
-            .encode(&pixels, 512, 512, image_webp::ColorType::Rgba8)
-            .unwrap();
-        let image = Image::decode(&bytes).unwrap();
-        assert_eq!((image.width, image.height), (512, 512));
-        assert_eq!(image.channel(512 * 512 - 1, 0), 255);
-        assert_eq!(image.channel(512 * 512 - 1, 3), 255);
+    fn metadata(version: usize) -> Value {
+        let mut meta = json!({
+            "version": version, "count": 2,
+            "means": {"mins": [0,0,0], "maxs": [1,1,1], "files": ["low", "high"]},
+            "scales": {"codebook": vec![0.0;256], "files": ["scale"]},
+            "quats": {"files": ["rotation"]},
+            "sh0": {"codebook": vec![0.0;256], "files": ["color"]}
+        });
+        if version == 1 {
+            meta["means"]["shape"] = json!([2, 3]);
+            meta["scales"]["mins"] = json!([0, 0, 0]);
+            meta["scales"]["maxs"] = json!([1, 1, 1]);
+            meta["sh0"]["mins"] = json!([0, 0, 0, 0]);
+            meta["sh0"]["maxs"] = json!([1, 1, 1, 1]);
+        }
+        meta
+    }
+
+    // Identity and a half-turn around X, as each version stores them.
+    fn decode(version: usize) -> Vec<f32> {
+        let meta = metadata(version).to_string();
+        let mut decoder = SogDecoder::new(Rotations::default(), &meta, 0, false).unwrap();
+        let plan: Vec<Vec<String>> = decoder.plan().into_iter().map(<[String]>::to_vec).collect();
+        for group in plan {
+            for name in group {
+                let pixels = match (name.as_str(), version) {
+                    // The alpha of the v3 texture holds nothing.
+                    ("rotation", 3) => [128, 128, 128, 0, 255, 128, 128, 17],
+                    ("rotation", _) => [128, 128, 128, 252, 128, 128, 128, 253],
+                    _ => [0, 0, 0, 255, 0, 0, 0, 255],
+                };
+                decoder.decode_image(pixels.to_vec(), 2, 1, 4).unwrap();
+            }
+            while !decoder.decode_batch().unwrap() {}
+        }
+        decoder.finish().unwrap();
+        decoder.into_splats().0
     }
 
     #[test]
-    fn rejects_webp_without_pixel_data() {
-        // A lossless header advertises 1024 squared without any pixel data.
-        let mut bytes = b"RIFF\x12\0\0\0WEBPVP8L\x05\0\0\0\x2f".to_vec();
-        bytes.extend_from_slice(&0x00ff_c3ffu32.to_le_bytes());
-        bytes.push(0);
-        assert!(Image::decode(&bytes).is_err());
+    fn each_version_decodes_its_rotation_encoding() {
+        let expected = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+        for (version, tolerance) in [(1, 0.005), (2, 0.005), (3, 1e-6)] {
+            let actual = decode(version);
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() < tolerance);
+            }
+        }
+    }
+
+    #[test]
+    fn rotation_texture_is_required() {
+        for version in [2, 3] {
+            let meta = Metadata::parse(&metadata(version).to_string(), false).unwrap();
+            assert_eq!(meta.groups[1].1, ["scale", "rotation"]);
+            for invalid in [Value::Null, json!({"files": []}), json!({"files": [""]})] {
+                let mut meta = metadata(version);
+                meta["quats"] = invalid;
+                assert!(Metadata::parse(&meta.to_string(), false).is_err());
+            }
+            let mut meta = metadata(version);
+            meta.as_object_mut().unwrap().remove("quats");
+            assert!(Metadata::parse(&meta.to_string(), false).is_err());
+        }
     }
 }
 

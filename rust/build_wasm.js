@@ -3,8 +3,21 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildCWasm } from "../c/build_wasm.js";
 
-const wasmPackVersion = "0.15.0";
+const wasmPackVersion = "0.15.1";
+const wasmPackRoot = join(
+  homedir(),
+  ".cache",
+  "gaussian-splat-lite",
+  "rust",
+  `wasm-pack-${wasmPackVersion}`,
+);
+const wasmPack = join(
+  wasmPackRoot,
+  "bin",
+  process.platform === "win32" ? "wasm-pack.exe" : "wasm-pack",
+);
 const lodOnly = process.argv.includes("--lod");
 const packageDir = fileURLToPath(
   new URL("./gaussian-splat-rs/", import.meta.url),
@@ -20,13 +33,12 @@ const childEnv = {
     .join(delimiter),
 };
 
-function available(command) {
-  return (
-    spawnSync(command, ["--version"], {
-      env: childEnv,
-      stdio: "ignore",
-    }).status === 0
-  );
+function version(command) {
+  const result = spawnSync(command, ["--version"], {
+    env: childEnv,
+    encoding: "utf8",
+  });
+  return result.status === 0 ? result.stdout.trim() : undefined;
 }
 
 function run(command, args, options = {}) {
@@ -48,7 +60,7 @@ process.once("SIGTERM", () => process.exit(143));
 
 try {
   for (const command of ["rustc", "cargo"]) {
-    if (!available(command)) {
+    if (!version(command)) {
       throw new Error(`${command} is required. Install Rust through rustup.`);
     }
   }
@@ -59,13 +71,15 @@ try {
   if (!existsSync(join(sysroot, "lib", "rustlib", "wasm32-unknown-unknown"))) {
     run("rustup", ["target", "add", "wasm32-unknown-unknown"]);
   }
-  if (!available("wasm-pack")) {
+  if (version(wasmPack) !== `wasm-pack ${wasmPackVersion}`) {
     run("cargo", [
       "install",
       "wasm-pack",
       "--version",
       wasmPackVersion,
       "--locked",
+      "--root",
+      wasmPackRoot,
     ]);
   }
 
@@ -75,11 +89,11 @@ try {
   const buildEnv = {
     ...childEnv,
     CARGO_TARGET_DIR: join(buildDir, "cargo-target"),
-    RUSTFLAGS: "-C target-feature=+simd128,+bulk-memory",
+    RUSTFLAGS: undefined,
   };
   const decoderOutput = join(buildDir, "decoder");
   run(
-    "wasm-pack",
+    wasmPack,
     [
       "build",
       "--target",
@@ -127,10 +141,17 @@ try {
     new URL("cluster.wasm", decoderDestination),
   );
 
+  const webpDirectory = buildCWasm(
+    buildDir,
+    lodOnly ? ["encoder"] : ["encoder", "decoder"],
+    fileURLToPath(decoderDestination),
+  );
+
   if (!lodOnly) {
+    buildEnv.GSL_WEBP_LIB_DIR = webpDirectory;
     const output = join(buildDir, "pkg");
     run(
-      "wasm-pack",
+      wasmPack,
       [
         "build",
         "--target",
@@ -151,6 +172,6 @@ try {
     });
   }
 } catch (error) {
-  console.error("Failed to build Rust WASM:", error.message);
+  console.error("Failed to build WASM:", error.message);
   process.exitCode = 1;
 }

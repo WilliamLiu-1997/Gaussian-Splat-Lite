@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Requires Node.js 22.12 or later and Rust via `rustup`. `npm run build:wasm` installs the `wasm32-unknown-unknown` target if needed.
+Requires Node.js 22.12 or later, Rust via `rustup`, Git, and Python 3 with `venv` support. `npm run build:wasm` installs the `wasm32-unknown-unknown` target if needed and caches the required wasm-pack, Emscripten, and CMake/Ninja tools under `~/.cache/gaussian-splat-lite/`. The cached wasm-pack is independent of any global installation.
 
 ```bash
 npm ci
@@ -25,7 +25,7 @@ Before running the CLI from a checkout, and after changing the decoder, its depe
 npm run build:wasm:lod
 ```
 
-`npm run build:wasm` also builds the CLI decoder. The generated `bin/decoder/` files are ignored by Git and included in the npm package, so npm users can run the command without compiling anything. The release workflow builds them before packaging.
+Both commands build the CLI decoder and the libwebp encoder from source. `npm run build:wasm` also builds the libwebp decoder for the browser WASM module. The generated `bin/decoder/` files are ignored by Git and included in the npm package, so npm users can run the command without compiling anything. The release workflow builds them before packaging. See [C/WASM build details](https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/blob/main/c/README.md) for tool versions and the download cache.
 
 ## Validation
 
