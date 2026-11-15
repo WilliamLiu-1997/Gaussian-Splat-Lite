@@ -308,8 +308,16 @@ fn blind_texture(texture: &Value) -> Result<(String, Vec<String>)> {
             _ => bail!("unsupported field type {kind}"),
         };
         if let Some(range) = field.get("range") {
-            let [min, max] = numbers::<2>(range, "field range")?;
-            ensure!(min <= max && (max - min).is_finite(), "invalid field range");
+            let range = range
+                .as_array()
+                .filter(|values| values.len() == 2)
+                .context("field range must have 2 entries")?;
+            let min = range[0].as_f64().context("field range must be numbers")?;
+            let max = range[1].as_f64().context("field range must be numbers")?;
+            ensure!(
+                min.is_finite() && max.is_finite() && min <= max && (max - min).is_finite(),
+                "invalid field range"
+            );
         }
     }
     ensure!(bytes <= 4, "fields exceed four bytes");

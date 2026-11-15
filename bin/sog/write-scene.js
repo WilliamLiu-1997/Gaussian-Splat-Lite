@@ -10,6 +10,7 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { GENERATOR } from "../generator.js";
 import { clusterBytes } from "../rad/cluster.js";
 import { initialize } from "../rad/input.js";
 import { WorkerGroup, clusterers } from "../rad/parallel.js";
@@ -42,6 +43,9 @@ export function checkOutput(output) {
 export async function writeScene(rows, regions, output, options, kernel) {
   checkOutput(output);
   const { workspace } = rows;
+  const input = rows.levels[0];
+  const { blind } = input;
+  const blindCount = blind?.textures.length ?? 0;
   const directory = dirname(output);
   mkdirSync(directory, { recursive: true });
   const staging = mkdtempSync(join(directory, ".gsl-build-sog-"));
@@ -68,8 +72,8 @@ export async function writeScene(rows, regions, output, options, kernel) {
     );
     // Both the gathered rows and the WebP encoder must fit their own memory.
     const capacity = Math.min(
-      Math.floor((workspace.room * 0.3) / (160 + dims * 8)),
-      Math.floor((4 * GIB) / chunkRowBytes(dims)),
+      Math.floor((workspace.room * 0.3) / (160 + dims * 8 + blindCount * 4)),
+      Math.floor((4 * GIB) / chunkRowBytes(dims, blindCount)),
       MAX_CHUNK_SPLATS,
     );
     const limit = Math.min(options.lodChunkCount, capacity);
@@ -103,8 +107,8 @@ export async function writeScene(rows, regions, output, options, kernel) {
     // An entry per splat needs float codes and labels, but no clustering.
     const codes = dims ? entries(largest, options) : 0;
     const chunkBytes =
-      largest * (124 + dims * 2) +
-      encodeBytes(largest, dims, codes) +
+      largest * (124 + dims * 2 + blindCount * 4) +
+      encodeBytes(largest, dims, codes, blindCount) +
       (!dims
         ? 0
         : codes < largest
@@ -122,7 +126,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
     // Idle threads keep their chunk buffers for reuse.
     const idle = encoder.threads.map((worker) => ({
       worker,
-      buffer: chunkBuffer(largest, dims),
+      buffer: chunkBuffer(largest, dims, blindCount),
     }));
     const active = new Set();
 
@@ -157,6 +161,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
           encoder,
           thread.worker,
           thread.buffer,
+          input,
         ).then((result) => {
           bytes += result.bytes;
           clipped += result.clipped;
@@ -199,6 +204,9 @@ export async function writeScene(rows, regions, output, options, kernel) {
         size += range.count;
       }
       await flush();
+      // Encoders own gathered buffers; later LODs only need the Blind table.
+      source.records.dispose();
+      for (const band of source.sh) band.dispose();
     }
     await Promise.all(active);
     // The manifest may take the threads' memory and their chunks'.
@@ -211,11 +219,14 @@ export async function writeScene(rows, regions, output, options, kernel) {
     );
     const manifest = {
       version: 1,
+      asset: { generator: GENERATOR },
       count: rows.length,
       counts,
       lodLevels: counts.length,
       filenames,
       tree: finishTree(regions.root),
+      model: input.model,
+      ...(input.comments?.length ? { comments: input.comments } : {}),
     };
     const path = join(staging, "lod-meta.json");
     bytes += writeFile(workspace, path, Buffer.from(JSON.stringify(manifest)));

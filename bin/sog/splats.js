@@ -1,5 +1,7 @@
 import { Progress } from "../rad/progress.js";
 import { PagedArray } from "../rad/storage.js";
+import { BlindInput } from "./blind.js";
+import { plyMetadata } from "./comments.js";
 
 export const SH_DIMS = [9, 15, 21, 27];
 export const SH_C0 = 0.28209479177387814;
@@ -9,7 +11,7 @@ const CHECKED = 16384;
 // garbage, each call's would take room from the cache.
 let stored = new Float32Array(0);
 
-// Position, raw mass, RGB, log scale, XYZW rotation; two alignment words.
+// Position, raw mass, RGB, log scale, XYZW rotation; Blind row as two u16s.
 export class Splats {
   // With `filter`, retain() crops the splats to its `withinDist`.
   constructor(workspace, maxSh, filter = undefined) {
@@ -18,6 +20,9 @@ export class Splats {
     // fields that every splat needs and how far each has arrived, the
     // splats checked, and the first `kept` of them, which stay.
     this.withinDist = filter?.withinDist;
+    this.blind = filter?.blind?.length
+      ? new BlindInput(workspace, filter.blind, CHECKED)
+      : undefined;
     this.fields = [];
     this.received = {};
     this.checked = 0;
@@ -42,6 +47,17 @@ export class Splats {
   }
 
   receive(name, base, values) {
+    if (name === "ply") {
+      Object.assign(this, plyMetadata(values));
+      return;
+    }
+    if (name === "blind") {
+      // Blind arrives before each geometry batch; consume the previous tail
+      // before its raw values are replaced.
+      if (this.checked < base) this.check(base - this.checked);
+      this.blind.receive(base, values);
+      return;
+    }
     if (name === "init") {
       if (base > 0xffffffff) throw new Error("Input exceeds u32 index limit");
       this.length = base;
@@ -112,6 +128,11 @@ export class Splats {
   // Reads `count` splats from `start` into `records` and an array per band.
   load(start, count, records, sh) {
     this.records.read(start * 16, records, count * 16);
+    if (this.blind)
+      for (let i = 0; i < count; i++) {
+        records[i * 16 + 14] = (start + i) & 65535;
+        records[i * 16 + 15] = (start + i) >>> 16;
+      }
     for (let band = 0; band < this.maxSh; band++)
       this.sh[band].read(
         start * SH_DIMS[band],
@@ -177,6 +198,8 @@ export class Splats {
       );
     if (cropped) console.log(`Removed ${cropped} splats outside --within-dist`);
     if (!kept) throw new Error("Input has no usable splats");
+    if (this.blind?.automatic.length)
+      this.blind.resolveLayout(this.blind.maxima);
   }
 
   // Notes that the splats before `end` have `field`, and checks those that
@@ -192,7 +215,7 @@ export class Splats {
   // Checks the next `count` splats, and moves those that stay after the
   // splats kept so far.
   check(count) {
-    const { maxSh, withinDist } = this;
+    const { maxSh, withinDist, blind } = this;
     this.block ??= {
       records: new Float32Array(CHECKED * 16),
       sh: SH_DIMS.map(
@@ -242,6 +265,7 @@ export class Splats {
         this.cropped++;
         continue;
       }
+      blind?.keep(start + i, stay);
       if (stay !== i) {
         records.copyWithin(stay * 16, at, at + 16);
         for (let band = 0; band < maxSh; band++) {
@@ -251,6 +275,7 @@ export class Splats {
       }
       stay++;
     }
+    blind?.flush(this.kept, stay);
     if (this.kept !== start || stay !== count)
       this.store(this.kept, stay, records, sh);
     else this.grow(records, stay);
@@ -259,6 +284,7 @@ export class Splats {
   }
 
   dispose() {
+    this.blind?.dispose();
     this.records.dispose();
     this.centers.dispose();
     for (const band of this.sh) band.dispose();

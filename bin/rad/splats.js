@@ -127,6 +127,7 @@ export class Splats {
   }
 
   receive(name, base, values) {
+    if (name === "ply") return;
     if (name === "init") {
       if (base > 0x80000000)
         throw new Error("Input exceeds LOD u32 index limit");

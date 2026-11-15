@@ -7,7 +7,7 @@ use gaussian_splat_lib::{
     splat_encode::decode_splat_sh_rgb,
 };
 use half::f16;
-use js_sys::{Float32Array, Function, Uint16Array};
+use js_sys::{Float32Array, Float64Array, Function, Uint16Array};
 use wasm_bindgen::prelude::*;
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
@@ -21,6 +21,7 @@ struct Receiver {
     raw_mass: bool,
     max_sh: usize,
     sh: Vec<u16>,
+    columns: Vec<String>,
 }
 
 impl Receiver {
@@ -31,6 +32,7 @@ impl Receiver {
             raw_mass,
             max_sh,
             sh: Vec::new(),
+            columns: Vec::new(),
         }
     }
     fn emit_values(&self, name: &str, base: usize, values: &JsValue) {
@@ -91,6 +93,20 @@ impl SplatReceiver for Receiver {
 
     fn raw_mass(&self) -> bool {
         self.raw_mass
+    }
+
+    fn ply_columns(&self) -> &[String] {
+        &self.columns
+    }
+    fn ply_header(&mut self, header: &str) -> anyhow::Result<()> {
+        self.emit_values("ply", 0, &JsValue::from_str(header));
+        anyhow::ensure!(self.error.borrow().is_none(), "Reading PLY metadata failed");
+        Ok(())
+    }
+    fn set_ply_columns(&mut self, base: usize, values: &[f64]) {
+        // SAFETY: the callback copies this view synchronously, as in emit().
+        let values = unsafe { Float64Array::view(values) };
+        self.emit_values("blind", base, &values);
     }
 
     fn reserve_decoder_memory(&mut self, bytes: usize) -> anyhow::Result<()> {
@@ -197,8 +213,10 @@ impl RawDecoder {
         callback: Function,
         raw_mass: Option<bool>,
         max_sh: usize,
+        columns: Option<Vec<String>>,
     ) -> Result<Self, JsValue> {
-        let receiver = Receiver::new(callback, raw_mass.unwrap_or(false), max_sh);
+        let mut receiver = Receiver::new(callback, raw_mass.unwrap_or(false), max_sh);
+        receiver.columns = columns.unwrap_or_default();
         let mut decoder = MultiDecoder::new(receiver.clone(), None, Some(path));
         receiver.check(decoder.set_expected_input_size(size as u64))?;
         Ok(Self { decoder, receiver })

@@ -213,13 +213,7 @@ async function convert(input, options, kernel, cancelled) {
         `Clustered SH into ${codebook.count} codes in ${((performance.now() - clusterStart) / 1000).toFixed(2)}s`,
       );
     }
-    const bytes = await writeRad(
-      splats,
-      output,
-      options.chunked,
-      options.lodBase,
-      codebook,
-    );
+    const bytes = await writeRad(splats, output, options.chunked, codebook);
     console.log(
       `Wrote ${(bytes / 1048576).toFixed(2)} MiB in ${((performance.now() - start) / 1000).toFixed(2)}s total`,
     );

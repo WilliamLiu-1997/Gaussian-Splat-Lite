@@ -72,6 +72,24 @@ Chunks whose SH coefficients are all zero use a single SH entry.
 
 Conversion is lossy, so colors and shape can differ from the source. SOG v3 limits linear opacity to **1.5625**; larger values are clamped and reported.
 
+## Blind data and PLY comments
+
+Use `--sog-blind` to include custom PLY fields such as object IDs. Repeat the option to include more fields.
+
+```sh
+gsl-build-sog scene.ply \
+  --sog-blind object_id \
+  --sog-blind confidence:f32
+```
+
+Fields use `name[:type]`. Omit the type for unsigned integers, or use `f16` or `f32` for decimal values. See `--help` for all supported types. Blind data is disabled by default and supports PLY input only.
+
+Separate fields with commas to pack them into one texture; their encodings must fit in four bytes per `--sog-blind` option. Only retained splats are validated. For automatic types, each group must fit using its fields' maximum values across all retained splats. Automatic integer encodings are chosen separately for each output chunk, so a field's type can differ between chunks. Coarser LODs inherit Blind values from the selected representative splat; values are not averaged.
+
+For `unorm8` and `unorm16`, an optional `[min,max]` range defaults to `[0,1]`; bounds must be finite and increasing. Float32 rounding at the endpoints is accepted and clamped; other out-of-range values are rejected. Values stored as `f16` are rounded to half precision and may overflow to infinity. Quote arguments containing brackets or spaces, for example `--sog-blind 'confidence:unorm8, depth:unorm16[0,100]'`.
+
+PLY comments are preserved automatically.
+
 ## Memory and temporary storage
 
 ```sh
@@ -107,6 +125,7 @@ See [SOG streaming](SogStreamScheduler.md) for loading and display options.
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere in input coordinates. |
 | `--sh-codebook <K>` | Automatic | Maximum SH entries per chunk, 1–256 K. |
 | `--sh-iterations <n>` | `10` | SH codebook refinement iterations; nonnegative. |
+| `--sog-blind <fields>` | Disabled | Include custom PLY fields as Blind data; repeatable. |
 | `--memory-budget <GiB>` | `4` | Memory target, at least 1 GiB; fractional values accepted. |
 | `--temp-dir <path>` | System temp directory | Directory for temporary working files. |
 | `-o, --output <path>` | `<input-stem>-sog/` | Output directory, for one input only. |

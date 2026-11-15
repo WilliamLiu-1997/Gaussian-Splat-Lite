@@ -7,7 +7,7 @@ import { SH_DIMS } from "./splats.js";
 // half bits of SH too, and the centers follow from the records while each
 // window of them is cached.
 export function reorder(source, order, pool) {
-  const { workspace, centers } = source;
+  const { workspace, centers, blind } = source;
   centers.dispose();
   workspace.settle();
   let permutation;
@@ -43,6 +43,16 @@ export function reorder(source, order, pool) {
         pool,
         false,
         `Grouping SH${band + 1}`,
+      );
+
+    // Only the input owns Blind data; later LODs keep references to these rows.
+    if (blind)
+      blind.values = permutation.apply(
+        blind.values,
+        blind.fields.length,
+        pool,
+        false,
+        "Grouping Blind data",
       );
   } finally {
     permutation?.dispose();

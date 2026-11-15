@@ -36,6 +36,7 @@ async function convert(input, options, kernel, cancelled) {
     );
     splats = await readInput(input, options.maxSh, workspace, Splats, {
       withinDist: options.withinDist,
+      blind: options.blind,
     });
     splats.retain();
     if (splats.maxSh < splats.inputSh)

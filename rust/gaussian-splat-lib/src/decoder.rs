@@ -88,6 +88,15 @@ pub trait SplatReceiver: 'static {
         false
     }
 
+    fn ply_columns(&self) -> &[String] {
+        &[]
+    }
+    fn ply_header(&mut self, _header: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Requested PLY columns, interleaved per vertex, without byte normalization.
+    fn set_ply_columns(&mut self, _base: usize, _values: &[f64]) {}
+
     /// Reserve the decoder's estimated live working memory before allocation.
     /// Budgeted receivers can spill their output storage to make room.
     fn reserve_decoder_memory(&mut self, _bytes: usize) -> anyhow::Result<()> {

@@ -27,6 +27,8 @@ export async function readInput(input, maxSh, workspace, Receiver, filter) {
   if (extension !== ".ply" && extension !== ".spz") {
     throw new Error("Input must be a .ply or .spz file");
   }
+  if (filter.blind?.length && extension !== ".ply")
+    throw new Error("--sog-blind requires PLY input");
   if (crashed) {
     throw new Error(
       `Skipped after the decoder failed on an earlier input (${crashed.message}); convert this file in a new run`,
@@ -64,6 +66,7 @@ export async function readInput(input, maxSh, workspace, Receiver, filter) {
       callback,
       splats.rawMass,
       maxSh,
+      splats.blind?.fields.map((field) => field.name),
     );
     try {
       const bytes = Buffer.allocUnsafe(1024 * 1024);

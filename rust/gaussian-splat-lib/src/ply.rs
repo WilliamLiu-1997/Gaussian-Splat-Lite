@@ -26,6 +26,7 @@ pub struct PlyDecoder<T: SplatReceiver> {
     prefix_remaining: u64,
     expected_input_size: Option<u64>,
     metadata_bytes: usize,
+    columns: PlyColumns,
 }
 
 impl<T: SplatReceiver> PlyDecoder<T> {
@@ -37,6 +38,7 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             prefix_remaining: 0,
             expected_input_size: None,
             metadata_bytes: 0,
+            columns: PlyColumns::default(),
         }
     }
 
@@ -93,6 +95,21 @@ impl<T: SplatReceiver> PlyDecoder<T> {
             T::SUPPORTS_COMPRESSED_PLY || parsed.chunk.is_none(),
             "Compressed PLY input is not supported"
         );
+        self.columns.properties = self
+            .splats
+            .ply_columns()
+            .iter()
+            .map(|name| {
+                parsed
+                    .vertex
+                    .properties
+                    .get(name)
+                    .copied()
+                    .ok_or_else(|| anyhow!("Missing PLY property for Blind data: {name}"))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        self.splats.ply_header(header)?;
+        self.reserve_memory(self.buffer.capacity())?;
         if let Some(size) = self.expected_input_size {
             let header_bytes = (header_end + terminator_len) as u64;
             let required = elements_byte_len(parsed.elements.iter(), header_bytes)?;
@@ -162,6 +179,12 @@ impl<T: SplatReceiver> PlyDecoder<T> {
         self.splats.reserve_decoder_memory(
             (12 * 1024 * 1024usize)
                 .saturating_add(input_capacity.saturating_mul(3))
+                .saturating_add(
+                    self.columns
+                        .properties
+                        .len()
+                        .saturating_mul(MAX_SPLAT_CHUNK * 8),
+                )
                 .saturating_add(self.metadata_bytes),
         )
     }
@@ -222,6 +245,13 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 }
             }
 
+            self.columns.decode(
+                &mut self.splats,
+                &self.buffer[offset..],
+                state.record_size,
+                state.next_splat,
+                count,
+            );
             self.splats.set_batch(
                 state.next_splat,
                 count,
@@ -333,6 +363,13 @@ impl<T: SplatReceiver> PlyDecoder<T> {
                 }
             }
 
+            self.columns.decode(
+                &mut self.splats,
+                &self.buffer[offset..],
+                state.record_size,
+                state.next_splat,
+                count,
+            );
             self.splats.set_batch_ln_scale(
                 state.next_splat,
                 count,
@@ -564,6 +601,50 @@ impl<T: SplatReceiver> ChunkReceiver for PlyDecoder<T> {
 
         self.splats.finish()?;
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct PlyColumns {
+    properties: Vec<PlyProperty>,
+    values: Vec<f64>,
+}
+
+impl PlyColumns {
+    fn decode<T: SplatReceiver>(
+        &mut self,
+        receiver: &mut T,
+        bytes: &[u8],
+        stride: usize,
+        base: usize,
+        count: usize,
+    ) {
+        if self.properties.is_empty() {
+            return;
+        }
+        self.values.resize(count * self.properties.len(), 0.0);
+        for (i, row) in self
+            .values
+            .chunks_exact_mut(self.properties.len())
+            .enumerate()
+        {
+            for (value, property) in row.iter_mut().zip(&self.properties) {
+                let at = i * stride + property.offset;
+                *value = match property.ty {
+                    PlyPropertyType::Uint => {
+                        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as f64
+                    }
+                    PlyPropertyType::Int => {
+                        i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as f64
+                    }
+                    PlyPropertyType::Double => {
+                        f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+                    }
+                    _ => property.ty.get_raw_f32(bytes, at) as f64,
+                };
+            }
+        }
+        receiver.set_ply_columns(base, &self.values);
     }
 }
 

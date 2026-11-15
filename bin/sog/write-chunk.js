@@ -30,8 +30,10 @@ export async function writeChunk(
   encoder,
   worker,
   buffer,
+  input,
 ) {
   const { workspace } = source;
+  const { blind, model } = input;
   const count = order.length;
   // Without a thread, the images of the chunk before stay on this thread
   // until collected, and this chunk's would add to them.
@@ -40,17 +42,9 @@ export async function writeChunk(
   const { shCodebook, shIterations } = options;
   // A codebook with an entry for every splat takes the SH as they are.
   const clustered = source.maxSh && entries(count, options) < count;
-  const { records, sh, weights, dims } = gather(
-    source,
-    order,
-    clustered,
-    buffer,
-  );
   const job = {
-    records,
-    sh,
-    weights,
-    dims,
+    ...gather(source, order, clustered, buffer, blind),
+    model,
     count,
     ranges,
     options: { shCodebook, shIterations },

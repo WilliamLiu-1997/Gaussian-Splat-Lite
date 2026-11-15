@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { GIB } from "../rad/storage.js";
+import { parseBlind } from "./blind.js";
 
 export const help = `Build streamed SOG v3 from PLY or SPZ with levels of detail (LOD).
 
@@ -18,6 +19,9 @@ Options:
                         Keep splat centers within this sphere (input coordinates)
   --sh-codebook <K>      Maximum SH entries per chunk, 1..256 K (default: automatic)
   --sh-iterations <n>    Color refinement iterations (default: 10)
+  --sog-blind <fields>   PLY columns as Blind data; repeat for each four-byte texture
+                        column[:type],...; types: u8/u16/u24/u32/f16/f32/unorm8/unorm16
+                        Default: smallest unsigned integer; unorm supports [min,max]
   --memory-budget <GiB>  Target memory (default: 4, minimum: 1)
   --temp-dir <path>      Temporary working files (default: system temp)
   -o, --output <path>    Output directory (one input only)
@@ -44,6 +48,7 @@ export function parse(args) {
       "within-dist": { type: "string" },
       "sh-codebook": { type: "string" },
       "sh-iterations": { type: "string", default: "10" },
+      "sog-blind": { type: "string", multiple: true },
       "memory-budget": { type: "string", default: "4" },
       "temp-dir": { type: "string" },
       output: { type: "string", short: "o" },
@@ -102,6 +107,7 @@ export function parse(args) {
     lodFactor: factor,
     maxSh: integer("max-sh", 0, 4),
     withinDist,
+    blind: parseBlind(values["sog-blind"]),
     shCodebook:
       values["sh-codebook"] === undefined
         ? undefined

@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `gsl-build-sog` can write PLY fields as Blind data with `--sog-blind`, preserving representative values across LODs. PLY producer comments and recognized anti-aliasing model tags are preserved in the scene metadata.
 - Added `gsl-build-sog` to convert PLY or SPZ into streamed SOG v3 without a GPU, with automatic LOD generation and support for up to SH4. Supports configurable LODs, chunk sizes, SH codebooks, a memory target, and sphere cropping with `--within-dist`. See [Building SOG files](docs/BuildSog.md).
 
 ### Changed

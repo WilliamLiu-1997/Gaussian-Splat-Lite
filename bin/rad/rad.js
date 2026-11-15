@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { deflateRawSync } from "node:zlib";
+import { GENERATOR } from "../generator.js";
 import { HALF, half, halfBits, opacityRadius } from "./math.js";
 import { WorkerGroup, encoders } from "./parallel.js";
 import { Progress } from "./progress.js";
@@ -460,7 +461,7 @@ if (!isMainThread && workerData?.coder) {
 }
 
 // With a codebook from clusterSh(), splats store SH as its labels.
-export async function writeRad(splats, output, chunked, lodBase, codebook) {
+export async function writeRad(splats, output, chunked, codebook) {
   const { workspace } = splats;
   const chunks = [];
   const stem = chunkStem(output);
@@ -575,7 +576,7 @@ export async function writeRad(splats, output, chunked, lodBase, codebook) {
       chunks,
       splatEncoding: format.meta,
       ...(codebook && { shCodeCount: codebook.count }),
-      comment: `Gaussian Splat Lite quality LOD (base ${lodBase})`,
+      comment: GENERATOR,
     });
     const writing = new Progress(
       "Writing RAD file",

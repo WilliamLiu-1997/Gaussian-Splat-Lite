@@ -2,6 +2,7 @@ import { closeSync, fdatasyncSync, openSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { sogBounds } from "../decoder/decoder.js";
+import { GENERATOR } from "../generator.js";
 import { initialize } from "../rad/input.js";
 import { collect } from "../rad/storage.js";
 import { cluster } from "./cluster.js";
@@ -201,13 +202,28 @@ export async function encodeChunk(job, kernel, check) {
   );
   const meta = {
     version: 3,
-    asset: { generator: "Gaussian-Splat-Lite gsl-build-sog" },
+    asset: { generator: GENERATOR },
     count,
+    model: job.model,
     means: { ...means, files: ["means_l.webp", "means_u.webp"] },
     scales: { codebook: scales, files: ["scales.webp"] },
     quats: { files: ["quats.webp"] },
     sh0: { codebook: sh0, files: ["sh0.webp"] },
   };
+  if (job.blindTextures?.length) {
+    const { width, height } = imageSize(count);
+    const image = opaqueImage(width, height);
+    // The converter uses little-endian word storage.
+    const pixels = new Uint32Array(image.buffer);
+    meta.blind = job.blindTextures.map((fields, texture) => {
+      pixels.set(
+        job.blindWords.subarray(texture * count, (texture + 1) * count),
+      );
+      const name = `blind_${texture}.webp`;
+      write(name, encodeWebp(image, width, height));
+      return { files: [name], fields };
+    });
+  }
   if (opacityMax > 204) meta.opacity = { max: (opacityMax / 204) ** 2 };
   if (dims) {
     const codebook = await cluster(
@@ -237,7 +253,7 @@ export async function encodeChunk(job, kernel, check) {
 // Also count the scalar codebooks' histogram and 36 bytes a splat of work
 // arrays: rotations and values to quantize, center codes and scale labels,
 // and the decoder module's copies of the codes for the bounds.
-export function encodeBytes(count, dims, entries) {
+export function encodeBytes(count, dims, entries, blindCount = 0) {
   const { width, height } = imageSize(count);
   const points = width * height * 4;
   let codebook = 0;
@@ -247,7 +263,7 @@ export function encodeBytes(count, dims, entries) {
   }
   const largest = Math.max(points, codebook);
   return (
-    2 * points +
+    (blindCount ? 3 : 2) * points +
     codebook +
     largest +
     webpBytes(largest) +

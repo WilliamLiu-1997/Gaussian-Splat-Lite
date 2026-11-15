@@ -216,7 +216,10 @@ function merge(block, plan) {
     if (!members[slot]) throw new Error("Voxel selection has an empty slot");
     if (members[slot] === 1) continue;
     const base = slot * stride;
-    // Every field but the two alignment words, which stay 0.
+    // Blind data follows the selected representative, never an average of IDs.
+    const selected = plan.selected[slot] * 16;
+    record[14] = records[selected + 14];
+    record[15] = records[selected + 15];
     const weight = weights[slot];
     for (let d = 0; d < 6; d++) covariance[d] = sums[base + 3 + d] / weight;
     covarianceToScaleQuat(...covariance, record, 7, record, 10, scratch);
@@ -245,9 +248,10 @@ function merge(block, plan) {
   }
 }
 
-// The merge weights, opacity × ellipsoid area, of the `count` splats in
-// `records`, as loadCore() computes them.
+// Fills the merge weights, opacity × ellipsoid area, as loadCore() does,
+// and returns the heaviest splat.
 function loadWeights(records, count, mergeWeight) {
+  let selected = 0;
   for (let i = 0; i < count; i++) {
     const row = i * 16;
     mergeWeight[i] =
@@ -257,7 +261,9 @@ function loadWeights(records, count, mergeWeight) {
         Math.exp(records[row + 8]),
         Math.exp(records[row + 9]),
       );
+    if (mergeWeight[i] > mergeWeight[selected]) selected = i;
   }
+  return selected;
 }
 
 // Returns whether the planner ran, whose arrays are then garbage.
@@ -270,10 +276,10 @@ function simplify(block, check) {
       mergedSh[band].set(sh[band].subarray(0, count * SH_DIMS[band]));
     return false;
   }
-  // Into one splat, every splat merges whatever the representative.
+  // Into one splat, Blind data follows the heaviest member.
   if (target === 1) {
-    loadWeights(records, count, block.mergeWeight);
-    merge(block, { selected: [0], assignment: new Int32Array(count) });
+    const selected = loadWeights(records, count, block.mergeWeight);
+    merge(block, { selected: [selected], assignment: new Int32Array(count) });
     return false;
   }
   const cloud = loadCore(records, count, block.core, block.mergeWeight);
