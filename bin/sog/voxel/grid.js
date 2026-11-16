@@ -1,7 +1,14 @@
 import { cellHash } from "../../rad/grid.js";
+import { refineVoxelGrid } from "./refine.js";
 
-// Adjacent sqrt(2) scales are not nested, so rebuild the grid at each scale.
-export function buildVoxelGrid(cloud, voxelTarget, check) {
+// Rebuild at each sqrt(2) scale, then refine dense cells by octree subdivision.
+export function buildVoxelGrid(
+  cloud,
+  voxelTarget,
+  splitThreshold,
+  maxGroups,
+  check,
+) {
   const { positions, length: count, minFeature, origin } = cloud;
   const capacity = 2 ** Math.ceil(Math.log2(voxelTarget * 2));
   const table = new Uint32Array(capacity);
@@ -9,6 +16,7 @@ export function buildVoxelGrid(cloud, voxelTarget, check) {
   const counts = new Uint32Array(voxelTarget);
   const pointGroups = new Uint32Array(count);
   let level = Math.ceil(Math.log2(Math.max(minFeature, 0.000001)) * 2);
+  let inverse;
   let groups = 0;
 
   const slotFor = (x, y, z) => {
@@ -30,8 +38,7 @@ export function buildVoxelGrid(cloud, voxelTarget, check) {
     check();
     table.fill(0);
     groups = 0;
-    const step = 2 ** (level / 2);
-    const inverse = 1 / step;
+    inverse = 1 / 2 ** (level / 2);
     let row = 0;
     for (; row < count; row++) {
       if ((row & 4095) === 0) check();
@@ -90,5 +97,13 @@ export function buildVoxelGrid(cloud, voxelTarget, check) {
     }
     neighborGroupsByGroup[group] = neighbors.sort((a, b) => a - b);
   }
-  return { groupOffsets, groupIndices, neighborGroupsByGroup };
+  return refineVoxelGrid(
+    cloud,
+    inverse,
+    coordinates,
+    { groupOffsets, groupIndices, neighborGroupsByGroup },
+    splitThreshold,
+    maxGroups,
+    check,
+  );
 }

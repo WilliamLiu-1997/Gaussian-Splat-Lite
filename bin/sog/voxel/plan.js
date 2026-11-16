@@ -25,15 +25,18 @@ function planSimplifyCloudVoxel(cloud, target, check) {
     1,
     Math.floor(target / REPRESENTATIVES_PER_VOXEL),
   );
+  const splitThreshold = Math.max(2, Math.ceil((n / voxelTarget) * 8));
   const { positions: pos, rgb, covariance } = cloud;
   const { groupOffsets, groupIndices, neighborGroupsByGroup } = buildVoxelGrid(
     cloud,
     voxelTarget,
+    splitThreshold,
+    target,
     check,
   );
   const groupCount = groupOffsets.length - 1;
-  // Keep the existing first-representative search budget for dense cells.
-  const candidateLimit = Math.ceil((n / voxelTarget) * 8) * 8;
+  // Keep the initial representative search budget independent of refinement.
+  const candidateLimit = splitThreshold * 8;
 
   const origRadius = cloud.radius;
   const coarseWeights = cloud.weight;
