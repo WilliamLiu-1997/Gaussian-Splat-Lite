@@ -32,7 +32,8 @@ Automatic SH codebooks use one entry per 8 splats in each chunk, rounded up,
 up to 256 K entries.
 PLY input must be uncompressed binary little-endian; SPZ is also supported.
 Supports up to SH4. Conversion is lossy; linear opacity above 1.5625 is clamped
-and reported. The memory budget is a target, not a hard memory limit.
+with scale compensation and reported. The memory budget is a target, not a hard
+memory limit.
 Requires Node.js 22.12 or later. No GPU is required.`;
 
 export function parse(args) {

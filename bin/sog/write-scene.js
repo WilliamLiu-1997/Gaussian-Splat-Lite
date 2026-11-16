@@ -244,7 +244,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
     );
     if (clipped)
       console.warn(
-        `SOG v3 clipped ${clipped} splats with mass above 1.5625 (across all LODs)`,
+        `SOG v3 clamped mass above 1.5625 and compensated scale for ${clipped} splats (across all LODs)`,
       );
     return { bytes, clipped, counts, files: filenames.length };
   } finally {

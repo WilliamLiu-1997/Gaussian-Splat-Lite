@@ -6,6 +6,7 @@ import { GENERATOR } from "../generator.js";
 import { initialize } from "../rad/input.js";
 import { collect } from "../rad/storage.js";
 import { cluster } from "./cluster.js";
+import { MAX_MASS, opacityLogScale } from "./opacity.js";
 import { QUANTIZE_BYTES, encodeRotation, label, quantize } from "./quantize.js";
 import { SH_C0 } from "./splats.js";
 import {
@@ -72,7 +73,11 @@ function encodeGeometry({ records, count, ranges }, write) {
       min[d] = Math.min(min[d], record[d]);
       max[d] = Math.max(max[d], record[d]);
     }
-    if (record[3] > 1.5625) clipped++;
+    if (record[3] > MAX_MASS) {
+      const compensation = opacityLogScale(record[3]);
+      for (let d = 7; d < 10; d++) record[d] += compensation;
+      clipped++;
+    }
   }
   // Each center coordinate as 16 bits, in two images of 8.
   const positions = new Uint16Array(count * 3);
