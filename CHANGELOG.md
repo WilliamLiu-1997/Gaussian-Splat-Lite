@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-17
+
 ### Added
 
 - `gsl-build-sog` can write PLY fields as Blind data with `--sog-blind`, preserving representative values across LODs. PLY producer comments and recognized anti-aliasing model tags are preserved in the scene metadata.
@@ -832,7 +834,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.6.2...v1.7.0
