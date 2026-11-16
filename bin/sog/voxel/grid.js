@@ -1,7 +1,6 @@
 import { cellHash } from "../../rad/grid.js";
 
-// One cubic grid per working block. Its origin stays fixed while the cell
-// width doubles, so every coarser cell contains whole finer cells.
+// Adjacent sqrt(2) scales are not nested, so rebuild the grid at each scale.
 export function buildVoxelGrid(cloud, voxelTarget, check) {
   const { positions, length: count, minFeature, origin } = cloud;
   const capacity = 2 ** Math.ceil(Math.log2(voxelTarget * 2));
@@ -9,7 +8,7 @@ export function buildVoxelGrid(cloud, voxelTarget, check) {
   const coordinates = new Float64Array(voxelTarget * 3);
   const counts = new Uint32Array(voxelTarget);
   const pointGroups = new Uint32Array(count);
-  let step = 2 ** Math.ceil(Math.log2(Math.max(minFeature, 0.000001)));
+  let level = Math.ceil(Math.log2(Math.max(minFeature, 0.000001)) * 2);
   let groups = 0;
 
   const slotFor = (x, y, z) => {
@@ -31,6 +30,7 @@ export function buildVoxelGrid(cloud, voxelTarget, check) {
     check();
     table.fill(0);
     groups = 0;
+    const step = 2 ** (level / 2);
     const inverse = 1 / step;
     let row = 0;
     for (; row < count; row++) {
@@ -54,7 +54,7 @@ export function buildVoxelGrid(cloud, voxelTarget, check) {
       counts[group]++;
     }
     if (row === count) break;
-    step *= 2;
+    level++;
   }
 
   const groupOffsets = new Uint32Array(groups + 1);
