@@ -154,118 +154,87 @@ function allocateRepresentatives(
   groupOffsets,
   target,
   representativesPerVoxelTarget,
-  weights,
+  opacity,
 ) {
   const groupCount = groupOffsets.length - 1;
   const maxRepsByGroup = new Uint32Array(groupCount);
-  const capacities = new Uint32Array(groupCount);
-  const groupWeights = new Float64Array(groupCount);
-  let capacityTotal = 0;
-
+  const counts = new Uint32Array(groupCount);
+  const weights = new Float64Array(groupCount);
+  const quotas = new Float64Array(groupCount);
+  const order = [];
+  let budget = Math.min(
+    target,
+    groupOffsets[groupCount],
+    groupCount * representativesPerVoxelTarget,
+  );
   for (let group = 0; group < groupCount; group++) {
     const start = groupOffsets[group];
     const end = groupOffsets[group + 1];
-    const size = end - start;
-    maxRepsByGroup[group] = 1;
-    const capacity = size - 1;
-    capacities[group] = capacity;
-    capacityTotal += capacity;
-    if (capacity <= 0) {
-      continue;
-    }
-
-    let groupWeight = 0.0;
+    counts[group] = end - start;
     for (let p = start; p < end; p++) {
-      const row = groupIndices[p];
-      const weight = Number.isFinite(weights[row])
-        ? Math.max(weights[row], 0.0)
-        : 0.0;
-      groupWeight += weight;
+      const weight = opacity[groupIndices[p]];
+      weights[group] += Number.isFinite(weight) ? Math.max(weight, 0) : 0;
     }
-    if (Number.isFinite(groupWeight) && groupWeight > 0.0) {
-      groupWeights[group] = groupWeight;
-    }
+    if (!Number.isFinite(weights[group])) weights[group] = 0;
+    order.push(group);
   }
 
-  const localBudget = Math.min(
-    target,
-    groupCount + capacityTotal,
-    groupCount * representativesPerVoxelTarget,
-  );
-  let remaining = Math.max(0, localBudget - groupCount);
-  if (remaining <= 0 || capacityTotal <= 0) {
-    return maxRepsByGroup;
-  }
-
-  let totalScore = 0.0;
-  for (let group = 0; group < groupCount; group++) {
-    if (capacities[group] > 0) {
-      totalScore += groupWeights[group];
-    }
-  }
-  const useCapacityFallback = !Number.isFinite(totalScore) || totalScore <= 0.0;
-  if (useCapacityFallback) {
-    totalScore = capacityTotal;
-  }
-
-  const exactExtras = new Float64Array(groupCount);
-  const order = [];
-  let allocated = 0;
-  for (let group = 0; group < groupCount; group++) {
-    const capacity = capacities[group];
-    if (capacity <= 0) {
-      continue;
-    }
-    const score = useCapacityFallback ? capacity : groupWeights[group];
-    if (!Number.isFinite(score) || score <= 0.0) {
-      continue;
-    }
-
-    const exact = (remaining * score) / totalScore;
-    const extra = Math.min(capacity, Math.floor(exact));
-    exactExtras[group] = exact;
-    maxRepsByGroup[group] += extra;
-    allocated += extra;
-    if (extra < capacity) {
-      order.push(group);
-    }
-  }
-
-  remaining -= allocated;
-  order.sort((a, b) => {
-    const aRemainder = exactExtras[a] - (maxRepsByGroup[a] - 1);
-    const bRemainder = exactExtras[b] - (maxRepsByGroup[b] - 1);
-    if (aRemainder !== bRemainder) {
-      return bRemainder - aRemainder;
-    }
-    const aScore = useCapacityFallback ? capacities[a] : groupWeights[a];
-    const bScore = useCapacityFallback ? capacities[b] : groupWeights[b];
-    if (aScore !== bScore) {
-      return bScore - aScore;
-    }
-    const aCapacity = capacities[a] - (maxRepsByGroup[a] - 1);
-    const bCapacity = capacities[b] - (maxRepsByGroup[b] - 1);
-    if (aCapacity !== bCapacity) {
-      return bCapacity - aCapacity;
-    }
-    return a - b;
-  });
-
-  while (remaining > 0 && order.length > 0) {
-    let wrote = 0;
-    for (let i = 0; i < order.length && remaining > 0; i++) {
-      const group = order[i];
-      if (maxRepsByGroup[group] - 1 >= capacities[group]) {
-        continue;
+  while (order.length > 0) {
+    let totalWeight = 0;
+    for (const group of order) totalWeight += weights[group];
+    if (!(totalWeight > 0) || !Number.isFinite(totalWeight)) {
+      totalWeight = 0;
+      for (const group of order) {
+        weights[group] = counts[group] - 1;
+        totalWeight += weights[group];
       }
-      maxRepsByGroup[group] += 1;
-      remaining -= 1;
-      wrote += 1;
-    }
-    if (wrote === 0) {
+      const extras = budget - order.length;
+      for (const group of order)
+        quotas[group] =
+          1 + (totalWeight > 0 ? (extras * weights[group]) / totalWeight : 0);
       break;
     }
+
+    let shortage = 0;
+    let excess = 0;
+    for (const group of order) {
+      const exact = (budget * weights[group]) / totalWeight;
+      quotas[group] = exact;
+      shortage += Math.max(0, 1 - exact);
+      excess += Math.max(0, exact - counts[group]);
+    }
+    if (shortage === excess) break;
+
+    // Clamp only the bound that moves the total toward the budget.
+    const fixMinimum = shortage > excess;
+    let active = 0;
+    for (const group of order) {
+      if (fixMinimum ? quotas[group] < 1 : quotas[group] > counts[group]) {
+        const count = fixMinimum ? 1 : counts[group];
+        maxRepsByGroup[group] = count;
+        budget -= count;
+      } else {
+        order[active++] = group;
+      }
+    }
+    order.length = active;
   }
+
+  let remaining = budget;
+  let candidates = 0;
+  for (const group of order) {
+    const exact = Math.max(1, Math.min(counts[group], quotas[group]));
+    const count = Math.floor(exact);
+    maxRepsByGroup[group] = count;
+    quotas[group] = exact - count;
+    remaining -= count;
+    if (count < counts[group]) order[candidates++] = group;
+  }
+  order.length = candidates;
+  order.sort(
+    (a, b) => quotas[b] - quotas[a] || weights[b] - weights[a] || a - b,
+  );
+  for (let i = 0; i < remaining; i++) maxRepsByGroup[order[i]]++;
 
   return maxRepsByGroup;
 }

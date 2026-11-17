@@ -16,7 +16,7 @@ const HEAP_MB = 32;
 // place in the output beforehand: worker threads simplify blocks in any
 // order while this thread reads and writes them, and the output is the same
 // with any number of threads.
-async function simplifyBlocks(source, root, limit, output, progress) {
+async function simplifyBlocks(source, root, limit, output, update) {
   const { workspace, maxSh } = source;
   const dims = SH_DIMS.slice(0, maxSh).reduce((a, b) => a + b, 0);
   const blocks = [];
@@ -88,8 +88,8 @@ async function simplifyBlocks(source, root, limit, output, progress) {
             }
             if (failed) return;
             output.store(offset, node.quota, arrays.merged, arrays.mergedSh);
-            done += node.count;
-            progress.update(done);
+            done += node.count - node.quota;
+            update(done);
           }
         }),
       );
@@ -135,8 +135,8 @@ async function simplifyBlocks(source, root, limit, output, progress) {
         simplifyBlock({ ...job, ...arrays }, check);
         output.store(offset, node.quota, arrays.merged, arrays.mergedSh);
       }
-      done += node.count;
-      progress.update(done);
+      done += node.count - node.quota;
+      update(done);
     }
   }
   // The cache may take the memory of the blocks again.
@@ -144,7 +144,7 @@ async function simplifyBlocks(source, root, limit, output, progress) {
   workspace.expect(0);
 }
 
-async function reduce(source, target, context) {
+async function reduce(source, target, context, update) {
   const { workspace, maxSh } = source;
   workspace.settle();
   const dims = SH_DIMS.slice(0, maxSh).reduce((a, b) => a + b, 0);
@@ -155,10 +155,6 @@ async function reduce(source, target, context) {
   const root = { start: 0, count: source.length, quota: target };
   let order;
   const output = new Splats(workspace, maxSh);
-  const progress = new Progress(
-    `Simplifying ${source.length} → ${target}`,
-    source.length,
-  );
   try {
     if (source.length > limit) {
       // No more threads split than will simplify the blocks: threads that
@@ -176,10 +172,9 @@ async function reduce(source, target, context) {
       order.dispose();
       order = undefined;
     }
-    await simplifyBlocks(source, root, limit, output, progress);
+    await simplifyBlocks(source, root, limit, output, update);
     if (output.length !== target)
       throw new Error("LOD count differs from its target");
-    progress.finish(`${output.length} splats`);
     return output;
   } catch (error) {
     output.dispose();
@@ -204,23 +199,16 @@ export async function buildLevels(input, rootSplats, factor) {
         throw new Error(
           "Combined LODs exceed u32 index limit; increase --lod-factor",
         );
-      let current = source;
-      try {
-        while (current.length > target) {
-          const next = await reduce(
-            current,
-            Math.max(target, Math.ceil(current.length / 2)),
-            context,
-          );
-          if (current !== source) current.dispose();
-          current = next;
-        }
-        levels.push(current);
-        total += current.length;
-      } catch (error) {
-        if (current !== source) current.dispose();
-        throw error;
-      }
+      const progress = new Progress(
+        `Simplifying LOD ${levels.length} (${source.length} → ${target})`,
+        source.length - target,
+      );
+      const next = await reduce(source, target, context, (done) =>
+        progress.update(done),
+      );
+      levels.push(next);
+      total += next.length;
+      progress.finish(`${next.length} splats`);
     }
     console.log(
       `LOD counts: ${levels.map((level) => level.length).join(" → ")}`,

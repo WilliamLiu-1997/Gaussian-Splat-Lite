@@ -17,6 +17,9 @@ import {
 } from "./representatives.js";
 
 const REPRESENTATIVES_PER_VOXEL = 24;
+// The share of the output that the voxels do not receive by opacity: their
+// candidates compete for it across the block, by weight and novelty.
+const GLOBAL_SHARE = 1 / 3;
 
 function planSimplifyCloudVoxel(cloud, target, check) {
   check();
@@ -71,7 +74,7 @@ function planSimplifyCloudVoxel(cloud, target, check) {
   const maxRepsByGroup = allocateRepresentatives(
     groupIndices,
     groupOffsets,
-    target,
+    Math.max(groupCount, Math.floor(target * (1 - GLOBAL_SHARE))),
     REPRESENTATIVES_PER_VOXEL,
     cloud.opacity,
   );

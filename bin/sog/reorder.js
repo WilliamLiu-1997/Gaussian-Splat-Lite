@@ -12,12 +12,7 @@ export function reorder(source, order, pool) {
   workspace.settle();
   let permutation;
   try {
-    permutation = new Permutation(
-      workspace,
-      order,
-      source.length,
-      "Preparing voxel blocks",
-    );
+    permutation = new Permutation(workspace, order, source.length);
     const rows = new Float32Array(BATCH * 16);
     const values = new Float32Array(BATCH * 3);
     source.records = permutation.apply(
@@ -25,7 +20,7 @@ export function reorder(source, order, pool) {
       16,
       pool,
       false,
-      "Grouping splat attributes",
+      undefined,
       (records, start, end) => {
         for (let base = start; base < end; base += BATCH) {
           const count = Math.min(BATCH, end - base);
@@ -37,23 +32,11 @@ export function reorder(source, order, pool) {
       },
     );
     for (let band = 0; band < source.maxSh; band++)
-      source.sh[band] = permutation.apply(
-        source.sh[band],
-        SH_DIMS[band],
-        pool,
-        false,
-        `Grouping SH${band + 1}`,
-      );
+      source.sh[band] = permutation.apply(source.sh[band], SH_DIMS[band], pool);
 
     // Only the input owns Blind data; later LODs keep references to these rows.
     if (blind)
-      blind.values = permutation.apply(
-        blind.values,
-        blind.fields.length,
-        pool,
-        false,
-        "Grouping Blind data",
-      );
+      blind.values = permutation.apply(blind.values, blind.fields.length, pool);
   } finally {
     permutation?.dispose();
   }

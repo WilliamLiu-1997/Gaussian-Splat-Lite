@@ -605,11 +605,11 @@ async function split(workspace, levels, length, root, job) {
   // never beyond.
   const cutting =
     length > fit ? length * 4 * Math.ceil(Math.log2(length / fit)) : 0;
-  const progress = new Progress(job.label, 2 * length + cutting);
+  const progress = job.label && new Progress(job.label, 2 * length + cutting);
   let done = 0;
   const advance = (rows, most = Number.POSITIVE_INFINITY) => {
     done = Math.min(done + rows, most);
-    progress.update(done);
+    progress?.update(done);
   };
   let order = new IndexArray(workspace);
   order.length = length;
@@ -738,7 +738,7 @@ async function split(workspace, levels, length, root, job) {
       await splitParts(first, last, rows);
       first = last;
     }
-    progress.finish();
+    progress?.finish();
     if (arranged) {
       order.dispose();
       order = arranged;
@@ -765,7 +765,6 @@ export const splitBlocks = (source, root, limit, most) =>
     limit,
     most,
     bounds: false,
-    label: "Dividing voxel blocks",
   });
 
 // Divides all levels' splats into regions of at most `limit`, every node

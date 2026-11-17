@@ -1,7 +1,14 @@
 import { cellHash } from "../../rad/grid.js";
 import { refineVoxelGrid } from "./refine.js";
 
-// Rebuild at each sqrt(2) scale, then refine dense cells by octree subdivision.
+// How many times the step between the last cell edge that did not fit and
+// the first that did is halved: the cells then come to within a few percent
+// of `voxelTarget`.
+const EDGE_BISECTIONS = 5;
+
+// The finest grid of at most `voxelTarget` cells: the cell edge doubles until
+// the cells fit, and the step back toward the last edge that did not fit is
+// halved a few times. Dense cells are then refined by octree subdivision.
 export function buildVoxelGrid(
   cloud,
   voxelTarget,
@@ -15,7 +22,6 @@ export function buildVoxelGrid(
   const coordinates = new Float64Array(voxelTarget * 3);
   const counts = new Uint32Array(voxelTarget);
   const pointGroups = new Uint32Array(count);
-  let level = Math.ceil(Math.log2(Math.max(minFeature, 0.000001)) * 2);
   let inverse;
   let groups = 0;
 
@@ -34,13 +40,14 @@ export function buildVoxelGrid(
     return slot;
   };
 
-  for (;;) {
+  // Groups the splats by cells with an edge of 2 ** exponent, and returns
+  // whether the cells fit.
+  const place = (exponent) => {
     check();
     table.fill(0);
     groups = 0;
-    inverse = 1 / 2 ** (level / 2);
-    let row = 0;
-    for (; row < count; row++) {
+    inverse = 1 / 2 ** exponent;
+    for (let row = 0; row < count; row++) {
       if ((row & 4095) === 0) check();
       const at = row * 3;
       const x = Math.floor((positions[at] - origin[0]) * inverse);
@@ -49,20 +56,35 @@ export function buildVoxelGrid(
       const slot = slotFor(x, y, z);
       if (!table[slot]) {
         // Reject an oversized grid as soon as its budget is exceeded.
-        if (groups === voxelTarget) break;
+        if (groups === voxelTarget) return false;
         coordinates[groups * 3] = x;
         coordinates[groups * 3 + 1] = y;
         coordinates[groups * 3 + 2] = z;
         counts[groups] = 0;
         table[slot] = ++groups;
       }
-      const group = table[slot] - 1;
-      pointGroups[row] = group;
-      counts[group]++;
+      const cell = table[slot] - 1;
+      pointGroups[row] = cell;
+      counts[cell]++;
     }
-    if (row === count) break;
-    level++;
+    return true;
+  };
+
+  let exponent = Math.ceil(Math.log2(Math.max(minFeature, 0.000001)));
+  // How far below `exponent` the cells are known not to fit.
+  let step = 0;
+  while (!place(exponent)) {
+    exponent++;
+    step = 1;
   }
+  // Whether the arrays hold an attempt that did not fit.
+  let stale = false;
+  for (let i = 0; i < EDGE_BISECTIONS && step > 0; i++) {
+    step /= 2;
+    stale = !place(exponent - step);
+    if (!stale) exponent -= step;
+  }
+  if (stale) place(exponent);
 
   const groupOffsets = new Uint32Array(groups + 1);
   for (let group = 0; group < groups; group++)
