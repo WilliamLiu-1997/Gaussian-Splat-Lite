@@ -1,11 +1,14 @@
 // LOD construction adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
 import { Cells, Grid, NONE, cellHash } from "./grid.js";
-import { Heap, Queue, sortSplats } from "./heap.js";
+import { Heap, Queue, rank, sortSplats } from "./heap.js";
 import { HALF, SCALE, rotation } from "./math.js";
 import { MISS, ROUND, hint } from "./parallel.js";
 import { Progress } from "./progress.js";
 import { SHAPE_WORDS, SH_DIMS, Similarities, shCodeCount } from "./splats.js";
 import { IndexArray, PagedArray, Permutation } from "./storage.js";
+
+// Grid cell size and candidate size limit relative to the level (at least 1).
+const SEARCH_SCALE = 2;
 
 // Records that the weights of SH clustering are taken from at a time.
 const BLOCK = 4096;
@@ -174,9 +177,10 @@ function mergeLevels(splats, pool) {
   // 4 cells per axis next to them: queries in other blocks skip the check.
   const added = new Cells(18);
   const near = new Cells(20);
-  // Levels double the size of the splats that merge, from the smallest
-  // leaf's. Progress numbers them and shows about how many there are: until
-  // all leaves are in and a level spans the scene, which can be one off.
+  // Levels double the size of the splats that initiate merges, from the
+  // smallest leaf's. Progress numbers them and shows about how many there
+  // are: until all leaves are in and a level spans the scene, which can be
+  // one off.
   const first = Math.ceil(Math.log2(Math.max(sizes.get(0), 0.000001)));
   const span = Math.hypot(
     bounds.max[0] - bounds.min[0],
@@ -187,7 +191,9 @@ function mergeLevels(splats, pool) {
   const levels = Math.max(1, Math.ceil(Math.log2(reach)) - first + 1);
   for (let level = first; ; level++) {
     const step = 2 ** level;
-    if (!Number.isFinite(step)) throw new Error("LOD scale overflow");
+    const searchStep = step * SEARCH_SCALE;
+    if (!Number.isFinite(searchStep)) throw new Error("LOD scale overflow");
+    const stepKey = rank(-step);
     const name = `LOD level ${level - first + 1}/≈${levels}`;
     // The leaves are sorted by feature, so find this level's range without
     // an extra linear pass just to count its work.
@@ -195,7 +201,7 @@ function mergeLevels(splats, pool) {
     let high = initial;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
-      if (sizes.get(middle) <= step) low = middle + 1;
+      if (sizes.get(middle) <= searchStep) low = middle + 1;
       else high = middle;
     }
     const { grid, queue } = Progress.inline(() => {
@@ -207,7 +213,7 @@ function mergeLevels(splats, pool) {
         if ((frontier & 4095) === 0) adding.update(frontier - previous);
       }
       adding.finish();
-      const grid = new Grid(similarities, step, bounds, pool);
+      const grid = new Grid(similarities, searchStep, bounds, pool);
       grid.build(active, removed, name);
       const queue = new Queue(active, workspace, `Sorting ${name} queue`);
       return { grid, queue };
@@ -233,6 +239,10 @@ function mergeLevels(splats, pool) {
       while (count < limit && queue.length) {
         const index = queue.pop();
         if (removed.get(index)) continue;
+        if (queue.key < stepKey) {
+          next.pushKey(index, queue.key);
+          continue;
+        }
         pool.nodes[count] = index;
         pool.entries[count] = grid.entry(index);
         keys[count] = queue.key;
@@ -316,11 +326,15 @@ function mergeLevels(splats, pool) {
         removed.set(other, 1);
         grid.remove(self);
         grid.remove(best);
-        const feature = sizes.get(merged);
+        // Merger already rounds these fields to their stored precision.
+        const record = task < 0 ? splats.merged : merge;
+        const feature = record[14];
         if (feature > step) next.push(merged, -feature);
-        else {
+        if (feature <= searchStep) {
           const terms =
-            task < 0 ? undefined : copy(pool.terms, task * 13, terms13, 13);
+            task < 0
+              ? similarities.terms(record, terms13)
+              : copy(pool.terms, task * 13, terms13, 13);
           // The slot of its cell where the search found it.
           const slot =
             task < 0
@@ -328,9 +342,7 @@ function mergeLevels(splats, pool) {
               : layout === grid.layout
                 ? pool.hints[task]
                 : NONE;
-          added.add(
-            grid.insert(merged, splats.weight.get(merged), terms, slot),
-          );
+          added.add(grid.insert(merged, record[15] * record[3], terms, slot));
           const { lastX: x, lastY: y, lastZ: z } = grid;
           const x1 = Math.floor((x + 1) / 4);
           const y1 = Math.floor((y + 1) / 4);
@@ -339,7 +351,7 @@ function mergeLevels(splats, pool) {
             for (let by = Math.floor((y - 1) / 4); by <= y1; by++)
               for (let bx = Math.floor((x - 1) / 4); bx <= x1; bx++)
                 near.add(cellHash(bx, by, bz));
-          queue.push(merged, -feature);
+          if (feature <= step) queue.push(merged, -feature);
         }
       }
       // At round boundaries the queue only shrinks: each new merged item

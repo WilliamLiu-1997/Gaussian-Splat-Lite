@@ -4,7 +4,7 @@ import { IndexArray } from "./storage.js";
 const float = new Float32Array(1);
 const bits = new Uint32Array(float.buffer);
 // An unsigned integer that orders like the float score; -0 counts as 0.
-function rank(score) {
+export function rank(score) {
   float[0] = score + 0;
   const word = bits[0];
   return (word & 0x80000000 ? ~word : word | 0x80000000) >>> 0;

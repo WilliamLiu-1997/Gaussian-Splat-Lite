@@ -1,4 +1,5 @@
 // Candidate search adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
+import { rank } from "./heap.js";
 import { HALF, halfBits } from "./math.js";
 import { Progress } from "./progress.js";
 import { LATER } from "./splats.js";
@@ -159,7 +160,7 @@ export class Lookup {
     this.gone = gone;
     this.capacity = capacity;
     this.step = step;
-    // Exact, as the step is a power of two, and faster than dividing.
+    // Reused for cell lookups.
     this.inverse = 1 / step;
     this.terms = new Int32Array(9);
   }
@@ -391,13 +392,16 @@ export class Grid extends Lookup {
     return out;
   }
 
-  // Adds the active splats that are not removed, in heap order: a batch at
-  // a time, whose entries the pool's threads compute from the splats'
+  // Adds live splats no larger than the search step, in heap order: a batch
+  // at a time, whose entries the pool's threads compute from the splats'
   // records. This thread computes those of records that are not cached.
   build(active, removed, label) {
     const progress = label && new Progress(`${label} grid`, active.length);
     const { pool, similarities } = this;
     const { nodes, results, records: values, recordWords: words } = pool;
+    const { items } = active;
+    // Active keys rank -size, so larger keys mean smaller splats.
+    const cellKey = rank(-this.step);
     let count = 0;
     const flush = () => {
       if (count < 64) results.fill(LATER, 0, count);
@@ -412,8 +416,11 @@ export class Grid extends Lookup {
       count = 0;
     };
     for (let i = 0; i < active.length; i++) {
-      const node = active.index(i);
-      if (!removed.get(node)) {
+      const pair = items.page(i * 2);
+      const offset = (i * 2) & items.mask;
+      const key = pair[offset];
+      const node = pair[offset + 1];
+      if (!removed.get(node) && key >= cellKey) {
         nodes[count++] = node;
         if (count === nodes.length) flush();
       }

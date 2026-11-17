@@ -304,7 +304,12 @@ export class Pool {
       capacity: grid.capacity,
       step: grid.step,
     });
-    this.run(SEARCH, count, 32);
+    // Leave several chunks per thread, including in short rounds.
+    const size = Math.max(
+      4,
+      Math.min(32, Math.floor(count / ((this.workers.length + 1) * 4))),
+    );
+    this.run(SEARCH, count, size);
   }
 
   // Blends the rows of `column` of the first `count` children pairs in
