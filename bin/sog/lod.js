@@ -11,18 +11,42 @@ import { splitBlocks } from "./split.js";
 // heap for a full block and 24 MiB for one of exact duplicates.
 const HEAP_MB = 32;
 
-// Simplifies the working blocks under `root` into `output`. A block depends
-// on no other block and yields exactly its quota, so its splats have their
-// place in the output beforehand: worker threads simplify blocks in any
-// order while this thread reads and writes them, and the output is the same
-// with any number of threads.
+// An internal working block has a quota of one. Reduce its children before
+// loading their representatives into the same scratch arrays as a leaf.
+function loadBlock(source, node, arrays, check) {
+  const { records, sh, merged, mergedSh } = arrays;
+  if (!node.children) {
+    source.load(node.start, node.count, records, sh);
+    return node.count;
+  }
+
+  const reduceChild = (child) => {
+    const count = loadBlock(source, child, arrays, check);
+    simplifyBlock({ count, target: 1, maxSh: source.maxSh, ...arrays }, check);
+  };
+
+  reduceChild(node.children[0]);
+  const left = merged.slice(0, 16);
+  const leftSh = mergedSh.map((band, i) => band.slice(0, SH_DIMS[i]));
+  reduceChild(node.children[1]);
+
+  records.set(left);
+  records.set(merged.subarray(0, 16), 16);
+  for (let i = 0; i < sh.length; i++) {
+    const size = SH_DIMS[i];
+    sh[i].set(leftSh[i]);
+    sh[i].set(mergedSh[i].subarray(0, size), size);
+  }
+  return 2;
+}
+
 async function simplifyBlocks(source, root, limit, output, update) {
   const { workspace, maxSh } = source;
   const dims = SH_DIMS.slice(0, maxSh).reduce((a, b) => a + b, 0);
   const blocks = [];
   let rows = 0;
   let most = 0;
-  let offset = 0;
+  let start = 0;
   const stack = [root];
   while (stack.length) {
     const node = stack.pop();
@@ -30,116 +54,63 @@ async function simplifyBlocks(source, root, limit, output, update) {
       stack.push(node.children[1], node.children[0]);
       continue;
     }
-    blocks.push({ node, offset });
+    blocks.push({ node, start });
+    start += node.quota;
     rows = Math.max(rows, Math.min(node.count, limit));
     most = Math.max(most, node.quota);
-    offset += node.quota;
   }
-  // The largest blocks go first, so that the last to finish are small and
-  // few threads wait for them.
+
+  // Start large blocks first; their final positions are already fixed.
   blocks.sort((a, b) => b.node.count - a.node.count);
-  workspace.settle();
   const bytes = blockBytes(rows, most, dims);
-  // As in SH clustering, the threads only compute: they take all the room
-  // but a small cache. Every byte of a thread is planned: its block's arrays
-  // have their size, and its heap ends the thread at its limit.
   const threads =
     blocks.length > 1
       ? clusterers(workspace, bytes + HEAP_MB * 1024 ** 2, 0, blocks.length)
       : 0;
+  if (!threads) {
+    workspace.settle();
+    workspace.expect(bytes);
+  }
   const check = () => workspace.check();
-  // The blocks that this thread simplifies: all without room for threads,
-  // those that merge upward, and those whose planner outgrew a thread's heap.
-  const own = [];
+  const group = new WorkerGroup(
+    new URL("./simplify.js", import.meta.url),
+    threads,
+    { simplifier: true, cancelled: workspace.cancelled },
+    undefined,
+    "Voxel simplification",
+    HEAP_MB,
+  );
   let next = 0;
-  let done = 0;
-  if (threads) {
-    const group = new WorkerGroup(
-      new URL("./simplify.js", import.meta.url),
-      threads,
-      { simplifier: true, cancelled: workspace.cancelled },
-      undefined,
-      "Voxel simplification",
-      HEAP_MB,
-    );
-    let failed = false;
-    try {
-      // Each thread has one block at a time, in its own arrays.
-      await Promise.all(
-        group.workers.map(async (worker) => {
-          const arrays = blockArrays(rows, most, maxSh);
-          while (!failed && next < blocks.length) {
-            workspace.check();
-            const block = blocks[next++];
-            const { node, offset } = block;
-            if (node.children) {
-              own.push(block);
-              continue;
-            }
-            source.load(node.start, node.count, arrays.records, arrays.sh);
-            const job = { count: node.count, target: node.quota, maxSh };
+  try {
+    let done = 0;
+    await Promise.all(
+      group.threads.map(async (thread) => {
+        let worker = thread;
+        const arrays = blockArrays(rows, most, maxSh);
+        while (next < blocks.length) {
+          check();
+          const { node, start } = blocks[next++];
+          const count = loadBlock(source, node, arrays, check);
+          const job = { count, target: node.quota, maxSh, ...arrays };
+          if (worker) {
             try {
-              await group.request(worker, { ...job, ...arrays });
+              await group.request(worker, job);
             } catch (error) {
               if (error.code !== "ERR_WORKER_OUT_OF_MEMORY") throw error;
-              // The thread ended at its heap limit.
-              own.push(block);
-              return;
+              worker = undefined;
             }
-            if (failed) return;
-            output.store(offset, node.quota, arrays.merged, arrays.mergedSh);
-            done += node.count - node.quota;
-            update(done);
           }
-        }),
-      );
-    } catch (error) {
-      failed = true;
-      throw error;
-    } finally {
-      await group.close();
-    }
-    // The threads' memory has returned.
-    workspace.settle();
+          if (!worker) simplifyBlock(job, check);
+          output.store(start, node.quota, arrays.merged, arrays.mergedSh);
+          done += node.count;
+          update(done);
+        }
+      }),
+    );
+  } finally {
+    next = blocks.length;
+    await group.close();
   }
-  own.push(...blocks.slice(next));
-  if (own.length) {
-    workspace.expect(bytes);
-    const arrays = blockArrays(rows, most, maxSh);
-    // Working blocks may merge upward; they never impose a root count floor.
-    // Each child yields one splat.
-    const mergeUp = (node, destination, base) => {
-      const children = node.children && new Splats(workspace, maxSh);
-      try {
-        node.children?.forEach((child, i) => mergeUp(child, children, i));
-        const count = children ? children.length : node.count;
-        const { records, sh } = arrays;
-        (children ?? source).load(
-          children ? 0 : node.start,
-          count,
-          records,
-          sh,
-        );
-        simplifyBlock({ count, target: 1, maxSh, ...arrays }, check);
-        destination.store(base, 1, arrays.merged, arrays.mergedSh);
-      } finally {
-        children?.dispose();
-      }
-    };
-    for (const { node, offset } of own) {
-      workspace.check();
-      if (node.children) mergeUp(node, output, offset);
-      else {
-        source.load(node.start, node.count, arrays.records, arrays.sh);
-        const job = { count: node.count, target: node.quota, maxSh };
-        simplifyBlock({ ...job, ...arrays }, check);
-        output.store(offset, node.quota, arrays.merged, arrays.mergedSh);
-      }
-      done += node.count - node.quota;
-      update(done);
-    }
-  }
-  // The cache may take the memory of the blocks again.
   workspace.settle();
   workspace.expect(0);
 }
@@ -201,7 +172,7 @@ export async function buildLevels(input, rootSplats, factor) {
         );
       const progress = new Progress(
         `Simplifying LOD ${levels.length} (${source.length} → ${target})`,
-        source.length - target,
+        source.length,
       );
       const next = await reduce(source, target, context, (done) =>
         progress.update(done),

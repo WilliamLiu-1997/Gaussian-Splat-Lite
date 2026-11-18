@@ -60,13 +60,9 @@ export class Splats {
     }
     if (name === "init") {
       if (base > 0xffffffff) throw new Error("Input exceeds u32 index limit");
-      this.length = base;
-      this.records.length = base * 16;
-      this.centers.length = base * 3;
       this.inputSh = values[0];
       this.maxSh = Math.min(this.maxSh, this.inputSh);
-      for (let band = 0; band < this.maxSh; band++)
-        this.sh[band].length = base * SH_DIMS[band];
+      this.resize(base);
       this.fields = ["center", "opacity", "rgb", "scale", "quat"];
       for (let band = 0; band < this.maxSh; band++)
         this.fields.push(`sh${band + 1}`);
@@ -141,6 +137,14 @@ export class Splats {
       );
   }
 
+  resize(count) {
+    this.length = count;
+    this.records.length = count * 16;
+    this.centers.length = count * 3;
+    for (let band = 0; band < this.maxSh; band++)
+      this.sh[band].length = count * SH_DIMS[band];
+  }
+
   // Writes `count` splats at `start`, their centers too; blocks may arrive
   // in any order.
   store(start, count, records, sh) {
@@ -187,11 +191,7 @@ export class Splats {
     }
     this.block = undefined;
     const { kept, invalid, cropped } = this;
-    this.length = kept;
-    this.records.length = kept * 16;
-    this.centers.length = kept * 3;
-    for (let band = 0; band < this.maxSh; band++)
-      this.sh[band].length = kept * SH_DIMS[band];
+    this.resize(kept);
     if (kept !== length)
       console.log(
         `Kept ${kept} splats; removed ${invalid} invalid and ${length - kept - invalid - cropped} empty splats`,

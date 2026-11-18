@@ -1,6 +1,5 @@
 import { assignRowsToNeighborGroupsRgbCov } from "./assignment.js";
 import { GroupCandidateHeap } from "./candidate-heap.js";
-import { fillExactTarget } from "./exact-target.js";
 import { buildVoxelGrid } from "./grid.js";
 import {
   SCORE_SLACK,
@@ -392,7 +391,28 @@ function planSimplifyCloudVoxel(cloud, target, check) {
     covarianceTerms,
     check,
   );
-  fillExactTarget(cloud, selected, assignment, target, covarianceTerms, check);
+
+  // Once the candidates are exhausted, every remaining row already matches a
+  // representative. Give the heaviest rows their own slots; other matches stand.
+  if (selected.length < target) {
+    let count = 0;
+    for (let row = 0; row < n; row++) {
+      if ((row & 4095) === 0) check();
+      if (selected[assignment[row]] !== row) groupIndices[count++] = row;
+    }
+    const remaining = groupIndices.subarray(0, count);
+    remaining.sort(
+      (a, b) =>
+        coarseWeights[b] - coarseWeights[a] ||
+        origRadius[b] - origRadius[a] ||
+        b - a,
+    );
+    for (const row of remaining.subarray(0, target - selected.length)) {
+      if ((selected.length & 4095) === 0) check();
+      assignment[row] = selected.length;
+      selected.push(row);
+    }
+  }
 
   return {
     selected,

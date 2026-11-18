@@ -32,18 +32,4 @@ function ellipsoidAreaFromScales(sx, sy, sz) {
   return 4.0 * Math.PI * (numerator / 3.0) ** (1.0 / p);
 }
 
-function representativeSplatWeightFromScales(opacity, sx, sy, sz) {
-  const maxScale = Math.max(
-    nonNegativeFiniteScale(sx),
-    nonNegativeFiniteScale(sy),
-    nonNegativeFiniteScale(sz),
-  );
-  const alpha = Number.isFinite(opacity) ? opacity : 0.0;
-  return maxScale * alpha;
-}
-
-export {
-  ellipsoidAreaFromScales,
-  representativeSplatWeightFromScales,
-  threeSigmaAabbBlendedRadiusFromExtents,
-};
+export { ellipsoidAreaFromScales, threeSigmaAabbBlendedRadiusFromExtents };

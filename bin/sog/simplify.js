@@ -9,7 +9,6 @@ import {
 } from "./voxel/covariance.js";
 import {
   ellipsoidAreaFromScales,
-  representativeSplatWeightFromScales,
   threeSigmaAabbBlendedRadiusFromExtents,
 } from "./voxel/extents.js";
 import { planSimplifyCloudVoxel } from "./voxel/plan.js";
@@ -62,10 +61,15 @@ export function blockArrays(count, target, maxSh) {
   };
 }
 
+function representativeOpacityWeight(opacity) {
+  return opacity <= 1 ? opacity : opacityRadius(opacity);
+}
+
 // Fills the planner's arrays of `core`, and the merge weights, opacity ×
 // ellipsoid area, of the `count` splats in `records`.
-function loadCore(records, count, core, mergeWeight) {
+function loadCore({ records, count, core, mergeWeight }) {
   const cloud = {
+    ...core,
     length: count,
     minFeature: Number.POSITIVE_INFINITY,
     origin: [
@@ -73,13 +77,6 @@ function loadCore(records, count, core, mergeWeight) {
       Number.POSITIVE_INFINITY,
       Number.POSITIVE_INFINITY,
     ],
-    positions: core.positions.subarray(0, count * 3),
-    mergeWeight: mergeWeight.subarray(0, count),
-    opacity: core.opacity.subarray(0, count),
-    rgb: core.rgb.subarray(0, count * 3),
-    covariance: core.covariance.subarray(0, count * 6),
-    radius: core.radius.subarray(0, count),
-    weight: core.weight.subarray(0, count),
   };
   const covariance = new Float64Array(6);
   const scales = new Float64Array(3);
@@ -93,7 +90,7 @@ function loadCore(records, count, core, mergeWeight) {
       );
       cloud.origin[d] = Math.min(cloud.origin[d], records[row + d]);
     }
-    cloud.opacity[i] = records[row + 3];
+    const opacity = records[row + 3];
     covarianceComponentsFromValuesWithScales(
       records[row + 7],
       records[row + 8],
@@ -107,29 +104,22 @@ function loadCore(records, count, core, mergeWeight) {
       scales,
     );
     for (let d = 0; d < 6; d++) cloud.covariance[i * 6 + d] = covariance[d];
+    const maxScale = Math.max(scales[0], scales[1], scales[2]);
+    const opacityWeight = representativeOpacityWeight(opacity);
+    cloud.opacity[i] = opacity;
+    cloud.weight[i] = maxScale * opacityWeight;
     cloud.minFeature = Math.min(
       cloud.minFeature,
-      2 *
-        Math.max(scales[0], scales[1], scales[2]) *
-        opacityRadius(cloud.opacity[i]),
+      2 * maxScale * Math.max(1, opacityWeight),
     );
-    // In double precision and before the planner regularizes the
-    // covariance: the blended radius of the box of three standard
-    // deviations, from the variances along the axes, and the weights.
+    // Use the double-precision variances before the planner regularizes them.
     cloud.radius[i] = threeSigmaAabbBlendedRadiusFromExtents(
       3.0 * Math.sqrt(Math.max(covariance[0], 1e-20)),
       3.0 * Math.sqrt(Math.max(covariance[3], 1e-20)),
       3.0 * Math.sqrt(Math.max(covariance[5], 1e-20)),
     );
-    cloud.weight[i] = representativeSplatWeightFromScales(
-      cloud.opacity[i],
-      scales[0],
-      scales[1],
-      scales[2],
-    );
-    cloud.mergeWeight[i] =
-      records[row + 3] *
-      ellipsoidAreaFromScales(scales[0], scales[1], scales[2]);
+    mergeWeight[i] =
+      opacity * ellipsoidAreaFromScales(scales[0], scales[1], scales[2]);
   }
   return cloud;
 }
@@ -248,52 +238,53 @@ function merge(block, plan) {
   }
 }
 
-// Fills the merge weights, opacity × ellipsoid area, as loadCore() does,
-// and returns the heaviest splat.
+// Fill the merge weights and select the block's single representative.
 function loadWeights(records, count, mergeWeight) {
   let selected = 0;
+  let bestWeight = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < count; i++) {
     const row = i * 16;
-    mergeWeight[i] =
-      records[row + 3] *
-      ellipsoidAreaFromScales(
-        Math.exp(records[row + 7]),
-        Math.exp(records[row + 8]),
-        Math.exp(records[row + 9]),
-      );
-    if (mergeWeight[i] > mergeWeight[selected]) selected = i;
+    const opacity = records[row + 3];
+    const sx = Math.exp(records[row + 7]);
+    const sy = Math.exp(records[row + 8]);
+    const sz = Math.exp(records[row + 9]);
+    mergeWeight[i] = opacity * ellipsoidAreaFromScales(sx, sy, sz);
+    const weight = representativeOpacityWeight(opacity) * Math.max(sx, sy, sz);
+    if (weight > bestWeight) {
+      bestWeight = weight;
+      selected = i;
+    }
   }
   return selected;
 }
 
-// Returns whether the planner ran, whose arrays are then garbage.
-function simplify(block, check) {
+function simplifyVoxel(block, check) {
+  const cloud = loadCore(block);
+  const plan = planSimplifyCloudVoxel(cloud, block.target, check);
+  if (plan.selected.length !== block.target)
+    throw new Error("Voxel selection missed its target count");
+  merge(block, plan);
+  return plan.selected.length;
+}
+
+// Returns the number of rows written to merged and mergedSh.
+export function simplifyBlock(block, check) {
   const { count, target, maxSh, records, sh, merged, mergedSh } = block;
   check();
   if (target === count) {
     merged.set(records.subarray(0, count * 16));
     for (let band = 0; band < maxSh; band++)
       mergedSh[band].set(sh[band].subarray(0, count * SH_DIMS[band]));
-    return false;
+    return count;
   }
-  // Into one splat, Blind data follows the heaviest member.
   if (target === 1) {
     const selected = loadWeights(records, count, block.mergeWeight);
     merge(block, { selected: [selected], assignment: new Int32Array(count) });
-    return false;
+    return 1;
   }
-  const cloud = loadCore(records, count, block.core, block.mergeWeight);
-  merge(block, planSimplifyCloudVoxel(cloud, target, check));
-  return true;
-}
-
-// Simplifies the first `count` splats in the block's arrays, `records` and a
-// `sh` array of half bits per band, into `target` splats in `merged` and
-// `mergedSh`; see blockArrays(). A block depends on nothing else, so any
-// thread may do it.
-export function simplifyBlock(block, check) {
-  // Before the next block allocates its working arrays.
-  if (simplify(block, check)) collect();
+  const written = simplifyVoxel(block, check);
+  collect();
+  return written;
 }
 
 if (!isMainThread && workerData?.simplifier) {
@@ -303,7 +294,6 @@ if (!isMainThread && workerData?.simplifier) {
       throw new Error("Conversion cancelled");
   };
   parentPort.on("message", (block) => {
-    simplifyBlock(block, check);
-    parentPort.postMessage(true);
+    parentPort.postMessage(simplifyBlock(block, check));
   });
 }
