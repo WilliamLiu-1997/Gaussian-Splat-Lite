@@ -190,7 +190,7 @@ async function convert(input, options, kernel, cancelled) {
     if (!splats.length) throw new Error("Input contains no usable splats");
     const leaves = splats.length;
     const lodStart = performance.now();
-    buildLod(splats, options.lodBase, pool, options.shCodebook);
+    const format = buildLod(splats, options.lodBase, pool, options.shCodebook);
     await pool.close();
     console.log(
       `Built ${splats.length} LOD splats from ${leaves} leaves in ${((performance.now() - lodStart) / 1000).toFixed(2)}s`,
@@ -213,7 +213,13 @@ async function convert(input, options, kernel, cancelled) {
         `Clustered SH into ${codebook.count} codes in ${((performance.now() - clusterStart) / 1000).toFixed(2)}s`,
       );
     }
-    const bytes = await writeRad(splats, output, options.chunked, codebook);
+    const bytes = await writeRad(
+      splats,
+      output,
+      options.chunked,
+      codebook,
+      format,
+    );
     console.log(
       `Wrote ${(bytes / 1048576).toFixed(2)} MiB in ${((performance.now() - start) / 1000).toFixed(2)}s total`,
     );

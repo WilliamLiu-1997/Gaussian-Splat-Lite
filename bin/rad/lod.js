@@ -1,4 +1,5 @@
 // LOD construction adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
+import { EncodingRanges } from "./encoding.js";
 import { Cells, Grid, NONE, cellHash } from "./grid.js";
 import { Heap, Queue, rank, sortSplats } from "./heap.js";
 import { HALF, SCALE, rotation } from "./math.js";
@@ -9,9 +10,6 @@ import { IndexArray, PagedArray, Permutation } from "./storage.js";
 
 // Grid cell size and candidate size limit relative to the level (at least 1).
 const SEARCH_SCALE = 2;
-
-// Records that the weights of SH clustering are taken from at a time.
-const BLOCK = 4096;
 
 export function buildLod(splats, lodBase, pool, shCodebook) {
   const initial = splats.length;
@@ -89,13 +87,13 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
         top--;
         const logical = logicals[top];
         const index = indices[top];
+        if (index < initial) continue;
         if (lengths[top] < limit) {
           next.push(logical);
           next.push(index);
           next.push(bitsOf(lengths[top]));
           continue;
         }
-        if (index < initial) continue;
         // Its children: the kept splats below it, through those not kept.
         let count = 0;
         let depth = 0;
@@ -125,17 +123,23 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
           indices = grow(indices, top, top + count);
           lengths = grow(lengths, top, top + count);
         }
-        // Each child's size is read once, at random, for both uses.
+        // The sorted children start with leaves. Only parents need a stack slot.
+        let parents = count;
         for (let c = 0; c < count; c++) {
-          const length = sizes.get(list[c]);
-          order.push(list[c]);
+          const child = list[c];
+          const length = sizes.get(child);
+          order.push(child);
           ordered.push(length);
+          if (child < initial) {
+            parents--;
+            continue;
+          }
           const at = top + count - 1 - c;
           logicals[at] = start + c;
-          indices[at] = list[c];
+          indices[at] = child;
           lengths[at] = length;
         }
-        top += count;
+        top += parents;
       }
     }
     frontier.dispose();
@@ -151,7 +155,7 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
   splats.children.dispose();
   const chunks = chunkTree(splats, order, first, counts, ordered, pool);
   order.dispose();
-  reorderChunks(splats, chunks, pool, shCodebook);
+  return reorderChunks(splats, chunks, pool, shCodebook);
 }
 
 // Merges the splats level by level into a binary tree, adding the merged
@@ -645,8 +649,8 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
   return indices;
 }
 
-// Moves records and SH into chunk order, collecting clustering weights
-// while records are cached, unless every row gets its own SH codebook entry.
+// Moves retained records and SH into chunk order, collecting encoding ranges
+// and any clustering weights while each output window is pinned.
 function reorderChunks(splats, indices, pool, shCodebook) {
   const workspace = splats.workspace;
   const nodes = splats.length;
@@ -658,31 +662,34 @@ function reorderChunks(splats, indices, pool, shCodebook) {
     "Preparing chunk splat order",
   );
   if (!splats.maxSh) indices.dispose();
-  let writeWeights;
-  if (
-    splats.maxSh &&
-    shCodebook !== 0 &&
-    shCodeCount(length, shCodebook) < length
-  ) {
-    const rows = new Float32Array(BLOCK * 16);
-    const values = new Float64Array(BLOCK);
-    writeWeights = (records, start, end) => {
-      for (let base = start; base < end; base += BLOCK) {
-        const count = Math.min(BLOCK, end - base);
-        records.read(base * 16, rows, count * 16);
+  const ranges = new EncodingRanges();
+  const weights =
+    splats.maxSh && shCodebook !== 0 && shCodeCount(length, shCodebook) < length
+      ? new Float64Array(splats.records.items / 16)
+      : undefined;
+  const analyze = (records, start, end) => {
+    for (let base = start; base < end; ) {
+      const offset = records.offset(base * 16);
+      const count = Math.min(end - base, (records.items - offset) / 16);
+      const rows = records
+        .page(base * 16)
+        .subarray(offset, offset + count * 16);
+      ranges.add(rows);
+      if (weights) {
         for (let i = 0; i < count; i++)
-          values[i] = rows[i * 16 + 15] * rows[i * 16 + 3];
-        splats.weight.write(base, values, count);
+          weights[i] = rows[i * 16 + 15] * rows[i * 16 + 3];
+        splats.weight.write(base, weights, count);
       }
-    };
-  }
+      base += count;
+    }
+  };
   splats.records = moved.apply(
     splats.records,
     16,
     pool,
     false,
     "Reordering chunk splats",
-    writeWeights,
+    analyze,
   );
   moved.dispose();
   // The SH coefficients are still in the order of mergeSh().
@@ -712,4 +719,5 @@ function reorderChunks(splats, indices, pool, shCodebook) {
     nodeOrder.dispose();
   }
   splats.length = length;
+  return ranges.format();
 }

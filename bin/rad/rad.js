@@ -13,15 +13,14 @@ import path from "node:path";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { deflateRawSync } from "node:zlib";
 import { GENERATOR } from "../generator.js";
-import { HALF, half, halfBits, opacityRadius } from "./math.js";
+import { SH_MAX, alpha } from "./encoding.js";
+import { HALF, halfBits } from "./math.js";
 import { WorkerGroup, encoders } from "./parallel.js";
 import { Progress } from "./progress.js";
 import { SH_DIMS } from "./splats.js";
-import { PAGE_BYTES, readAll, removePath } from "./storage.js";
+import { readAll, removePath } from "./storage.js";
 
 const CHUNK = 65536;
-// Fixed s8 range with SPZ's 1/128 SH step; -1 clips to -127/128.
-const SH_MAX = 127 / 128;
 function encodeSh(value) {
   const magnitude = Math.min(127, Math.round(Math.abs(value) * 128));
   return (value < 0 ? -magnitude : magnitude) & 255;
@@ -71,107 +70,16 @@ export function checkOutput(output, chunked) {
     }
   }
 }
-class Histogram {
-  constructor() {
-    this.counts = new Float64Array(65536);
-    this.count = 0;
-  }
-  // Adds the counts of a Histogram, also one copied from a worker.
-  merge(other) {
-    for (let i = 0; i < 65536; i++) this.counts[i] += other.counts[i];
-    this.count += other.count;
-  }
-  add(bits) {
-    this.counts[bits & 32768 ? bits ^ 65535 : bits ^ 32768]++;
-    this.count++;
-  }
-  percentile(fraction) {
-    let rank = Math.min(
-      this.count - 1,
-      Math.round(Math.fround(Math.fround(this.count) * Math.fround(fraction))),
-    );
-    for (let i = 0; i < 65536; i++) {
-      if (rank < this.counts[i]) return HALF[i & 32768 ? i ^ 32768 : i ^ 65535];
-      rank -= this.counts[i];
-    }
-    throw new Error("Empty encoding histogram");
-  }
-}
-function alpha(value) {
-  return value > 1
-    ? half(Math.min(2, 1 + 0.25 * (opacityRadius(value) - 1)))
-    : value;
-}
-// The base attributes that determine the encoding ranges.
-class Counts {
-  constructor() {
-    this.colors = new Histogram();
-    this.scales = new Histogram();
-    this.alphaF16 = false;
-  }
-  add(records) {
-    for (let offset = 0; offset < records.length; offset += 16) {
-      this.alphaF16 ||= alpha(records[offset + 3]) > 1;
-      for (let d = 4; d <= 6; d++)
-        this.colors.add(halfBits(records[offset + d]));
-      const a = records[offset + 7];
-      const b = records[offset + 8];
-      const c = records[offset + 9];
-      this.scales.add(
-        halfBits(Math.max(Math.min(a, b), Math.min(Math.max(a, b), c))),
-      );
-      this.scales.add(halfBits(Math.max(a, b, c)));
-    }
-  }
-  merge(other) {
-    this.colors.merge(other.colors);
-    this.scales.merge(other.scales);
-    this.alphaF16 ||= other.alphaF16;
-  }
-}
-
-function encoding(counts) {
-  const { colors, scales } = counts;
-  const rgbMin = Math.min(0, colors.percentile(0.01));
-  const rgbMax = Math.max(1, colors.percentile(0.99));
-  const lnScaleMin = Math.min(
-    -12,
-    Math.max(Math.log(1e-30), scales.percentile(0.01)),
-  );
-  const lnScaleMax = Math.max(9, scales.percentile(0.99));
-  return {
-    alphaF16: counts.alphaF16,
-    rgbF16: rgbMin < -1 || rgbMax > 2,
-    scaleF16: lnScaleMax - lnScaleMin > 25,
-    meta: {
-      rgbMin,
-      rgbMax,
-      lnScaleMin,
-      lnScaleMax,
-      sh1Max: SH_MAX,
-      sh2Max: SH_MAX,
-      sh3Max: SH_MAX,
-      lodOpacity: true,
-    },
-  };
-}
 const unorm = (value, min, max) =>
   Math.round(Math.max(0, Math.min(255, ((value - min) / (max - min)) * 255)));
 
 // The columns encodeChunk() reads. With a codebook, labels replace the SH.
-// The records before `kept` come through the cache, where counting left
-// them; the rest of them and the other columns, read once, pass it by.
-function gather(splats, base, count, codebook, kept) {
+function gather(splats, base, count, codebook) {
   return {
     base,
     count,
     maxSh: splats.maxSh,
-    records: splats.records.scan(
-      base * 16,
-      new Float32Array(count * 16),
-      count * 16,
-      kept * 16,
-    ),
+    records: splats.records.stream(base * 16, new Float32Array(count * 16)),
     sh: codebook
       ? []
       : splats.sh
@@ -378,32 +286,16 @@ function encodeChunk(chunk, encoding) {
   return Buffer.concat([meta, size, ...payloads]);
 }
 
-// Counts and encodes chunks; in workers, each answers in order.
-class Coder {
-  constructor() {
-    this.counts = new Counts();
-    this.format = undefined;
-  }
-  handle({ type, records, chunk, format }) {
-    if (type === "count") this.counts.add(records);
-    else if (type === "counts") return this.counts;
-    else if (type === "format") this.format = format;
-    else return encodeChunk(chunk, this.format);
-    return true;
-  }
-}
-
-// Spreads counting and encoding over worker threads.
 class Encoder extends WorkerGroup {
   // Encodes `chunks` with workers when there is more than one and the
   // workspace has room for them.
-  constructor(workspace, chunks) {
+  constructor(workspace, chunks, format) {
     const count = encoders(workspace, chunks);
     super(
       new URL(import.meta.url),
       count,
-      { coder: true },
-      count ? undefined : new Coder(),
+      { format },
+      { handle: (chunk) => encodeChunk(chunk, format) },
       "Encoding",
     );
     this.next = 0;
@@ -411,28 +303,10 @@ class Encoder extends WorkerGroup {
   get size() {
     return this.workers.length;
   }
-  // Sends the next job to the next worker.
-  send(message, transfer) {
-    return this.request(
-      this.workers[this.next++ % this.workers.length],
-      message,
-      transfer,
-    );
-  }
-  count(records) {
-    return this.send({ type: "count", records }, [records.buffer]);
-  }
-  async counts() {
-    const counts = new Counts();
-    for (const result of await this.broadcast({ type: "counts" }))
-      counts.merge(result);
-    return counts;
-  }
-  use(format) {
-    return this.broadcast({ type: "format", format });
-  }
   async encode(chunk) {
-    const bytes = await this.send({ type: "encode", chunk }, [
+    const threads = this.threads;
+    const worker = threads[this.next++ % threads.length];
+    const bytes = await this.request(worker, chunk, [
       chunk.records.buffer,
       ...chunk.sh.map((values) => values.buffer),
       ...(chunk.labels ? [chunk.labels.buffer] : []),
@@ -444,24 +318,21 @@ class Encoder extends WorkerGroup {
   }
 }
 
-if (!isMainThread && workerData?.coder) {
-  const coder = new Coder();
-  parentPort.on("message", (message) => {
-    const result = coder.handle(message);
+if (!isMainThread && workerData?.format) {
+  parentPort.on("message", (chunk) => {
+    const result = encodeChunk(chunk, workerData.format);
     // The chunk's buffers would otherwise pile up to tens of MiB before the
     // collector frees them.
     gc();
     // A chunk with its own memory moves to the main thread without a copy.
     const own =
-      result instanceof Uint8Array &&
-      result.byteOffset === 0 &&
-      result.byteLength === result.buffer.byteLength;
+      result.byteOffset === 0 && result.byteLength === result.buffer.byteLength;
     parentPort.postMessage(result, own ? [result.buffer] : []);
   });
 }
 
 // With a codebook from clusterSh(), splats store SH as its labels.
-export async function writeRad(splats, output, chunked, codebook) {
+export async function writeRad(splats, output, chunked, codebook, format) {
   const { workspace } = splats;
   const chunks = [];
   const stem = chunkStem(output);
@@ -510,51 +381,18 @@ export async function writeRad(splats, output, chunked, codebook) {
   // order. A chunk's failure is thrown when its turn comes, not as an
   // unhandled rejection while an earlier chunk is awaited.
   const pending = [];
-  const encoder = new Encoder(workspace, Math.ceil(splats.length / CHUNK));
+  const chunkCount = Math.ceil(splats.length / CHUNK);
+  const encoder = new Encoder(workspace, chunkCount, format);
   try {
-    // Count the encoding ranges in a first pass. The records that the cache
-    // holds stay there for encoding; see gather(). Recompute the prefix
-    // after measuring worker growth so it fits a cache that has shrunk.
-    const keep = () => {
-      workspace.adjust();
-      return Math.floor(Math.max(0, workspace.capacity - PAGE_BYTES) / 64);
-    };
-    const chunkCount = Math.ceil(splats.length / CHUNK);
-    progress = new Progress("Analyzing RAD encoding", chunkCount);
-    let countedChunks = 0;
-    for (let base = 0; base < splats.length; base += CHUNK) {
-      workspace.check();
-      // The encoders grow as they work, and reading past the cache loads
-      // no pages, which would measure them.
-      const kept = keep();
-      const count = Math.min(CHUNK, splats.length - base);
-      const records = splats.records.scan(
-        base * 16,
-        new Float32Array(count * 16),
-        count * 16,
-        kept * 16,
-      );
-      const counted = encoder
-        .count(records)
-        .then(() => progress.update(++countedChunks));
-      counted.catch(() => {});
-      pending.push(counted);
-      if (pending.length > encoder.size + 1) await pending.shift();
-    }
-    while (pending.length) await pending.shift();
-    const format = encoding(await encoder.counts());
-    await encoder.use(format);
-    progress.finish();
     progress = new Progress("Encoding RAD chunks", chunkCount);
     for (let base = 0; base < splats.length; base += CHUNK) {
       workspace.check();
-      const kept = keep();
+      workspace.adjust();
       const chunk = gather(
         splats,
         base,
         Math.min(CHUNK, splats.length - base),
         codebook,
-        kept,
       );
       if (codebook && base === 0)
         chunk.codes = encodeCodes(codebook, splats.maxSh);

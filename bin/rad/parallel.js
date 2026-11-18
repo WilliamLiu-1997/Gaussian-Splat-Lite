@@ -692,8 +692,10 @@ class Task {
       return MISS;
     }
     this.records.set(merged, t * 16);
-    this.hints[t] = hint(lookup, merged, query, other);
-    this.terms.set(this.similarities.terms(merged, this.tuple), t * 13);
+    if (merged[14] <= lookup.step) {
+      this.hints[t] = hint(lookup, merged, query, other);
+      this.terms.set(this.similarities.terms(merged, this.tuple), t * 13);
+    }
     this.blends[t * 2] = this.merger.w;
     this.blends[t * 2 + 1] = this.merger.v;
     return best;
