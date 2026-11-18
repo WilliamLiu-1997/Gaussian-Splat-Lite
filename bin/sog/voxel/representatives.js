@@ -149,24 +149,14 @@ function representativeIndexForGroupRange(
   return rep;
 }
 
-function allocateRepresentatives(
-  groupIndices,
-  groupOffsets,
-  target,
-  representativesPerVoxelTarget,
-  opacity,
-) {
+function allocateRepresentatives(groupIndices, groupOffsets, target, opacity) {
   const groupCount = groupOffsets.length - 1;
   const maxRepsByGroup = new Uint32Array(groupCount);
   const counts = new Uint32Array(groupCount);
   const weights = new Float64Array(groupCount);
   const quotas = new Float64Array(groupCount);
   const order = [];
-  let budget = Math.min(
-    target,
-    groupOffsets[groupCount],
-    groupCount * representativesPerVoxelTarget,
-  );
+  let budget = target;
   for (let group = 0; group < groupCount; group++) {
     const start = groupOffsets[group];
     const end = groupOffsets[group + 1];

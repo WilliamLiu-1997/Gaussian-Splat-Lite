@@ -75,7 +75,6 @@ function planSimplifyCloudVoxel(cloud, target, check) {
     groupIndices,
     groupOffsets,
     Math.max(groupCount, Math.floor(target * (1 - GLOBAL_SHARE))),
-    REPRESENTATIVES_PER_VOXEL,
     cloud.opacity,
   );
 
