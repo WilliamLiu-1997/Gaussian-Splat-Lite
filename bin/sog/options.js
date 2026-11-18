@@ -1,6 +1,13 @@
 import { parseArgs } from "node:util";
 import { GIB } from "../rad/storage.js";
 import { parseBlind } from "./blind.js";
+import {
+  DEFAULT_CHUNK_SPLATS_K,
+  DEFAULT_LOD_FACTOR,
+  DEFAULT_MEMORY_GIB,
+  DEFAULT_REGION_SPLATS_K,
+  DEFAULT_ROOT_SPLATS_K,
+} from "./lod-config.js";
 
 export const help = `Build streamed SOG v3 from PLY or SPZ with levels of detail (LOD).
 
@@ -10,10 +17,10 @@ Usage: gsl-build-sog <input> [more inputs...] [options]
 Output: lod-meta.json and chunks/ inside <input-stem>-sog/. Existing output is not overwritten.
 
 Options:
-  --lod-chunk-count <K>  Maximum splats per output chunk, subject to memory budget (default: 256)
-  --region-splats <K>    Maximum splats per region, summed across all LODs (default: 8)
-  --root-splats <K>      Maximum total splats in the coarsest scene LOD (default: 256)
-  --lod-factor <n>       Divide point count by this factor at each LOD (default: 2, >1)
+  --lod-chunk-count <K>  Maximum splats per output chunk, subject to memory budget (default: ${DEFAULT_CHUNK_SPLATS_K})
+  --region-splats <K>    Maximum splats per region, summed across all LODs (default: ${DEFAULT_REGION_SPLATS_K})
+  --root-splats <K>      Maximum total splats in the coarsest scene LOD (default: ${DEFAULT_ROOT_SPLATS_K})
+  --lod-factor <n>       Divide point count by this factor at each LOD (default: ${DEFAULT_LOD_FACTOR}, >1)
   --max-sh <0..4>        Maximum SH degree (default: 4)
   --within-dist <x,y,z,radius>
                         Keep splat centers within this sphere (input coordinates)
@@ -22,7 +29,7 @@ Options:
   --sog-blind <fields>   PLY columns as Blind data; repeat for each four-byte texture
                         column[:type],...; types: u8/u16/u24/u32/f16/f32/unorm8/unorm16
                         Default: smallest unsigned integer; unorm supports [min,max]
-  --memory-budget <GiB>  Target memory (default: 4, minimum: 1)
+  --memory-budget <GiB>  Target memory (default: ${DEFAULT_MEMORY_GIB}, minimum: 1)
   --temp-dir <path>      Temporary working files (default: system temp)
   -o, --output <path>    Output directory (one input only)
   -h, --help             Show this help
@@ -41,16 +48,22 @@ export function parse(args) {
     args,
     allowPositionals: true,
     options: {
-      "lod-chunk-count": { type: "string", default: "256" },
-      "region-splats": { type: "string", default: "8" },
-      "root-splats": { type: "string", default: "256" },
-      "lod-factor": { type: "string", default: "2" },
+      "lod-chunk-count": {
+        type: "string",
+        default: String(DEFAULT_CHUNK_SPLATS_K),
+      },
+      "region-splats": {
+        type: "string",
+        default: String(DEFAULT_REGION_SPLATS_K),
+      },
+      "root-splats": { type: "string", default: String(DEFAULT_ROOT_SPLATS_K) },
+      "lod-factor": { type: "string", default: String(DEFAULT_LOD_FACTOR) },
       "max-sh": { type: "string", default: "4" },
       "within-dist": { type: "string" },
       "sh-codebook": { type: "string" },
       "sh-iterations": { type: "string", default: "10" },
       "sog-blind": { type: "string", multiple: true },
-      "memory-budget": { type: "string", default: "4" },
+      "memory-budget": { type: "string", default: String(DEFAULT_MEMORY_GIB) },
       "temp-dir": { type: "string" },
       output: { type: "string", short: "o" },
       help: { type: "boolean", short: "h" },

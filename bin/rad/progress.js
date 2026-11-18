@@ -15,9 +15,11 @@ export class Progress {
     }
   }
 
-  constructor(label, total, detail = "") {
+  constructor(label, total, detail = "", singleLine = false, interval = 500) {
     this.label = label;
     this.total = total;
+    this.singleLine = singleLine;
+    this.interval = interval;
     this.started = performance.now();
     this.updated = this.started;
     this.print(0, false, detail);
@@ -25,7 +27,7 @@ export class Progress {
 
   update(completed, detail = "") {
     const now = performance.now();
-    if (now - this.updated < 500) return;
+    if (now - this.updated < this.interval) return;
     this.updated = now;
     const percent = this.total
       ? Math.min(99.9, Math.floor((completed * 1000) / this.total) / 10)
@@ -44,7 +46,10 @@ export class Progress {
       parentPort.postMessage({
         method: "progress",
         args: [line, done && !inline],
+        singleLine: this.singleLine,
       });
-    else console.log(line);
+    else if (this.singleLine && process.stdout.isTTY)
+      process.stdout.write(`\r\x1b[2K${line}${done ? "\n" : ""}`);
+    else if (done || !this.singleLine) console.log(line);
   }
 }

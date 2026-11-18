@@ -1,423 +1,61 @@
-import { assignRowsToNeighborGroupsRgbCov } from "./assignment.js";
-import { GroupCandidateHeap } from "./candidate-heap.js";
-import { buildVoxelGrid } from "./grid.js";
 import {
-  SCORE_SLACK,
-  candidateDistanceFromLog,
-  candidateNoveltyFactor,
-  candidatePriorityIsBetter,
-  gaussianLogSimilarity,
-  prepareBhattacharyyaTerms,
-} from "./metrics.js";
-import {
-  allocateRepresentatives,
-  buildRepGroupBounds,
-  representativeIndexForGroupRange,
-} from "./representatives.js";
+  MIN_REP_WEIGHT,
+  REPRESENTATIVES_PER_GROUP,
+  SEED_CANDIDATE_BATCH,
+  SEED_CANDIDATE_MULTIPLIER,
+} from "../lod-config.js";
+import { assignRemainingRows } from "./assignment.js";
+import { buildCoverageIndex } from "./coverage-index.js";
+import { prepareBhattacharyyaTerms } from "./metrics.js";
+import { selectByNovelty } from "./novelty.js";
 
-const REPRESENTATIVES_PER_VOXEL = 24;
-// The share of the output that the voxels do not receive by opacity: their
-// candidates compete for it across the block, by weight and novelty.
-const GLOBAL_SHARE = 1 / 3;
-
-function planSimplifyCloudVoxel(cloud, target, check) {
+export function planRepresentatives(cloud, target, check, phase) {
   check();
   const n = cloud.length;
-  const voxelTarget = Math.max(
+  const groupCount = Math.max(
     1,
-    Math.floor(target / REPRESENTATIVES_PER_VOXEL),
+    Math.floor(target / REPRESENTATIVES_PER_GROUP),
   );
-  const splitThreshold = Math.max(2, Math.ceil((n / voxelTarget) * 8));
-  const { positions: pos, rgb, covariance } = cloud;
-  const { groupOffsets, groupIndices, neighborGroupsByGroup } = buildVoxelGrid(
+  const { groupOffsets, groupIndices, groupsFor, nodes } = buildCoverageIndex(
     cloud,
-    voxelTarget,
-    splitThreshold,
-    target,
-    check,
-  );
-  const groupCount = groupOffsets.length - 1;
-  // Keep the initial representative search budget independent of refinement.
-  const candidateLimit = splitThreshold * 8;
-
-  const origRadius = cloud.radius;
-  const coarseWeights = cloud.weight;
-  for (let i = 0; i < n; i++)
-    coarseWeights[i] = Math.max(coarseWeights[i], 1e-12);
-  const covarianceTerms = prepareBhattacharyyaTerms(covariance, n);
-  const selected = [];
-  const assignment = new Int32Array(n).fill(-1);
-  const groupReps = new Array(groupCount);
-  for (let group = 0; group < groupCount; group++) {
-    if ((group & 255) === 0) check();
-    const start = groupOffsets[group];
-    const end = groupOffsets[group + 1];
-    const coarseRep = representativeIndexForGroupRange(
-      cloud,
-      groupIndices,
-      start,
-      end,
-      coarseWeights,
-      origRadius,
-      covarianceTerms,
-      rgb,
-      candidateLimit,
-      check,
-    );
-    const coarseOutIdx = selected.length;
-    selected.push(coarseRep);
-    assignment[coarseRep] = coarseOutIdx;
-    groupReps[group] = [coarseOutIdx];
-  }
-
-  const maxRepsByGroup = allocateRepresentatives(
-    groupIndices,
-    groupOffsets,
-    Math.max(groupCount, Math.floor(target * (1 - GLOBAL_SHARE))),
-    cloud.opacity,
-  );
-
-  if (selected.length < target) {
-    check();
-    const candidateStarts = new Uint32Array(groupCount + 1);
-    for (let group = 0; group < groupCount; group++)
-      candidateStarts[group + 1] =
-        candidateStarts[group] +
-        groupOffsets[group + 1] -
-        groupOffsets[group] -
-        groupReps[group].length;
-    const capacity = candidateStarts[groupCount];
-    const candidateRows = new Int32Array(capacity);
-    const candidateLogSimilarities = new Float32Array(capacity);
-    // Each candidate's novelty factor for its cached similarity, an
-    // exponential: scans compare every candidate each time one is selected.
-    const candidateNovelties = new Float64Array(capacity);
-    const candidateLengths = new Uint32Array(groupCount);
-    const groupBestIndex = new Int32Array(groupCount).fill(-1);
-
-    for (let group = 0; group < groupCount; group++) {
-      const start = groupOffsets[group];
-      const end = groupOffsets[group + 1];
-      const slotStart = candidateStarts[group];
-      const rep = selected[group];
-      let length = 0;
-      let bestRow = -1;
-      let bestNovelty = 0.0;
-      for (let p = start; p < end; p++) {
-        if ((p & 1023) === 0) check();
-        const row = groupIndices[p];
-        if (assignment[row] >= 0) continue;
-        const similarity = Math.fround(
-          gaussianLogSimilarity(covarianceTerms, pos, rgb, row, rep),
-        );
-        if (similarity >= 0.0) continue;
-        const slot = slotStart + length;
-        candidateRows[slot] = row;
-        candidateLogSimilarities[slot] = similarity;
-        const novelty = candidateNoveltyFactor(
-          candidateDistanceFromLog(similarity),
-        );
-        candidateNovelties[slot] = novelty;
-        if (
-          candidatePriorityIsBetter(
-            row,
-            novelty,
-            bestRow,
-            bestNovelty,
-            coarseWeights,
-            origRadius,
-          )
-        ) {
-          groupBestIndex[group] = length;
-          bestRow = row;
-          bestNovelty = novelty;
-        }
-        length++;
-      }
-      candidateLengths[group] = length;
-    }
-
-    const findGroupBest = (group, out) => {
-      const bestIndex = groupBestIndex[group];
-      if (bestIndex < 0) return false;
-      const slot = candidateStarts[group] + bestIndex;
-      out.row = candidateRows[slot];
-      out.distance = candidateDistanceFromLog(candidateLogSimilarities[slot]);
-      // candidateNoveltyFactor() of that distance, cached with it.
-      out.novelty = candidateNovelties[slot];
-      return true;
-    };
-
-    const copyCandidateSlot = (dst, src) => {
-      candidateRows[dst] = candidateRows[src];
-      candidateLogSimilarities[dst] = candidateLogSimilarities[src];
-      candidateNovelties[dst] = candidateNovelties[src];
-    };
-
-    const compareRepresentative = (group, rep) => {
-      let length = candidateLengths[group];
-      const slotStart = candidateStarts[group];
-      if (length === 0) {
-        groupBestIndex[group] = -1;
-        return;
-      }
-
-      const covComponents = covarianceTerms.components;
-      const logDetQuarter = covarianceTerms.logDetQuarter;
-      const maxVariance = covarianceTerms.maxVariance;
-      const rep3 = rep * 3;
-      const rep6 = rep * 6;
-      const repR = rgb[rep3 + 0];
-      const repG = rgb[rep3 + 1];
-      const repB = rgb[rep3 + 2];
-      const repX = pos[rep3 + 0];
-      const repY = pos[rep3 + 1];
-      const repZ = pos[rep3 + 2];
-      const repVariance = maxVariance[rep];
-      const repLogDet = logDetQuarter[rep];
-      const b00 = covComponents[rep6 + 0];
-      const b01 = covComponents[rep6 + 1];
-      const b02 = covComponents[rep6 + 2];
-      const b11 = covComponents[rep6 + 3];
-      const b12 = covComponents[rep6 + 4];
-      const b22 = covComponents[rep6 + 5];
-
-      let bestIndex = -1;
-      let bestRow = -1;
-      let bestNovelty = 0.0;
-      let i = 0;
-      let compared = 0;
-      while (i < length) {
-        if ((compared++ & 4095) === 0) check();
-        const slot = slotStart + i;
-        let cached = candidateLogSimilarities[slot];
-        if (cached < 0.0) {
-          const candRow = candidateRows[slot];
-          const cand3 = candRow * 3;
-          const dr = rgb[cand3 + 0] - repR;
-          const dg = rgb[cand3 + 1] - repG;
-          const db = rgb[cand3 + 2] - repB;
-          const colorLog = -(dr * dr + dg * dg + db * db);
-          let logSimilarity = Number.NEGATIVE_INFINITY;
-          if (colorLog >= cached) {
-            const dx = pos[cand3 + 0] - repX;
-            const dy = pos[cand3 + 1] - repY;
-            const dz = pos[cand3 + 2] - repZ;
-            let proceed = true;
-            if (cached > Number.NEGATIVE_INFINITY) {
-              const varianceSum = maxVariance[candRow] + repVariance;
-              if (varianceSum > 0.0) {
-                const upperBound =
-                  colorLog -
-                  (0.25 * (dx * dx + dy * dy + dz * dz)) / varianceSum;
-                if (upperBound + SCORE_SLACK < cached) {
-                  proceed = false;
-                }
-              }
-            }
-            if (proceed) {
-              const candLogDet = logDetQuarter[candRow];
-              const cand6 = candRow * 6;
-              const a00 = covComponents[cand6 + 0];
-              const a01 = covComponents[cand6 + 1];
-              const a02 = covComponents[cand6 + 2];
-              const a11 = covComponents[cand6 + 3];
-              const a12 = covComponents[cand6 + 4];
-              const a22 = covComponents[cand6 + 5];
-              const m00 = 0.5 * (a00 + b00);
-              const m01 = 0.5 * (a01 + b01);
-              const m02 = 0.5 * (a02 + b02);
-              const m11 = 0.5 * (a11 + b11);
-              const m12 = 0.5 * (a12 + b12);
-              const m22 = 0.5 * (a22 + b22);
-              const cof00 = m11 * m22 - m12 * m12;
-              const cof01 = m12 * m02 - m01 * m22;
-              const cof02 = m01 * m12 - m11 * m02;
-              const detM = m00 * cof00 + m01 * cof01 + m02 * cof02;
-              if (detM > 0.0) {
-                const invDetM = 1.0 / detM;
-                const inv00 = cof00 * invDetM;
-                const inv01 = cof01 * invDetM;
-                const inv02 = cof02 * invDetM;
-                const inv11 = (m00 * m22 - m02 * m02) * invDetM;
-                const inv12 = (m01 * m02 - m00 * m12) * invDetM;
-                const inv22 = (m00 * m11 - m01 * m01) * invDetM;
-                const quad =
-                  dx * (inv00 * dx + inv01 * dy + inv02 * dz) +
-                  dy * (inv01 * dx + inv11 * dy + inv12 * dz) +
-                  dz * (inv02 * dx + inv12 * dy + inv22 * dz);
-                const safeQuad = quad > 0.0 ? quad : 0.0;
-                // The determinants only lower a score, by their logarithm:
-                // the Mahalanobis term alone may already rule the pair out.
-                if (colorLog - 0.125 * safeQuad + SCORE_SLACK >= cached) {
-                  const logCoefficient =
-                    candLogDet +
-                    repLogDet -
-                    0.5 * Math.log(detM) -
-                    0.125 * safeQuad;
-                  if (Number.isFinite(logCoefficient)) {
-                    const bhatLog = logCoefficient > 0.0 ? 0.0 : logCoefficient;
-                    logSimilarity = bhatLog + colorLog;
-                  }
-                }
-              }
-            }
-          }
-          if (logSimilarity > cached) {
-            cached = Math.fround(logSimilarity);
-            candidateLogSimilarities[slot] = cached;
-            candidateNovelties[slot] = candidateNoveltyFactor(
-              candidateDistanceFromLog(cached),
-            );
-          }
-        }
-        if (cached >= 0.0) {
-          length -= 1;
-          if (i !== length) copyCandidateSlot(slot, slotStart + length);
-        } else {
-          const row = candidateRows[slot];
-          const novelty = candidateNovelties[slot];
-          if (
-            candidatePriorityIsBetter(
-              row,
-              novelty,
-              bestRow,
-              bestNovelty,
-              coarseWeights,
-              origRadius,
-            )
-          ) {
-            bestIndex = i;
-            bestRow = row;
-            bestNovelty = novelty;
-          }
-          i += 1;
-        }
-      }
-      candidateLengths[group] = length;
-      groupBestIndex[group] = bestIndex;
-    };
-
-    // The first representatives are in group order; each group has scored its own.
-    for (let group = 0; group < groupCount; group++) {
-      if (candidateLengths[group] === 0) continue;
-      for (const neighbor of neighborGroupsByGroup[group]) {
-        if (neighbor !== group)
-          compareRepresentative(group, selected[neighbor]);
-      }
-    }
-
-    const selectBest = (group, row, updateGroupBest) => {
-      const outIdx = selected.length;
-      selected.push(row);
-      assignment[row] = outIdx;
-      groupReps[group].push(outIdx);
-      if (selected.length === target) return;
-
-      const last = --candidateLengths[group];
-      const index = groupBestIndex[group];
-      const start = candidateStarts[group];
-      if (index !== last) copyCandidateSlot(start + index, start + last);
-
-      for (const neighbor of neighborGroupsByGroup[group]) {
-        compareRepresentative(neighbor, row);
-        updateGroupBest?.(neighbor);
-      }
-    };
-
-    const best = {};
-    for (
-      let group = 0;
-      group < groupCount && selected.length < target;
-      group++
-    ) {
-      const reps = groupReps[group];
-      const maxReps = maxRepsByGroup[group];
-      while (reps.length < maxReps && selected.length < target) {
-        if ((selected.length & 1023) === 0) check();
-        if (!findGroupBest(group, best)) break;
-        selectBest(group, best.row);
-      }
-    }
-
-    if (selected.length < target) {
-      check();
-      const heap = new GroupCandidateHeap(groupCount);
-
-      const updateGroupBest = (group) => {
-        if ((group & 255) === 0) check();
-        if (!findGroupBest(group, best)) {
-          heap.remove(group);
-          return;
-        }
-        const weight = coarseWeights[best.row];
-        heap.set(
-          group,
-          best.row,
-          best.distance,
-          weight,
-          best.novelty * Math.max(weight, 1e-12),
-          origRadius[best.row],
-        );
-      };
-
-      for (let group = 0; group < groupCount; group++) updateGroupBest(group);
-
-      while (selected.length < target && heap.length > 0) {
-        if ((selected.length & 1023) === 0) check();
-        const group = heap.groups[0];
-        selectBest(group, heap.rows[group], updateGroupBest);
-      }
-    }
-  }
-
-  const repGroupBounds = buildRepGroupBounds(
-    groupReps,
-    selected,
-    pos,
-    rgb,
-    covarianceTerms,
-  );
-  assignRowsToNeighborGroupsRgbCov(
-    neighborGroupsByGroup,
-    groupReps,
-    repGroupBounds,
     groupCount,
+    check,
+    phase?.("index"),
+  );
+  const candidateLimit =
+    Math.ceil(
+      ((n / groupCount) * SEED_CANDIDATE_MULTIPLIER) / SEED_CANDIDATE_BATCH,
+    ) * SEED_CANDIDATE_BATCH;
+  const weights = cloud.weight;
+  for (let i = 0; i < n; i++) {
+    const weight = weights[i];
+    weights[i] = Number.isFinite(weight)
+      ? Math.max(weight, MIN_REP_WEIGHT)
+      : MIN_REP_WEIGHT;
+  }
+  const covarianceTerms = prepareBhattacharyyaTerms(cloud.covariance, n);
+  const plan = selectByNovelty(
+    cloud,
+    target,
+    covarianceTerms,
+    groupsFor,
     groupOffsets,
     groupIndices,
-    assignment,
-    pos,
-    rgb,
-    covarianceTerms,
+    candidateLimit,
     check,
+    phase?.("seeds", groupCount),
+    phase?.("selection", Math.max(1, target - groupCount)),
   );
-
-  // Once the candidates are exhausted, every remaining row already matches a
-  // representative. Give the heaviest rows their own slots; other matches stand.
-  if (selected.length < target) {
-    let count = 0;
-    for (let row = 0; row < n; row++) {
-      if ((row & 4095) === 0) check();
-      if (selected[assignment[row]] !== row) groupIndices[count++] = row;
-    }
-    const remaining = groupIndices.subarray(0, count);
-    remaining.sort(
-      (a, b) =>
-        coarseWeights[b] - coarseWeights[a] ||
-        origRadius[b] - origRadius[a] ||
-        b - a,
-    );
-    for (const row of remaining.subarray(0, target - selected.length)) {
-      if ((selected.length & 4095) === 0) check();
-      assignment[row] = selected.length;
-      selected.push(row);
-    }
-  }
-
-  return {
-    selected,
-    assignment,
-  };
+  assignRemainingRows(
+    cloud,
+    plan,
+    covarianceTerms,
+    groupsFor,
+    nodes,
+    groupOffsets,
+    groupIndices,
+    check,
+    phase?.("assignment"),
+  );
+  return { selected: plan.selected, assignment: plan.assignment };
 }
-
-export { planSimplifyCloudVoxel };

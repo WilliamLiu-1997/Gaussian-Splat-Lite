@@ -1,4 +1,5 @@
-const THREE_SIGMA_AABB_ASPECT_PENALTY_EXPONENT = 0.5;
+import { RADIUS_ASPECT_EXPONENT } from "../lod-config.js";
+
 const ELLIPSOID_AREA_P = 1.6075;
 const MIN_SPLAT_EXTENT = 1e-12;
 
@@ -17,10 +18,7 @@ function threeSigmaAabbBlendedRadiusFromExtents(ex, ey, ez) {
   const volumeEquivalentRadius = Math.cbrt(sx * sy * sz);
   const rmsRadius = Math.sqrt((sx * sx + sy * sy + sz * sz) / 3.0);
   const aspectPenalty = rmsRadius / volumeEquivalentRadius;
-  return (
-    volumeEquivalentRadius *
-    aspectPenalty ** THREE_SIGMA_AABB_ASPECT_PENALTY_EXPONENT
-  );
+  return volumeEquivalentRadius * aspectPenalty ** RADIUS_ASPECT_EXPONENT;
 }
 
 function ellipsoidAreaFromScales(sx, sy, sz) {

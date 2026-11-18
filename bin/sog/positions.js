@@ -1,5 +1,6 @@
-// Rows read at a time.
-export const BATCH = 16384;
+import { POSITION_BATCH_ROWS as BATCH } from "./lod-config.js";
+
+export { BATCH };
 
 // The centers of the splats of `levels`, one level after another, three
 // values a row, read from the levels' own centers, and `box`, the box of

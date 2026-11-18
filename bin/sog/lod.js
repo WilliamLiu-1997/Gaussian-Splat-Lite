@@ -1,15 +1,17 @@
 import { Pool, WorkerGroup, clusterers, computers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
+import {
+  BLOCK_MEMORY_SHARE,
+  LOD_PROGRESS_INTERVAL_MS,
+  LOD_REORDER_WORK,
+  LOD_SPLIT_WORK,
+  MAX_BLOCK_SPLATS,
+  SIMPLIFY_HEAP_MB,
+} from "./lod-config.js";
 import { reorder } from "./reorder.js";
 import { blockArrays, blockBytes, simplifyBlock } from "./simplify.js";
 import { SH_DIMS, Splats } from "./splats.js";
 import { splitBlocks } from "./split.js";
-
-// The most a simplifying thread's heap may grow to, in MiB, counted for each
-// thread besides the 32 MiB of clusterers(): 12 MiB before any block and a
-// young generation of 8 MiB, measured. The planner's objects took 15 MiB of
-// heap for a full block and 24 MiB for one of exact duplicates.
-const HEAP_MB = 32;
 
 // An internal working block has a quota of one. Reduce its children before
 // loading their representatives into the same scratch arrays as a leaf.
@@ -65,7 +67,12 @@ async function simplifyBlocks(source, root, limit, output, update) {
   const bytes = blockBytes(rows, most, dims);
   const threads =
     blocks.length > 1
-      ? clusterers(workspace, bytes + HEAP_MB * 1024 ** 2, 0, blocks.length)
+      ? clusterers(
+          workspace,
+          bytes + SIMPLIFY_HEAP_MB * 1024 ** 2,
+          0,
+          blocks.length,
+        )
       : 0;
   if (!threads) {
     workspace.settle();
@@ -77,21 +84,46 @@ async function simplifyBlocks(source, root, limit, output, update) {
     threads,
     { simplifier: true, cancelled: workspace.cancelled },
     undefined,
-    "Voxel simplification",
-    HEAP_MB,
+    "LOD simplification",
+    SIMPLIFY_HEAP_MB,
   );
+  const counters = group.threads.map(
+    () => new Uint32Array(new SharedArrayBuffer(4)),
+  );
+  const activeRows = new Array(counters.length).fill(0);
+  const total = Math.max(root.count / counters.length, blocks[0].node.count);
   let next = 0;
+  let finished = 0;
+  let highWater = 0;
+  const refresh = () => {
+    let done = finished;
+    let longest = blocks[next]?.node.count ?? 0;
+    for (let i = 0; i < counters.length; i++) {
+      const completed = Atomics.load(counters[i], 0);
+      done += completed;
+      longest = Math.max(longest, activeRows[i] - completed);
+    }
+    // Work can be shared across workers, but the last block runs on one.
+    const remaining = Math.max((root.count - done) / counters.length, longest);
+    // A worker that runs out of memory restarts its block locally.
+    highWater = Math.max(highWater, (1 - remaining / total) * root.count);
+    update(highWater);
+  };
+  const timer = threads
+    ? setInterval(refresh, LOD_PROGRESS_INTERVAL_MS / 2)
+    : undefined;
   try {
-    let done = 0;
     await Promise.all(
-      group.threads.map(async (thread) => {
+      group.threads.map(async (thread, index) => {
+        const counter = counters[index];
         let worker = thread;
         const arrays = blockArrays(rows, most, maxSh);
         while (next < blocks.length) {
           check();
           const { node, start } = blocks[next++];
+          activeRows[index] = node.count;
           const count = loadBlock(source, node, arrays, check);
-          const job = { count, target: node.quota, maxSh, ...arrays };
+          const job = { count, target: node.quota, maxSh, ...arrays, counter };
           if (worker) {
             try {
               await group.request(worker, job);
@@ -100,34 +132,56 @@ async function simplifyBlocks(source, root, limit, output, update) {
               worker = undefined;
             }
           }
-          if (!worker) simplifyBlock(job, check);
+          if (!worker)
+            simplifyBlock(job, check, (done) => {
+              Atomics.store(counter, 0, done);
+              refresh();
+            });
           output.store(start, node.quota, arrays.merged, arrays.mergedSh);
-          done += node.count;
-          update(done);
+          finished += node.count;
+          activeRows[index] = 0;
+          Atomics.store(counter, 0, 0);
+          refresh();
         }
       }),
     );
   } finally {
+    clearInterval(timer);
     next = blocks.length;
     await group.close();
   }
   workspace.settle();
   workspace.expect(0);
+  if (output.length !== root.quota)
+    throw new Error("LOD count differs from its target");
 }
 
-async function reduce(source, target, context, update) {
+async function reduce(source, target, context, label) {
   const { workspace, maxSh } = source;
   workspace.settle();
   const dims = SH_DIMS.slice(0, maxSh).reduce((a, b) => a + b, 0);
   const limit = Math.max(
     2,
-    Math.min(262144, Math.floor((workspace.room * 0.4) / (512 + dims * 8))),
+    Math.min(
+      MAX_BLOCK_SPLATS,
+      Math.floor((workspace.room * BLOCK_MEMORY_SHARE) / (512 + dims * 8)),
+    ),
   );
   const root = { start: 0, count: source.length, quota: target };
+  const split = source.length > limit;
+  const splitWork = split ? source.length * LOD_SPLIT_WORK : 0;
+  const preparation = split ? splitWork + source.length * LOD_REORDER_WORK : 0;
+  const progress = new Progress(
+    `Simplifying ${label} (${source.length} → ${target})`,
+    preparation + source.length,
+    "",
+    true,
+    LOD_PROGRESS_INTERVAL_MS,
+  );
   let order;
   const output = new Splats(workspace, maxSh);
   try {
-    if (source.length > limit) {
+    if (split) {
       // No more threads split than will simplify the blocks: threads that
       // ended leave memory that the system does not take back, and it
       // counts against the threads that follow.
@@ -136,16 +190,26 @@ async function reduce(source, target, context, update) {
         Math.ceil((limit * target) / root.count),
         dims,
       );
-      const most = computers(workspace, bytes + HEAP_MB * 1024 ** 2, 0, limit);
-      order = await splitBlocks(source, root, limit, most);
+      const most = computers(
+        workspace,
+        bytes + SIMPLIFY_HEAP_MB * 1024 ** 2,
+        0,
+        limit,
+      );
+      order = await splitBlocks(source, root, limit, most, (done) =>
+        progress.update(done * LOD_SPLIT_WORK),
+      );
       context.pool ??= new Pool(workspace, source.length);
-      reorder(source, order, context.pool);
+      reorder(source, order, context.pool, (done) =>
+        progress.update(splitWork + done * LOD_REORDER_WORK),
+      );
       order.dispose();
       order = undefined;
     }
-    await simplifyBlocks(source, root, limit, output, update);
-    if (output.length !== target)
-      throw new Error("LOD count differs from its target");
+    await simplifyBlocks(source, root, limit, output, (done) =>
+      progress.update(preparation + done),
+    );
+    progress.finish();
     return output;
   } catch (error) {
     output.dispose();
@@ -170,16 +234,14 @@ export async function buildLevels(input, rootSplats, factor) {
         throw new Error(
           "Combined LODs exceed u32 index limit; increase --lod-factor",
         );
-      const progress = new Progress(
-        `Simplifying LOD ${levels.length} (${source.length} → ${target})`,
-        source.length,
-      );
-      const next = await reduce(source, target, context, (done) =>
-        progress.update(done),
+      const next = await reduce(
+        source,
+        target,
+        context,
+        `LOD ${levels.length}`,
       );
       levels.push(next);
       total += next.length;
-      progress.finish(`${next.length} splats`);
     }
     console.log(
       `LOD counts: ${levels.map((level) => level.length).join(" → ")}`,

@@ -11,7 +11,7 @@ export async function start(url, options) {
     if (progressLine) process.stdout.write("\n");
     progressLine = "";
   };
-  const print = ({ method, args }) => {
+  const print = ({ method, args, singleLine }) => {
     if (method === "writeback") return syncFiles(...args, cancelled);
     if (method === "progress") {
       const [line, done] = args;
@@ -20,7 +20,7 @@ export async function start(url, options) {
         const text = !done && width ? line.slice(0, width - 1) : line;
         process.stdout.write(`\r\x1b[2K${text}${done ? "\n" : ""}`);
         progressLine = done ? "" : text;
-      } else console.log(line);
+      } else if (done || !singleLine) console.log(line);
     } else {
       // Insert logs above the live progress instead of leaving a stale row.
       if (progressLine) process.stdout.write("\r\x1b[2K");

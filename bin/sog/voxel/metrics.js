@@ -1,3 +1,8 @@
+import {
+  RELATIVE_VARIANCE_FLOOR,
+  SCORE_SLACK,
+  VARIANCE_BOUND_FACTOR,
+} from "../lod-config.js";
 function determinantSymmetric3(c00, c01, c02, c11, c12, c22) {
   return (
     c00 * (c11 * c22 - c12 * c12) -
@@ -43,7 +48,7 @@ function prepareBhattacharyyaTerms(covariance, rowCount) {
     let determinant = determinantSymmetric3(c00, c01, c02, c11, c12, c22);
     const minorSum =
       c00 * c11 - c01 * c01 + c00 * c22 - c02 * c02 + c11 * c22 - c12 * c12;
-    const varianceFloor = 1e-6 * (c00 + c11 + c22);
+    const varianceFloor = RELATIVE_VARIANCE_FLOOR * (c00 + c11 + c22);
 
     // det / minorSum bounds the smallest positive eigenvalue from below.
     // Regularize only the scoring cache; merging rebuilds the original shape.
@@ -69,150 +74,113 @@ function prepareBhattacharyyaTerms(covariance, rowCount) {
     // their mean covariance. The margin covers rounding; the trace is a
     // bound of its own.
     const trace = c00 + c11 + c22;
-    const largest = 1.001 * largestEigenvalue(c00, c01, c02, c11, c12, c22);
+    const largest =
+      VARIANCE_BOUND_FACTOR * largestEigenvalue(c00, c01, c02, c11, c12, c22);
     maxVariance[i] = largest < trace ? largest : trace;
   }
 
   return { components: covariance, logDetQuarter, maxVariance };
 }
 
-function colorLogSimilarityRgb(rgb, lhs, rhs) {
-  const a = lhs * 3;
-  const b = rhs * 3;
-  const dr = rgb[a + 0] - rgb[b + 0];
-  const dg = rgb[a + 1] - rgb[b + 1];
-  const db = rgb[a + 2] - rgb[b + 2];
-  return -(dr * dr + dg * dg + db * db);
-}
-
-function bhattacharyyaLogCoeffPrepared(covarianceTerms, pos, lhs, rhs) {
-  const covariance = covarianceTerms.components;
-  const a = lhs * 6;
-  const b = rhs * 6;
-  const a00 = covariance[a + 0];
-  const a01 = covariance[a + 1];
-  const a02 = covariance[a + 2];
-  const a11 = covariance[a + 3];
-  const a12 = covariance[a + 4];
-  const a22 = covariance[a + 5];
-  const b00 = covariance[b + 0];
-  const b01 = covariance[b + 1];
-  const b02 = covariance[b + 2];
-  const b11 = covariance[b + 3];
-  const b12 = covariance[b + 4];
-  const b22 = covariance[b + 5];
-
-  const m00 = 0.5 * (a00 + b00);
-  const m01 = 0.5 * (a01 + b01);
-  const m02 = 0.5 * (a02 + b02);
-  const m11 = 0.5 * (a11 + b11);
-  const m12 = 0.5 * (a12 + b12);
-  const m22 = 0.5 * (a22 + b22);
-  const logDetA = covarianceTerms.logDetQuarter[lhs];
-  const logDetB = covarianceTerms.logDetQuarter[rhs];
-  const detM = determinantSymmetric3(m00, m01, m02, m11, m12, m22);
-  if (detM <= 0.0) {
-    return Number.NEGATIVE_INFINITY;
-  }
-
-  const invDetM = 1.0 / detM;
-  const inv00 = (m11 * m22 - m12 * m12) * invDetM;
-  const inv01 = (m02 * m12 - m01 * m22) * invDetM;
-  const inv02 = (m01 * m12 - m02 * m11) * invDetM;
-  const inv11 = (m00 * m22 - m02 * m02) * invDetM;
-  const inv12 = (m01 * m02 - m00 * m12) * invDetM;
-  const inv22 = (m00 * m11 - m01 * m01) * invDetM;
-  const lhs3 = lhs * 3;
-  const rhs3 = rhs * 3;
-  const dx = pos[lhs3 + 0] - pos[rhs3 + 0];
-  const dy = pos[lhs3 + 1] - pos[rhs3 + 1];
-  const dz = pos[lhs3 + 2] - pos[rhs3 + 2];
-  const quad =
-    dx * (inv00 * dx + inv01 * dy + inv02 * dz) +
-    dy * (inv01 * dx + inv11 * dy + inv12 * dz) +
-    dz * (inv02 * dx + inv12 * dy + inv22 * dz);
-  const logCoefficient =
-    logDetA + logDetB - 0.5 * Math.log(detM) - 0.125 * Math.max(quad, 0.0);
-  return Number.isFinite(logCoefficient)
-    ? Math.min(0.0, logCoefficient)
-    : Number.NEGATIVE_INFINITY;
-}
-
-function gaussianLogSimilarity(covarianceTerms, pos, rgb, lhs, rhs) {
-  return (
-    bhattacharyyaLogCoeffPrepared(covarianceTerms, pos, lhs, rhs) +
-    colorLogSimilarityRgb(rgb, lhs, rhs)
-  );
-}
-
-// How far a score may lie above the distance bounds through its rounding:
+// SCORE_SLACK allows for scores above the distance bounds through rounding:
 // the quarter log determinants are single floats, the determinants round
 // with the splats' flatness, and a score above zero is cut to zero. A bound
 // rules a pair out only below the score to beat by more than this, so pairs
 // that may tie are scored, and the result does not depend on the order of
 // scoring. Estimated at 0.001 for the flattest splats that the variance
 // floor allows.
-const SCORE_SLACK = 0.01;
+function logSimilarityFor(cloud, covarianceTerms, candidate, radius) {
+  const { positions: pos, rgb } = cloud;
+  const cand3 = candidate * 3;
+  const cand6 = candidate * 6;
+  const radiusSquared = radius * radius;
+  const covComponents = covarianceTerms.components;
+  const logDetQuarter = covarianceTerms.logDetQuarter;
+  const maxVariance = covarianceTerms.maxVariance;
+  const candX = pos[cand3];
+  const candY = pos[cand3 + 1];
+  const candZ = pos[cand3 + 2];
+  const candR = rgb[cand3];
+  const candG = rgb[cand3 + 1];
+  const candB = rgb[cand3 + 2];
+  const candVariance = maxVariance[candidate];
+  const candLogDet = logDetQuarter[candidate];
+  const a00 = covComponents[cand6];
+  const a01 = covComponents[cand6 + 1];
+  const a02 = covComponents[cand6 + 2];
+  const a11 = covComponents[cand6 + 3];
+  const a12 = covComponents[cand6 + 4];
+  const a22 = covComponents[cand6 + 5];
 
-const CANDIDATE_NOVELTY_DISTANCE_SCALE = 3.0;
+  return (other, threshold) => {
+    if (candidate === other) return 0;
+    const other3 = other * 3;
+    const dx = candX - pos[other3];
+    const dy = candY - pos[other3 + 1];
+    const dz = candZ - pos[other3 + 2];
+    const distanceSquared = dx * dx + dy * dy + dz * dz;
+    if (distanceSquared > radiusSquared) return Number.NEGATIVE_INFINITY;
+    const dr = candR - rgb[other3];
+    const dg = candG - rgb[other3 + 1];
+    const db = candB - rgb[other3 + 2];
+    const colorLog = -(dr * dr + dg * dg + db * db);
+    if (colorLog < threshold) return Number.NEGATIVE_INFINITY;
+    const varianceSum = candVariance + maxVariance[other];
+    if (
+      varianceSum > 0 &&
+      colorLog - (0.25 * distanceSquared) / varianceSum + SCORE_SLACK <
+        threshold
+    )
+      return Number.NEGATIVE_INFINITY;
 
-// Of a distance from candidateDistanceFromLog(): 0 or more, or infinite.
-function candidateNoveltyFactor(distance) {
-  return 1.0 - Math.exp(-distance / CANDIDATE_NOVELTY_DISTANCE_SCALE);
+    const other6 = other * 6;
+    if (
+      distanceSquared === 0 &&
+      colorLog === 0 &&
+      a00 === covComponents[other6] &&
+      a01 === covComponents[other6 + 1] &&
+      a02 === covComponents[other6 + 2] &&
+      a11 === covComponents[other6 + 3] &&
+      a12 === covComponents[other6 + 4] &&
+      a22 === covComponents[other6 + 5]
+    )
+      return 0;
+    const m00 = 0.5 * (a00 + covComponents[other6 + 0]);
+    const m01 = 0.5 * (a01 + covComponents[other6 + 1]);
+    const m02 = 0.5 * (a02 + covComponents[other6 + 2]);
+    const m11 = 0.5 * (a11 + covComponents[other6 + 3]);
+    const m12 = 0.5 * (a12 + covComponents[other6 + 4]);
+    const m22 = 0.5 * (a22 + covComponents[other6 + 5]);
+    const cof00 = m11 * m22 - m12 * m12;
+    const cof01 = m12 * m02 - m01 * m22;
+    const cof02 = m01 * m12 - m11 * m02;
+    const detM = m00 * cof00 + m01 * cof01 + m02 * cof02;
+    if (!(detM > 0)) return Number.NEGATIVE_INFINITY;
+    const invDetM = 1.0 / detM;
+    const inv00 = cof00 * invDetM;
+    const inv01 = cof01 * invDetM;
+    const inv02 = cof02 * invDetM;
+    const inv11 = (m00 * m22 - m02 * m02) * invDetM;
+    const inv12 = (m01 * m02 - m00 * m12) * invDetM;
+    const inv22 = (m00 * m11 - m01 * m01) * invDetM;
+    const quad =
+      dx * (inv00 * dx + inv01 * dy + inv02 * dz) +
+      dy * (inv01 * dx + inv11 * dy + inv12 * dz) +
+      dz * (inv02 * dx + inv12 * dy + inv22 * dz);
+    const safeQuad = quad > 0.0 ? quad : 0.0;
+    // The determinants only lower a score, by their logarithm:
+    // the Mahalanobis term alone may already rule the pair out.
+    if (colorLog - 0.125 * safeQuad + SCORE_SLACK < threshold)
+      return Number.NEGATIVE_INFINITY;
+    const logCoefficient =
+      candLogDet +
+      logDetQuarter[other] -
+      0.5 * Math.log(detM) -
+      0.125 * safeQuad;
+    return Number.isFinite(logCoefficient)
+      ? Math.min(0, logCoefficient) + colorLog
+      : Number.NEGATIVE_INFINITY;
+  };
 }
 
-// Of a log similarity, which is at most 0 or minus infinity, never NaN.
-function candidateDistanceFromLog(logSimilarity) {
-  return Math.max(0.0, -logSimilarity);
-}
-
-// `novelty` and `bestNovelty` are the candidates' candidateNoveltyFactor().
-function candidatePriorityIsBetter(
-  row,
-  novelty,
-  bestRow,
-  bestNovelty,
-  weights,
-  radii,
-) {
-  if (bestRow < 0) {
-    return true;
-  }
-  const weight = weights[row];
-  const bestWeight = weights[bestRow];
-  const priority = novelty * Math.max(weight, 1e-12);
-  const bestPriority = bestNovelty * Math.max(bestWeight, 1e-12);
-  if (priority > bestPriority + 1e-12) {
-    return true;
-  }
-  if (Math.abs(priority - bestPriority) > 1e-12) {
-    return false;
-  }
-
-  if (novelty > bestNovelty + 1e-12) {
-    return true;
-  }
-  if (Math.abs(novelty - bestNovelty) > 1e-12) {
-    return false;
-  }
-
-  const weightDiff = weight - bestWeight;
-  if (Math.abs(weightDiff) > 1e-12) {
-    return weightDiff > 0.0;
-  }
-
-  const radiusDiff = radii[row] - radii[bestRow];
-  if (Math.abs(radiusDiff) > 1e-12) {
-    return radiusDiff > 0.0;
-  }
-  return row > bestRow;
-}
-
-export {
-  SCORE_SLACK,
-  candidateDistanceFromLog,
-  candidateNoveltyFactor,
-  candidatePriorityIsBetter,
-  gaussianLogSimilarity,
-  prepareBhattacharyyaTerms,
-};
+export { prepareBhattacharyyaTerms, logSimilarityFor };

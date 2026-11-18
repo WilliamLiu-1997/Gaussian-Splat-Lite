@@ -1,7 +1,12 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { HALF, halfBits, opacityRadius } from "../rad/math.js";
 import { collect, sharedBuffer } from "../rad/storage.js";
-import { SH_C0, SH_DIMS } from "./splats.js";
+import {
+  FEATURE_SIZE_SCALE,
+  LOD_PHASE_WORK,
+  LOD_PROGRESS_REFERENCE_ROWS,
+} from "./lod-config.js";
+import { SH_DIMS } from "./splats.js";
 import {
   covarianceComponentsFromValuesWithScales,
   covarianceToScaleQuat,
@@ -11,12 +16,16 @@ import {
   ellipsoidAreaFromScales,
   threeSigmaAabbBlendedRadiusFromExtents,
 } from "./voxel/extents.js";
-import { planSimplifyCloudVoxel } from "./voxel/plan.js";
+import { planRepresentatives } from "./voxel/plan.js";
 
 // Memory that simplifying a block of `count` splats into `target` takes: its
 // arrays, see blockArrays(), and the planner's.
 export function blockBytes(count, target, dims) {
-  return (count + target) * 256 + (count * 2 + target * 10) * dims;
+  return (
+    (count + target) * 256 +
+    (count - target) * 24 +
+    (count * 2 + target * 10) * dims
+  );
 }
 
 // A thread's arrays for blocks of up to `count` splats that simplify into up
@@ -30,8 +39,8 @@ export function blockArrays(count, target, maxSh) {
   const bands = SH_DIMS.slice(0, maxSh);
   const dims = bands.reduce((a, b) => a + b, 0);
   const bytes =
-    (target * (12 + dims) + count) * 8 +
-    (count * 31 + target * 16) * 4 +
+    (target * (12 + dims) + count * 2) * 8 +
+    (count * 30 + target * 16) * 4 +
     (count + target) * dims * 2;
   const buffer = sharedBuffer(bytes);
   let offset = 0;
@@ -40,6 +49,7 @@ export function blockArrays(count, target, maxSh) {
     offset += size * Type.BYTES_PER_ELEMENT;
     return values;
   };
+  const featureSize = take(count, Float64Array);
   return {
     // The merge sums of each simplified splat; see merge().
     sums: take(target * (12 + dims), Float64Array),
@@ -49,8 +59,8 @@ export function blockArrays(count, target, maxSh) {
     merged: take(target * 16),
     // What the planner reads of the splats; see loadCore().
     core: {
+      featureSize,
       positions: take(count * 3),
-      opacity: take(count),
       rgb: take(count * 3),
       covariance: take(count * 6),
       radius: take(count),
@@ -67,28 +77,19 @@ function representativeOpacityWeight(opacity) {
 
 // Fills the planner's arrays of `core`, and the merge weights, opacity ×
 // ellipsoid area, of the `count` splats in `records`.
-function loadCore({ records, count, core, mergeWeight }) {
+function loadCore({ records, count, core, mergeWeight }, report) {
   const cloud = {
     ...core,
     length: count,
-    minFeature: Number.POSITIVE_INFINITY,
-    origin: [
-      Number.POSITIVE_INFINITY,
-      Number.POSITIVE_INFINITY,
-      Number.POSITIVE_INFINITY,
-    ],
   };
   const covariance = new Float64Array(6);
   const scales = new Float64Array(3);
   for (let i = 0; i < count; i++) {
+    if ((i & 4095) === 0) report?.(i);
     const row = i * 16;
     for (let d = 0; d < 3; d++) {
       cloud.positions[i * 3 + d] = records[row + d];
-      cloud.rgb[i * 3 + d] = Math.max(
-        0,
-        Math.min(1, 0.5 + ((records[row + 4 + d] - 0.5) / SH_C0) * 0.15),
-      );
-      cloud.origin[d] = Math.min(cloud.origin[d], records[row + d]);
+      cloud.rgb[i * 3 + d] = records[row + 4 + d];
     }
     const opacity = records[row + 3];
     covarianceComponentsFromValuesWithScales(
@@ -106,12 +107,9 @@ function loadCore({ records, count, core, mergeWeight }) {
     for (let d = 0; d < 6; d++) cloud.covariance[i * 6 + d] = covariance[d];
     const maxScale = Math.max(scales[0], scales[1], scales[2]);
     const opacityWeight = representativeOpacityWeight(opacity);
-    cloud.opacity[i] = opacity;
     cloud.weight[i] = maxScale * opacityWeight;
-    cloud.minFeature = Math.min(
-      cloud.minFeature,
-      2 * maxScale * Math.max(1, opacityWeight),
-    );
+    cloud.featureSize[i] =
+      FEATURE_SIZE_SCALE * maxScale * Math.max(1, opacityWeight);
     // Use the double-precision variances before the planner regularizes them.
     cloud.radius[i] = threeSigmaAabbBlendedRadiusFromExtents(
       3.0 * Math.sqrt(Math.max(covariance[0], 1e-20)),
@@ -124,7 +122,7 @@ function loadCore({ records, count, core, mergeWeight }) {
   return cloud;
 }
 
-function merge(block, plan) {
+function merge(block, plan, report) {
   const { count, maxSh, records, sh, merged, mergedSh } = block;
   const target = plan.selected.length;
   const dims = SH_DIMS.slice(0, maxSh).reduce((a, b) => a + b, 0);
@@ -138,12 +136,13 @@ function merge(block, plan) {
   for (let i = 0; i < count; i++) {
     const slot = plan.assignment[i];
     if (slot < 0 || slot >= target)
-      throw new Error("Voxel assignment has an unassigned splat");
+      throw new Error("Invalid representative assignment");
     members[slot]++;
   }
   for (let i = 0; i < count; i++) {
     const row = i * 16;
     const slot = plan.assignment[i];
+    if ((i & 4095) === 0) report?.(i);
     const weight = block.mergeWeight[i];
     // A splat that nothing merges into stays as it is, its SH too.
     if (members[slot] === 1) {
@@ -202,8 +201,10 @@ function merge(block, plan) {
   }
   const scratch = makeCovarianceToScaleQuatScratch();
   for (let slot = 0; slot < target; slot++) {
+    if ((slot & 4095) === 0) report?.(count + slot);
     // The arrays hold an earlier block's splats where nothing is written.
-    if (!members[slot]) throw new Error("Voxel selection has an empty slot");
+    if (!members[slot])
+      throw new Error("Representative selection has an empty slot");
     if (members[slot] === 1) continue;
     const base = slot * stride;
     // Blind data follows the selected representative, never an average of IDs.
@@ -258,17 +259,31 @@ function loadWeights(records, count, mergeWeight) {
   return selected;
 }
 
-function simplifyVoxel(block, check) {
-  const cloud = loadCore(block);
-  const plan = planSimplifyCloudVoxel(cloud, block.target, check);
+function simplifyRepresentatives(block, check, report) {
+  // Larger blocks spend more time searching for each new representative.
+  const selection =
+    LOD_PHASE_WORK.selection *
+    Math.max(1, Math.sqrt(block.count / LOD_PROGRESS_REFERENCE_ROWS));
+  const work = { ...LOD_PHASE_WORK, selection };
+  const units =
+    block.count / Object.values(work).reduce((sum, value) => sum + value, 0);
+  let end = 0;
+  function phase(name, total = block.count) {
+    const start = end;
+    const length = units * work[name];
+    end += length;
+    return report && ((done) => report(start + length * (done / total)));
+  }
+  const cloud = loadCore(block, phase("core"));
+  const plan = planRepresentatives(cloud, block.target, check, phase);
   if (plan.selected.length !== block.target)
-    throw new Error("Voxel selection missed its target count");
-  merge(block, plan);
+    throw new Error("Representative selection missed its target count");
+  merge(block, plan, phase("merge", block.count + block.target));
   return plan.selected.length;
 }
 
 // Returns the number of rows written to merged and mergedSh.
-export function simplifyBlock(block, check) {
+export function simplifyBlock(block, check, report) {
   const { count, target, maxSh, records, sh, merged, mergedSh } = block;
   check();
   if (target === count) {
@@ -282,7 +297,7 @@ export function simplifyBlock(block, check) {
     merge(block, { selected: [selected], assignment: new Int32Array(count) });
     return 1;
   }
-  const written = simplifyVoxel(block, check);
+  const written = simplifyRepresentatives(block, check, report);
   collect();
   return written;
 }
@@ -294,6 +309,10 @@ if (!isMainThread && workerData?.simplifier) {
       throw new Error("Conversion cancelled");
   };
   parentPort.on("message", (block) => {
-    parentPort.postMessage(simplifyBlock(block, check));
+    parentPort.postMessage(
+      simplifyBlock(block, check, (done) =>
+        Atomics.store(block.counter, 0, done),
+      ),
+    );
   });
 }

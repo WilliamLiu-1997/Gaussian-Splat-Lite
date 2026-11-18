@@ -1,4 +1,4 @@
-const BINS = 256;
+import { KD_BINS_PER_AXIS as BINS } from "./lod-config.js";
 
 export function boundsOf(rows, order, start, count) {
   const min = [

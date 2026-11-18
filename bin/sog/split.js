@@ -2,92 +2,27 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { WorkerGroup, clusterers, computers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import { IndexArray, PagedArray, sharedBuffer } from "../rad/storage.js";
+import {
+  POSITION_BATCH_ROWS as BATCH,
+  SPLIT_BUFFER_ROWS as BUFFERED,
+  SPLIT_HEAP_MB as HEAP_MB,
+  SPLIT_SCAN_ROWS as SCAN,
+  SPLIT_MEMORY_SHARE as SHARE,
+  SPLIT_TASKS_PER_WORKER,
+  SPLIT_STRETCH_ROWS as STRETCH,
+} from "./lod-config.js";
 import { sortMorton } from "./morton.js";
-import { BATCH, Positions } from "./positions.js";
+import { Positions } from "./positions.js";
+import { Centers, Order, divide } from "./spatial-order.js";
 import { Cut, binRange, boundsOf, partRange, splitRange } from "./spatial.js";
 
 // Bytes in memory of a row while its part is split: its center, its place
 // in the order and its row.
 const GATHERED_BYTES = 20;
-// The share of the room that the parts split at a time may take.
-const SHARE = 0.5;
-// Rows buffered for each part while its centers are put side by side.
-const BUFFERED = 4096;
-// Rows of a large node that a thread takes at a time.
-const STRETCH = 1 << 20;
-// Rows of a batch that a thread takes of a pass over the centers, and the
-// bytes of a row in it, and of each row while cutting: its center and its
-// part.
-const SCAN = 1 << 18;
+// Bytes of a scanned row: its center and part.
 const SCANNED_BYTES = 16;
-// The most a splitting thread's heap may grow to, in MiB, and what
-// clusterers() counts for a thread besides: 12 MiB before any work and a
-// young generation of 8 MiB, measured. The heap holds little but the nodes.
-const HEAP_MB = 32;
 // The most rows of an array in a WebAssembly memory of 4 GiB.
 const MOST = Math.floor(0xffff0000 / 12);
-
-// Gives `node` its two children at `middle`, and with a quota, theirs in
-// proportion to their counts.
-function divide(node, middle) {
-  const { start, count, quota } = node;
-  const left = middle - start;
-  const right = count - left;
-  node.children = [
-    { start, count: left },
-    { start: middle, count: right },
-  ];
-  if (quota === undefined) return;
-  const a =
-    quota === 1
-      ? 1
-      : Math.max(
-          1,
-          quota - right,
-          Math.min(left, quota - 1, Math.round((quota * left) / count)),
-        );
-  node.children[0].quota = a;
-  node.children[1].quota = Math.max(1, quota - a);
-}
-
-// Centers in memory, read as splitRange() reads rows. Polls for
-// cancellation as the paged arrays do.
-class Centers {
-  constructor(values, check) {
-    this.values = values;
-    this.check = check;
-    this.reads = 0;
-  }
-
-  read(index, record) {
-    if ((++this.reads & 0xfffff) === 0) this.check();
-    const at = index * 3;
-    record[0] = this.values[at];
-    record[1] = this.values[at + 1];
-    record[2] = this.values[at + 2];
-    return record;
-  }
-}
-
-// The order of rows in memory, with what splitRange() uses of an
-// IndexArray.
-class Order {
-  constructor(values) {
-    this.values = values;
-  }
-
-  get(index) {
-    return this.values[index];
-  }
-
-  set(index, value) {
-    this.values[index] = value;
-  }
-
-  sort(start, count) {
-    this.values.subarray(start, start + count).sort();
-  }
-}
 
 // Splits nodes of the centers in the order, both in shared memory, as is
 // `ids`, the row of each center. Nodes own separate ranges of the order, so
@@ -263,7 +198,11 @@ async function splitShared(
   // for each thread at a time; smaller nodes go whole to a thread. On this
   // thread alone, a root is split to the end at once.
   const grain = threads
-    ? Math.max(limit, STRETCH, Math.ceil(order.length / threads / 4))
+    ? Math.max(
+        limit,
+        STRETCH,
+        Math.ceil(order.length / threads / SPLIT_TASKS_PER_WORKER),
+      )
     : order.length;
   try {
     await new Promise((resolve, reject) => {
@@ -605,11 +544,13 @@ async function split(workspace, levels, length, root, job) {
   // never beyond.
   const cutting =
     length > fit ? length * 4 * Math.ceil(Math.log2(length / fit)) : 0;
-  const progress = job.label && new Progress(job.label, 2 * length + cutting);
+  const total = 2 * length + cutting;
+  const progress = job.label && new Progress(job.label, total);
   let done = 0;
   const advance = (rows, most = Number.POSITIVE_INFINITY) => {
     done = Math.min(done + rows, most);
     progress?.update(done);
+    job.update?.(length * (done / total));
   };
   let order = new IndexArray(workspace);
   order.length = length;
@@ -760,11 +701,12 @@ async function split(workspace, levels, length, root, job) {
 
 // Divides a level into working blocks of at most `limit` splats, each with
 // its quota and sorted by row, on at most `most` threads.
-export const splitBlocks = (source, root, limit, most) =>
+export const splitBlocks = (source, root, limit, most, update) =>
   split(source.workspace, [source], source.length, root, {
     limit,
     most,
     bounds: false,
+    update,
   });
 
 // Divides all levels' splats into regions of at most `limit`, every node
