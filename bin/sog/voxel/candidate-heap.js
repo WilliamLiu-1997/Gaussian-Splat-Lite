@@ -1,7 +1,8 @@
 class GroupCandidateHeap {
-  // At most one candidate per group; pop it before pushing its replacement.
+  // Neighbors can change the best candidate of a group anywhere in the heap.
   constructor(capacity) {
     this.groups = new Int32Array(capacity);
+    this.indices = new Int32Array(capacity).fill(-1);
     this.rows = new Int32Array(capacity);
     this.distances = new Float64Array(capacity);
     this.weights = new Float64Array(capacity);
@@ -25,32 +26,35 @@ class GroupCandidateHeap {
     return lhs < rhs;
   }
 
-  push(group, row, distance, weight, priority, radius) {
+  set(group, row, distance, weight, priority, radius) {
     this.rows[group] = row;
     this.distances[group] = distance;
     this.weights[group] = weight;
     this.priorities[group] = priority;
     this.radii[group] = radius;
 
-    let index = this.length++;
-    while (index > 0) {
-      const parent = (index - 1) >> 1;
-      if (!this.before(group, this.groups[parent])) break;
-      this.groups[index] = this.groups[parent];
-      index = parent;
-    }
-    this.groups[index] = group;
+    const index = this.indices[group];
+    this.place(group, index < 0 ? this.length++ : index);
   }
 
-  pop(out) {
-    out.group = this.groups[0];
-    out.row = this.rows[out.group];
-
+  remove(group) {
+    const index = this.indices[group];
+    if (index < 0) return;
+    this.indices[group] = -1;
     const last = --this.length;
-    if (last === 0) return;
+    if (index !== last) this.place(this.groups[last], index);
+  }
 
-    const group = this.groups[last];
-    let index = 0;
+  place(group, start) {
+    let index = start;
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      const other = this.groups[parent];
+      if (!this.before(group, other)) break;
+      this.groups[index] = other;
+      this.indices[other] = index;
+      index = parent;
+    }
     while (index * 2 + 1 < this.length) {
       let child = index * 2 + 1;
       if (
@@ -60,9 +64,11 @@ class GroupCandidateHeap {
         child++;
       if (!this.before(this.groups[child], group)) break;
       this.groups[index] = this.groups[child];
+      this.indices[this.groups[child]] = index;
       index = child;
     }
     this.groups[index] = group;
+    this.indices[group] = index;
   }
 }
 

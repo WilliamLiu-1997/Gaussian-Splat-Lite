@@ -78,7 +78,8 @@ function planSimplifyCloudVoxel(cloud, target, check) {
     cloud.opacity,
   );
 
-  const createCandidateState = () => {
+  if (selected.length < target) {
+    check();
     const candidateStarts = new Uint32Array(groupCount + 1);
     for (let group = 0; group < groupCount; group++)
       candidateStarts[group + 1] =
@@ -99,7 +100,7 @@ function planSimplifyCloudVoxel(cloud, target, check) {
       const start = groupOffsets[group];
       const end = groupOffsets[group + 1];
       const slotStart = candidateStarts[group];
-      const rep = selected[groupReps[group][0]];
+      const rep = selected[group];
       let length = 0;
       let bestRow = -1;
       let bestNovelty = 0.0;
@@ -148,17 +149,15 @@ function planSimplifyCloudVoxel(cloud, target, check) {
       return true;
     };
 
-    const selectCandidate = (group, rep) => {
-      let length = --candidateLengths[group];
-      const selectedIndex = groupBestIndex[group];
+    const copyCandidateSlot = (dst, src) => {
+      candidateRows[dst] = candidateRows[src];
+      candidateLogSimilarities[dst] = candidateLogSimilarities[src];
+      candidateNovelties[dst] = candidateNovelties[src];
+    };
+
+    const compareRepresentative = (group, rep) => {
+      let length = candidateLengths[group];
       const slotStart = candidateStarts[group];
-      if (selectedIndex !== length) {
-        const dst = slotStart + selectedIndex;
-        const src = slotStart + length;
-        candidateRows[dst] = candidateRows[src];
-        candidateLogSimilarities[dst] = candidateLogSimilarities[src];
-        candidateNovelties[dst] = candidateNovelties[src];
-      }
       if (length === 0) {
         groupBestIndex[group] = -1;
         return;
@@ -275,12 +274,7 @@ function planSimplifyCloudVoxel(cloud, target, check) {
         }
         if (cached >= 0.0) {
           length -= 1;
-          if (i !== length) {
-            const lastSlot = slotStart + length;
-            candidateRows[slot] = candidateRows[lastSlot];
-            candidateLogSimilarities[slot] = candidateLogSimilarities[lastSlot];
-            candidateNovelties[slot] = candidateNovelties[lastSlot];
-          }
+          if (i !== length) copyCandidateSlot(slot, slotStart + length);
         } else {
           const row = candidateRows[slot];
           const novelty = candidateNovelties[slot];
@@ -305,12 +299,33 @@ function planSimplifyCloudVoxel(cloud, target, check) {
       groupBestIndex[group] = bestIndex;
     };
 
-    return { findGroupBest, selectCandidate };
-  };
+    // The first representatives are in group order; each group has scored its own.
+    for (let group = 0; group < groupCount; group++) {
+      if (candidateLengths[group] === 0) continue;
+      for (const neighbor of neighborGroupsByGroup[group]) {
+        if (neighbor !== group)
+          compareRepresentative(group, selected[neighbor]);
+      }
+    }
 
-  if (selected.length < target) {
-    check();
-    const state = createCandidateState();
+    const selectBest = (group, row, updateGroupBest) => {
+      const outIdx = selected.length;
+      selected.push(row);
+      assignment[row] = outIdx;
+      groupReps[group].push(outIdx);
+      if (selected.length === target) return;
+
+      const last = --candidateLengths[group];
+      const index = groupBestIndex[group];
+      const start = candidateStarts[group];
+      if (index !== last) copyCandidateSlot(start + index, start + last);
+
+      for (const neighbor of neighborGroupsByGroup[group]) {
+        compareRepresentative(neighbor, row);
+        updateGroupBest?.(neighbor);
+      }
+    };
+
     const best = {};
     for (
       let group = 0;
@@ -321,32 +336,23 @@ function planSimplifyCloudVoxel(cloud, target, check) {
       const maxReps = maxRepsByGroup[group];
       while (reps.length < maxReps && selected.length < target) {
         if ((selected.length & 1023) === 0) check();
-        if (!state.findGroupBest(group, best)) {
-          break;
-        }
-        const bestRow = best.row;
-        const outIdx = selected.length;
-        selected.push(bestRow);
-        assignment[bestRow] = outIdx;
-        reps.push(outIdx);
-        // The candidates are not used once the target is reached.
-        if (selected.length === target) break;
-        state.selectCandidate(group, bestRow);
+        if (!findGroupBest(group, best)) break;
+        selectBest(group, best.row);
       }
     }
 
     if (selected.length < target) {
       check();
       const heap = new GroupCandidateHeap(groupCount);
-      const heapEntry = {};
 
-      const pushGroupBest = (group) => {
+      const updateGroupBest = (group) => {
         if ((group & 255) === 0) check();
-        if (!state.findGroupBest(group, best)) {
+        if (!findGroupBest(group, best)) {
+          heap.remove(group);
           return;
         }
         const weight = coarseWeights[best.row];
-        heap.push(
+        heap.set(
           group,
           best.row,
           best.distance,
@@ -356,26 +362,12 @@ function planSimplifyCloudVoxel(cloud, target, check) {
         );
       };
 
-      for (let group = 0; group < groupCount; group++) {
-        pushGroupBest(group);
-      }
+      for (let group = 0; group < groupCount; group++) updateGroupBest(group);
 
       while (selected.length < target && heap.length > 0) {
         if ((selected.length & 1023) === 0) check();
-        heap.pop(heapEntry);
-        const group = heapEntry.group;
-        const rep = heapEntry.row;
-        if (assignment[rep] >= 0) {
-          continue;
-        }
-
-        const outIdx = selected.length;
-        selected.push(rep);
-        assignment[rep] = outIdx;
-        groupReps[group].push(outIdx);
-        if (selected.length === target) break;
-        state.selectCandidate(group, rep);
-        pushGroupBest(group);
+        const group = heap.groups[0];
+        selectBest(group, heap.rows[group], updateGroupBest);
       }
     }
   }
