@@ -99,6 +99,17 @@ export const renderOptionGroups = [
         format: (value) => value.toFixed(3),
       },
       {
+        property: "lodBehindPenalty",
+        label: "Behind-camera LOD penalty",
+        description:
+          "Distance multiplier directly behind the camera. Higher values reduce detail there. At 1×, all directions are treated equally.",
+        min: 1,
+        max: 10,
+        step: 0.1,
+        defaultValue: 5,
+        format: (value) => `${value.toFixed(1)}×`,
+      },
+      {
         property: "renderOnDemand",
         description:
           "Skips unchanged frames. Disable it to render continuously for profiling.",

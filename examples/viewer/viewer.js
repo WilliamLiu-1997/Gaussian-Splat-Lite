@@ -335,6 +335,9 @@ const renderOptionActions = {
   lodMultiplier: (value) => {
     if (isChunkStream(activeStream)) activeStream.lodMultiplier = value;
   },
+  lodBehindPenalty: (value) => {
+    if (isChunkStream(activeStream)) activeStream.lodBehindPenalty = value;
+  },
   denoiseEnabled: (value) => {
     denoiseEnabled = value;
     replaceDenoiser();
@@ -583,6 +586,7 @@ function syncModelOptions() {
   optionsPanel.setHidden("splatBudgetMode", !isChunk);
   optionsPanel.setHidden("environment", !isChunk);
   optionsPanel.setHidden("lodMultiplier", !isChunk);
+  optionsPanel.setHidden("lodBehindPenalty", !isChunk);
   optionsPanel.setHidden(
     "lodBaseDistance",
     !isChunk || activeStream.splatBudgetMode !== "limit",
@@ -744,6 +748,7 @@ async function initializeModel(
       splatBudgetMode: optionsPanel.getValue("splatBudgetMode"),
       lodBaseDistance: optionsPanel.getValue("lodBaseDistance"),
       lodMultiplier: optionsPanel.getValue("lodMultiplier"),
+      lodBehindPenalty: optionsPanel.getValue("lodBehindPenalty"),
     });
     model.stream.setCamera(camera);
     model.splat = model.stream.group;
