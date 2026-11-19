@@ -192,6 +192,7 @@ async function convert(input, options, kernel, cancelled) {
     const lodStart = performance.now();
     const format = buildLod(splats, options.lodBase, pool, options.shCodebook);
     await pool.close();
+    pool = undefined;
     console.log(
       `Built ${splats.length} LOD splats from ${leaves} leaves in ${((performance.now() - lodStart) / 1000).toFixed(2)}s`,
     );

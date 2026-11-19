@@ -18,11 +18,12 @@ class Histogram {
       this.count - 1,
       Math.round(Math.fround(Math.fround(this.count) * Math.fround(fraction))),
     );
-    for (let i = 0; i < 65536; i++) {
-      if (rank < this.counts[i]) return HALF[i & 32768 ? i ^ 32768 : i ^ 65535];
-      rank -= this.counts[i];
+    let bin = 0;
+    while (rank >= this.counts[bin]) {
+      rank -= this.counts[bin];
+      bin++;
     }
-    throw new Error("Empty encoding histogram");
+    return HALF[bin & 32768 ? bin ^ 32768 : bin ^ 65535];
   }
 }
 

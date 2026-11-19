@@ -297,7 +297,7 @@ export class Workspace {
   // from its file nor cleared.
   allocate(array, index, restore = true) {
     if (++this.allocations % 64 === 0) this.adjust();
-    if (this.used + PAGE_BYTES > this.capacity && this.used) this.evict();
+    if (this.used + PAGE_BYTES > this.capacity) this.evict();
     let slot = this.free.pop();
     if (slot === undefined) {
       slot = this.slots.length;
@@ -595,19 +595,17 @@ export class PagedArray {
   }
 }
 
-// A page of `fill` words for each type, made once per thread: columns are
-// made anew whenever shared arrays change.
+// One zero page per type and thread, reused across column views.
 const EMPTY = new Map();
-function empty(Type, fill) {
-  const key = `${Type.name} ${fill}`;
-  let page = EMPTY.get(key);
+function empty(Type) {
+  let page = EMPTY.get(Type);
   if (!page) {
     const buffer = new ArrayBuffer(PAGE_BYTES);
     page = {
       values: new Type(buffer),
-      words: new Uint32Array(buffer).fill(fill),
+      words: new Uint32Array(buffer),
     };
-    EMPTY.set(key, page);
+    EMPTY.set(Type, page);
   }
   return page;
 }
@@ -644,15 +642,7 @@ export class ArenaViews {
 // job. Searches can also read spilled parts and see zeros for unwritten pages.
 // Other jobs report misses for the main thread.
 export class SharedColumn {
-  constructor(
-    views,
-    directory,
-    Type,
-    fill = 0,
-    fds = undefined,
-    parts = undefined,
-    column = 0,
-  ) {
+  constructor(views, directory, Type, fds, parts, column = 0) {
     this.directory = directory;
     this.views = views;
     this.arenas = views.get(Type);
@@ -663,7 +653,7 @@ export class SharedColumn {
     this.mask = this.items - 1;
     // Exact for the power of two, and faster than dividing.
     this.inverse = 1 / this.items;
-    this.empty = empty(Type, fill);
+    this.empty = empty(Type);
     this.base = 0;
     this.missed = false;
     this.lastBlock = -1;

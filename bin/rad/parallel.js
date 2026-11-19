@@ -415,8 +415,8 @@ export class Pool {
   }
 
   // Writes the grid entries of the first `count` splats in `nodes` to
-  // `records`, 16 words each as Grid.add() writes them, and marks them 0 in
-  // `results`. A splat whose record is not cached is marked LATER.
+  // `records`, 16 words each, and marks them 0 in `results`. A splat whose
+  // record is not cached is marked LATER.
   enter(splats, count) {
     this.share({ splatRecords: splats.records.share().directory });
     this.run(ENTER, count, 1024);
@@ -568,7 +568,6 @@ class Task {
             views,
             directory,
             Type,
-            0,
             state.files[i],
             this.parts,
             i,

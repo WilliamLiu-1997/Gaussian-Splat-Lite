@@ -463,21 +463,14 @@ export class Grid extends Lookup {
     this.relink(label);
   }
 
-  // Adds a merged splat during the level, with its terms if known, and
-  // returns the hash of its cell.
-  insert(node, weight, terms, slot = NONE) {
-    this.add(node, weight, terms);
-    this.link(this.length - 1, slot);
-    return this.lastHash;
-  }
-
-  // Without terms, reads the splat's terms and weight.
-  add(node, weight, terms) {
-    const tuple = terms ?? this.similarities.get(node, this.tuple);
+  // Adds a merged splat and returns the hash of its cell.
+  insert(node, weight, terms, slot) {
     const entry = this.length++;
     const { values, words } = this.entries.at(entry * STRIDE, true);
     const offset = (entry * STRIDE) & this.entries.mask;
-    writeEntry(values, words, offset, node, tuple, terms ? weight : tuple[13]);
+    writeEntry(values, words, offset, node, terms, weight);
+    this.link(entry, slot);
+    return this.lastHash;
   }
 
   // Returns the first `length` entries of `table` stably sorted by block,

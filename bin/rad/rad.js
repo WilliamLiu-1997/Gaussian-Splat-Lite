@@ -265,9 +265,8 @@ function encodeChunk(chunk, encoding) {
   const counts = raw(count * 2);
   const starts = raw(count * 4, 1);
   for (let i = 0; i < count; i++) {
-    const children = chunk.counts[i];
-    counts.writeUInt16LE(children, i * 2);
-    starts.writeUInt32LE(children ? chunk.starts[i] : 0, i * 4);
+    counts.writeUInt16LE(chunk.counts[i], i * 2);
+    starts.writeUInt32LE(chunk.starts[i], i * 4);
   }
   property("child_count", "u16", counts);
   property("child_start", "u32", starts);

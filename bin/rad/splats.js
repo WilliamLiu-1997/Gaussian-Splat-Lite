@@ -566,9 +566,10 @@ export class Merger {
     this.v = 0;
   }
   run(ca, cb, wa, wb, out) {
-    const total = Math.max(wa + wb, 1e-30);
-    const w = wa / total;
-    const v = wb / total;
+    const total = wa + wb;
+    // Single-axis splats can pass filtering with zero area.
+    const w = total === 0 ? 0.5 : wa / total;
+    const v = total === 0 ? 0.5 : wb / total;
     this.w = w;
     this.v = v;
     for (let d = 0; d < 3; d++) {
