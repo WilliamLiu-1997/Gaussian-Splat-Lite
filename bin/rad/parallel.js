@@ -45,13 +45,12 @@ const END = 13;
 // The workers that have collected the views of released arenas.
 const COLLECTED = 14;
 // Jobs.
-const SEARCH = 0;
+const SEARCH_AHEAD = 0;
 const BLEND = 1;
 const COPY = 2;
 const CHECK = 3;
 const COLLECT = 4;
 const ENTER = 5;
-const SEARCH_AHEAD = 6;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
@@ -305,7 +304,7 @@ export class Pool {
   // Searches and merges for the first `count` nodes and entries, against the
   // grid. Returns the number of results ready to commit in order.
   search(grid, count) {
-    if (count < 64) {
+    if (count < 256 || !this.workers.length) {
       this.results.fill(MISS, 0, count);
       return count;
     }
@@ -323,9 +322,7 @@ export class Pool {
       4,
       Math.min(32, Math.floor(count / ((this.workers.length + 1) * 4))),
     );
-    const overlap = this.workers.length > 0 && count >= 128;
-    this.run(overlap ? SEARCH_AHEAD : SEARCH, count, size);
-    if (!overlap) return count;
+    this.run(SEARCH_AHEAD, count, size);
     this.workspace.finishSearch = this.joinSearch;
     this.chunkSize = size;
     return 0;
@@ -581,10 +578,10 @@ class Task {
       const count = Atomics.load(control, COUNT);
       const end = Math.min(start + size, count);
       const job = Atomics.load(control, JOB);
-      if (job === SEARCH || job === SEARCH_AHEAD) {
-        this.lookup.concurrent = job === SEARCH_AHEAD;
+      if (job === SEARCH_AHEAD) {
+        this.lookup.concurrent = true;
         for (let t = start; t < end; t++) this.results[t] = this.search(t);
-        if (job === SEARCH_AHEAD) Atomics.store(this.readyChunks, start, gen);
+        Atomics.store(this.readyChunks, start, gen);
       } else if (job === BLEND)
         this.blend(start, end, Atomics.load(control, DIMS));
       else if (job === COPY) this.copy(start, end);
