@@ -24,6 +24,8 @@ import { ArenaViews, Parts, SharedColumn, collect } from "./storage.js";
 export const MISS = 0xfffffffe;
 // The most searches in one round.
 export const ROUND = 32768;
+// Minimum input size for starting additional LOD workers.
+const MIN_WORKER_SPLATS = 65536;
 // Control words.
 const GEN = 0;
 const NEXT = 1;
@@ -203,7 +205,6 @@ const same = (a, b) =>
 // read pages that are not cached from their files; the other jobs leave
 // what is not cached to the main thread.
 export class Pool {
-  // Workers pay off for jobs over at least a batch of `splats`.
   constructor(workspace, splats) {
     this.workspace = workspace;
     // Once the LOD grid's entries, 64 bytes a splat, exceed three times the
@@ -216,7 +217,9 @@ export class Pool {
       Math.min(1 / 4, (0.75 * workspace.budget) / (splats * 64)),
     );
     const count =
-      splats < ROUND ? 0 : threads(workspace, WORKER_BYTES, MAIN_BYTES, share);
+      splats < MIN_WORKER_SPLATS
+        ? 0
+        : threads(workspace, WORKER_BYTES, MAIN_BYTES, share);
     this.shared = {
       cancelled: workspace.cancelled,
       control: shared(Int32Array, 16),
