@@ -117,13 +117,10 @@ export class Splats {
     this.shapeFloats = new Float32Array(this.shapeRows.buffer);
     this.shapeFields = new Float32Array(SHAPE_BLOCK * 7);
     this.shapeBits = new Uint16Array(SHAPE_BLOCK * 7);
-    // Each decoded splat's row in the SH columns: as decoded, and from
-    // mergeSh() on, in the order merges read them; see shRow().
+    // Sorted leaf -> decoded SH row. mergeSh() reuses it for merge-read order.
     this.shOrder = undefined;
     this.merged = new Float64Array(16);
     this.merger = new Merger();
-    this.shLeft = new Uint16Array(21);
-    this.shRight = new Uint16Array(21);
   }
 
   receive(name, base, values) {
@@ -332,17 +329,18 @@ export class Splats {
     return index;
   }
 
-  // Blend each SH band in creation order, children before parents. Reorder
-  // leaves for sequential reads; only merged children need random reads.
-  // Batches use at most half the cache for child pages. Workers handle
-  // earlier children; children within the batch are blended below in order.
-  mergeSh(initial, pool) {
-    if (!this.maxSh) return;
-    const { nodes, entries, later, blends, blended, results } = pool;
+  // Blend one band at a time, gathering its retained rows into chunk order
+  // before the next band needs space for intermediate parents.
+  mergeSh(indices, pool) {
+    this.workspace.rest([]);
+    const initial = this.shOrder.length;
     // Each leaf occurs once, as a merge child or the lone root. Replace its
     // decoded SH row with its position in merge-read order.
     const reads = new IndexArray(this.workspace);
-    const collecting = new Progress("Collecting SH order", this.length);
+    const collecting = new Progress(
+      "Collecting SH order",
+      this.length - initial,
+    );
     for (let k = 0; k < (this.length - initial) * 2; k++) {
       const child = this.children.get(k);
       if (child < initial) {
@@ -363,9 +361,24 @@ export class Splats {
       "Preparing SH order",
     );
     reads.dispose();
-    // Splats per batch.
-    const size = later.length;
-    const rows = [this.shLeft, this.shRight];
+
+    // Only leaf rows change in merge-read order. Parent rows keep their tree indices.
+    const order = new Progress("Collecting LOD SH order", indices.length);
+    for (let i = 0; i < indices.length; i++) {
+      const node = indices.get(i);
+      if (node < initial) indices.set(i, this.shOrder.get(node));
+      if ((i & 4095) === 0) order.update(i);
+    }
+    order.finish();
+    this.shOrder.dispose();
+    const chunkRows = new Permutation(
+      this.workspace,
+      indices,
+      this.length,
+      "Preparing LOD SH order",
+    );
+    indices.dispose();
+
     for (let band = 0; band < this.maxSh; band++) {
       const dims = SH_DIMS[band];
       const column = leafRows.apply(
@@ -375,90 +388,108 @@ export class Splats {
         false,
         `Reordering SH${band + 1}`,
       );
-      this.sh[band] = column;
-      const progress = new Progress(
-        `Blending SH${band + 1}`,
-        this.length - initial,
+      this.blendSh(column, band, initial, pool);
+      this.sh[band] = chunkRows.apply(
+        column,
+        dims,
+        pool,
+        false,
+        `Reordering LOD SH${band + 1}`,
       );
-      // The batch that last counted each page of the column.
-      const counted = new Float64Array(
-        Math.ceil((this.length * dims) / column.items),
-      );
-      let batch = 0;
-      // The row of the next decoded splat that a merge reads.
-      let next = 0;
-      for (let start = initial; start < this.length; ) {
-        const limit = Math.min(size, this.length - start);
-        const pages = Math.max(
-          1,
-          Math.floor(this.workspace.capacity / PAGE_BYTES / 2),
-        );
-        batch++;
-        let taken = 0;
-        let count = 0;
-        // Load the pages of the children's rows for the workers. Consecutive
-        // splats' children often share pages; a page evicted meanwhile is a
-        // miss that the main thread blends.
-        let left = -1;
-        let right = -1;
-        while (count < limit) {
-          const k = (start + count - initial) * 2;
-          const a = this.children.get(k);
-          const b = this.children.get(k + 1);
-          const ra = a < initial ? next : a;
-          const rb = b < initial ? next + Number(a < initial) : b;
-          const pa = Math.floor((ra * dims) / column.items);
-          const pb = Math.floor((rb * dims) / column.items);
-          let added = Number(ra < start && counted[pa] !== batch);
-          if (rb < start && counted[pb] !== batch && !(added && pb === pa))
-            added++;
-          if (count && taken + added > pages) break;
-          taken += added;
-          if (ra < start) counted[pa] = batch;
-          if (rb < start) counted[pb] = batch;
-          next += Number(a < initial) + Number(b < initial);
-          const i = count++;
-          nodes[i] = ra;
-          entries[i] = rb;
-          blends[i * 2] = this.blend.get(k);
-          blends[i * 2 + 1] = this.blend.get(k + 1);
-          later[i] = Number(ra >= start || rb >= start);
-          if (later[i]) continue;
-          if (pa !== left) {
-            left = pa;
-            column.page(ra * dims);
-          }
-          if (pb !== right) {
-            right = pb;
-            column.page(rb * dims);
-          }
-        }
-        pool.blend(column, count, dims);
-        for (let i = 0; i < count; i++) {
-          // A worker blended rows it marked 0.
-          if (!later[i] && results[i] === 0) continue;
-          for (let c = 0; c < 2; c++) {
-            const child = c ? entries[i] : nodes[i];
-            if (child < start) column.read(child * dims, rows[c], dims);
-            else
-              for (let d = 0; d < dims; d++)
-                rows[c][d] = blended[(child - start) * dims + d];
-          }
-          const w = blends[i * 2];
-          const v = blends[i * 2 + 1];
-          for (let d = 0; d < dims; d++)
-            blended[i * dims + d] = halfBits(
-              HALF[this.shLeft[d]] * w + HALF[this.shRight[d]] * v,
-            );
-        }
-        column.write(start * dims, blended, count * dims);
-        start += count;
-        progress.update(start - initial);
-      }
-      progress.finish();
     }
     leafRows.dispose();
+    chunkRows.dispose();
+    this.children.dispose();
     this.blend.dispose();
+  }
+
+  // Workers blend earlier children. The main thread resolves dependencies
+  // within a batch in creation order, rounding each parent to FP16.
+  blendSh(column, band, initial, pool) {
+    const { nodes, entries, later, blends, blended, results } = pool;
+    const dims = SH_DIMS[band];
+    const size = later.length;
+    const rows = [new Uint16Array(dims), new Uint16Array(dims)];
+    const progress = new Progress(
+      `Blending SH${band + 1}`,
+      this.length - initial,
+    );
+    // The batch that last counted each page of the column.
+    const counted = new Float64Array(
+      Math.ceil((this.length * dims) / column.items),
+    );
+    let batch = 0;
+    // The row of the next decoded splat that a merge reads.
+    let next = 0;
+    for (let start = initial; start < this.length; ) {
+      const limit = Math.min(size, this.length - start);
+      const pages = Math.max(
+        1,
+        Math.floor(this.workspace.capacity / PAGE_BYTES / 2),
+      );
+      batch++;
+      let taken = 0;
+      let count = 0;
+      // Load the pages of the children's rows for the workers. Consecutive
+      // splats' children often share pages; a page evicted meanwhile is a
+      // miss that the main thread blends.
+      let left = -1;
+      let right = -1;
+      while (count < limit) {
+        const k = (start + count - initial) * 2;
+        const a = this.children.get(k);
+        const b = this.children.get(k + 1);
+        const ra = a < initial ? next : a;
+        const rb = b < initial ? next + Number(a < initial) : b;
+        const pa = Math.floor((ra * dims) / column.items);
+        const pb = Math.floor((rb * dims) / column.items);
+        let added = Number(ra < start && counted[pa] !== batch);
+        if (rb < start && counted[pb] !== batch && !(added && pb === pa))
+          added++;
+        if (count && taken + added > pages) break;
+        taken += added;
+        if (ra < start) counted[pa] = batch;
+        if (rb < start) counted[pb] = batch;
+        next += Number(a < initial) + Number(b < initial);
+        const i = count++;
+        nodes[i] = ra;
+        entries[i] = rb;
+        blends[i * 2] = this.blend.get(k);
+        blends[i * 2 + 1] = this.blend.get(k + 1);
+        later[i] = Number(ra >= start || rb >= start);
+        if (later[i]) continue;
+        if (pa !== left) {
+          left = pa;
+          column.page(ra * dims);
+        }
+        if (pb !== right) {
+          right = pb;
+          column.page(rb * dims);
+        }
+      }
+      pool.blend(column, count, dims);
+      for (let i = 0; i < count; i++) {
+        // A worker blended rows it marked 0.
+        if (!later[i] && results[i] === 0) continue;
+        for (let c = 0; c < 2; c++) {
+          const child = c ? entries[i] : nodes[i];
+          if (child < start) column.read(child * dims, rows[c], dims);
+          else
+            for (let d = 0; d < dims; d++)
+              rows[c][d] = blended[(child - start) * dims + d];
+        }
+        const w = blends[i * 2];
+        const v = blends[i * 2 + 1];
+        for (let d = 0; d < dims; d++)
+          blended[i * dims + d] = halfBits(
+            HALF[rows[0][d]] * w + HALF[rows[1][d]] * v,
+          );
+      }
+      column.write(start * dims, blended, count * dims);
+      start += count;
+      progress.update(start - initial);
+    }
+    progress.finish();
   }
 
   // Moves row indices[i] of the records to row i, and keeps `indices` for
@@ -503,13 +534,6 @@ export class Splats {
     this.length = indices.length;
     if (this.maxSh) this.shOrder = indices;
     else indices.dispose();
-  }
-
-  // The row of splat `index` in the SH columns after mergeSh(): merged
-  // splats keep theirs, and the decoded ones are in the order merges read
-  // them.
-  shRow(index) {
-    return index < this.shOrder.length ? this.shOrder.get(index) : index;
   }
 
   dispose() {

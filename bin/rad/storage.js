@@ -81,6 +81,7 @@ export class Workspace {
     this.clock = 0;
     this.slots = [];
     this.free = [];
+    this.rest([]);
     this.arenas = [];
     // Each slot's page object and views, kept so that loading a page
     // allocates nothing: their garbage would read as memory of the process
@@ -231,7 +232,26 @@ export class Workspace {
     }
   }
 
+  // Takes a list of idle arrays in next-use order. Eviction consumes it
+  // from the end before scanning active pages.
+  rest(arrays) {
+    this.idle = arrays;
+    this.idlePage = 0;
+  }
+
   evict() {
+    while (this.idle.length) {
+      const { pages } = this.idle.at(-1);
+      while (this.idlePage < pages.length) {
+        const page = pages[this.idlePage++];
+        if (page) {
+          this.drop(page);
+          return;
+        }
+      }
+      this.idle.pop();
+      this.idlePage = 0;
+    }
     for (let step = 0; ; step++) {
       const slot = this.clock;
       this.clock = (this.clock + 1) % this.slots.length;
@@ -551,6 +571,16 @@ export class PagedArray {
     return this.stream(base + cached, output, count - cached, cached);
   }
 
+  // Forget fully consumed pages without writing them back. A page shared
+  // with rows outside [from, to) must remain readable.
+  discard(from, to) {
+    const end = Math.floor(to / this.items);
+    for (let block = Math.ceil(from / this.items); block < end; block++) {
+      const page = this.pages[block];
+      if (page) this.workspace.unmap(page);
+    }
+  }
+
   write(base, values, count = values.length) {
     let offset = 0;
     while (offset < count) {
@@ -830,6 +860,8 @@ export class Permutation {
         const b = base / block;
         if (start && (high[b] <= start || low[b] > end)) continue;
         const count = Math.min(block, this.rows - base);
+        const sourceStart = base * stride;
+        const sourceEnd = (base + count) * stride;
         this.targets.read(base, targets, count);
         if (!start) {
           low[b] = Number.POSITIVE_INFINITY;
@@ -838,9 +870,12 @@ export class Permutation {
               low[b] = Math.min(low[b], targets[i]);
               high[b] = Math.max(high[b], targets[i]);
             }
-          if (low[b] > end) continue;
+          if (low[b] > end) {
+            if (high[b] === 0) source.discard(sourceStart, sourceEnd);
+            continue;
+          }
         }
-        source.load(base * stride, (base + count) * stride);
+        source.load(sourceStart, sourceEnd);
         pool.copy(source, output, stride, count, base, start, end, words);
         for (let i = 0; i < count; i++) {
           if (!later[i]) continue;
@@ -859,6 +894,9 @@ export class Permutation {
           for (let d = 0; d < stride; d++)
             out[(to & output.mask) + d] = record[d];
         }
+        // No later window uses this block once its last target is in place:
+        // dropped here, its pages are not written back when the cache is full.
+        if (high[b] <= end) source.discard(sourceStart, sourceEnd);
         progress?.update(Math.floor(start / window) * this.rows + base + count);
       }
       visit?.(output, start, end);

@@ -5,7 +5,7 @@ import { Heap, Queue, rank, sortSplats } from "./heap.js";
 import { HALF, SCALE, rotation } from "./math.js";
 import { MISS, ROUND, hint } from "./parallel.js";
 import { Progress } from "./progress.js";
-import { SHAPE_WORDS, SH_DIMS, Similarities, shCodeCount } from "./splats.js";
+import { SHAPE_WORDS, Similarities, shCodeCount } from "./splats.js";
 import { IndexArray, PagedArray, Permutation } from "./storage.js";
 
 // Grid cell size and candidate size limit relative to the level (at least 1).
@@ -25,9 +25,10 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
   const workspace = splats.workspace;
   // Every splat's shape, written as it is sorted or merged, for chunkTree().
   splats.shapes = new PagedArray(workspace, Uint32Array);
+  // mergeSh() reads the SH bands in ascending order after the tree is built.
+  workspace.rest(splats.sh.slice(0, splats.maxSh));
   sortSplats(splats, pool);
   mergeLevels(splats, pool);
-  splats.mergeSh(initial, pool);
   const root = splats.length - 1;
 
   // Children always precede their binary parent: the two of merged splat
@@ -161,7 +162,7 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
   sizes.dispose();
   kept.dispose();
   ordering.finish();
-  splats.children.dispose();
+  if (!splats.maxSh) splats.children.dispose();
   const chunks = chunkTree(splats, order, first, counts, ordered, pool);
   order.dispose();
   return reorderChunks(splats, chunks, pool, shCodebook);
@@ -704,32 +705,7 @@ function reorderChunks(splats, indices, pool, shCodebook) {
     analyze,
   );
   moved.dispose();
-  // The SH coefficients are still in the order of mergeSh().
-  if (splats.maxSh) {
-    const shOrder = new Progress("Collecting LOD SH order", length);
-    for (let i = 0; i < length; i++) {
-      indices.set(i, splats.shRow(indices.get(i)));
-      if ((i & 4095) === 0) shOrder.update(i);
-    }
-    shOrder.finish();
-    splats.shOrder.dispose();
-    const nodeOrder = new Permutation(
-      workspace,
-      indices,
-      nodes,
-      "Preparing LOD SH order",
-    );
-    indices.dispose();
-    for (let band = 0; band < splats.maxSh; band++)
-      splats.sh[band] = nodeOrder.apply(
-        splats.sh[band],
-        SH_DIMS[band],
-        pool,
-        false,
-        `Reordering LOD SH${band + 1}`,
-      );
-    nodeOrder.dispose();
-  }
+  if (splats.maxSh) splats.mergeSh(indices, pool);
   splats.length = length;
   return ranges.format();
 }

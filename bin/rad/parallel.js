@@ -54,17 +54,20 @@ const ENTER = 5;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
-// Memory each LOD worker thread takes and each encoding worker thread with
-// its chunk, with young generations of YOUNG_MB, measured on Linux and macOS;
-// what the main thread grows by during the LOD; and the chunks the main
-// thread holds for the encoders.
-const WORKER_BYTES = 40 * 1024 ** 2;
+// Memory each LOD worker thread takes, 21 MiB and 3 MiB of the parts it
+// reads from files, and each encoding worker thread with its chunk, with
+// young generations of YOUNG_MB, measured on Linux and macOS; what the main
+// thread grows by during the LOD; and the chunks the main thread holds for
+// the encoders.
+const WORKER_BYTES = 24 * 1024 ** 2;
 const ENCODER_BYTES = 52 * 1024 ** 2;
 const MAIN_BYTES = 64 * 1024 ** 2;
 const CHUNKS_BYTES = 24 * 1024 ** 2;
 // What an SH clustering worker thread takes besides its kernel and jobs,
-// and the cache that clustering keeps: it reads rows in order.
-const CLUSTER_BYTES = 32 * 1024 ** 2;
+// with a full young generation, and the cache that clustering keeps: it
+// reads rows in order. A clustering thread measured 6 to 8 MiB on Linux
+// and macOS.
+const CLUSTER_BYTES = 16 * 1024 ** 2;
 const STREAM_BYTES = 64 * 1024 ** 2;
 export const YOUNG_MB = 8;
 
@@ -209,11 +212,11 @@ export class Pool {
     // Once the LOD grid's entries, 64 bytes a splat, exceed three times the
     // budget, reads of pages dominate: the system serves no more of them
     // with more threads, and fewer threads leave more room for the cache.
-    // The threads' share of the budget falls from a quarter in proportion,
-    // to an eighth at twice that, below which it saves little.
+    // The threads' share of the budget falls from 15% in proportion, to
+    // half of it at twice that, below which it saves little.
     const share = Math.max(
-      1 / 8,
-      Math.min(1 / 4, (0.75 * workspace.budget) / (splats * 64)),
+      0.075,
+      Math.min(0.15, (0.45 * workspace.budget) / (splats * 64)),
     );
     const count =
       splats < MIN_WORKER_SPLATS

@@ -973,9 +973,9 @@ export async function clusterRows(
       const bytes =
         kernelBytes(dims, blocks, groups, scratchBytes(module, dims, groups)) +
         WINDOW * size * (rowBytes + labelBytes + 8 + pickBytes);
-      // This thread's arrays, and its own kernel and jobs when there is no
-      // room for workers.
-      const extra = ownBytes(dims, count, blocks, groups) + bytes;
+      // This thread's arrays. Its own kernel and jobs are added below, only
+      // when there is no room for workers.
+      const extra = ownBytes(dims, count, blocks, groups);
       // Reserve before allocating the codes and accumulators, so their
       // memory is not already in the RSS measurement that clusterers() adds
       // to. Without a workspace the caller has planned the memory; see
@@ -986,6 +986,7 @@ export async function clusterRows(
         extra,
         Math.ceil(training.length / size),
       );
+      if (!threads) workspace.expect(extra + bytes);
     }
     // Measure worker growth between passes: bypass reads do not allocate
     // pages or trigger measurements. Leave room for the splats' groups, and
