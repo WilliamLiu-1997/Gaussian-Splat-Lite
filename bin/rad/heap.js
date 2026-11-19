@@ -204,7 +204,7 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
   const block = new Uint32Array(BLOCK * 2);
   for (let base = 0; base < count; base += BLOCK) {
     const size = Math.min(BLOCK, count - base);
-    items.read(base * 2, block, size * 2);
+    items.stream(base * 2, block, size * 2);
     for (let i = 0; i < size; i++)
       for (let pass = first; pass < 8; pass++)
         counts[pass][digit(block[i * 2], block[i * 2 + 1], pass)]++;
@@ -230,7 +230,8 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
     };
     for (let base = 0; base < count; base += BLOCK) {
       const size = Math.min(BLOCK, count - base);
-      source.read(base * 2, block, size * 2);
+      if (source === items) items.stream(base * 2, block, size * 2);
+      else source.consume(base * 2, block, size * 2);
       for (let i = 0; i < size; i++) {
         const key = block[i * 2];
         const index = block[i * 2 + 1];
@@ -253,7 +254,7 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
   const copy = new IndexArray(workspace);
   for (let base = 0; base < count; base += BLOCK) {
     const size = Math.min(BLOCK, count - base);
-    items.read(base * 2, block, size * 2);
+    items.stream(base * 2, block, size * 2);
     copy.write(base * 2, block, size * 2);
     progress?.update(count * (9 - first) + base + size);
   }
@@ -274,7 +275,7 @@ export function sortSplats(splats, pool) {
   const block = new Uint32Array(BLOCK * 2);
   for (let base = 0; base < count; base += BLOCK) {
     const size = Math.min(BLOCK, count - base);
-    splats.sizes.read(base, sizes, size);
+    splats.sizes.consume(base, sizes, size);
     for (let i = 0; i < size; i++) {
       block[i * 2] = rank(-sizes[i]);
       block[i * 2 + 1] = base + i;
@@ -290,7 +291,7 @@ export function sortSplats(splats, pool) {
   const indices = new Uint32Array(BLOCK);
   for (let base = 0; base < count; base += BLOCK) {
     const size = Math.min(BLOCK, count - base);
-    sorted.read(base * 2, block, size * 2);
+    sorted.consume(base * 2, block, size * 2);
     for (let i = 0; i < size; i++) indices[i] = block[i * 2 + 1];
     order.write(base, indices, size);
     ordering.update(base + size);

@@ -538,7 +538,7 @@ export class Grid extends Lookup {
       filled.fill(0);
       for (let base = 0; base < length; base += KEYS) {
         const size = Math.min(KEYS, length - base);
-        keys.read(base * 4, chunk, size * 4);
+        keys.consume(base * 4, chunk, size * 4);
         for (let i = 0; i < size; i++) {
           const o = i * 4;
           const b = digit(chunk, o, pass);
@@ -568,7 +568,7 @@ export class Grid extends Lookup {
     let z = -1;
     for (let base = 0; base < length; base += KEYS) {
       const size = Math.min(KEYS, length - base);
-      keys.read(base * 4, chunk, size * 4);
+      keys.consume(base * 4, chunk, size * 4);
       for (let i = 0; i < size; i++) {
         const o = i * 4;
         if (chunk[o] !== x || chunk[o + 1] !== y || chunk[o + 2] !== z) {

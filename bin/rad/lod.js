@@ -244,6 +244,7 @@ function mergeLevels(splats, pool) {
     // splats that merges add pop as they would one by one.
     while (queue.length) {
       grid.tidy();
+      // Keep the same rounds on disk. Changing them can reorder tied candidates.
       const limit = Math.min(
         ROUND,
         Math.max(256, Math.floor(grid.count / 100)),
@@ -265,8 +266,8 @@ function mergeLevels(splats, pool) {
       // the layout does.
       const start = grid.length;
       const layout = grid.layout;
-      let ready = pool.search(grid, count);
-      const predicting = ready < count;
+      const predicting = pool.search(grid, count);
+      let ready = predicting ? 0 : count;
       if (predicting) {
         added.clear();
         near.fill(0);

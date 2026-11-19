@@ -8,6 +8,7 @@ import {
 } from "node:worker_threads";
 import { Lookup, NONE, writeEntry } from "./grid.js";
 import { HALF, halfBits } from "./math.js";
+import { PAGE_BYTES, Parts } from "./spill.js";
 import {
   INVALID,
   LATER,
@@ -18,7 +19,7 @@ import {
   refresh,
   validRecord,
 } from "./splats.js";
-import { ArenaViews, Parts, SharedColumn, collect } from "./storage.js";
+import { ArenaViews, SharedColumn, collect } from "./storage.js";
 
 // A search to run on the committing thread.
 export const MISS = 0xfffffffe;
@@ -51,6 +52,7 @@ const COPY = 2;
 const CHECK = 3;
 const COLLECT = 4;
 const ENTER = 5;
+const SEARCH_SORTED = 6;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
@@ -204,8 +206,7 @@ const same = (a, b) =>
 // main thread taking part: the searches and merges of a round of LOD merges,
 // which the main thread then commits in order (see mergeLevels()), SH
 // blending, column permutations and the checks of decoded splats. Searches
-// read pages that are not cached from their files; the other jobs leave
-// what is not cached to the main thread.
+// can also read spilled grid pages through their private caches.
 export class Pool {
   constructor(workspace, splats) {
     this.workspace = workspace;
@@ -229,10 +230,12 @@ export class Pool {
       readyChunks: shared(Int32Array, ROUND),
       // Bytes that threads read from files, for Workspace.readBytes.
       read: new BigInt64Array(new SharedArrayBuffer(8)),
+      diskVersions: shared(Float64Array, 3),
       failure: shared(Uint8Array, 1024),
       // Each search's splat and its entry.
       nodes: shared(Uint32Array, ROUND),
       entries: shared(Uint32Array, ROUND),
+      searchOrder: shared(Uint16Array, ROUND),
       // Its candidate's entry, NONE or MISS; unless a MISS, the splat's
       // terms and weight and its candidate's node, the merged record and its
       // Similarities terms and the blend weights.
@@ -262,8 +265,8 @@ export class Pool {
     this.sent = 0;
     this.task = new Task(this.shared);
     this.joinSearch = () => {
-      workspace.finishSearch = undefined;
       this.finish(SEARCH_AHEAD, Atomics.load(this.control, COUNT));
+      this.releaseSearch();
     };
     // What the threads and this thread may take, and the rest of the
     // process before the workers start; see reserve().
@@ -305,32 +308,69 @@ export class Pool {
   }
 
   // Searches and merges for the first `count` nodes and entries, against the
-  // grid. Returns the number of results ready to commit in order.
+  // grid. Returns whether this round has predictions to validate at commit.
   search(grid, count) {
     if (count < 128 || !this.workers.length) {
       this.results.fill(MISS, 0, count);
-      return count;
+      return false;
     }
     const arrays = [grid.entries, grid.slots, grid.gone];
+    for (let i = 0; i < arrays.length; i++)
+      this.diskVersions[i] = arrays[i].spill?.version ?? 0;
     this.share({
       entries: grid.entries.directory,
       slots: grid.slots.directory,
       gone: grid.gone.directory,
-      files: arrays.map((array) => array.files()),
+      files: arrays.map((array) => array.spill?.files),
       capacity: grid.capacity,
       step: grid.step,
     });
+    let pages = Math.floor(this.workspace.capacity / PAGE_BYTES / 2);
+    // Entries are written densely, so every nonresident page is on disk.
+    const entryPages = grid.entries.pages.length;
+    if (entryPages > pages && grid.entries.residentPages < entryPages) {
+      // A u32 spatial entry and its 15-bit queue position fit exactly in a
+      // double. Workers visit nearby pages and fill the original result slots.
+      const keys = this.metrics.subarray(0, count);
+      for (let i = 0; i < count; i++) keys[i] = this.entries[i] * ROUND + i;
+      keys.sort();
+      for (let i = 0; i < count; i++)
+        this.searchOrder[i] = keys[i] & (ROUND - 1);
+      const chunk = Math.ceil(count / ((this.workers.length + 1) * 4));
+      this.run(SEARCH_SORTED, count, chunk);
+      return true;
+    }
     // Leave several chunks per thread, including in short rounds.
     const size = Math.max(
       4,
       Math.min(32, Math.floor(count / ((this.workers.length + 1) * 4))),
     );
     this.run(SEARCH_AHEAD, count, size);
-    this.workspace.finishSearch = (array) => {
-      if (!array || arrays.includes(array)) this.joinSearch();
-    };
+    this.searchColumns = arrays;
+    const slots = this.workspace.arenas.length * this.workspace.arenaPages;
+    // Prefer the removal bitmap and hash slots before the larger entries.
+    // Leave at least half the cache for the committing thread's working set.
+    for (let i = arrays.length - 1; i >= 0; i--) {
+      const array = arrays[i];
+      array.readerSlots = slots;
+      if (array.pages.length <= pages) {
+        array.pinned[1] = array.pages.length;
+        pages -= array.pages.length;
+      }
+    }
+    this.workspace.finishSearch = this.joinSearch;
     this.chunkSize = size;
-    return 0;
+    return true;
+  }
+
+  releaseSearch() {
+    if (!this.searchColumns) return;
+    for (const column of this.searchColumns) {
+      column.readerSlots = 0;
+      column.pinned[1] = 0;
+    }
+    this.searchColumns = undefined;
+    this.workspace.finishSearch = undefined;
   }
 
   // Blends the rows of `column` of the first `count` children pairs in
@@ -435,7 +475,6 @@ export class Pool {
     Atomics.store(control, COLLECTED, 0);
     Atomics.store(control, GEN, gen);
     Atomics.notify(control, GEN);
-    this.task.begin();
     if (job !== SEARCH_AHEAD) this.finish(job, count);
   }
 
@@ -467,10 +506,10 @@ export class Pool {
   // Stops the workers. Their views and the main thread's would keep arenas
   // that the workspace releases.
   async close() {
-    this.workspace.finishSearch = undefined;
     Atomics.store(this.control, GEN, -1);
     Atomics.notify(this.control, GEN);
     await Promise.all(this.workers.map((worker) => worker.terminate()));
+    this.releaseSearch();
     this.task = undefined;
     this.workspace.collector = undefined;
   }
@@ -510,9 +549,7 @@ class Task {
     this.merger = new Merger();
     this.similarities = new Similarities();
     // For the columns of searches: entries, slots and gone.
-    this.parts = [Float32Array, Uint32Array, Uint32Array].map(
-      (Type) => new Parts(Type),
-    );
+    this.parts = new Parts(this.diskVersions);
     this.views = new ArenaViews();
   }
 
@@ -533,7 +570,8 @@ class Task {
             Type,
             0,
             state.files[i],
-            this.parts[i],
+            this.parts,
+            i,
           ),
       );
       this.lookup = new Lookup(
@@ -564,11 +602,6 @@ class Task {
     }
   }
 
-  // Forgets what searches read from files: pages change between jobs.
-  begin() {
-    for (const parts of this.parts) parts.reset();
-  }
-
   // Claims chunks of the round `gen` until none are left.
   work(gen, one = false) {
     const control = this.control;
@@ -584,11 +617,18 @@ class Task {
       const count = Atomics.load(control, COUNT);
       const end = Math.min(start + size, count);
       const job = Atomics.load(control, JOB);
+      this.views.job = gen;
       if (job === SEARCH_AHEAD) {
         this.lookup.concurrent = true;
         for (let t = start; t < end; t++) this.results[t] = this.search(t);
         Atomics.store(this.readyChunks, start, gen);
         Atomics.notify(this.readyChunks, start, 1);
+      } else if (job === SEARCH_SORTED) {
+        this.lookup.concurrent = false;
+        for (let i = start; i < end; i++) {
+          const t = this.searchOrder[i];
+          this.results[t] = this.search(t);
+        }
       } else if (job === BLEND)
         this.blend(start, end, Atomics.load(control, DIMS));
       else if (job === COPY) this.copy(start, end);
@@ -599,12 +639,10 @@ class Task {
           this.results[i] = this.check(base + i);
       }
       // Before the chunk counts as done, so the main thread finds it.
-      let bytes = 0;
-      for (const parts of this.parts) {
-        bytes += parts.bytesRead;
-        parts.bytesRead = 0;
+      if (this.parts.bytesRead) {
+        Atomics.add(this.read, 0, BigInt(this.parts.bytesRead));
+        this.parts.bytesRead = 0;
       }
-      if (bytes) Atomics.add(this.read, 0, BigInt(bytes));
       if (Atomics.add(control, DONE, end - start) + end - start === count)
         Atomics.notify(control, DONE);
       if (one) return true;
@@ -762,7 +800,6 @@ if (!isMainThread && workerData?.control) {
         const received = receiveMessageOnPort(parentPort);
         if (received) task.use(received.message);
       }
-      task.begin();
       if (Atomics.load(control, JOB) === COLLECT) {
         collect();
         Atomics.add(control, COLLECTED, 1);

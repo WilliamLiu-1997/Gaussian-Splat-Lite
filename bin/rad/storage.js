@@ -3,7 +3,6 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
-  readSync,
   rmSync,
   writeSync,
 } from "node:fs";
@@ -12,9 +11,10 @@ import { join } from "node:path";
 import v8 from "node:v8";
 import { runInNewContext } from "node:vm";
 import { Progress } from "./progress.js";
+import { PAGE_BYTES, Spill } from "./spill.js";
 import { Writeback } from "./writeback.js";
 
-export const PAGE_BYTES = 65536;
+export { PAGE_BYTES, readAll } from "./spill.js";
 export const GIB = 1024 ** 3;
 // Memory the budget keeps for growth between measurements.
 const MARGIN = 64 * 1024 ** 2;
@@ -93,6 +93,7 @@ export class Workspace {
     this.generation = 0;
     this.files = new Map();
     this.nextFile = 0;
+    this.diskVersion = 0;
     this.readBytes = 0;
     this.writeBytes = 0;
     // File writes can remain in the system's cache after writeSync returns.
@@ -240,7 +241,6 @@ export class Workspace {
   }
 
   evict() {
-    this.finishSearch?.();
     while (this.idle.length) {
       const { pages } = this.idle.at(-1);
       while (this.idlePage < pages.length) {
@@ -273,22 +273,29 @@ export class Workspace {
     }
   }
 
-  // Writes `page` to its array's file if it changed, and frees its slot.
-  drop(page) {
+  // Only a slot visible to an active search needs a barrier before reuse.
+  drop(page, save = true) {
     const array = page.array;
-    if (page.dirty) {
-      array.save(page.index, page.bytes);
+    if (array.readerSlots) this.finishSearch();
+    if (save && page.dirty) {
+      array.spill ??= new Spill(this, array.stripes);
+      array.spill.save(page.index, page.bytes);
       this.writeBytes += PAGE_BYTES;
     }
-    this.unmap(page);
+    array.pages[page.index] = undefined;
+    array.residentPages--;
+    if (array.directory) {
+      const disk = save ? array.spill?.blocks.get(page.index) : undefined;
+      array.directory[page.index] = disk === undefined ? -1 : -2 - disk;
+    }
+    this.slots[page.slot] = undefined;
+    this.free.push(page.slot);
+    this.used -= PAGE_BYTES;
   }
 
   // Without `restore`, the caller writes all of the page: it is neither read
   // from its file nor cleared.
   allocate(array, index, restore = true) {
-    // Only a searched column needs to publish a new mapping to readers.
-    // Eviction and shrinking also join before reusing a reader's memory.
-    this.finishSearch?.(array);
     if (++this.allocations % 64 === 0) this.adjust();
     if (this.used + PAGE_BYTES > this.capacity && this.used) this.evict();
     let slot = this.free.pop();
@@ -331,7 +338,7 @@ export class Workspace {
     const page = reuse.page;
     const bytes = page.bytes;
     if (restore) {
-      if (array.restore(index, bytes)) this.readBytes += PAGE_BYTES;
+      if (array.spill?.read(index, bytes)) this.readBytes += PAGE_BYTES;
       else bytes.set(ZERO);
     }
     const { views, offset } = reuse;
@@ -350,20 +357,13 @@ export class Workspace {
     // A store far past the end would turn `pages` into a slow dictionary.
     while (array.pages.length < index) array.pages.push(undefined);
     array.pages[index] = page;
+    array.residentPages++;
     if (array.directory) array.map(index, slot);
     return page;
   }
 
-  unmap(page) {
-    page.array.pages[page.index] = undefined;
-    if (page.array.directory) page.array.directory[page.index] = -1;
-    this.slots[page.slot] = undefined;
-    this.free.push(page.slot);
-    this.used -= PAGE_BYTES;
-  }
-
   release(array) {
-    for (const page of array.pages) if (page) this.unmap(page);
+    for (const page of array.pages) if (page) this.drop(page, false);
     array.pages.length = 0;
   }
 
@@ -405,58 +405,39 @@ export class PagedArray {
     // Exact for the power of two, and faster than dividing.
     this.inverse = 1 / this.items;
     this.pages = [];
-    // Pages not cached live in files: block b in stripe b % stripes, at
-    // block b / stripes, so that threads reading pages at once share files
-    // less; see share().
+    this.residentPages = 0;
     this.stripes = 1;
-    this.fds = [];
-    this.sizes = [];
+    this.spill = undefined;
     // Also view each page as 32-bit words; see at().
     this.wordView = false;
     this.directory = undefined;
+    // Number of arena slots visible to the current search, zero between jobs.
+    this.readerSlots = 0;
     // The blocks whose pages stay cached, for workers to write.
     this.pinned = [0, 0];
   }
 
-  // Keeps a shared block -> slot directory (-1 when not cached), so workers
-  // can read this array's cached pages through a SharedColumn.
-  // With `stripes`, before any page is written, its pages are spread over
-  // that many files.
+  // A resident slot is nonnegative, -1 is an unwritten page, and -2 - n
+  // addresses disk page n. Stripes are chosen before the first spill.
   share(stripes = 1) {
     if (this.directory) return this;
-    this.stripes = stripes;
-    this.directory = new Int32Array(new SharedArrayBuffer(64 * 4)).fill(-1);
+    this.stripes = this.spill?.files.length ?? stripes;
+    const length = Math.max(64, this.pages.length);
+    this.directory = new Int32Array(new SharedArrayBuffer(length * 4)).fill(-1);
+    if (this.spill)
+      for (const [block, disk] of this.spill.blocks)
+        this.directory[block] = -2 - disk;
     this.workspace.version++;
     for (const page of this.pages) if (page) this.map(page.index, page.slot);
     return this;
   }
-  // The files of the pages that are not cached, created if there are none.
-  files() {
-    for (let stripe = 0; stripe < this.stripes; stripe++)
-      this.fds[stripe] ??= this.workspace.file();
-    return this.fds;
-  }
-  // Writes the page of block `block`. Writing past the end of a file
-  // extends it and fills the gap with zeros.
-  save(block, bytes) {
-    const stripe = block % this.stripes;
-    const position = Math.floor(block / this.stripes) * PAGE_BYTES;
-    this.fds[stripe] ??= this.workspace.file();
-    this.workspace.write(this.fds[stripe], bytes, position);
-    this.sizes[stripe] = Math.max(
-      this.sizes[stripe] ?? 0,
-      position + PAGE_BYTES,
-    );
-  }
-  // Reads the page of block `block` into `bytes` if a file holds it.
-  restore(block, bytes) {
-    const stripe = block % this.stripes;
-    const position = Math.floor(block / this.stripes) * PAGE_BYTES;
-    if (position >= (this.sizes[stripe] ?? 0)) return false;
-    readAll(this.fds[stripe], bytes, position);
-    return true;
-  }
+
   map(block, slot) {
+    if (
+      this.readerSlots &&
+      (slot >= this.readerSlots || block >= this.directory.length)
+    )
+      this.workspace.finishSearch();
     if (block >= this.directory.length) {
       const old = this.directory;
       const size = Math.max(block + 1, old.length * 2);
@@ -464,7 +445,8 @@ export class PagedArray {
       this.directory.set(old);
       this.workspace.version++;
     }
-    this.directory[block] = slot;
+    if (this.readerSlots) Atomics.store(this.directory, block, slot);
+    else this.directory[block] = slot;
   }
 
   page(index, write = false) {
@@ -488,6 +470,8 @@ export class PagedArray {
   // The values of the page of `index`, for writing all of them.
   whole(index) {
     if ((++this.workspace.accesses & 4095) === 0) this.workspace.check();
+    // An uninitialized slot cannot be published to a reader.
+    if (this.readerSlots) this.workspace.finishSearch();
     const block = Math.floor(index * this.inverse);
     const page =
       this.pages[block] ?? this.workspace.allocate(this, block, false);
@@ -547,19 +531,14 @@ export class PagedArray {
       if (page)
         output.set(page.values.subarray(within, within + size), at + offset);
       else {
-        const stripe = block % this.stripes;
-        const position = Math.floor(block / this.stripes) * PAGE_BYTES;
         const part = new Uint8Array(
           output.buffer,
           output.byteOffset + (at + offset) * bytes,
           size * bytes,
         );
-        // As in allocate(), a page that no file holds is zeros.
-        if (position >= (this.sizes[stripe] ?? 0)) part.fill(0);
-        else {
-          readAll(this.fds[stripe], part, position + within * bytes);
+        if (this.spill?.read(block, part, within * bytes))
           this.workspace.readBytes += part.byteLength;
-        }
+        else part.fill(0);
       }
       offset += size;
     }
@@ -573,13 +552,20 @@ export class PagedArray {
     return this.stream(base + cached, output, count - cached, cached);
   }
 
+  // Consume consecutive batches starting at zero. Once the last item of a
+  // page is read, even across batches, it needs no further writeback.
+  consume(base, output, count) {
+    this.stream(base, output, count);
+    this.discard(base - (base & this.mask), base + count);
+  }
+
   // Forget fully consumed pages without writing them back. A page shared
   // with rows outside [from, to) must remain readable.
   discard(from, to) {
     const end = Math.floor(to / this.items);
     for (let block = Math.ceil(from / this.items); block < end; block++) {
       const page = this.pages[block];
-      if (page) this.workspace.unmap(page);
+      if (page) this.workspace.drop(page, false);
     }
   }
 
@@ -600,10 +586,11 @@ export class PagedArray {
   }
 
   dispose() {
+    if (this.readerSlots) this.workspace.finishSearch();
     this.workspace.release(this);
-    for (const fd of this.fds) if (fd !== undefined) this.workspace.close(fd);
-    this.fds = [];
-    this.sizes = [];
+    this.spill?.close();
+    this.spill = undefined;
+    this.directory?.fill(-1);
     this.length = 0;
   }
 }
@@ -625,72 +612,12 @@ function empty(Type, fill) {
   return page;
 }
 
-// Bytes that a thread reads at a time of a page that is not cached, and how
-// many such parts it keeps for each column.
-const PART_BYTES = 16384;
-const PARTS = 64;
-
-// The parts of pages that a thread read from the file of a column of `Type`.
-// The main thread changes no page while workers run a job; reset() forgets
-// the parts read for the next.
-export class Parts {
-  constructor(Type) {
-    const buffer = new ArrayBuffer(PARTS * PART_BYTES);
-    this.views = { values: new Type(buffer), words: new Uint32Array(buffer) };
-    this.bytes = new Uint8Array(buffer);
-    this.items = PART_BYTES / Type.BYTES_PER_ELEMENT;
-    // Part number -> position, and the part at each position.
-    this.positions = new Map();
-    this.numbers = new Float64Array(PARTS).fill(-1);
-    this.next = 0;
-    // Bytes read from files since taken; see Pool.run().
-    this.bytesRead = 0;
-  }
-  reset() {
-    if (!this.positions.size) return;
-    this.positions.clear();
-    this.numbers.fill(-1);
-  }
-  // The position of part `number` of `column`, read if needed.
-  get(column, number) {
-    let position = this.positions.get(number);
-    if (position !== undefined) return position;
-    // Replaces the oldest part; callers use a part before the next at().
-    position = this.next;
-    this.next = (position + 1) % PARTS;
-    if (this.numbers[position] >= 0)
-      this.positions.delete(this.numbers[position]);
-    this.numbers[position] = number;
-    this.positions.set(number, position);
-    const bytes = this.bytes.subarray(
-      position * PART_BYTES,
-      (position + 1) * PART_BYTES,
-    );
-    const at = column.locate(number * PART_BYTES);
-    let done = 0;
-    while (done < PART_BYTES) {
-      const count = readSync(
-        column.fd,
-        bytes,
-        done,
-        PART_BYTES - done,
-        at + done,
-      );
-      if (!count) break;
-      done += count;
-    }
-    this.bytesRead += done;
-    // Past the end of the file, pages are zeros.
-    if (done < PART_BYTES) bytes.fill(0, done);
-    return position;
-  }
-}
-
 // A thread's views of the arenas by type, made once for each generation of
 // arenas: columns are made anew whenever shared arrays change.
 export class ArenaViews {
   constructor() {
     this.generation = -1;
+    this.job = 0;
     this.arenas = [];
     this.types = new Map();
   }
@@ -713,11 +640,9 @@ export class ArenaViews {
   }
 }
 
-// A worker's read-only view of a shared PagedArray. Pages are views of whole
-// arenas, so offset() places an index within the last page found. A page that
-// is not cached reads as `fill` words and sets `missed`, unless the column
-// has the array's file `fd` and Parts: then the part around the index is
-// read from the file, where the page is while not cached.
+// Worker's view of a shared PagedArray. A resident slot stays valid for the
+// job. Searches can also read spilled parts and see zeros for unwritten pages.
+// Other jobs report misses for the main thread.
 export class SharedColumn {
   constructor(
     views,
@@ -726,8 +651,10 @@ export class SharedColumn {
     fill = 0,
     fds = undefined,
     parts = undefined,
+    column = 0,
   ) {
     this.directory = directory;
+    this.views = views;
     this.arenas = views.get(Type);
     this.arenaPages = this.arenas.length
       ? this.arenas[0].values.byteLength / PAGE_BYTES
@@ -738,43 +665,43 @@ export class SharedColumn {
     this.inverse = 1 / this.items;
     this.empty = empty(Type, fill);
     this.base = 0;
-    // Whether a page was not cached, and the first such block.
     this.missed = false;
-    this.block = 0;
+    this.lastBlock = -1;
     this.fds = fds;
-    this.fd = -1;
     this.parts = parts;
-    parts?.reset();
-  }
-  // The position of byte `offset` of the array in its file, which it sets
-  // as `fd`.
-  locate(offset) {
-    const block = Math.floor(offset / PAGE_BYTES);
-    const stripes = this.fds.length;
-    this.fd = this.fds[block % stripes];
-    return (
-      Math.floor(block / stripes) * PAGE_BYTES + offset - block * PAGE_BYTES
-    );
+    this.column = column;
   }
   at(index) {
     const block = Math.floor(index * this.inverse);
-    const slot = block < this.directory.length ? this.directory[block] : -1;
+    if (block === this.lastBlock && this.job === this.views.job)
+      return this.lastArena;
+    const slot =
+      block >= this.directory.length
+        ? -1
+        : this.parts
+          ? Atomics.load(this.directory, block)
+          : this.directory[block];
     if (slot < 0) {
-      if (this.fds) return this.part(index);
-      if (!this.missed) this.block = block;
-      this.missed = true;
+      this.lastBlock = -1;
+      if (this.parts) {
+        if (slot < -1) return this.part(index, -2 - slot);
+      } else this.missed = true;
       this.base = 0;
       return this.empty;
     }
     this.base = (slot % this.arenaPages) * this.items;
-    return this.arenas[Math.floor(slot / this.arenaPages)];
+    this.lastBlock = block;
+    this.job = this.views.job;
+    this.lastArena = this.arenas[Math.floor(slot / this.arenaPages)];
+    return this.lastArena;
   }
-  part(index) {
+  part(index, disk) {
     const parts = this.parts;
-    const number = Math.floor(index / parts.items);
-    const position = parts.get(this, number);
-    this.base = (position - (number % (PAGE_BYTES / PART_BYTES))) * parts.items;
-    return parts.views;
+    const items = this.items / parts.perPage;
+    const part = Math.floor((index & this.mask) / items);
+    const position = parts.get(this.column, this.fds, disk, part);
+    this.base = (position - part) * items;
+    return parts.views[this.column];
   }
   offset(index) {
     return this.base + (index & this.mask);
@@ -788,7 +715,7 @@ export class SharedColumn {
 }
 
 // Gathers columns into the order of `indices`: row indices[i] of a column with
-// `rows` rows becomes row i. Each output window, 7/8 of the cache, is
+// `rows` rows becomes row i. Each output window is
 // filled while the column is read in order, so a column larger than the cache
 // costs a few sequential passes instead of a page load per row.
 export class Permutation {
@@ -836,13 +763,25 @@ export class Permutation {
     source.share();
     const record = words ? new Uint32Array(stride) : new source.Type(stride);
     const { nodes: targets, later } = pool;
-    const block = later.length;
-    // The window's pages are pinned; the rest of the cache holds the source
-    // rows a block at a time.
-    const window = Math.floor(
-      (this.workspace.capacity * 7) /
-        8 /
-        (stride * source.Type.BYTES_PER_ELEMENT),
+    const rowBytes = stride * source.Type.BYTES_PER_ELEMENT;
+    const pages = Math.floor(this.workspace.capacity / PAGE_BYTES);
+    const targetBytes = targets.BYTES_PER_ELEMENT;
+    const block = Math.min(
+      later.length,
+      Math.max(
+        1,
+        Math.floor((pages * PAGE_BYTES) / 8 / (rowBytes + targetBytes)),
+      ),
+    );
+    // Keep one batch of source rows and targets alongside the destination.
+    // All three ranges can start partway through a page.
+    const reserved =
+      Math.ceil((block * rowBytes) / PAGE_BYTES) +
+      Math.ceil((block * targetBytes) / PAGE_BYTES) +
+      3;
+    const window = Math.max(
+      1,
+      Math.floor((Math.max(1, pages - reserved) * PAGE_BYTES) / rowBytes),
     );
     const progress =
       label && new Progress(label, Math.ceil(this.length / window) * this.rows);
@@ -937,22 +876,6 @@ export function removePath(file, options) {
     if (error.code !== "ENOENT")
       console.warn(`Could not remove ${file} (${error.code ?? error.message})`);
   }
-}
-
-export function readAll(fd, bytes, position) {
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const count = readSync(
-      fd,
-      bytes,
-      offset,
-      bytes.byteLength - offset,
-      position + offset,
-    );
-    if (!count) throw new Error("Truncated input or temporary file");
-    offset += count;
-  }
-  return bytes;
 }
 
 function writeAll(fd, bytes, position) {
