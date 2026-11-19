@@ -49,6 +49,7 @@ const COPY = 2;
 const CHECK = 3;
 const COLLECT = 4;
 const ENTER = 5;
+const SEARCH_AHEAD = 6;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
@@ -219,6 +220,8 @@ export class Pool {
     this.shared = {
       cancelled: workspace.cancelled,
       control: shared(Int32Array, 16),
+      // Generation of each published search chunk, indexed by its first row.
+      readyChunks: shared(Int32Array, ROUND),
       // Bytes that threads read from files, for Workspace.readBytes.
       read: new BigInt64Array(new SharedArrayBuffer(8)),
       failure: shared(Uint8Array, 1024),
@@ -253,6 +256,10 @@ export class Pool {
     this.state = {};
     this.sent = 0;
     this.task = new Task(this.shared);
+    this.joinSearch = () => {
+      workspace.finishSearch = undefined;
+      this.finish(SEARCH_AHEAD, Atomics.load(this.control, COUNT));
+    };
     // What the threads and this thread may take, and the rest of the
     // process before the workers start; see reserve().
     this.reserved = count * WORKER_BYTES + MAIN_BYTES;
@@ -293,8 +300,12 @@ export class Pool {
   }
 
   // Searches and merges for the first `count` nodes and entries, against the
-  // grid as it is.
+  // grid. Returns the number of results ready to commit in order.
   search(grid, count) {
+    if (count < 64) {
+      this.results.fill(MISS, 0, count);
+      return count;
+    }
     const arrays = [grid.entries, grid.slots, grid.gone];
     this.share({
       entries: grid.entries.directory,
@@ -309,7 +320,12 @@ export class Pool {
       4,
       Math.min(32, Math.floor(count / ((this.workers.length + 1) * 4))),
     );
-    this.run(SEARCH, count, size);
+    const overlap = this.workers.length > 0 && count >= 128;
+    this.run(overlap ? SEARCH_AHEAD : SEARCH, count, size);
+    if (!overlap) return count;
+    this.workspace.finishSearch = this.joinSearch;
+    this.chunkSize = size;
+    return 0;
   }
 
   // Blends the rows of `column` of the first `count` children pairs in
@@ -386,21 +402,40 @@ export class Pool {
     );
   }
 
+  // While the next chunk is in flight, help the workers with unclaimed rows.
+  readyThrough(start, count) {
+    if (!this.workspace.finishSearch) return count;
+    while (Atomics.load(this.readyChunks, start) !== this.generation) {
+      this.workspace.check();
+      if (!this.task.work(this.generation, true)) {
+        this.joinSearch();
+        return count;
+      }
+    }
+    return start + this.chunkSize;
+  }
+
   run(job, count, size) {
     this.workspace.check();
     const gen = ++this.generation;
     const control = this.control;
+    // Close the previous round before its workers can see the new count.
+    Atomics.store(control, NEXT, (gen & 0x7fff) << 16);
     Atomics.store(control, JOB, job);
     Atomics.store(control, SIZE, size);
     Atomics.store(control, COUNT, count);
     Atomics.store(control, DONE, 0);
-    Atomics.store(control, NEXT, (gen & 0x7fff) << 16);
     Atomics.store(control, VERSION, this.sent);
     Atomics.store(control, COLLECTED, 0);
     Atomics.store(control, GEN, gen);
     Atomics.notify(control, GEN);
     this.task.begin();
-    this.task.work(gen);
+    if (job !== SEARCH_AHEAD) this.finish(job, count);
+  }
+
+  finish(job, count) {
+    const control = this.control;
+    this.task.work(this.generation);
     for (;;) {
       this.workspace.check();
       const done = Atomics.load(control, DONE);
@@ -426,6 +461,7 @@ export class Pool {
   // Stops the workers. Their views and the main thread's would keep arenas
   // that the workspace releases.
   async close() {
+    this.workspace.finishSearch = undefined;
     Atomics.store(this.control, GEN, -1);
     Atomics.notify(this.control, GEN);
     await Promise.all(this.workers.map((worker) => worker.terminate()));
@@ -528,7 +564,7 @@ class Task {
   }
 
   // Claims chunks of the round `gen` until none are left.
-  work(gen) {
+  work(gen, one = false) {
     const control = this.control;
     for (;;) {
       if (this.cancelled && Atomics.load(this.cancelled, 0)) return;
@@ -542,9 +578,11 @@ class Task {
       const count = Atomics.load(control, COUNT);
       const end = Math.min(start + size, count);
       const job = Atomics.load(control, JOB);
-      if (job === SEARCH)
+      if (job === SEARCH || job === SEARCH_AHEAD) {
+        this.lookup.concurrent = job === SEARCH_AHEAD;
         for (let t = start; t < end; t++) this.results[t] = this.search(t);
-      else if (job === BLEND)
+        if (job === SEARCH_AHEAD) Atomics.store(this.readyChunks, start, gen);
+      } else if (job === BLEND)
         this.blend(start, end, Atomics.load(control, DIMS));
       else if (job === COPY) this.copy(start, end);
       else if (job === ENTER) this.enter(start, end);
@@ -562,6 +600,7 @@ class Task {
       if (bytes) Atomics.add(this.read, 0, BigInt(bytes));
       if (Atomics.add(control, DONE, end - start) + end - start === count)
         Atomics.notify(control, DONE);
+      if (one) return true;
     }
   }
 

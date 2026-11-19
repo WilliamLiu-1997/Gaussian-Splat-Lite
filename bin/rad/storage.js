@@ -76,6 +76,7 @@ export class Workspace {
     // Makes worker threads drop and collect their views of released arenas;
     // see Pool.collect().
     this.collector = undefined;
+    this.finishSearch = undefined;
     this.used = 0;
     this.clock = 0;
     this.slots = [];
@@ -264,6 +265,8 @@ export class Workspace {
   // Without `restore`, the caller writes all of the page: it is neither read
   // from its file nor cleared.
   allocate(array, index, restore = true) {
+    // An overlapping search may still hold this slot or its arena directory.
+    this.finishSearch?.();
     if (++this.allocations % 64 === 0) this.adjust();
     if (this.used + PAGE_BYTES > this.capacity && this.used) this.evict();
     let slot = this.free.pop();

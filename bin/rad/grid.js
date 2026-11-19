@@ -55,32 +55,21 @@ function morton(a, b) {
   return difference;
 }
 
-// A set of cell hashes, cleared in constant time.
+// A round marks cells by their low hash bits. Collisions only add a slot lookup.
 export class Cells {
   constructor(bits) {
     this.mask = (1 << bits) - 1;
-    this.hashes = new Uint32Array(1 << bits);
     this.stamps = new Uint32Array(1 << bits);
     this.stamp = 1;
   }
   clear() {
-    this.stamp++;
+    this.stamp = (this.stamp + 1) >>> 0;
   }
   add(hash) {
-    let slot = hash & this.mask;
-    while (this.stamps[slot] === this.stamp && this.hashes[slot] !== hash)
-      slot = (slot + 1) & this.mask;
-    this.stamps[slot] = this.stamp;
-    this.hashes[slot] = hash;
+    this.stamps[hash & this.mask] = this.stamp;
   }
   has(hash) {
-    for (
-      let slot = hash & this.mask;
-      this.stamps[slot] === this.stamp;
-      slot = (slot + 1) & this.mask
-    )
-      if (this.hashes[slot] === hash) return true;
-    return false;
+    return this.stamps[hash & this.mask] === this.stamp;
   }
 }
 
@@ -146,7 +135,7 @@ function term(value, d) {
     ((value - block * 2) << d)
   );
 }
-export function cellHash(x, y, z) {
+function cellHash(x, y, z) {
   return (term(x, 0) ^ term(y, 1) ^ term(z, 2)) >>> 0;
 }
 
@@ -162,18 +151,26 @@ export class Lookup {
     this.step = step;
     // Reused for cell lookups.
     this.inverse = 1 / step;
+    // Overlapping searches acquire the head after its entry and link are ready.
+    this.concurrent = false;
     this.terms = new Int32Array(9);
   }
 
   // The slot of cell (x, y, z), or the free slot for it. A slot is a cell
-  // hash and its newest entry + 1, which is 0 in free slots.
+  // hash and its newest entry + 1, which is 0 in free slots. Keep that
+  // head for find() so it does not have to look up the slot twice.
   slot(hash, x, y, z) {
     const mask = this.capacity - 1;
     for (let slot = hash & mask; ; slot = (slot + 1) & mask) {
       const words = this.slots.page(slot * 2);
       const at = this.slots.offset(slot * 2);
-      const head = words[at + 1];
-      if (!head) return slot;
+      const head = this.concurrent
+        ? Atomics.load(words, at + 1)
+        : words[at + 1];
+      if (!head) {
+        this.slotHead = 0;
+        return slot;
+      }
       if (words[at] !== hash) continue;
       const floats = this.entries.page((head - 1) * STRIDE);
       const offset = this.entries.offset((head - 1) * STRIDE);
@@ -181,8 +178,10 @@ export class Lookup {
         Math.floor(floats[offset] * this.inverse) === x &&
         Math.floor(floats[offset + 1] * this.inverse) === y &&
         Math.floor(floats[offset + 2] * this.inverse) === z
-      )
+      ) {
+        this.slotHead = head;
         return slot;
+      }
     }
   }
 
@@ -238,9 +237,6 @@ export class Lookup {
     }
     const entries = this.entries;
     const gone = this.gone;
-    // The word of `gone` last read.
-    let word = -1;
-    let bits = 0;
     let best = NONE;
     let metric = Number.NEGATIVE_INFINITY;
     let home = NONE;
@@ -252,64 +248,68 @@ export class Lookup {
           if (cells && !cells.has(hash)) continue;
           const slot = this.slot(hash, gx + dx, gy + dy, gz + dz);
           if (!dx && !dy && !dz) home = slot;
-          const head = this.slots.get(slot * 2 + 1);
+          const head = this.slotHead;
           let entry = head ? head - 1 : NONE;
           // Lists run from the newest entry down.
           while (entry !== NONE && entry >= from) {
-            // Before the entry's page, which reading `gone` could evict.
-            if (entry >>> 5 !== word) {
-              word = entry >>> 5;
-              bits = gone.get(word);
-            }
+            const word = entry >>> 5;
+            const bits = gone.get(word);
             const page = entries.at(entry * STRIDE);
             const b = page.values;
             const w = page.words;
-            const o = entries.offset(entry * STRIDE);
-            if (w[o + NODE] !== index && !((bits >>> (entry & 31)) & 1)) {
-              const xx = (cxx + b[o + 3]) * 0.5;
-              const yy = (cyy + b[o + 4]) * 0.5;
-              const zz = (czz + b[o + 5]) * 0.5;
-              const xy = (cxy + b[o + 6]) * 0.5;
-              const xz = (cxz + b[o + 7]) * 0.5;
-              const yz = (cyz + b[o + 8]) * 0.5;
-              const det =
-                xx * (yy * zz - yz * yz) -
-                xy * (xy * zz - yz * xz) +
-                xz * (xy * yz - yy * xz);
-              const diag = Math.max(Math.abs(xx), Math.abs(yy), Math.abs(zz));
-              let distance = 0;
-              if (Math.abs(det) >= 1e-9 * Math.max(diag * diag * diag, 1e-30)) {
-                const x = b[o] - qx;
-                const y = b[o + 1] - qy;
-                const z = b[o + 2] - qz;
-                const quad =
-                  ((yy * zz - yz * yz) * x * x +
-                    (xx * zz - xz * xz) * y * y +
-                    (xx * yy - xy * xy) * z * z +
-                    2 *
-                      ((xz * yz - xy * zz) * x * y +
-                        (xy * yz - xz * yy) * x * z +
-                        (xy * xz - xx * yz) * y * z)) /
-                  det;
-                distance =
-                  0.125 * quad + 0.5 * Math.log(det) - logDet - b[o + 9];
+            const base = entries.offset(entry * STRIDE) - (entry & 31) * STRIDE;
+            // A removal word covers 32 entries in the same page and disk part.
+            do {
+              const o = base + (entry & 31) * STRIDE;
+              if (w[o + NODE] !== index && !((bits >>> (entry & 31)) & 1)) {
+                const xx = (cxx + b[o + 3]) * 0.5;
+                const yy = (cyy + b[o + 4]) * 0.5;
+                const zz = (czz + b[o + 5]) * 0.5;
+                const xy = (cxy + b[o + 6]) * 0.5;
+                const xz = (cxz + b[o + 7]) * 0.5;
+                const yz = (cyz + b[o + 8]) * 0.5;
+                const det =
+                  xx * (yy * zz - yz * yz) -
+                  xy * (xy * zz - yz * xz) +
+                  xz * (xy * yz - yy * xz);
+                const diag = Math.max(Math.abs(xx), Math.abs(yy), Math.abs(zz));
+                let distance = 0;
+                if (
+                  Math.abs(det) >=
+                  1e-9 * Math.max(diag * diag * diag, 1e-30)
+                ) {
+                  const x = b[o] - qx;
+                  const y = b[o + 1] - qy;
+                  const z = b[o + 2] - qz;
+                  const quad =
+                    ((yy * zz - yz * yz) * x * x +
+                      (xx * zz - xz * xz) * y * y +
+                      (xx * yy - xy * xy) * z * z +
+                      2 *
+                        ((xz * yz - xy * zz) * x * y +
+                          (xy * yz - xz * yy) * x * z +
+                          (xy * xz - xx * yz) * y * z)) /
+                    det;
+                  distance =
+                    0.125 * quad + 0.5 * Math.log(det) - logDet - b[o + 9];
+                }
+                const color = w[o + COLOR];
+                const score =
+                  -distance -
+                  (red - HALF[color & 0xffff]) ** 2 -
+                  (green - HALF[color >>> 16]) ** 2 -
+                  (blue - HALF[w[o + COLOR + 1]]) ** 2;
+                const value = Number.isNaN(score)
+                  ? Number.NEGATIVE_INFINITY
+                  : score;
+                if (best === NONE || value >= metric) {
+                  best = entry;
+                  metric = value;
+                  near = slot;
+                }
               }
-              const color = w[o + COLOR];
-              const score =
-                -distance -
-                (red - HALF[color & 0xffff]) ** 2 -
-                (green - HALF[color >>> 16]) ** 2 -
-                (blue - HALF[w[o + COLOR + 1]]) ** 2;
-              const value = Number.isNaN(score)
-                ? Number.NEGATIVE_INFINITY
-                : score;
-              if (best === NONE || value >= metric) {
-                best = entry;
-                metric = value;
-                near = slot;
-              }
-            }
-            entry = w[o + LINK];
+              entry = w[o + LINK];
+            } while (entry !== NONE && entry >= from && entry >>> 5 === word);
           }
         }
       }
@@ -653,25 +653,27 @@ export class Grid extends Lookup {
         throw new Error(
           "Splat coordinates exceed the LOD grid's integer range",
         );
-      this.lastHash = (term(x, 0) ^ term(y, 1) ^ term(z, 2)) >>> 0;
+      this.lastHash = cellHash(x, y, z);
       slot = this.slot(this.lastHash, x, y, z);
     }
+    const at = this.slots.offset(slot * 2);
     const head = this.slots.get(slot * 2 + 1);
     this.entries.at(entry * STRIDE, true).words[offset + LINK] = head
       ? head - 1
       : NONE;
-    this.slots.set(slot * 2 + 1, entry + 1);
+    const words = this.slots.page(slot * 2, true);
+    if (!head) words[at] = this.lastHash;
+    if (this.workspace.finishSearch) Atomics.store(words, at + 1, entry + 1);
+    else words[at + 1] = entry + 1;
     this.last = slot;
     this.lastX = x;
     this.lastY = y;
     this.lastZ = z;
-    if (!head) {
-      this.slots.set(slot * 2, this.lastHash);
-      if (++this.count >= this.capacity * LOAD) this.grow();
-    }
+    if (!head && ++this.count >= this.capacity * LOAD) this.grow();
   }
 
   grow() {
+    this.workspace.finishSearch?.();
     this.last = -1;
     this.layout++;
     const old = this.slots;

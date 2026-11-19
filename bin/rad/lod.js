@@ -1,6 +1,6 @@
 // LOD construction adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
 import { EncodingRanges } from "./encoding.js";
-import { Cells, Grid, NONE, cellHash } from "./grid.js";
+import { Cells, Grid, NONE } from "./grid.js";
 import { Heap, Queue, rank, sortSplats } from "./heap.js";
 import { HALF, SCALE, rotation } from "./math.js";
 import { MISS, ROUND, hint } from "./parallel.js";
@@ -10,6 +10,15 @@ import { IndexArray, PagedArray, Permutation } from "./storage.js";
 
 // Grid cell size and candidate size limit relative to the level (at least 1).
 const SEARCH_SCALE = 2;
+
+// A conservative filter of 2-cell blocks. Each new parent can affect queries
+// in exactly two blocks per axis. Hash collisions only add a grid check.
+const Y_STRIDE = 73856093;
+const Z_STRIDE = 19349663;
+const NEAR_MASK = (1 << 17) - 1;
+const blockSlot = (x, y, z) =>
+  ((x | 0) + Math.imul(y, Y_STRIDE) + Math.imul(z, Z_STRIDE)) & NEAR_MASK;
+const BLOCK_OFFSETS = [0, Y_STRIDE, Z_STRIDE, Y_STRIDE + Z_STRIDE];
 
 export function buildLod(splats, lodBase, pool, shCodebook) {
   const initial = splats.length;
@@ -177,10 +186,9 @@ function mergeLevels(splats, pool) {
   // A worker's merged record and its terms.
   const merge = new Float32Array(16);
   const terms13 = new Float32Array(13);
-  // Cells that merges of the round have added entries to, and the blocks of
-  // 4 cells per axis next to them: queries in other blocks skip the check.
+  // Cells receiving new entries in this round, and blocks within their reach.
   const added = new Cells(18);
-  const near = new Cells(20);
+  const near = new Uint8Array(NEAR_MASK + 1);
   // Levels double the size of the splats that initiate merges, from the
   // smallest leaf's. Progress numbers them and shows about how many there
   // are: until all leaves are in and a level spans the scene, which can be
@@ -229,7 +237,7 @@ function mergeLevels(splats, pool) {
     const detail = () => `${splats.length - initial}/${initial - 1} merges`;
     const progress = new Progress(`Merging ${name}`, queue.length, detail());
     // Rounds of merges in heap order. Workers search for the candidates of
-    // the next popped splats against the grid at the start of the round.
+    // the next popped splats while this thread commits completed chunks.
     // Committing them in order, a search still holds unless its candidate is
     // gone or a merge of the round added a candidate at least as good, and
     // splats that merges add pop as they would one by one.
@@ -256,11 +264,11 @@ function mergeLevels(splats, pool) {
       // the layout does.
       const start = grid.length;
       const layout = grid.layout;
-      if (count < 64) pool.results.fill(MISS, 0, count);
-      else pool.search(grid, count);
+      let ready = pool.search(grid, count);
       added.clear();
-      near.clear();
+      near.fill(0);
       for (let t = 0; t < count; ) {
+        if (t === ready) ready = pool.readyThrough(t, count);
         let index;
         let self;
         let key;
@@ -279,22 +287,23 @@ function mergeLevels(splats, pool) {
           task = t++;
           if (removed.get(index)) continue;
         }
-        // A search that the main thread need not do passes on the terms.
+        const offset = task * 14;
+        const inverse = grid.inverse / 2;
         if (best === MISS) grid.read(self, query);
-        else
-          for (let d = 0; d < 14; d++) query[d] = pool.queries[task * 14 + d];
-        if (best !== MISS && best !== NONE && grid.isRemoved(best)) best = MISS;
-        const inverse = grid.inverse;
-        if (
-          best !== MISS &&
-          near.has(
-            cellHash(
-              Math.floor(Math.floor(query[0] * inverse) / 4),
-              Math.floor(Math.floor(query[1] * inverse) / 4),
-              Math.floor(Math.floor(query[2] * inverse) / 4),
-            ),
-          )
+        else if (best !== NONE && grid.isRemoved(best)) {
+          copy(pool.queries, offset, query, 14);
+          best = MISS;
+        } else if (
+          grid.length > start &&
+          near[
+            blockSlot(
+              Math.floor(pool.queries[offset] * inverse),
+              Math.floor(pool.queries[offset + 1] * inverse),
+              Math.floor(pool.queries[offset + 2] * inverse),
+            )
+          ]
         ) {
+          copy(pool.queries, offset, query, 14);
           const better = grid.find(query, index, start, added);
           if (better !== NONE) {
             const metric = pool.metrics[task];
@@ -348,16 +357,19 @@ function mergeLevels(splats, pool) {
                 : NONE;
           added.add(grid.insert(merged, record[15] * record[3], terms, slot));
           const { lastX: x, lastY: y, lastZ: z } = grid;
-          const x1 = Math.floor((x + 1) / 4);
-          const y1 = Math.floor((y + 1) / 4);
-          const z1 = Math.floor((z + 1) / 4);
-          for (let bz = Math.floor((z - 1) / 4); bz <= z1; bz++)
-            for (let by = Math.floor((y - 1) / 4); by <= y1; by++)
-              for (let bx = Math.floor((x - 1) / 4); bx <= x1; bx++)
-                near.add(cellHash(bx, by, bz));
+          const first = blockSlot(
+            Math.floor((x - 1) / 2),
+            Math.floor((y - 1) / 2),
+            Math.floor((z - 1) / 2),
+          );
+          for (const offset of BLOCK_OFFSETS) {
+            near[(first + offset) & NEAR_MASK] = 1;
+            near[(first + offset + 1) & NEAR_MASK] = 1;
+          }
           if (feature <= step) queue.push(merged, -feature);
         }
       }
+      workspace.finishSearch?.();
       // At round boundaries the queue only shrinks: each new merged item
       // replaces at least one popped item. Include those items until drained.
       progress.update(progress.total - queue.length, detail());
