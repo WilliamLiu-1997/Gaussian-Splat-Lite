@@ -304,7 +304,7 @@ export class Pool {
   // Searches and merges for the first `count` nodes and entries, against the
   // grid. Returns the number of results ready to commit in order.
   search(grid, count) {
-    if (count < 256 || !this.workers.length) {
+    if (count < 128 || !this.workers.length) {
       this.results.fill(MISS, 0, count);
       return count;
     }
