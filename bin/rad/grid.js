@@ -21,10 +21,12 @@ let sorting;
 
 // An entry holds Similarities.get()'s 13 terms: the center, covariance and
 // log determinant as floats and the color as halves, which it is exactly.
-// Then come its node, the next entry of its cell's list and, as a double,
-// its merge weight, so that a search reads nothing else.
+// Consecutive entries of one cell form a run within each 32-entry removal
+// word. The high half of BLUE stores its first bit index. LINK points to
+// the preceding run.
 const STRIDE = 16;
 const COLOR = 10;
+const BLUE = 11;
 const NODE = 12;
 const LINK = 13;
 const WEIGHT = 14;
@@ -97,7 +99,7 @@ export function writeEntry(values, words, offset, node, tuple, weight) {
   for (let d = 0; d < 3; d++) values[offset + d] = tuple[d];
   for (let d = 0; d < 7; d++) values[offset + 3 + d] = tuple[6 + d];
   words[offset + COLOR] = halfBits(tuple[3]) | (halfBits(tuple[4]) << 16);
-  words[offset + COLOR + 1] = halfBits(tuple[5]);
+  words[offset + BLUE] = halfBits(tuple[5]);
   words[offset + NODE] = node;
   words[offset + LINK] = NONE;
   double[0] = weight;
@@ -161,7 +163,9 @@ export class Lookup {
   // head for find() so it does not have to look up the slot twice.
   slot(hash, x, y, z) {
     const mask = this.capacity - 1;
-    for (let slot = hash & mask; ; slot = (slot + 1) & mask) {
+    // Triangular probing visits every slot of a power-of-two table.
+    let stride = 0;
+    for (let slot = hash & mask; ; slot = (slot + ++stride) & mask) {
       const words = this.slots.page(slot * 2);
       const at = this.slots.offset(slot * 2);
       const head = this.concurrent
@@ -194,7 +198,7 @@ export class Lookup {
     for (let d = 0; d < 3; d++) out[d] = values[offset + d];
     out[3] = HALF[words[offset + COLOR] & 0xffff];
     out[4] = HALF[words[offset + COLOR] >>> 16];
-    out[5] = HALF[words[offset + COLOR + 1]];
+    out[5] = HALF[words[offset + BLUE] & 0xffff];
     for (let d = 0; d < 7; d++) out[6 + d] = values[offset + 3 + d];
     pair[0] = words[offset + WEIGHT];
     pair[1] = words[offset + WEIGHT + 1];
@@ -207,12 +211,16 @@ export class Lookup {
     return (this.gone.get(entry >>> 5) >>> (entry & 31)) & 1;
   }
 
-  // The most similar splat other than `index` in the 27 cells around `query`,
-  // with its score in `metric`. Lists and cells are visited in reverse, and >=
-  // keeps the last best score: the first best of a forward scan over lists in
-  // insertion order. With `cells`, only the entries from `from` on in those
-  // cells count.
-  find(query, index, from = 0, cells = undefined) {
+  // The best entry other than `self` in the 27 neighboring cells, scoring
+  // at least `minimum`. Reverse traversal and >= keep the first forward tie.
+  // With `cells`, search only marked cells and entries from `from` on.
+  find(
+    query,
+    self,
+    from = 0,
+    cells = undefined,
+    minimum = Number.NEGATIVE_INFINITY,
+  ) {
     const qx = query[0];
     const qy = query[1];
     const qz = query[2];
@@ -238,7 +246,11 @@ export class Lookup {
     const entries = this.entries;
     const gone = this.gone;
     let best = NONE;
-    let metric = Number.NEGATIVE_INFINITY;
+    let metric = minimum;
+    const selfWord = self >>> 5;
+    const selfBit = 1 << (self & 31);
+    let lowDet = Number.POSITIVE_INFINITY;
+    let lowLog = 0;
     let home = NONE;
     let near = NONE;
     for (let dz = 1; dz >= -1; dz--) {
@@ -253,63 +265,78 @@ export class Lookup {
           // Lists run from the newest entry down.
           while (entry !== NONE && entry >= from) {
             const word = entry >>> 5;
-            const bits = gone.get(word);
+            const bits = gone.get(word) | (word === selfWord ? selfBit : 0);
             const page = entries.at(entry * STRIDE);
             const b = page.values;
             const w = page.words;
-            const base = entries.offset(entry * STRIDE) - (entry & 31) * STRIDE;
-            // A removal word covers 32 entries in the same page and disk part.
-            do {
-              const o = base + (entry & 31) * STRIDE;
-              if (w[o + NODE] !== index && !((bits >>> (entry & 31)) & 1)) {
-                const xx = (cxx + b[o + 3]) * 0.5;
-                const yy = (cyy + b[o + 4]) * 0.5;
-                const zz = (czz + b[o + 5]) * 0.5;
-                const xy = (cxy + b[o + 6]) * 0.5;
-                const xz = (cxz + b[o + 7]) * 0.5;
-                const yz = (cyz + b[o + 8]) * 0.5;
-                const det =
-                  xx * (yy * zz - yz * yz) -
-                  xy * (xy * zz - yz * xz) +
-                  xz * (xy * yz - yy * xz);
-                const diag = Math.max(Math.abs(xx), Math.abs(yy), Math.abs(zz));
-                let distance = 0;
+            const last = entry & 31;
+            const at = entries.offset(entry * STRIDE);
+            const base = at - last * STRIDE;
+            const first = w[at + BLUE] >>> 16;
+            const lower = Math.max(first, from - word * 32);
+            let live = ~bits & (-1 << lower) & (0xffffffff >>> (31 - last));
+            entry = w[at + LINK];
+            while (live) {
+              const bit = 31 - Math.clz32(live);
+              live ^= 1 << bit;
+              const o = base + bit * STRIDE;
+              // The covariance sum has eight times the mean's determinant
+              // and half its inverse quadratic form.
+              const xx = cxx + b[o + 3];
+              const yy = cyy + b[o + 4];
+              const zz = czz + b[o + 5];
+              const xy = cxy + b[o + 6];
+              const xz = cxz + b[o + 7];
+              const yz = cyz + b[o + 8];
+              const minorXX = yy * zz - yz * yz;
+              const minorXY = xy * zz - yz * xz;
+              const minorXZ = xy * yz - yy * xz;
+              const det = xx * minorXX - xy * minorXY + xz * minorXZ;
+              const diag = Math.max(Math.abs(xx), Math.abs(yy), Math.abs(zz));
+              let distance = 0;
+              if (Math.abs(det) >= 1e-9 * Math.max(diag * diag * diag, 8e-30)) {
+                const x = b[o] - qx;
+                const y = b[o + 1] - qy;
+                const z = b[o + 2] - qz;
+                const quad =
+                  (minorXX * x * x +
+                    (xx * zz - xz * xz) * y * y +
+                    (xx * yy - xy * xy) * z * z +
+                    2 *
+                      (-minorXY * x * y +
+                        minorXZ * x * z +
+                        (xy * xz - xx * yz) * y * z)) /
+                  det;
+                const spatial = 0.25 * quad;
+                // log is monotone and each color penalty can only lower the
+                // score. A strict bound keeps candidates tied with the best.
                 if (
-                  Math.abs(det) >=
-                  1e-9 * Math.max(diag * diag * diag, 1e-30)
-                ) {
-                  const x = b[o] - qx;
-                  const y = b[o + 1] - qy;
-                  const z = b[o + 2] - qz;
-                  const quad =
-                    ((yy * zz - yz * yz) * x * x +
-                      (xx * zz - xz * xz) * y * y +
-                      (xx * yy - xy * xy) * z * z +
-                      2 *
-                        ((xz * yz - xy * zz) * x * y +
-                          (xy * yz - xz * yy) * x * z +
-                          (xy * xz - xx * yz) * y * z)) /
-                    det;
-                  distance =
-                    0.125 * quad + 0.5 * Math.log(det) - logDet - b[o + 9];
+                  det >= lowDet &&
+                  -(spatial + lowLog - logDet - b[o + 9]) < metric
+                )
+                  continue;
+                const shape = 0.5 * Math.log(det * 0.125);
+                if (det > 0 && det < lowDet) {
+                  lowDet = det;
+                  lowLog = shape;
                 }
-                const color = w[o + COLOR];
-                const score =
-                  -distance -
-                  (red - HALF[color & 0xffff]) ** 2 -
-                  (green - HALF[color >>> 16]) ** 2 -
-                  (blue - HALF[w[o + COLOR + 1]]) ** 2;
-                const value = Number.isNaN(score)
-                  ? Number.NEGATIVE_INFINITY
-                  : score;
-                if (best === NONE || value >= metric) {
-                  best = entry;
-                  metric = value;
-                  near = slot;
-                }
+                distance = spatial + shape - logDet - b[o + 9];
               }
-              entry = w[o + LINK];
-            } while (entry !== NONE && entry >= from && entry >>> 5 === word);
+              const color = w[o + COLOR];
+              const score =
+                -distance -
+                (red - HALF[color & 0xffff]) ** 2 -
+                (green - HALF[color >>> 16]) ** 2 -
+                (blue - HALF[w[o + BLUE] & 0xffff]) ** 2;
+              const value = Number.isNaN(score)
+                ? Number.NEGATIVE_INFINITY
+                : score;
+              if (value >= metric) {
+                best = word * 32 + bit;
+                metric = value;
+                near = slot;
+              }
+            }
           }
         }
       }
@@ -357,6 +384,7 @@ export class Grid extends Lookup {
     this.lastHash = 0;
     // Node -> entry, kept up to date by link().
     this.entryOf = new IndexArray(this.workspace);
+    this.runNodes = new Uint32Array(32);
     this.tuple = new Float64Array(14);
     // Sort keys address blocks of `scale` cells per axis within the bounds:
     // single cells unless the bounds exceed 2^30 cells.
@@ -618,27 +646,30 @@ export class Grid extends Lookup {
     this.count = 0;
     this.last = -1;
     this.layout++;
-    for (let entry = 0; entry < this.length; entry++) {
-      this.link(entry);
+    for (let entry = 0; entry < this.length; ) {
       if ((entry & 4095) === 0) progress?.update(entry);
+      entry = this.link(entry, NONE, this.length);
     }
     progress?.finish();
   }
 
-  // Prepends `entry` to the list of its cell.
-  link(entry, hint = NONE) {
+  // Link consecutive entries in one cell and removal word, up to `end`.
+  // A single insertion publishes just its own entry.
+  link(entry, hint = NONE, end = entry + 1) {
     const page = this.entries.at(entry * STRIDE);
     const offset = (entry * STRIDE) & this.entries.mask;
-    const node = page.words[offset + NODE];
     const x = Math.floor(page.values[offset] * this.inverse);
     const y = Math.floor(page.values[offset + 1] * this.inverse);
     const z = Math.floor(page.values[offset + 2] * this.inverse);
-    this.entryOf.set(node, entry);
     // Entries in spatial order often share the last entry's cell.
     let slot = this.last;
+    let head = entry; // One-based head when the previous cell matches.
     if (hint !== NONE) {
       slot = hint;
-      this.lastHash = this.slots.get(hint * 2);
+      const words = this.slots.page(slot * 2);
+      const at = this.slots.offset(slot * 2);
+      this.lastHash = words[at];
+      head = words[at + 1];
     } else if (
       slot < 0 ||
       x !== this.lastX ||
@@ -655,21 +686,44 @@ export class Grid extends Lookup {
         );
       this.lastHash = cellHash(x, y, z);
       slot = this.slot(this.lastHash, x, y, z);
+      head = this.slotHead;
     }
     const at = this.slots.offset(slot * 2);
-    const head = this.slots.get(slot * 2 + 1);
-    this.entries.at(entry * STRIDE, true).words[offset + LINK] = head
-      ? head - 1
-      : NONE;
+    const { values, words: entryWords } = this.entries.at(entry * STRIDE, true);
+    let first = entry & 31;
+    let previous = head ? head - 1 : NONE;
+    if (first && previous === entry - 1) {
+      first = entryWords[offset - STRIDE + BLUE] >>> 16;
+      previous = entryWords[offset - STRIDE + LINK];
+    }
+    const limit = Math.min(end - entry, 32 - (entry & 31));
+    let count = 0;
+    let o = offset;
+    do {
+      this.runNodes[count++] = entryWords[o + NODE];
+      entryWords[o + BLUE] = (entryWords[o + BLUE] & 0xffff) | (first << 16);
+      entryWords[o + LINK] = previous;
+      o += STRIDE;
+    } while (
+      count < limit &&
+      Math.floor(values[o] * this.inverse) === x &&
+      Math.floor(values[o + 1] * this.inverse) === y &&
+      Math.floor(values[o + 2] * this.inverse) === z
+    );
+    // Updating the node map may evict the entry page.
+    for (let i = 0; i < count; i++)
+      this.entryOf.set(this.runNodes[i], entry + i);
     const words = this.slots.page(slot * 2, true);
     if (!head) words[at] = this.lastHash;
-    if (this.workspace.finishSearch) Atomics.store(words, at + 1, entry + 1);
-    else words[at + 1] = entry + 1;
+    if (this.workspace.finishSearch)
+      Atomics.store(words, at + 1, entry + count);
+    else words[at + 1] = entry + count;
     this.last = slot;
     this.lastX = x;
     this.lastY = y;
     this.lastZ = z;
     if (!head && ++this.count >= this.capacity * LOAD) this.grow();
+    return entry + count;
   }
 
   grow() {
@@ -686,7 +740,8 @@ export class Grid extends Lookup {
       if (!head) continue;
       const hash = old.get(i * 2);
       let slot = hash & mask;
-      while (this.slots.get(slot * 2 + 1)) slot = (slot + 1) & mask;
+      let stride = 0;
+      while (this.slots.get(slot * 2 + 1)) slot = (slot + ++stride) & mask;
       this.slots.set(slot * 2, hash);
       this.slots.set(slot * 2 + 1, head);
     }

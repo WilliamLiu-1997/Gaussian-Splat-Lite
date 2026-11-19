@@ -167,10 +167,10 @@ export class Workspace {
 
   // Once the arenas' used pages take more than the capacity, releases the
   // arenas past it, evicting their pages, and collects them so that their
-  // memory returns. The main thread allocates pages only between the jobs
-  // of worker threads.
+  // memory returns. Searches must release their views before arenas move.
   shrink() {
     if (this.slots.length * PAGE_BYTES <= this.capacity) return;
+    this.finishSearch?.();
     const slots = Math.floor(this.capacity / this.arenaBytes) * this.arenaPages;
     // Without a copy of the slots: a copy kept the released pages alive
     // through the collection below, and their memory returned only later.
@@ -240,6 +240,7 @@ export class Workspace {
   }
 
   evict() {
+    this.finishSearch?.();
     while (this.idle.length) {
       const { pages } = this.idle.at(-1);
       while (this.idlePage < pages.length) {
@@ -285,8 +286,9 @@ export class Workspace {
   // Without `restore`, the caller writes all of the page: it is neither read
   // from its file nor cleared.
   allocate(array, index, restore = true) {
-    // An overlapping search may still hold this slot or its arena directory.
-    this.finishSearch?.();
+    // Only a searched column needs to publish a new mapping to readers.
+    // Eviction and shrinking also join before reusing a reader's memory.
+    this.finishSearch?.(array);
     if (++this.allocations % 64 === 0) this.adjust();
     if (this.used + PAGE_BYTES > this.capacity && this.used) this.evict();
     let slot = this.free.pop();

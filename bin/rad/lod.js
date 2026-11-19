@@ -266,10 +266,12 @@ function mergeLevels(splats, pool) {
       const start = grid.length;
       const layout = grid.layout;
       let ready = pool.search(grid, count);
-      added.clear();
-      near.fill(0);
+      const predicting = ready < count;
+      if (predicting) {
+        added.clear();
+        near.fill(0);
+      }
       for (let t = 0; t < count; ) {
-        if (t === ready) ready = pool.readyThrough(t, count);
         let index;
         let self;
         let key;
@@ -281,6 +283,7 @@ function mergeLevels(splats, pool) {
           if (removed.get(index)) continue;
           self = grid.entry(index);
         } else {
+          if (t === ready) ready = pool.readyThrough(t, count);
           index = pool.nodes[t];
           self = pool.entries[t];
           key = keys[t];
@@ -305,17 +308,17 @@ function mergeLevels(splats, pool) {
           ]
         ) {
           copy(pool.queries, offset, query, 14);
-          const better = grid.find(query, index, start, added);
-          if (better !== NONE) {
-            const metric = pool.metrics[task];
+          const metric = pool.metrics[task];
+          const better = grid.find(query, self, start, added, metric);
+          if (better !== NONE && better !== best) {
             if (best === NONE || grid.metric > metric) {
               best = better;
               task = -1;
-            } else if (grid.metric === metric) best = MISS;
+            } else best = MISS;
           }
         }
         if (best === MISS) {
-          best = grid.find(query, index);
+          best = grid.find(query, self);
           task = -1;
         }
         if (best === NONE) {
@@ -356,16 +359,19 @@ function mergeLevels(splats, pool) {
               : layout === grid.layout
                 ? pool.hints[task]
                 : NONE;
-          added.add(grid.insert(merged, record[15] * record[3], terms, slot));
-          const { lastX: x, lastY: y, lastZ: z } = grid;
-          const first = blockSlot(
-            Math.floor((x - 1) / 2),
-            Math.floor((y - 1) / 2),
-            Math.floor((z - 1) / 2),
-          );
-          for (const offset of BLOCK_OFFSETS) {
-            near[(first + offset) & NEAR_MASK] = 1;
-            near[(first + offset + 1) & NEAR_MASK] = 1;
+          const hash = grid.insert(merged, record[15] * record[3], terms, slot);
+          if (predicting && t < count) {
+            added.add(hash);
+            const { lastX: x, lastY: y, lastZ: z } = grid;
+            const first = blockSlot(
+              Math.floor((x - 1) / 2),
+              Math.floor((y - 1) / 2),
+              Math.floor((z - 1) / 2),
+            );
+            for (const offset of BLOCK_OFFSETS) {
+              near[(first + offset) & NEAR_MASK] = 1;
+              near[(first + offset + 1) & NEAR_MASK] = 1;
+            }
           }
           if (feature <= step) queue.push(merged, -feature);
         }
@@ -430,7 +436,10 @@ function sort(values, count) {
 function chunkTree(splats, order, first, counts, sizes, pool) {
   const workspace = splats.workspace;
   const nodes = splats.length;
-  for (const column of [splats.childStart, splats.childCount]) column.dispose();
+  for (const column of [splats.childStart, splats.childCount]) {
+    column.dispose();
+    column.length = order.length;
+  }
   // Chunking reads shapes at random by logical index, so it reads them in
   // logical order, where splats of a subtree lie close together. The
   // records move once, into chunk order.
@@ -452,10 +461,11 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
   logical.dispose();
   const shape = new Uint32Array(SHAPE_WORDS);
   const center = new Float32Array(shape.buffer, 0, 3);
-  // The row of each splat's first child.
-  const starts = new PagedArray(workspace, Float64Array);
+  // Emit original splat indices directly. Once a parent has its chunk row,
+  // reuse its consumed order entry to write its child range when it pops.
   const indices = new IndexArray(workspace);
-  indices.push(0);
+  indices.push(order.get(0));
+  order.set(0, 0);
   const top = new IndexArray(workspace);
   top.push(0);
   const batches = [top];
@@ -472,9 +482,9 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
   let popped = new Uint32Array(1024);
   let poppedSizes = new Float32Array(1024);
   let pops = 0;
-  const add = (heap, index) => {
+  const add = (heap, index, count = counts.get(index)) => {
     const size = sizes.get(index);
-    if (counts.get(index)) heap.push(index, size);
+    if (count) heap.push(index, size);
     else {
       if (waiting === leaves.length) {
         leaves = grow(leaves, waiting);
@@ -537,11 +547,16 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
         stayed = waiting - stay;
         break;
       }
-      starts.set(parent, indices.length);
+      const parentRow = order.get(parent);
+      splats.childStart.set(parentRow, indices.length);
+      splats.childCount.set(parentRow, count);
       const firstChild = first.get(parent);
       for (let child = firstChild; child < firstChild + count; child++) {
-        indices.push(child);
-        add(heap, child);
+        const childCount = counts.get(child);
+        const row = indices.length;
+        indices.push(order.get(child));
+        if (childCount) order.set(child, row);
+        add(heap, child, childCount);
       }
       if ((pops & 4095) === 0) chunking.update(indices.length);
     }
@@ -624,41 +639,10 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
   sizes.dispose();
   shapes.dispose();
   first.dispose();
+  counts.dispose();
   if (indices.length !== order.length)
     throw new Error("Incomplete LOD tree ordering");
   chunking.finish();
-  const chunked = new Permutation(
-    workspace,
-    indices,
-    order.length,
-    "Preparing chunk order",
-  );
-  splats.childCount = chunked.apply(
-    counts,
-    1,
-    pool,
-    false,
-    "Reordering child counts",
-  );
-  splats.childStart = chunked.apply(
-    starts,
-    1,
-    pool,
-    false,
-    "Reordering child offsets",
-  );
-  chunked.dispose();
-  // The splat of each row: the records are still in the order of the tree's
-  // merges. The logical indices are no longer needed, so replace them.
-  const collecting = new Progress(
-    "Collecting chunk splat order",
-    indices.length,
-  );
-  for (let i = 0; i < indices.length; i++) {
-    indices.set(i, order.get(indices.get(i)));
-    if ((i & 4095) === 0) collecting.update(i);
-  }
-  collecting.finish();
   return indices;
 }
 

@@ -20,7 +20,7 @@ import {
 } from "./splats.js";
 import { ArenaViews, Parts, SharedColumn, collect } from "./storage.js";
 
-// A search that the main thread does: a merge failed.
+// A search to run on the committing thread.
 export const MISS = 0xfffffffe;
 // The most searches in one round.
 export const ROUND = 32768;
@@ -326,7 +326,9 @@ export class Pool {
       Math.min(32, Math.floor(count / ((this.workers.length + 1) * 4))),
     );
     this.run(SEARCH_AHEAD, count, size);
-    this.workspace.finishSearch = this.joinSearch;
+    this.workspace.finishSearch = (array) => {
+      if (!array || arrays.includes(array)) this.joinSearch();
+    };
     this.chunkSize = size;
     return 0;
   }
@@ -408,14 +410,15 @@ export class Pool {
   // While the next chunk is in flight, help the workers with unclaimed rows.
   readyThrough(start, count) {
     if (!this.workspace.finishSearch) return count;
-    while (Atomics.load(this.readyChunks, start) !== this.generation) {
+    for (;;) {
+      const ready = Atomics.load(this.readyChunks, start);
+      if (ready === this.generation) return start + this.chunkSize;
       this.workspace.check();
       if (!this.task.work(this.generation, true)) {
-        this.joinSearch();
-        return count;
+        if (Atomics.load(this.control, FAILED)) this.joinSearch();
+        Atomics.wait(this.readyChunks, start, ready, 100);
       }
     }
-    return start + this.chunkSize;
   }
 
   run(job, count, size) {
@@ -585,6 +588,7 @@ class Task {
         this.lookup.concurrent = true;
         for (let t = start; t < end; t++) this.results[t] = this.search(t);
         Atomics.store(this.readyChunks, start, gen);
+        Atomics.notify(this.readyChunks, start, 1);
       } else if (job === BLEND)
         this.blend(start, end, Atomics.load(control, DIMS));
       else if (job === COPY) this.copy(start, end);
@@ -722,7 +726,7 @@ class Task {
   search(t) {
     const { lookup, query, other, merged } = this;
     lookup.read(this.entries[t], query);
-    const best = lookup.find(query, this.nodes[t]);
+    const best = lookup.find(query, this.entries[t]);
     this.metrics[t] = lookup.metric;
     this.queries.set(query, t * 14);
     if (best === NONE) return best;
