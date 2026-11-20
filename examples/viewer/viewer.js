@@ -42,6 +42,14 @@ const renderOptionsReset = document.querySelector("#render-options-reset");
 const sourceUpAxis = document.querySelector("#source-up-axis");
 const objectColorsControl = document.querySelector("#object-colors-control");
 
+// iOS Files can disable custom extensions such as .ply when accept is set.
+const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+if (isIOS) {
+  fileInput.removeAttribute("accept");
+}
+
 const ui = createViewerUI({
   onCancelLoad: cancelLoading,
   onResetView: () => {
