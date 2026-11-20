@@ -230,10 +230,8 @@ export async function buildLevels(input, rootSplats, factor) {
         1,
         Math.min(source.length - 1, Math.ceil(source.length / factor)),
       );
-      if (total + target > 0xffffffff)
-        throw new Error(
-          "Combined LODs exceed u32 index limit; increase --lod-factor",
-        );
+      if (!Number.isSafeInteger(total + target))
+        throw new Error("Combined LOD count exceeds the safe integer limit");
       const next = await reduce(
         source,
         target,

@@ -47,7 +47,7 @@ export class Cut {
     this.ext = bound.max.map((v, d) => v - bound.min[d]);
     this.longest = Math.max(...this.ext);
     this.epsilon = Math.max(1e-9, this.longest * 1e-9);
-    this.sizes = new Uint32Array(3 * BINS);
+    this.sizes = new Float64Array(3 * BINS);
     this.mins = new Float64Array(9 * BINS).fill(Number.POSITIVE_INFINITY);
     this.maxs = new Float64Array(9 * BINS).fill(Number.NEGATIVE_INFINITY);
     this.axis = -1;
@@ -94,7 +94,7 @@ export class Cut {
     let best;
     const suffixMin = new Float64Array(BINS * 3);
     const suffixMax = new Float64Array(BINS * 3);
-    const suffixCount = new Uint32Array(BINS);
+    const suffixCount = new Float64Array(BINS);
     for (let axis = 0; axis < 3; axis++) {
       if (ext[axis] <= epsilon) continue;
       // Cuts across shorter axes count for more.

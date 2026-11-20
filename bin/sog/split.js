@@ -16,9 +16,6 @@ import { Positions } from "./positions.js";
 import { Centers, Order, divide } from "./spatial-order.js";
 import { Cut, binRange, boundsOf, partRange, splitRange } from "./spatial.js";
 
-// Bytes in memory of a row while its part is split: its center, its place
-// in the order and its row.
-const GATHERED_BYTES = 20;
 // Bytes of a scanned row: its center and part.
 const SCANNED_BYTES = 16;
 // The most rows of an array in a WebAssembly memory of 4 GiB.
@@ -534,9 +531,12 @@ async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
 // many at a time as fit.
 async function split(workspace, levels, length, root, job) {
   workspace.settle();
+  // Region IDs span all levels until arrange() converts them to per-level rows.
+  const RowId = length - 1 > 0xffffffff ? Float64Array : Uint32Array;
+  const gatheredBytes = 12 + 4 + RowId.BYTES_PER_ELEMENT;
   const fit = Math.max(
     job.limit,
-    Math.min(MOST, Math.floor((workspace.room * SHARE) / GATHERED_BYTES)),
+    Math.min(MOST, Math.floor((workspace.room * SHARE) / gatheredBytes)),
   );
   // Progress counts passes over the rows: one each to put the parts side by
   // side and to split them. Cutting what does not fit takes two passes a
@@ -552,8 +552,7 @@ async function split(workspace, levels, length, root, job) {
     progress?.update(done);
     job.update?.(length * (done / total));
   };
-  let order = new IndexArray(workspace);
-  order.length = length;
+  let order = new PagedArray(workspace, RowId, length);
   let where;
   let gathered;
   let arranged;
@@ -575,7 +574,7 @@ async function split(workspace, levels, length, root, job) {
     for (const part of parts) {
       if (!part.node) continue;
       part.centers = new Float32Array(BUFFERED * 3);
-      part.ids = new Uint32Array(BUFFERED);
+      part.ids = new RowId(BUFFERED);
       part.buffered = 0;
       part.next = part.node.start;
     }
@@ -621,10 +620,14 @@ async function split(workspace, levels, length, root, job) {
     // cache takes their memory below.
     const splitParts = async (first, last, rows) => {
       const { start } = nodes[first];
-      const threads = splitters(workspace, rows, rows * GATHERED_BYTES, job);
+      const threads = splitters(workspace, rows, rows * gatheredBytes, job);
       const centers = new Float32Array(sharedBuffer(rows * 12), 0, rows * 3);
       const local = new Uint32Array(sharedBuffer(rows * 4), 0, rows);
-      const ids = new Uint32Array(sharedBuffer(rows * 4), 0, rows);
+      const ids = new RowId(
+        sharedBuffer(rows * RowId.BYTES_PER_ELEMENT),
+        0,
+        rows,
+      );
       gathered.read(start * 3, centers, rows * 3);
       order.read(start, ids, rows);
       for (let i = 0; i < rows; i++) local[i] = i;
