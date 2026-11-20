@@ -763,51 +763,71 @@ export class Permutation {
         Math.floor((pages * PAGE_BYTES) / 8 / (rowBytes + targetBytes)),
       ),
     );
-    // Keep one batch of source rows and targets alongside the destination.
-    // All three ranges can start partway through a page.
+    // The cache's pages besides one batch of source rows and targets, which
+    // stay alongside the destination; all three ranges can start partway
+    // through a page. The cache shrinks when the rest of the process grows.
     const reserved =
       Math.ceil((block * rowBytes) / PAGE_BYTES) +
       Math.ceil((block * targetBytes) / PAGE_BYTES) +
       3;
-    const window = Math.max(
-      1,
-      Math.floor((Math.max(1, pages - reserved) * PAGE_BYTES) / rowBytes),
-    );
-    const progress =
-      label && new Progress(label, Math.ceil(this.length / window) * this.rows);
-    // The lowest and highest target + 1 of each block of source rows, found
-    // as the first window reads them: a later window that none of a block's
-    // rows land in skips the block.
-    const low = new Float64Array(Math.ceil(this.rows / block));
-    const high = new Float64Array(low.length);
-    for (let start = 0; start < this.length; start += window) {
-      const end = Math.min(this.length, start + window);
+    const room = () =>
+      Math.floor(this.workspace.capacity / PAGE_BYTES) - reserved;
+    const progress = label && new Progress(label, 1);
+    // Each block's remaining targets lie in [nextTarget, high). Advancing
+    // its lower bound keeps track of rows copied before a window shrinks.
+    const nextTarget = new Float64Array(Math.ceil(this.rows / block));
+    const high = new Float64Array(nextTarget.length);
+    for (let start = 0, end, done = 0; start < this.length; start = end) {
+      const firstPage = Math.floor((start * stride) / output.items);
+      // The end of the rows that lie in `count` pages from the first.
+      const within = (count) =>
+        Math.max(
+          start + 1,
+          Math.floor(((firstPage + count) * output.items) / stride),
+        );
+      // A window is the whole pages that fit now. A sixty-fourth of them
+      // stays free, for what `visit` writes and so that eviction finds a
+      // page without passing every pinned one.
+      const fit = room();
+      end = Math.min(this.length, within(fit - Math.max(16, fit >>> 6)));
+      // Progress takes the windows left to be as long as this one.
+      const windows = done + Math.ceil((this.length - start) / (end - start));
       output.pinned = [
-        Math.floor((start * stride) / output.items),
+        firstPage,
         Math.floor((end * stride - 1) / output.items) + 1,
       ];
       output.load(start * stride, end * stride, true);
       for (let base = 0; base < this.rows; base += block) {
         const b = base / block;
-        if (start && (high[b] <= start || low[b] > end)) continue;
+        const begin = Math.max(start, nextTarget[b]);
+        if (start && (begin >= end || high[b] <= begin)) continue;
         const count = Math.min(block, this.rows - base);
         const sourceStart = base * stride;
         const sourceEnd = (base + count) * stride;
+        // A window that no longer fits ends early. The blocks before this
+        // one keep the rows they have put past its new end.
+        const fits = within(room() - 16);
+        if (fits < end) {
+          end = fits;
+          output.pinned[1] = Math.floor((end * stride - 1) / output.items) + 1;
+          if (begin >= end) continue;
+        }
         this.targets.read(base, targets, count);
         if (!start) {
-          low[b] = Number.POSITIVE_INFINITY;
+          nextTarget[b] = Number.POSITIVE_INFINITY;
           for (let i = 0; i < count; i++)
             if (targets[i]) {
-              low[b] = Math.min(low[b], targets[i]);
+              nextTarget[b] = Math.min(nextTarget[b], targets[i] - 1);
               high[b] = Math.max(high[b], targets[i]);
             }
-          if (low[b] > end) {
+          if (nextTarget[b] >= end) {
             if (high[b] === 0) source.discard(sourceStart, sourceEnd);
             continue;
           }
         }
         source.load(sourceStart, sourceEnd);
-        pool.copy(source, output, stride, count, base, start, end, words);
+        pool.copy(source, output, stride, count, base, begin, end, words);
+        nextTarget[b] = end;
         for (let i = 0; i < count; i++) {
           if (!later[i]) continue;
           const from = (base + i) * stride;
@@ -828,9 +848,10 @@ export class Permutation {
         // No later window uses this block once its last target is in place:
         // dropped here, its pages are not written back when the cache is full.
         if (high[b] <= end) source.discard(sourceStart, sourceEnd);
-        progress?.update(Math.floor(start / window) * this.rows + base + count);
+        progress?.update((done + (base + count) / this.rows) / windows);
       }
       visit?.(output, start, end);
+      done++;
     }
     output.pinned = [0, 0];
     source.dispose();

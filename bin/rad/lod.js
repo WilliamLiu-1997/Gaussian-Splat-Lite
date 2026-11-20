@@ -13,11 +13,14 @@ const SEARCH_SCALE = 2;
 
 // A conservative filter of 2-cell blocks. Each new parent can affect queries
 // in exactly two blocks per axis. Hash collisions only add a grid check.
+// Larger rounds need more slots to avoid collisions, but the filter shares
+// the memory budget with the page cache.
 const Y_STRIDE = 73856093;
 const Z_STRIDE = 19349663;
-const NEAR_MASK = (1 << 17) - 1;
+const MIN_NEAR_BITS = 17;
+const MAX_NEAR_BITS = 20;
 const blockSlot = (x, y, z) =>
-  ((x | 0) + Math.imul(y, Y_STRIDE) + Math.imul(z, Z_STRIDE)) & NEAR_MASK;
+  (x | 0) + Math.imul(y, Y_STRIDE) + Math.imul(z, Z_STRIDE);
 const BLOCK_OFFSETS = [0, Y_STRIDE, Z_STRIDE, Y_STRIDE + Z_STRIDE];
 
 export function buildLod(splats, lodBase, pool, shCodebook) {
@@ -189,7 +192,11 @@ function mergeLevels(splats, pool) {
   const terms13 = new Float32Array(13);
   // Cells receiving new entries in this round, and blocks within their reach.
   const added = new Cells(18);
-  const near = new Uint8Array(NEAR_MASK + 1);
+  const nearBits = Math.max(
+    MIN_NEAR_BITS,
+    Math.min(MAX_NEAR_BITS, Math.floor(Math.log2(workspace.budget / 4096))),
+  );
+  const near = new Uint8Array(1 << nearBits);
   // Levels double the size of the splats that initiate merges, from the
   // smallest leaf's. Progress numbers them and shows about how many there
   // are: until all leaves are in and a level spans the scene, which can be
@@ -268,9 +275,12 @@ function mergeLevels(splats, pool) {
       const layout = grid.layout;
       const predicting = pool.search(grid, count);
       let ready = predicting ? 0 : count;
+      let nearMask = 0;
       if (predicting) {
+        const bits = Math.ceil(Math.log2(count * 64));
+        nearMask = (1 << Math.max(MIN_NEAR_BITS, Math.min(nearBits, bits))) - 1;
         added.clear();
-        near.fill(0);
+        near.fill(0, 0, nearMask + 1);
       }
       for (let t = 0; t < count; ) {
         let index;
@@ -305,7 +315,7 @@ function mergeLevels(splats, pool) {
               Math.floor(pool.queries[offset] * inverse),
               Math.floor(pool.queries[offset + 1] * inverse),
               Math.floor(pool.queries[offset + 2] * inverse),
-            )
+            ) & nearMask
           ]
         ) {
           copy(pool.queries, offset, query, 14);
@@ -370,8 +380,8 @@ function mergeLevels(splats, pool) {
               Math.floor((z - 1) / 2),
             );
             for (const offset of BLOCK_OFFSETS) {
-              near[(first + offset) & NEAR_MASK] = 1;
-              near[(first + offset + 1) & NEAR_MASK] = 1;
+              near[(first + offset) & nearMask] = 1;
+              near[(first + offset + 1) & nearMask] = 1;
             }
           }
           if (feature <= step) queue.push(merged, -feature);
