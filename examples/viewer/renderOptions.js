@@ -27,7 +27,7 @@ export const renderOptionGroups = [
         label: "Streaming splat budget",
         description:
           "Splat budget for RAD, SOG and LCC2 streaming. Adjusts detail without reloading.",
-        min: 1_000_000,
+        min: 100_000,
         max: 5_000_000,
         step: 100_000,
         defaultValue: 3_000_000,

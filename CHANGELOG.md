@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `gsl-build-sog` now builds coarser LODs using the same approach as `gsl-build-rad`. Rebuilt scenes can look different at those levels and retain different object IDs or other Blind values.
+- Optimized LOD generation in `gsl-build-rad` and reduced temporary disk access when converting large scenes.
+
+### Fixed
+
+- The iOS file picker now lets you select PLY and other supported splat files in the viewer.
+- Fixed a `gsl-build-sog` conversion failure when the total across all LODs exceeded 4,294,967,295 splats.
+- Fixed some splats shifting toward the scene origin at coarser LODs in RAD output.
+
 ## [1.9.0] - 2026-11-17
 
 ### Added
