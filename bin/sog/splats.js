@@ -1,3 +1,4 @@
+import { MIN_ASPECT, SCALE, area, halfBits } from "../rad/math.js";
 import { Progress } from "../rad/progress.js";
 import { PagedArray } from "../rad/storage.js";
 import { BlindInput } from "./blind.js";
@@ -117,18 +118,9 @@ export class Splats {
     this.arrived(name === "lnScale" ? "scale" : name, base + count);
   }
 
-  read(index, record) {
-    return this.records.read(index * 16, record, 16);
-  }
-
   // Reads `count` splats from `start` into `records` and an array per band.
   load(start, count, records, sh) {
     this.records.read(start * 16, records, count * 16);
-    if (this.blind)
-      for (let i = 0; i < count; i++) {
-        records[i * 16 + 14] = (start + i) & 65535;
-        records[i * 16 + 15] = (start + i) >>> 16;
-      }
     for (let band = 0; band < this.maxSh; band++)
       this.sh[band].read(
         start * SH_DIMS[band],
@@ -145,8 +137,7 @@ export class Splats {
       this.sh[band].length = count * SH_DIMS[band];
   }
 
-  // Writes `count` splats at `start`, their centers too; blocks may arrive
-  // in any order.
+  // Write the splats and update their center column and bounds.
   store(start, count, records, sh) {
     this.records.write(start * 16, records, count * 16);
     if (stored.length < count * 3) stored = new Float32Array(count * 3);
@@ -154,13 +145,15 @@ export class Splats {
       for (let d = 0; d < 3; d++) stored[i * 3 + d] = records[i * 16 + d];
     this.centers.write(start * 3, stored, count * 3);
     this.grow(records, count);
+    this.length = Math.max(this.length, start + count);
+
+    if (!sh) return;
     for (let band = 0; band < this.maxSh; band++)
       this.sh[band].write(
         start * SH_DIMS[band],
         sh[band],
         count * SH_DIMS[band],
       );
-    this.length = Math.max(this.length, start + count);
   }
 
   // Grows the box by the centers of the first `count` of `records`.
@@ -175,9 +168,9 @@ export class Splats {
   }
 
   // Removes the splats that cannot be drawn: those with a value that is not
-  // finite, without a rotation, with negative opacity or with a scale that
-  // single precision does not hold, and those with no opacity. Most are
-  // checked as their fields arrive, see arrived(); this checks the rest.
+  // finite (except zero scales), without a rotation, with negative opacity or
+  // with an area or squared scale that single precision does not hold, and
+  // those with no opacity or extent. Most are checked as their fields arrive.
   retain() {
     const { length } = this;
     if (this.checked < length) {
@@ -227,10 +220,18 @@ export class Splats {
     this.load(start, count, records, sh);
     // The block's splats that stay, moved to its front.
     let stay = 0;
+    let rewritten = false;
     for (let i = 0; i < count; i++) {
       const at = i * 16;
       let valid = records[at + 3] >= 0;
-      for (let d = 0; d < 14; d++) valid &&= Number.isFinite(records[at + d]);
+      // As in RAD, a zero scale (log scale -Infinity) is valid.
+      for (let d = 0; d < 14; d++)
+        valid &&=
+          Number.isFinite(records[at + d]) ||
+          (d >= 7 && d <= 9 && records[at + d] === Number.NEGATIVE_INFINITY);
+      // The written SH0 must hold in single precision too.
+      for (let d = at + 4; d < at + 7; d++)
+        valid &&= Number.isFinite(Math.fround((records[d] - 0.5) / SH_C0));
       for (let band = 0; valid && band < maxSh; band++) {
         const size = SH_DIMS[band];
         const row = sh[band];
@@ -245,15 +246,35 @@ export class Splats {
           records[at + 12],
           records[at + 13],
         ) > 0;
-      for (let d = 7; d < 10; d++) {
-        const scale = Math.exp(records[at + d]);
-        valid &&= scale > 0 && Number.isFinite(Math.fround(scale));
+      const x = SCALE[halfBits(records[at + 7])];
+      const y = SCALE[halfBits(records[at + 8])];
+      const z = SCALE[halfBits(records[at + 9])];
+      const maxScale = Math.max(x, y, z);
+      // Zero axes take the thinnest merged extent, so codebooks stay finite.
+      let zeroAxisScale = 0;
+      if (maxScale > 0 && !(x && y && z)) {
+        const thin = Math.log(maxScale * MIN_ASPECT);
+        if (!x) records[at + 7] = thin;
+        if (!y) records[at + 8] = thin;
+        if (!z) records[at + 9] = thin;
+        zeroAxisScale = SCALE[halfBits(thin)];
+        rewritten = true;
       }
+      // Merge weights and covariances use Float32 areas and variances.
+      const surface = area(
+        x || zeroAxisScale,
+        y || zeroAxisScale,
+        z || zeroAxisScale,
+      );
+      valid &&=
+        Number.isFinite(Math.fround(maxScale * maxScale)) &&
+        Number.isFinite(Math.fround(surface));
       if (!valid) {
         this.invalid++;
         continue;
       }
-      if (!records[at + 3]) continue;
+      // As in RAD, a splat without opacity or extent is empty.
+      if (!records[at + 3] || !maxScale) continue;
       if (
         withinDist &&
         Math.hypot(
@@ -276,9 +297,12 @@ export class Splats {
       stay++;
     }
     blind?.flush(this.kept, stay);
-    if (this.kept !== start || stay !== count)
+    if (this.kept !== start || stay !== count) {
       this.store(this.kept, stay, records, sh);
-    else this.grow(records, stay);
+    } else {
+      if (rewritten) this.records.write(start * 16, records, stay * 16);
+      this.grow(records, stay);
+    }
     this.kept += stay;
     this.checked += count;
   }

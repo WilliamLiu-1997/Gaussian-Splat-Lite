@@ -100,11 +100,20 @@ export function rotation(record, output) {
   output[8] = 1 - 2 * (x * x + y * y);
 }
 
+// A splat's shortest axis relative to its longest in merging and its search.
+// Float32 search terms lose thinner variances; edge-on, this is still well
+// under a pixel.
+export const MIN_ASPECT = 1 / 512;
+
 export function covariance(record, output, r) {
   rotation(record, r);
-  const x = SCALE[halfBits(record[7])] ** 2;
-  const y = SCALE[halfBits(record[8])] ** 2;
-  const z = SCALE[halfBits(record[9])] ** 2;
+  const sx = SCALE[halfBits(record[7])];
+  const sy = SCALE[halfBits(record[8])];
+  const sz = SCALE[halfBits(record[9])];
+  const floor = (Math.max(sx, sy, sz) * MIN_ASPECT) ** 2;
+  const x = Math.max(floor, sx * sx);
+  const y = Math.max(floor, sy * sy);
+  const z = Math.max(floor, sz * sz);
   output[0] = r[0] * r[0] * x + r[3] * r[3] * y + r[6] * r[6] * z;
   output[1] = r[1] * r[1] * x + r[4] * r[4] * y + r[7] * r[7] * z;
   output[2] = r[2] * r[2] * x + r[5] * r[5] * y + r[8] * r[8] * z;

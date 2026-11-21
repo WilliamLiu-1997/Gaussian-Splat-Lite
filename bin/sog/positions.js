@@ -1,21 +1,16 @@
 import { POSITION_BATCH_ROWS as BATCH } from "./lod-config.js";
 
-export { BATCH };
-
 // The centers of the splats of `levels`, one level after another, three
 // values a row, read from the levels' own centers, and `box`, the box of
 // all of them.
 export class Positions {
-  constructor(levels, length) {
+  constructor({ levels, length, starts }) {
     this.length = length;
     this.levels = levels;
-    this.starts = [];
-    let start = 0;
+    this.starts = starts;
     const min = [0, 1, 2].map(() => Number.POSITIVE_INFINITY);
     const max = [0, 1, 2].map(() => Number.NEGATIVE_INFINITY);
     for (const level of levels) {
-      this.starts.push(start);
-      start += level.length;
       for (let d = 0; d < 3; d++) {
         min[d] = Math.min(min[d], level.box.min[d]);
         max[d] = Math.max(max[d], level.box.max[d]);

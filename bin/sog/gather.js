@@ -1,6 +1,6 @@
+import { area } from "../rad/math.js";
 import { sharedBuffer } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
-import { ellipsoidAreaFromScales } from "./voxel/extents.js";
 
 // The most places that fit beside a row in a number: a row is below 2^32.
 const PLACES = 2 ** 21;
@@ -25,8 +25,8 @@ function sortPlaces(places, index) {
 export const chunkRowBytes = (dims, blindCount = 0) =>
   72 + dims * 2 + blindCount * 4;
 
-// Shared memory for a thread's chunks of up to `count` splats, like a
-// simplifier's blocks: gather() fills it chunk after chunk and the thread
+// Shared memory for a thread's chunks of up to `count` splats.
+// gather() fills it chunk after chunk and the thread
 // reads it in place. Arrays made for each chunk stayed in memory: handed
 // over, as freed heap on macOS; shared, until this thread collected its own
 // reference to them, which it rarely does.
@@ -70,7 +70,7 @@ export function gather(source, order, weigh, buffer, blind) {
     if (weigh)
       weights[place] =
         records[place * 16 + 3] *
-        ellipsoidAreaFromScales(
+        area(
           Math.exp(records[place * 16 + 7]),
           Math.exp(records[place * 16 + 8]),
           Math.exp(records[place * 16 + 9]),

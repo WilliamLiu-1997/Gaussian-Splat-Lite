@@ -38,7 +38,7 @@ const SIZE = 6;
 const DIMS = 7;
 // The length + 1 of a failed worker's error message in `failure`.
 const FAILED = 8;
-// A copy's row stride, first source row and target window.
+// Row stride and unsigned row ranges carried in the signed control buffer.
 const STRIDE = 10;
 const BASE = 11;
 const START = 12;
@@ -324,6 +324,7 @@ export class Pool {
       files: arrays.map((array) => array.spill?.files),
       capacity: grid.capacity,
       step: grid.step,
+      origin: grid.origin,
     });
     let pages = Math.floor(this.workspace.capacity / PAGE_BYTES / 2);
     // Entries are written densely, so every nonresident page is on disk.
@@ -518,20 +519,19 @@ export class Pool {
 // The slot of the cell of merged center `m` that the last find visited: the
 // query's cell or the cell of its best, at `b`; NONE if neither.
 export function hint(lookup, m, q, b) {
-  const inverse = lookup.inverse;
-  const x = Math.floor(m[0] * inverse);
-  const y = Math.floor(m[1] * inverse);
-  const z = Math.floor(m[2] * inverse);
+  const x = lookup.cell(m[0], 0);
+  const y = lookup.cell(m[1], 1);
+  const z = lookup.cell(m[2], 2);
   if (
-    x === Math.floor(q[0] * inverse) &&
-    y === Math.floor(q[1] * inverse) &&
-    z === Math.floor(q[2] * inverse)
+    x === lookup.cell(q[0], 0) &&
+    y === lookup.cell(q[1], 1) &&
+    z === lookup.cell(q[2], 2)
   )
     return lookup.home;
   if (
-    x === Math.floor(b[0] * inverse) &&
-    y === Math.floor(b[1] * inverse) &&
-    z === Math.floor(b[2] * inverse)
+    x === lookup.cell(b[0], 0) &&
+    y === lookup.cell(b[1], 1) &&
+    z === lookup.cell(b[2], 2)
   )
     return lookup.near;
   return NONE;
@@ -579,6 +579,7 @@ class Task {
         gone,
         state.capacity,
         state.step,
+        state.origin,
       );
     }
     if (state.column)
@@ -633,7 +634,7 @@ class Task {
       else if (job === COPY) this.copy(start, end);
       else if (job === ENTER) this.enter(start, end);
       else {
-        const base = Atomics.load(control, BASE);
+        const base = Atomics.load(control, BASE) >>> 0;
         for (let i = start; i < end; i++)
           this.results[i] = this.check(base + i);
       }
@@ -700,9 +701,9 @@ class Task {
   copy(from, to) {
     const { source, output, nodes, later, control } = this;
     const stride = Atomics.load(control, STRIDE);
-    const base = Atomics.load(control, BASE);
-    const start = Atomics.load(control, START);
-    const end = Atomics.load(control, END);
+    const base = Atomics.load(control, BASE) >>> 0;
+    const start = Atomics.load(control, START) >>> 0;
+    const end = Atomics.load(control, END) >>> 0;
     const last = source.items - stride;
     for (let i = from; i < to; i++) {
       later[i] = 0;
@@ -776,7 +777,8 @@ class Task {
     }
     this.records.set(merged, t * 16);
     if (merged[14] <= lookup.step) {
-      this.hints[t] = hint(lookup, merged, query, other);
+      // A slot above u32 is looked up again when committing the merge.
+      this.hints[t] = Math.min(NONE, hint(lookup, merged, query, other));
       this.terms.set(this.similarities.terms(merged, this.tuple), t * 13);
     }
     this.blends[t * 2] = this.merger.w;

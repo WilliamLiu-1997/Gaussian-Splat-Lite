@@ -734,14 +734,13 @@ export class Permutation {
   // With `words`, rows are copied as 32-bit words, which keeps any bits of
   // floats, and the output has word views; see PagedArray.at(). `visit` is
   // called with the output and each window's rows [start, end) once they are
-  // in place, while their pages are still cached.
+  // in place, while their pages are still cached. With `keep`, `source` is
+  // left intact.
   apply(
     source,
     stride,
     pool,
-    words = false,
-    label = undefined,
-    visit = undefined,
+    { words = false, label, visit, keep = false } = {},
   ) {
     const output = new PagedArray(
       this.workspace,
@@ -821,7 +820,7 @@ export class Permutation {
               high[b] = Math.max(high[b], targets[i]);
             }
           if (nextTarget[b] >= end) {
-            if (high[b] === 0) source.discard(sourceStart, sourceEnd);
+            if (high[b] === 0 && !keep) source.discard(sourceStart, sourceEnd);
             continue;
           }
         }
@@ -847,14 +846,14 @@ export class Permutation {
         }
         // No later window uses this block once its last target is in place:
         // dropped here, its pages are not written back when the cache is full.
-        if (high[b] <= end) source.discard(sourceStart, sourceEnd);
+        if (high[b] <= end && !keep) source.discard(sourceStart, sourceEnd);
         progress?.update((done + (base + count) / this.rows) / windows);
       }
       visit?.(output, start, end);
       done++;
     }
     output.pinned = [0, 0];
-    source.dispose();
+    if (!keep) source.dispose();
     progress?.finish();
     return output;
   }

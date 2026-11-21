@@ -263,8 +263,9 @@ function sortItems(items, count, workspace, byKey = false, label = undefined) {
 }
 
 // Sorts the splats by feature size, and splats of equal size by index. Sizes,
-// items and the order go a block at a time, as in sortItems().
-export function sortSplats(splats, pool) {
+// items and the order go a block at a time, as in sortItems(). Only later
+// attribute passes need to keep the sorted-to-input mapping.
+export function sortSplats(splats, pool, keepOrder) {
   const workspace = splats.workspace;
   const count = splats.length;
   const progress = new Progress("Preparing splat sort", count);
@@ -299,4 +300,6 @@ export function sortSplats(splats, pool) {
   sorted.dispose();
   ordering.finish();
   splats.reorder(order, pool);
+  if (keepOrder) return order;
+  order.dispose();
 }

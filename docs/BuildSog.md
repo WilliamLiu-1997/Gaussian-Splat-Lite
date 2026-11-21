@@ -51,7 +51,7 @@ gsl-build-sog scene.ply \
 
 Count options take positive integers in **K (1 K = 1024)**.
 
-The finest LOD retains the usable input splats. Each coarser level reduces the point count by approximately `--lod-factor`, until the whole scene fits within `--root-splats`. An input already within this limit needs no additional LOD. Smaller factors produce more levels and usually larger output; larger factors produce fewer levels.
+The finest LOD retains the usable input splats. The builder merges pairs of splats across the scene in RAD merge order. It saves each coarser level when the remaining count reaches the previous level’s count divided by `--lod-factor`, rounded up (at least one fewer splat). It stops once the scene fits within `--root-splats`. An input already within this limit needs no additional LOD. Smaller factors produce more levels and usually larger output; larger factors produce fewer levels.
 
 `--region-splats` limits the count across all LODs in each spatial region. `--lod-chunk-count` limits output chunk size; chunks may be smaller to fit the memory budget or encoder limits. If a region cannot fit, reduce `--region-splats` or increase `--lod-chunk-count` as suggested by the error.
 
@@ -84,7 +84,7 @@ gsl-build-sog scene.ply \
 
 Fields use `name[:type]`. Omit the type for unsigned integers, or use `f16` or `f32` for decimal values. See `--help` for all supported types. Blind data is disabled by default and supports PLY input only.
 
-Separate fields with commas to pack them into one texture; their encodings must fit in four bytes per `--sog-blind` option. Only retained splats are validated. For automatic types, each group must fit using its fields' maximum values across all retained splats. Automatic integer encodings are chosen separately for each output chunk, so a field's type can differ between chunks. Coarser LODs inherit Blind values from the selected representative splat; values are not averaged.
+Separate fields with commas to pack them into one texture; their encodings must fit in four bytes per `--sog-blind` option. Only retained splats are validated. For automatic types, each group must fit using its fields' maximum values across all retained splats. Automatic integer encodings are chosen separately for each output chunk, so a field's type can differ between chunks. At each merge, the parent inherits the Blind values of the child with the larger blend weight.
 
 For `unorm8` and `unorm16`, an optional `[min,max]` range defaults to `[0,1]`; bounds must be finite and increasing. Float32 rounding at the endpoints is accepted and clamped; other out-of-range values are rejected. Values stored as `f16` are rounded to half precision and may overflow to infinity. Quote arguments containing brackets or spaces, for example `--sog-blind 'confidence:unorm8, depth:unorm16[0,100]'`.
 

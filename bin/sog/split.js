@@ -13,7 +13,7 @@ import {
 } from "./lod-config.js";
 import { sortMorton } from "./morton.js";
 import { Positions } from "./positions.js";
-import { Centers, Order, divide } from "./spatial-order.js";
+import { Centers, divide } from "./spatial-order.js";
 import { Cut, binRange, boundsOf, partRange, splitRange } from "./spatial.js";
 
 // Bytes of a scanned row: its center and part.
@@ -28,7 +28,7 @@ const MOST = Math.floor(0xffff0000 / 12);
 class Splitter {
   constructor(centers, order, ids, check) {
     this.rows = new Centers(centers, check);
-    this.order = new Order(order);
+    this.order = order;
     this.ids = ids;
     this.check = check;
     // A part's levels, its rows and centers level by level, and the keys
@@ -40,21 +40,17 @@ class Splitter {
     this.keys = new BigUint64Array(0);
   }
 
-  // Splits `node` into parts of at most `limit` rows and returns it. With
-  // `bounds`, every node gets the box of its centers, and the parts are
-  // arranged by the levels that start at the rows `starts`; without, the
-  // parts are sorted by row.
-  tree({ node, limit, bounds, starts }) {
+  // Split regions to the row limit, then arrange each leaf by LOD.
+  tree({ node, limit, starts }) {
     const { rows, order } = this;
     const pending = [node];
     while (pending.length) {
       this.check();
       const next = pending.pop();
       const { start, count } = next;
-      if (bounds) next.bound = boundsOf(rows, order, start, count);
+      next.bound = boundsOf(rows, order, start, count);
       if (count <= limit) {
-        if (bounds) this.arrange(next, starts);
-        else order.sort(start, count);
+        this.arrange(next, starts);
         continue;
       }
       divide(next, splitRange(rows, order, start, count, next.bound));
@@ -69,8 +65,7 @@ class Splitter {
   // node where each level's rows lie after the node's start.
   arrange(node, starts) {
     const { start, count } = node;
-    const { ids } = this;
-    const order = this.order.values;
+    const { ids, order } = this;
     const centers = this.rows.values;
     if (count > this.levels.length) {
       this.levels = new Uint32Array(count);
@@ -177,7 +172,8 @@ async function splitShared(
   order,
   ids,
   roots,
-  job,
+  limit,
+  starts,
   threads,
   advance,
 ) {
@@ -190,7 +186,6 @@ async function splitShared(
     "Splitting",
     HEAP_MB,
   );
-  const { limit, bounds, starts } = job;
   // A node of more than `grain` rows is cut here, with a stretch of its rows
   // for each thread at a time; smaller nodes go whole to a thread. On this
   // thread alone, a root is split to the end at once.
@@ -228,7 +223,7 @@ async function splitShared(
       const split = async (node) => {
         check();
         if (node.count <= grain) {
-          const tree = { kind: "tree", node, limit, bounds, starts };
+          const tree = { kind: "tree", node, limit, starts };
           Object.assign(node, await run(tree));
           advance(node.count);
           return;
@@ -249,7 +244,7 @@ async function splitShared(
             bound.min[d] = Math.min(bound.min[d], box.min[d]);
             bound.max[d] = Math.max(bound.max[d], box.max[d]);
           }
-        if (bounds) node.bound = bound;
+        node.bound = bound;
         const cut = new Cut(bound);
         for (const bins of await each({ kind: "bins", bound })) cut.merge(bins);
         let middle;
@@ -276,16 +271,6 @@ async function splitShared(
     await group.close();
   }
 }
-
-// Makes room for the threads that split `rows` rows held in `bytes` of
-// memory, at most `most`, and returns how many there are.
-const splitters = (workspace, rows, bytes, { limit, most }) =>
-  clusterers(
-    workspace,
-    HEAP_MB * 1024 ** 2,
-    bytes,
-    Math.min(most, Math.ceil(rows / limit)),
-  );
 
 // Adds `delta` to the starts of `node` and the nodes below it.
 function shift(node, delta) {
@@ -397,11 +382,11 @@ function add(part, other) {
 // and counts as cutting in memory does, two passes a level, on worker
 // threads a batch at a time. `where` gets the part of every row, and
 // `advance(rows)` hears of the rows of every pass.
-async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
+async function cutLarge(workspace, positions, where, parts, fit, advance) {
   const { length } = positions;
   const check = () => workspace.check();
   const bytes = HEAP_MB * 1024 ** 2 + SCAN * SCANNED_BYTES;
-  const most = Math.min(job.most, Math.ceil(length / SCAN));
+  const most = Math.ceil(length / SCAN);
   // As many threads as leave the centers and parts of all rows cached, so
   // that the passes read them from memory. If none do, the passes read
   // files whatever the threads, and as many as there is room for go.
@@ -498,7 +483,7 @@ async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
         const children = [parts[part.first], parts[part.first + 1]];
         if (!children[0].rows || !children[1].rows)
           throw new Error("Spatial split produced an empty child");
-        if (job.bounds) node.bound = part.box;
+        node.bound = part.box;
         divide(node, node.start + children[0].rows);
         part.cut = part.box = part.node = undefined;
         children.forEach((child, i) => {
@@ -517,25 +502,16 @@ async function cutLarge(workspace, positions, where, parts, job, fit, advance) {
   workspace.expect(0);
 }
 
-// Divides `root`, the `length` splats of `levels` one level after another,
-// into parts of at most `job.limit`; see Splitter.tree(). Returns the order
-// of rows with each part's side by side; with `job.starts`, each level's
-// rows where the level's lie, every part's after those of the parts
-// before, as Splitter.arrange() sorts them, and every part's `lods` with
-// the `start` of its rows of each level.
-//
-// Rows are split in memory, on at most `job.most` worker threads whose
-// number follows the memory budget as for SH clustering. More rows than fit
-// in memory are first cut into parts that fit, see cutLarge(). Every part's
-// centers and rows are then put side by side, and the parts are split, as
-// many at a time as fit.
-async function split(workspace, levels, length, root, job) {
+// Split the combined levels into regions and arrange their rows by LOD.
+// Parts too large for the memory budget are first partitioned by cutLarge().
+export async function splitRegions(rows, root, limit) {
+  const { workspace, levels, length, starts } = rows;
   workspace.settle();
   // Region IDs span all levels until arrange() converts them to per-level rows.
   const RowId = length - 1 > 0xffffffff ? Float64Array : Uint32Array;
   const gatheredBytes = 12 + 4 + RowId.BYTES_PER_ELEMENT;
   const fit = Math.max(
-    job.limit,
+    limit,
     Math.min(MOST, Math.floor((workspace.room * SHARE) / gatheredBytes)),
   );
   // Progress counts passes over the rows: one each to put the parts side by
@@ -545,25 +521,25 @@ async function split(workspace, levels, length, root, job) {
   const cutting =
     length > fit ? length * 4 * Math.ceil(Math.log2(length / fit)) : 0;
   const total = 2 * length + cutting;
-  const progress = job.label && new Progress(job.label, total);
+  const progress = new Progress("Partitioning regions", total);
   let done = 0;
   const advance = (rows, most = Number.POSITIVE_INFINITY) => {
     done = Math.min(done + rows, most);
-    progress?.update(done);
-    job.update?.(length * (done / total));
+    progress.update(done);
   };
-  let order = new PagedArray(workspace, RowId, length);
+  const order = new PagedArray(workspace, RowId, length);
   let where;
   let gathered;
-  let arranged;
+  const arranged = new IndexArray(workspace);
+  arranged.length = length;
   try {
-    const positions = new Positions(levels, length);
+    const positions = new Positions(rows);
     // Every row starts in the root's part, 0.
     where = new PagedArray(workspace, Uint32Array, length);
     const parts = [newPart()];
     parts[0].node = root;
     if (length > fit)
-      await cutLarge(workspace, positions, where, parts, job, fit, (rows) =>
+      await cutLarge(workspace, positions, where, parts, fit, (rows) =>
         advance(rows, cutting),
       );
     done = cutting;
@@ -606,13 +582,9 @@ async function split(workspace, levels, length, root, job) {
     nodes.sort((a, b) => a.start - b.start);
     // By level, the parts' rows go to `arranged` at each level's next row,
     // `cursors`; the order keeps the rows of the parts still to split.
-    const cursors = job.starts && [...job.starts];
-    if (job.starts) {
-      arranged = new IndexArray(workspace);
-      arranged.length = length;
-    }
+    const cursors = [...starts];
     // The regions' split is the last to read the levels' centers.
-    if (job.starts) for (const level of levels) level.centers.dispose();
+    for (const level of levels) level.centers.dispose();
     where.dispose();
     where = undefined;
     // Splits the parts from `first` up to `last`, `rows` rows, in memory. A
@@ -620,7 +592,12 @@ async function split(workspace, levels, length, root, job) {
     // cache takes their memory below.
     const splitParts = async (first, last, rows) => {
       const { start } = nodes[first];
-      const threads = splitters(workspace, rows, rows * gatheredBytes, job);
+      const threads = clusterers(
+        workspace,
+        HEAP_MB * 1024 ** 2,
+        rows * gatheredBytes,
+        Math.ceil(rows / limit),
+      );
       const centers = new Float32Array(sharedBuffer(rows * 12), 0, rows * 3);
       const local = new Uint32Array(sharedBuffer(rows * 4), 0, rows);
       const ids = new RowId(
@@ -641,7 +618,8 @@ async function split(workspace, levels, length, root, job) {
         local,
         ids,
         roots,
-        job,
+        limit,
+        starts,
         threads,
         advance,
       );
@@ -649,11 +627,6 @@ async function split(workspace, levels, length, root, job) {
         shift(node, start);
         Object.assign(nodes[first + i], node);
       });
-      if (!job.starts) {
-        for (let i = 0; i < rows; i++) local[i] = ids[local[i]];
-        order.write(start, local, rows);
-        return;
-      }
       // Parts arranged by level hold each row's place in its level.
       const stack = [];
       for (let i = last - 1; i >= first; i--) stack.push(nodes[i]);
@@ -682,46 +655,21 @@ async function split(workspace, levels, length, root, job) {
       await splitParts(first, last, rows);
       first = last;
     }
-    progress?.finish();
-    if (arranged) {
-      order.dispose();
-      order = arranged;
-      arranged = undefined;
-    }
+    order.dispose();
+    progress.finish();
     // The centers and the threads are gone: the cache may take their memory.
     workspace.settle();
     workspace.expect(0);
-    return order;
+    return arranged;
   } catch (error) {
     order.dispose();
-    arranged?.dispose();
+    arranged.dispose();
     throw error;
   } finally {
     where?.dispose();
     gathered?.dispose();
   }
 }
-
-// Divides a level into working blocks of at most `limit` splats, each with
-// its quota and sorted by row, on at most `most` threads.
-export const splitBlocks = (source, root, limit, most, update) =>
-  split(source.workspace, [source], source.length, root, {
-    limit,
-    most,
-    bounds: false,
-    update,
-  });
-
-// Divides all levels' splats into regions of at most `limit`, every node
-// with the box of its centers, and arranges each region's rows by level.
-export const splitRegions = (rows, root, limit) =>
-  split(rows.workspace, rows.levels, rows.length, root, {
-    limit,
-    most: Number.POSITIVE_INFINITY,
-    bounds: true,
-    starts: rows.starts,
-    label: "Partitioning regions",
-  });
 
 if (!isMainThread && workerData?.scanner) {
   const { cancelled } = workerData;

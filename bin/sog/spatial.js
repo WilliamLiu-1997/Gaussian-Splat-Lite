@@ -11,12 +11,12 @@ export function boundsOf(rows, order, start, count) {
     Number.NEGATIVE_INFINITY,
     Number.NEGATIVE_INFINITY,
   ];
-  const record = new Float32Array(16);
+  const center = new Float32Array(3);
   for (let i = start; i < start + count; i++) {
-    rows.read(order.get(i), record);
+    rows.read(order[i], center);
     for (let d = 0; d < 3; d++) {
-      min[d] = Math.min(min[d], record[d]);
-      max[d] = Math.max(max[d], record[d]);
+      min[d] = Math.min(min[d], center[d]);
+      max[d] = Math.max(max[d], center[d]);
     }
   }
   return { min, max };
@@ -166,26 +166,26 @@ export class Cut {
 
 // Adds the centers of the `count` rows from `start` of `order` to `cut`.
 export function binRange(rows, order, start, count, cut) {
-  const record = new Float32Array(16);
+  const center = new Float32Array(3);
   for (let i = start; i < start + count; i++) {
-    rows.read(order.get(i), record);
-    cut.add(record);
+    rows.read(order[i], center);
+    cut.add(center);
   }
 }
 
 // Moves the rows before the cut, of the `count` from `start` of `order`, to
 // the front, and returns where the others start.
 export function partRange(rows, order, start, count, axis, value) {
-  const record = new Float32Array(16);
+  const center = new Float32Array(3);
   let left = start;
   let right = start + count - 1;
   while (left <= right) {
-    const index = order.get(left);
-    rows.read(index, record);
-    if (record[axis] < value) left++;
+    const index = order[left];
+    rows.read(index, center);
+    if (center[axis] < value) left++;
     else {
-      order.set(left, order.get(right));
-      order.set(right--, index);
+      order[left] = order[right];
+      order[right--] = index;
     }
   }
   return left;
@@ -193,19 +193,13 @@ export function partRange(rows, order, start, count, axis, value) {
 
 // Splits the `count` rows from `start` of `order` in two and returns where
 // the second part starts. The parts do not depend on the order of the rows.
-export function splitRange(
-  rows,
-  order,
-  start,
-  count,
-  bound = boundsOf(rows, order, start, count),
-) {
+export function splitRange(rows, order, start, count, bound) {
   const cut = new Cut(bound);
   binRange(rows, order, start, count, cut);
   // Coincident centers still need two nonempty groups to enforce the point
   // cap: the first half by row.
   if (!cut.choose(count)) {
-    order.sort(start, count);
+    order.subarray(start, start + count).sort();
     return start + Math.floor(count / 2);
   }
   const middle = partRange(rows, order, start, count, cut.axis, cut.value);

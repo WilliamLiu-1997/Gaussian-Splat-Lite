@@ -1,6 +1,7 @@
 // LOD storage and merging adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
 import {
   HALF,
+  MIN_ASPECT,
   SCALE,
   area,
   covariance,
@@ -36,13 +37,18 @@ export const CROPPED = 3;
 // A worker found a page that is not cached.
 export const LATER = 4;
 
-// Sets a record's feature size and area from its scales and opacity.
-export function refresh(record) {
-  const x = SCALE[halfBits(record[7])];
-  const y = SCALE[halfBits(record[8])];
-  const z = SCALE[halfBits(record[9])];
-  record[14] = Math.fround(2 * Math.max(x, y, z) * opacityRadius(record[3]));
-  record[15] = Math.fround(area(x, y, z));
+// Set feature size and area. For a parent, preserve its children's combined
+// weight using the area of the stored shape.
+export function refresh(record, at = 0, weight = undefined) {
+  const x = SCALE[halfBits(record[at + 7])];
+  const y = SCALE[halfBits(record[at + 8])];
+  const z = SCALE[halfBits(record[at + 9])];
+  const surface = area(x, y, z);
+  if (weight !== undefined) record[at + 3] = Math.fround(weight / surface);
+  record[at + 15] = Math.fround(surface);
+  record[at + 14] = Math.fround(
+    2 * Math.max(x, y, z) * opacityRadius(record[at + 3]),
+  );
 }
 
 // Whether a record has no negative opacity and no NaN or infinite values but
@@ -106,17 +112,10 @@ export class Splats {
     // record, and the bounds of the centers; see reorder().
     this.sizes = new PagedArray(workspace, Float32Array);
     this.bounds = undefined;
-    // The two child weights of each merged splat, for mergeSh().
-    this.blend = new PagedArray(workspace, Float64Array);
+    // Child weights for SH blending and SOG Blind inheritance.
+    this.blend = undefined;
     // Each splat's shape while buildLod() builds the tree; see shape().
     this.shapes = undefined;
-    // Pending shapes: rows of words with a float view for their centers,
-    // and the seven half-valued fields as floats and half bits.
-    this.shapeCount = 0;
-    this.shapeRows = new Uint32Array(SHAPE_BLOCK * SHAPE_WORDS);
-    this.shapeFloats = new Float32Array(this.shapeRows.buffer);
-    this.shapeFields = new Float32Array(SHAPE_BLOCK * 7);
-    this.shapeBits = new Uint16Array(SHAPE_BLOCK * 7);
     // Sorted leaf -> decoded SH row. mergeSh() reuses it for merge-read order.
     this.shOrder = undefined;
     this.merged = new Float64Array(16);
@@ -126,8 +125,7 @@ export class Splats {
   receive(name, base, values) {
     if (name === "ply") return;
     if (name === "init") {
-      if (base > 0x80000000)
-        throw new Error("Input exceeds LOD u32 index limit");
+      if (base > 0xffffffff) throw new Error("Input exceeds u32 index limit");
       this.length = base;
       this.records.length = base * 16;
       this.inputSh = values[0];
@@ -284,8 +282,16 @@ export class Splats {
     return this.append(a, b, this.merged, merger.w, merger.v);
   }
 
-  // Appends shapes in row order: sorted leaves, then merged splats.
-  // buildLod() creates the column before sorting; writeShapes() flushes it.
+  // RAD chunk ordering uses packed shapes for sorted leaves and merged nodes.
+  prepareShapes() {
+    this.shapes = new PagedArray(this.workspace, Uint32Array);
+    this.shapeCount = 0;
+    this.shapeRows = new Uint32Array(SHAPE_BLOCK * SHAPE_WORDS);
+    this.shapeFloats = new Float32Array(this.shapeRows.buffer);
+    this.shapeFields = new Float32Array(SHAPE_BLOCK * 7);
+    this.shapeBits = new Uint16Array(SHAPE_BLOCK * 7);
+  }
+
   shape(record) {
     if (this.shapeCount === SHAPE_BLOCK) this.writeShapes();
     const i = this.shapeCount++;
@@ -316,13 +322,15 @@ export class Splats {
   append(a, b, out, w, v) {
     const index = this.length++;
     this.records.write(index * 16, out);
-    this.shape(out);
-    this.weight.set(index, out[15] * out[3]);
-    this.sizes.set(index, out[14]);
+    if (this.shapes) {
+      this.shape(out);
+      this.weight.set(index, out[15] * out[3]);
+      this.sizes.set(index, out[14]);
+    }
     this.children.push(a);
     this.children.push(b);
     // SH coefficients do not affect merging; mergeSh() blends them later.
-    if (this.maxSh) {
+    if (this.blend) {
       this.blend.push(w);
       this.blend.push(v);
     }
@@ -381,26 +389,21 @@ export class Splats {
 
     for (let band = 0; band < this.maxSh; band++) {
       const dims = SH_DIMS[band];
-      const column = leafRows.apply(
-        this.sh[band],
-        dims,
-        pool,
-        false,
-        `Reordering SH${band + 1}`,
-      );
+      const column = leafRows.apply(this.sh[band], dims, pool, {
+        label: `Reordering SH${band + 1}`,
+      });
+      const last = band + 1 === this.maxSh;
+      if (last) leafRows.dispose();
       this.blendSh(column, band, initial, pool);
-      this.sh[band] = chunkRows.apply(
-        column,
-        dims,
-        pool,
-        false,
-        `Reordering LOD SH${band + 1}`,
-      );
+      if (last) {
+        this.children.dispose();
+        this.blend.dispose();
+      }
+      this.sh[band] = chunkRows.apply(column, dims, pool, {
+        label: `Reordering LOD SH${band + 1}`,
+      });
     }
-    leafRows.dispose();
     chunkRows.dispose();
-    this.children.dispose();
-    this.blend.dispose();
   }
 
   // Workers blend earlier children. The main thread resolves dependencies
@@ -492,8 +495,7 @@ export class Splats {
     progress.finish();
   }
 
-  // Moves row indices[i] of the records to row i, and keeps `indices` for
-  // the SH rows, which move once merging has built the tree; see mergeSh().
+  // Moves record indices[i] to row i. The caller owns the index array.
   // The splats' sizes, weights and shapes, and the bounds of their centers,
   // come from the records while each window of them is cached.
   reorder(indices, pool) {
@@ -510,30 +512,25 @@ export class Splats {
       max: [0, 1, 2].map(() => Number.NEGATIVE_INFINITY),
     };
     const record = new Float64Array(16);
-    this.records = permutation.apply(
-      this.records,
-      16,
-      pool,
-      false,
-      "Reordering splats",
-      (records, start, end) => {
+    this.records = permutation.apply(this.records, 16, pool, {
+      label: "Reordering splats",
+      visit: (records, start, end) => {
         for (let i = start; i < end; i++) {
           records.read(i * 16, record, 16);
           for (let d = 0; d < 3; d++) {
             bounds.min[d] = Math.min(bounds.min[d], record[d]);
             bounds.max[d] = Math.max(bounds.max[d], record[d]);
           }
-          this.weight.set(i, record[15] * record[3]);
           sizes.set(i, record[14]);
-          this.shape(record);
+          if (this.shapes) {
+            this.weight.set(i, record[15] * record[3]);
+            this.shape(record);
+          }
         }
       },
-    );
+    });
     this.bounds = bounds;
     permutation.dispose();
-    this.length = indices.length;
-    if (this.maxSh) this.shOrder = indices;
-    else indices.dispose();
   }
 
   dispose() {
@@ -545,9 +542,9 @@ export class Splats {
       this.children,
       this.weight,
       this.sizes,
-      this.blend,
     ])
       column.dispose();
+    this.blend?.dispose();
     this.shapes?.dispose();
   }
 }
@@ -576,23 +573,26 @@ export class Merger {
       out[d] = Math.fround(ca[d] * w + cb[d] * v);
       out[4 + d] = half(ca[3 + d] * w + cb[3 + d] * v);
     }
-    const ax = ca[0] - out[0];
-    const ay = ca[1] - out[1];
-    const az = ca[2] - out[2];
-    const bx = cb[0] - out[0];
-    const by = cb[1] - out[1];
-    const bz = cb[2] - out[2];
+    // The between-center covariance is w * v * delta * deltaᵀ.
+    const dx = ca[0] - cb[0];
+    const dy = ca[1] - cb[1];
+    const dz = ca[2] - cb[2];
+    const cross = w * v;
+    const wx = cross * dx;
+    const wy = cross * dy;
+    const wz = cross * dz;
     const cov = this.cov;
-    cov[0] = (ca[6] + ax * ax) * w + (cb[6] + bx * bx) * v;
-    cov[1] = (ca[7] + ay * ay) * w + (cb[7] + by * by) * v;
-    cov[2] = (ca[8] + az * az) * w + (cb[8] + bz * bz) * v;
-    cov[3] = (ca[9] + ax * ay) * w + (cb[9] + bx * by) * v;
-    cov[4] = (ca[10] + ax * az) * w + (cb[10] + bx * bz) * v;
-    cov[5] = (ca[11] + ay * az) * w + (cb[11] + by * bz) * v;
+    cov[0] = ca[6] * w + cb[6] * v + wx * dx;
+    cov[1] = ca[7] * w + cb[7] * v + wy * dy;
+    cov[2] = ca[8] * w + cb[8] * v + wz * dz;
+    cov[3] = ca[9] * w + cb[9] * v + wx * dy;
+    cov[4] = ca[10] * w + cb[10] * v + wx * dz;
+    cov[5] = ca[11] * w + cb[11] * v + wy * dz;
     for (const value of cov)
       if (!Number.isFinite(value)) throw new Error("LOD covariance overflow");
     eigens(cov, this.matrix, this.vectors, this.axes);
     const r = this.rotation;
+    const floor = this.matrix[this.axes[0] * 4] * MIN_ASPECT ** 2;
     for (let col = 0; col < 3; col++) {
       const axis = this.axes[col];
       const norm = Math.hypot(
@@ -604,7 +604,7 @@ export class Merger {
         r[col * 3 + row] = this.vectors[row * 3 + axis] / norm;
       out[7 + col] = Math.max(
         1e-30,
-        Math.sqrt(Math.max(0, this.matrix[axis * 3 + axis])),
+        Math.sqrt(Math.max(floor, this.matrix[axis * 3 + axis])),
       );
     }
     if (
@@ -617,13 +617,10 @@ export class Merger {
       r[7] *= -1;
       r[8] *= -1;
     }
-    out[3] = half(
-      Math.max(0.000001, Math.min(1000, total / area(out[7], out[8], out[9]))),
-    );
     for (let d = 7; d <= 9; d++) out[d] = half(Math.log(out[d]));
     quaternion(r, out);
     for (let d = 10; d <= 13; d++) out[d] = half(out[d]);
-    refresh(out);
+    refresh(out, 0, total);
     if (!Number.isFinite(out[14]) || !Number.isFinite(out[15]))
       throw new Error("LOD scale overflow");
   }

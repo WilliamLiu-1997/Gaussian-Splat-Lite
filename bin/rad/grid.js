@@ -141,11 +141,16 @@ function cellHash(x, y, z) {
   return (term(x, 0) ^ term(y, 1) ^ term(z, 2)) >>> 0;
 }
 
+// Above 2^32 slots the probe's high bit no longer fits a u32 mask.
+function wrapSlot(index, mask) {
+  return mask <= 0xffffffff ? (index & mask) >>> 0 : index % (mask + 1);
+}
+
 // Finds candidates in a grid's tables: the Grid itself on the main thread,
 // and workers through SharedColumns. A removed entry has its bit set in
 // `gone`, so that removing one leaves the pages of entries unchanged.
 export class Lookup {
-  constructor(entries, slots, gone, capacity, step) {
+  constructor(entries, slots, gone, capacity, step, origin = [0, 0, 0]) {
     this.entries = entries;
     this.slots = slots;
     this.gone = gone;
@@ -153,9 +158,14 @@ export class Lookup {
     this.step = step;
     // Reused for cell lookups.
     this.inverse = 1 / step;
+    this.origin = origin;
     // Overlapping searches acquire the head after its entry and link are ready.
     this.concurrent = false;
     this.terms = new Int32Array(9);
+  }
+
+  cell(value, axis) {
+    return Math.floor(value * this.inverse) - this.origin[axis];
   }
 
   // The slot of cell (x, y, z), or the free slot for it. A slot is a cell
@@ -165,7 +175,11 @@ export class Lookup {
     const mask = this.capacity - 1;
     // Triangular probing visits every slot of a power-of-two table.
     let stride = 0;
-    for (let slot = hash & mask; ; slot = (slot + ++stride) & mask) {
+    for (
+      let slot = wrapSlot(hash, mask);
+      ;
+      slot = wrapSlot(slot + ++stride, mask)
+    ) {
       const words = this.slots.page(slot * 2);
       const at = this.slots.offset(slot * 2);
       const head = this.concurrent
@@ -179,9 +193,9 @@ export class Lookup {
       const floats = this.entries.page((head - 1) * STRIDE);
       const offset = this.entries.offset((head - 1) * STRIDE);
       if (
-        Math.floor(floats[offset] * this.inverse) === x &&
-        Math.floor(floats[offset + 1] * this.inverse) === y &&
-        Math.floor(floats[offset + 2] * this.inverse) === z
+        this.cell(floats[offset], 0) === x &&
+        this.cell(floats[offset + 1], 1) === y &&
+        this.cell(floats[offset + 2], 2) === z
       ) {
         this.slotHead = head;
         return slot;
@@ -234,9 +248,10 @@ export class Lookup {
     const cxz = query[10];
     const cyz = query[11];
     const logDet = query[12];
-    const gx = Math.floor(qx * this.inverse);
-    const gy = Math.floor(qy * this.inverse);
-    const gz = Math.floor(qz * this.inverse);
+    const finiteLogDet = Number.isFinite(logDet);
+    const gx = this.cell(qx, 0);
+    const gy = this.cell(qy, 1);
+    const gz = this.cell(qz, 2);
     const terms = this.terms;
     for (let d = -1; d <= 1; d++) {
       terms[1 + d] = term(gx + d, 0);
@@ -293,11 +308,16 @@ export class Lookup {
               const minorXZ = xy * yz - yy * xz;
               const det = xx * minorXX - xy * minorXY + xz * minorXZ;
               const diag = Math.max(Math.abs(xx), Math.abs(yy), Math.abs(zz));
-              let distance = 0;
-              if (Math.abs(det) >= 1e-9 * Math.max(diag * diag * diag, 8e-30)) {
-                const x = b[o] - qx;
-                const y = b[o + 1] - qy;
-                const z = b[o + 2] - qz;
+              const x = b[o] - qx;
+              const y = b[o + 1] - qy;
+              const z = b[o + 2] - qz;
+              let distance;
+              const otherLogDet = b[o + 9];
+              if (
+                finiteLogDet &&
+                Number.isFinite(otherLogDet) &&
+                det >= 1e-9 * Math.max(diag * diag * diag, 8e-30)
+              ) {
                 const quad =
                   (minorXX * x * x +
                     (xx * zz - xz * xz) * y * y +
@@ -312,15 +332,20 @@ export class Lookup {
                 // score. A strict bound keeps candidates tied with the best.
                 if (
                   det >= lowDet &&
-                  -(spatial + lowLog - logDet - b[o + 9]) < metric
+                  -(spatial + lowLog - logDet - otherLogDet) < metric
                 )
                   continue;
                 const shape = 0.5 * Math.log(det * 0.125);
-                if (det > 0 && det < lowDet) {
+                if (det < lowDet) {
                   lowDet = det;
                   lowLog = shape;
                 }
-                distance = spatial + shape - logDet - b[o + 9];
+                distance = spatial + shape - logDet - otherLogDet;
+              } else {
+                // Flat covariances can lose a determinant before or after
+                // summing. Mean variance still gives separation a scale.
+                const variance = (xx + yy + zz) / 3 || this.step * this.step;
+                distance = (0.25 * (x * x + y * y + z * z)) / variance;
               }
               const color = w[o + COLOR];
               const score =
@@ -363,6 +388,11 @@ export class Grid extends Lookup {
       new IndexArray(workspace).share(STRIPES),
       16,
       step,
+      // Anchor each axis at the point in its bounds nearest zero. A distant
+      // outlier then cannot move local cells beyond the safe integer range.
+      bounds.min.map((min, d) =>
+        Math.floor(Math.max(min, Math.min(0, bounds.max[d])) / step),
+      ),
     );
     this.similarities = similarities;
     this.workspace = workspace;
@@ -388,10 +418,10 @@ export class Grid extends Lookup {
     this.tuple = new Float64Array(14);
     // Sort keys address blocks of `scale` cells per axis within the bounds:
     // single cells unless the bounds exceed 2^30 cells.
-    this.origin = bounds.min.map((value) => Math.floor(value / step));
+    this.minCell = bounds.min.map((value, d) => this.cell(value, d));
     const extent = Math.max(
       ...bounds.max.map(
-        (value, d) => Math.floor(value / step) - this.origin[d] + 1,
+        (value, d) => this.cell(value, d) - this.minCell[d] + 1,
       ),
     );
     const bits = Math.max(1, Math.ceil(Math.log2(extent)));
@@ -412,8 +442,7 @@ export class Grid extends Lookup {
         Math.max(
           0,
           Math.floor(
-            (Math.floor(values[offset + d] * this.inverse) - this.origin[d]) /
-              this.scale,
+            (this.cell(values[offset + d], d) - this.minCell[d]) / this.scale,
           ),
         ),
       );
@@ -584,13 +613,10 @@ export class Grid extends Lookup {
       label && `${label} spatial order`,
     );
     indices.dispose();
-    const sorted = permutation.apply(
-      table,
-      STRIDE,
-      this.pool,
-      true,
-      label && `${label} spatial reorder`,
-    );
+    const sorted = permutation.apply(table, STRIDE, this.pool, {
+      words: true,
+      label: label && `${label} spatial reorder`,
+    });
     permutation.dispose();
     return sorted;
   }
@@ -651,9 +677,9 @@ export class Grid extends Lookup {
   link(entry, hint = NONE, end = entry + 1) {
     const page = this.entries.at(entry * STRIDE);
     const offset = (entry * STRIDE) & this.entries.mask;
-    const x = Math.floor(page.values[offset] * this.inverse);
-    const y = Math.floor(page.values[offset + 1] * this.inverse);
-    const z = Math.floor(page.values[offset + 2] * this.inverse);
+    const x = this.cell(page.values[offset], 0);
+    const y = this.cell(page.values[offset + 1], 1);
+    const z = this.cell(page.values[offset + 2], 2);
     // Entries in spatial order often share the last entry's cell.
     let slot = this.last;
     let head = entry; // One-based head when the previous cell matches.
@@ -699,9 +725,9 @@ export class Grid extends Lookup {
       o += STRIDE;
     } while (
       count < limit &&
-      Math.floor(values[o] * this.inverse) === x &&
-      Math.floor(values[o + 1] * this.inverse) === y &&
-      Math.floor(values[o + 2] * this.inverse) === z
+      this.cell(values[o], 0) === x &&
+      this.cell(values[o + 1], 1) === y &&
+      this.cell(values[o + 2], 2) === z
     );
     // Updating the node map may evict the entry page.
     for (let i = 0; i < count; i++)
@@ -732,9 +758,10 @@ export class Grid extends Lookup {
       const head = old.get(i * 2 + 1);
       if (!head) continue;
       const hash = old.get(i * 2);
-      let slot = hash & mask;
+      let slot = wrapSlot(hash, mask);
       let stride = 0;
-      while (this.slots.get(slot * 2 + 1)) slot = (slot + ++stride) & mask;
+      while (this.slots.get(slot * 2 + 1))
+        slot = wrapSlot(slot + ++stride, mask);
       this.slots.set(slot * 2, hash);
       this.slots.set(slot * 2 + 1, head);
     }

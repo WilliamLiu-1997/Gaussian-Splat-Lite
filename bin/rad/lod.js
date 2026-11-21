@@ -25,13 +25,17 @@ const BLOCK_OFFSETS = [0, Y_STRIDE, Z_STRIDE, Y_STRIDE + Z_STRIDE];
 
 export function buildLod(splats, lodBase, pool, shCodebook) {
   const initial = splats.length;
+  // N retained leaves produce 2N - 1 nodes in the binary tree.
+  if (initial > 0x80000000)
+    throw new Error(
+      "Filtered input exceeds the RAD LOD limit of 2147483648 splats",
+    );
   const workspace = splats.workspace;
-  // Every splat's shape, written as it is sorted or merged, for chunkTree().
-  splats.shapes = new PagedArray(workspace, Uint32Array);
+  splats.prepareShapes();
   // mergeSh() reads the SH bands in ascending order after the tree is built.
   workspace.rest(splats.sh.slice(0, splats.maxSh));
-  sortSplats(splats, pool);
-  mergeLevels(splats, pool);
+  splats.shOrder = sortSplats(splats, pool, splats.maxSh > 0);
+  mergeLevels(splats, pool, 1, splats.maxSh);
   const root = splats.length - 1;
 
   // Children always precede their binary parent: the two of merged splat
@@ -171,11 +175,13 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
   return reorderChunks(splats, chunks, pool, shCodebook);
 }
 
-// Merges the splats level by level into a binary tree, adding the merged
-// splats after the leaves.
-function mergeLevels(splats, pool) {
+// Starting with size-sorted leaves, append binary parents in merge order
+// until exactly target nodes remain.
+export function mergeLevels(splats, pool, target, saveBlends) {
   const initial = splats.length;
+  const end = initial + (initial - target);
   const workspace = splats.workspace;
+  if (saveBlends) splats.blend = new PagedArray(workspace, Float64Array);
   // Merged splats lie within the leaves' bounds.
   const { bounds, sizes } = splats;
   const removed = new PagedArray(workspace, Uint8Array);
@@ -240,16 +246,15 @@ function mergeLevels(splats, pool) {
     });
     active.dispose();
     const next = new Heap(workspace);
-    // Every merge makes one splat of two: all leaves take one less than
-    // there are.
-    const detail = () => `${splats.length - initial}/${initial - 1} merges`;
+    const detail = () =>
+      `${splats.length - initial}/${initial - target} merges`;
     const progress = new Progress(`Merging ${name}`, queue.length, detail());
     // Rounds of merges in heap order. Workers search for the candidates of
     // the next popped splats while this thread commits completed chunks.
     // Committing them in order, a search still holds unless its candidate is
     // gone or a merge of the round added a candidate at least as good, and
     // splats that merges add pop as they would one by one.
-    while (queue.length) {
+    while (queue.length && splats.length < end) {
       grid.tidy();
       // Keep the same rounds on disk. Changing them can reorder tied candidates.
       const limit = Math.min(
@@ -303,7 +308,6 @@ function mergeLevels(splats, pool) {
           if (removed.get(index)) continue;
         }
         const offset = task * 14;
-        const inverse = grid.inverse / 2;
         if (best === MISS) grid.read(self, query);
         else if (best !== NONE && grid.isRemoved(best)) {
           copy(pool.queries, offset, query, 14);
@@ -312,9 +316,9 @@ function mergeLevels(splats, pool) {
           grid.length > start &&
           near[
             blockSlot(
-              Math.floor(pool.queries[offset] * inverse),
-              Math.floor(pool.queries[offset + 1] * inverse),
-              Math.floor(pool.queries[offset + 2] * inverse),
+              Math.floor(grid.cell(pool.queries[offset], 0) / 2),
+              Math.floor(grid.cell(pool.queries[offset + 1], 1) / 2),
+              Math.floor(grid.cell(pool.queries[offset + 2], 2) / 2),
             ) & nearMask
           ]
         ) {
@@ -350,6 +354,7 @@ function mergeLevels(splats, pool) {
                 pool.blends[task * 2],
                 pool.blends[task * 2 + 1],
               );
+        if (splats.length === end) break;
         removed.set(index, 1);
         removed.set(other, 1);
         grid.remove(self);
@@ -396,7 +401,7 @@ function mergeLevels(splats, pool) {
     queue.dispose();
     progress.finish(detail());
     active = next;
-    if (frontier === initial && active.length <= 1) break;
+    if (splats.length === end) break;
   }
   active.dispose();
   removed.dispose();
@@ -461,13 +466,9 @@ function chunkTree(splats, order, first, counts, sizes, pool) {
     nodes,
     "Preparing LOD order",
   );
-  const shapes = logical.apply(
-    splats.shapes,
-    SHAPE_WORDS,
-    pool,
-    false,
-    "Reordering LOD shapes",
-  );
+  const shapes = logical.apply(splats.shapes, SHAPE_WORDS, pool, {
+    label: "Reordering LOD shapes",
+  });
   splats.shapes = undefined;
   logical.dispose();
   const shape = new Uint32Array(SHAPE_WORDS);
@@ -691,14 +692,10 @@ function reorderChunks(splats, indices, pool, shCodebook) {
       base += count;
     }
   };
-  splats.records = moved.apply(
-    splats.records,
-    16,
-    pool,
-    false,
-    "Reordering chunk splats",
-    analyze,
-  );
+  splats.records = moved.apply(splats.records, 16, pool, {
+    label: "Reordering chunk splats",
+    visit: analyze,
+  });
   moved.dispose();
   if (splats.maxSh) splats.mergeSh(indices, pool);
   splats.length = length;
