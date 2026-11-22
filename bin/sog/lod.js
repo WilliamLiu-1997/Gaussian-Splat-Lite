@@ -3,7 +3,7 @@ import { mergeLevels } from "../rad/lod.js";
 import { Pool } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import { Splats as RadSplats, refresh } from "../rad/splats.js";
-import { collectLevels } from "./lod-levels.js";
+import { collectBlindValues, collectLevels } from "./lod-levels.js";
 import { Splats } from "./splats.js";
 
 const MAX_HALF = 65504;
@@ -54,32 +54,39 @@ export async function buildLevels(input, rootSplats, factor) {
   if (cuts.at(-1) > 0xffffffff)
     throw new Error("Input exceeds LOD u32 index limit");
 
-  const tree = new RadSplats(workspace, 0, {});
   const levels = cuts.map(() => new Splats(workspace, maxSh));
-  let order;
-  try {
+  async function collectTree() {
+    const tree = new RadSplats(workspace, 0, {});
     const pool = new Pool(workspace, length);
+    let order;
     try {
       pool.ready();
       prepareTree(input, tree);
-      // Reuse input SH first, then region centers, then chunk records.
-      workspace.rest([
-        ...input.sh.slice(0, maxSh),
-        input.centers,
-        input.records,
-      ]);
-      const attributes = maxSh > 0 || Boolean(input.blind);
+      // After merging, collection reads attributes before the region split.
+      const columns = input.sh.slice(0, maxSh);
+      if (input.blindValues) columns.push(input.blindValues);
+      workspace.rest([...columns, input.centers, input.records]);
+      const attributes = columns.length > 0;
       order = sortSplats(tree, pool, attributes);
       mergeLevels(tree, pool, target, attributes);
       workspace.rest([]);
       tree.sizes.dispose();
-      // SH collection reorders leaf rows on the pool's threads.
-      collectLevels(input, tree, order, cuts, levels, pool);
+      return collectLevels(input, tree, order, cuts, levels, pool);
     } finally {
-      await pool.close();
+      try {
+        await pool.close();
+      } finally {
+        order?.dispose();
+        tree.dispose();
+      }
     }
+  }
+
+  try {
+    const refs = await collectTree();
     workspace.settle();
     workspace.expect(0);
+    if (refs) collectBlindValues(input, levels, refs);
     console.log(
       `LOD counts: ${[length, ...levels.map((level) => level.length)].join(" → ")}`,
     );
@@ -87,8 +94,5 @@ export async function buildLevels(input, rootSplats, factor) {
   } catch (error) {
     for (const level of levels) level.dispose();
     throw error;
-  } finally {
-    order?.dispose();
-    tree.dispose();
   }
 }

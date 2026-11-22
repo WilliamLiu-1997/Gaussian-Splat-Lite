@@ -26,10 +26,12 @@ const MOST = Math.floor(0xffff0000 / 12);
 // threads split them at once; so do the stretches of a large node's rows,
 // whose boxes and bins add up to the node's.
 class Splitter {
-  constructor(centers, order, ids, check) {
+  constructor(centers, order, ids, starts, check) {
     this.rows = new Centers(centers, check);
     this.order = order;
     this.ids = ids;
+    this.starts = starts;
+    this.cursors = new Uint32Array(starts.length);
     this.check = check;
     // A part's levels, its rows and centers level by level, and the keys
     // that sort a level's rows; see arrange(). They are kept from part to
@@ -41,7 +43,7 @@ class Splitter {
   }
 
   // Split regions to the row limit, then arrange each leaf by LOD.
-  tree({ node, limit, starts }) {
+  tree({ node, limit }) {
     const { rows, order } = this;
     const pending = [node];
     while (pending.length) {
@@ -50,7 +52,7 @@ class Splitter {
       const { start, count } = next;
       next.bound = boundsOf(rows, order, start, count);
       if (count <= limit) {
-        this.arrange(next, starts);
+        this.arrange(next);
         continue;
       }
       divide(next, splitRange(rows, order, start, count, next.bound));
@@ -61,11 +63,10 @@ class Splitter {
 
   // Puts the rows of the part `node` side by side level by level, each
   // level's in the Morton order of their centers, as a chunk holds them.
-  // The order then holds each row's place in its level, and `lods` of the
-  // node where each level's rows lie after the node's start.
-  arrange(node, starts) {
+  // The order holds level-local row indices and lods holds their counts.
+  arrange(node) {
     const { start, count } = node;
-    const { ids, order } = this;
+    const { ids, order, starts, cursors } = this;
     const centers = this.rows.values;
     if (count > this.levels.length) {
       this.levels = new Uint32Array(count);
@@ -74,7 +75,7 @@ class Splitter {
       this.keys = new BigUint64Array(count);
     }
     const { levels, indices, positions, keys } = this;
-    const counts = new Uint32Array(starts.length);
+    const lods = {};
     for (let i = 0; i < count; i++) {
       // The last level that starts at or before the row.
       const row = ids[order[start + i]];
@@ -86,32 +87,35 @@ class Splitter {
         else high = middle - 1;
       }
       levels[i] = low;
-      counts[low]++;
+      if (cursors[low]++ === 0) lods[low] = 0;
     }
-    const firsts = new Uint32Array(starts.length);
-    for (let level = 1; level < starts.length; level++)
-      firsts[level] = firsts[level - 1] + counts[level - 1];
+    // Integer keys visit only the occupied levels, in ascending order.
+    let offset = 0;
+    for (const level in lods) {
+      lods[level] = cursors[level];
+      cursors[level] = offset;
+      offset += lods[level];
+    }
     for (let i = 0; i < count; i++) {
       const id = order[start + i];
       const level = levels[i];
-      const at = firsts[level]++;
+      const at = cursors[level]++;
       indices[at] = ids[id] - starts[level];
       for (let d = 0; d < 3; d++) positions[at * 3 + d] = centers[id * 3 + d];
     }
-    node.lods = {};
-    for (let level = 0, first = 0; level < starts.length; level++) {
-      const size = counts[level];
-      if (!size) continue;
+    for (const level in lods) {
+      const end = cursors[level];
+      const first = end - lods[level];
       sortMorton(
-        indices.subarray(first, first + size),
-        positions.subarray(first * 3, (first + size) * 3),
+        indices.subarray(first, end),
+        positions.subarray(first * 3, end * 3),
         keys,
         order,
         start + first,
       );
-      node.lods[level] = { offset: first, count: size };
-      first += size;
+      cursors[level] = 0;
     }
+    node.lods = lods;
   }
 
   // The box of the centers of a stretch of rows.
@@ -181,8 +185,15 @@ async function splitShared(
   const group = new WorkerGroup(
     new URL(import.meta.url),
     threads,
-    { splitter: true, centers, order, ids, cancelled: workspace.cancelled },
-    new Splitter(centers, order, ids, check),
+    {
+      splitter: true,
+      centers,
+      order,
+      ids,
+      starts,
+      cancelled: workspace.cancelled,
+    },
+    new Splitter(centers, order, ids, starts, check),
     "Splitting",
     HEAP_MB,
   );
@@ -223,7 +234,7 @@ async function splitShared(
       const split = async (node) => {
         check();
         if (node.count <= grain) {
-          const tree = { kind: "tree", node, limit, starts };
+          const tree = { kind: "tree", node, limit };
           Object.assign(node, await run(tree));
           advance(node.count);
           return;
@@ -270,12 +281,6 @@ async function splitShared(
   } finally {
     await group.close();
   }
-}
-
-// Adds `delta` to the starts of `node` and the nodes below it.
-function shift(node, delta) {
-  node.start += delta;
-  if (node.children) for (const child of node.children) shift(child, delta);
 }
 
 // A part of the rows whose centers pass by in order: its node once its
@@ -502,10 +507,14 @@ async function cutLarge(workspace, positions, where, parts, fit, advance) {
   workspace.expect(0);
 }
 
-// Split the combined levels into regions and arrange their rows by LOD.
+// Split the combined levels into regions. Each level's leaves and their
+// Morton-ordered rows are collected together in write order.
 // Parts too large for the memory budget are first partitioned by cutLarge().
-export async function splitRegions(rows, root, limit) {
+export async function buildRegions(rows, limit) {
   const { workspace, levels, length, starts } = rows;
+  const root = { start: 0, count: length };
+  const leavesByLevel = levels.map(() => []);
+  let leafCount = 0;
   workspace.settle();
   // Region IDs span all levels until arrange() converts them to per-level rows.
   const RowId = length - 1 > 0xffffffff ? Float64Array : Uint32Array;
@@ -560,8 +569,8 @@ export async function splitRegions(rows, root, limit) {
       part.next += part.buffered;
       part.buffered = 0;
     };
-    positions.scan((values, rows, base) => {
-      if (parts.length > 1) where.read(base, which, rows);
+    positions.consume((values, rows, base) => {
+      if (parts.length > 1) where.consume(base, which, rows);
       for (let i = 0; i < rows; i++) {
         const part = parts[which[i]];
         const place = part.buffered++;
@@ -583,8 +592,6 @@ export async function splitRegions(rows, root, limit) {
     // By level, the parts' rows go to `arranged` at each level's next row,
     // `cursors`; the order keeps the rows of the parts still to split.
     const cursors = [...starts];
-    // The regions' split is the last to read the levels' centers.
-    for (const level of levels) level.centers.dispose();
     where.dispose();
     where = undefined;
     // Splits the parts from `first` up to `last`, `rows` rows, in memory. A
@@ -605,13 +612,12 @@ export async function splitRegions(rows, root, limit) {
         0,
         rows,
       );
-      gathered.read(start * 3, centers, rows * 3);
-      order.read(start, ids, rows);
+      gathered.consume(start * 3, centers, rows * 3);
+      order.consume(start, ids, rows);
       for (let i = 0; i < rows; i++) local[i] = i;
-      // The parts as nodes of the rows in memory, then back in their places.
-      const roots = [];
-      for (let i = first; i < last; i++)
-        roots.push({ ...nodes[i], start: nodes[i].start - start });
+      // From here each node's start indexes this batch.
+      const roots = nodes.slice(first, last);
+      for (const node of roots) node.start -= start;
       await splitShared(
         workspace,
         centers,
@@ -623,24 +629,21 @@ export async function splitRegions(rows, root, limit) {
         threads,
         advance,
       );
-      roots.forEach((node, i) => {
-        shift(node, start);
-        Object.assign(nodes[first + i], node);
-      });
       // Parts arranged by level hold each row's place in its level.
-      const stack = [];
-      for (let i = last - 1; i >= first; i--) stack.push(nodes[i]);
+      const stack = roots.reverse();
       while (stack.length) {
         const node = stack.pop();
         if (node.children) {
           stack.push(node.children[1], node.children[0]);
           continue;
         }
+        let at = node.start;
+        leafCount++;
         for (const level in node.lods) {
-          const { offset, count } = node.lods[level];
-          const at = node.start - start + offset;
+          const count = node.lods[level];
+          leavesByLevel[level].push(node);
           arranged.write(cursors[level], local.subarray(at, at + count), count);
-          node.lods[level] = { start: cursors[level], count };
+          at += count;
           cursors[level] += count;
         }
       }
@@ -660,7 +663,7 @@ export async function splitRegions(rows, root, limit) {
     // The centers and the threads are gone: the cache may take their memory.
     workspace.settle();
     workspace.expect(0);
-    return arranged;
+    return { root, leavesByLevel, leafCount, order: arranged };
   } catch (error) {
     order.dispose();
     arranged.dispose();
@@ -683,8 +686,8 @@ if (!isMainThread && workerData?.scanner) {
 }
 
 if (!isMainThread && workerData?.splitter) {
-  const { centers, order, ids, cancelled } = workerData;
-  const splitter = new Splitter(centers, order, ids, () => {
+  const { centers, order, ids, starts, cancelled } = workerData;
+  const splitter = new Splitter(centers, order, ids, starts, () => {
     if (cancelled && Atomics.load(cancelled, 0))
       throw new Error("Conversion cancelled");
   });

@@ -1,23 +1,29 @@
 import { area } from "../rad/math.js";
-import { sharedBuffer } from "../rad/storage.js";
+import { PAGE_BYTES, sharedBuffer } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
 
-// The most places that fit beside a row in a number: a row is below 2^32.
-const PLACES = 2 ** 21;
-// The places of a chunk's splats sorted by row, kept from chunk to chunk:
-// as garbage, each chunk's would take room from the cache until collected.
-let sorted = new Float64Array(0);
+const bandRows = new Uint16Array(PAGE_BYTES / Uint16Array.BYTES_PER_ELEMENT);
 
-function sortPlaces(places, index) {
-  if (places.length > PLACES) {
-    places.sort((a, b) => index(a) - index(b));
+function readBands(source, first, count, sh, dims) {
+  if (source.maxSh === 1) {
+    source.sh[0].consume(first * dims, sh, sh.length);
     return;
   }
-  for (let i = 0; i < places.length; i++) places[i] = index(i) * PLACES + i;
-  places.sort();
-  // PLACES is a power of two: the quotient is exact.
-  for (let i = 0; i < places.length; i++)
-    places[i] -= Math.floor(places[i] / PLACES) * PLACES;
+  let offset = 0;
+  for (let band = 0; band < source.maxSh; band++) {
+    const width = SH_DIMS[band];
+    const batch = Math.floor(bandRows.length / width);
+    for (let base = 0; base < count; base += batch) {
+      source.workspace.check();
+      const rows = Math.min(batch, count - base);
+      source.sh[band].consume((first + base) * width, bandRows, rows * width);
+      for (let i = 0, from = 0; i < rows; i++) {
+        const to = (base + i) * dims + offset;
+        for (let d = 0; d < width; d++) sh[to + d] = bandRows[from++];
+      }
+    }
+    offset += width;
+  }
 }
 
 // Bytes of a gathered splat with SH of `dims` coefficients: its record, its
@@ -33,11 +39,9 @@ export const chunkRowBytes = (dims, blindCount = 0) =>
 export const chunkBuffer = (count, dims, blindCount = 0) =>
   sharedBuffer(count * chunkRowBytes(dims, blindCount));
 
-// Reads the splats `order` of `source` into arrays in `buffer`, each splat
-// at its place in `order`; see chunkBuffer(). With `weigh`, also each
-// splat's SH clustering weight.
-export function gather(source, order, weigh, buffer, blind) {
-  const count = order.length;
+// Consume a contiguous chunk into its encoder's buffer.
+export function gather(source, first, count, weigh, buffer, blind) {
+  source.workspace.check();
   const dims = SH_DIMS.slice(0, source.maxSh).reduce((a, b) => a + b, 0);
   const weightBytes = weigh ? count * 8 : 0;
   const recordBytes = count * 64;
@@ -53,45 +57,25 @@ export function gather(source, order, weigh, buffer, blind) {
     weightBytes + recordBytes + blindWords.byteLength,
     count * dims,
   );
-  // Pages are read in the order of the rows: the places sorted by row, as
-  // numbers of row and place where those fit.
-  let places;
-  if (count <= PLACES) {
-    if (sorted.length < count) sorted = new Float64Array(count);
-    places = sorted.subarray(0, count);
-  } else {
-    places = Uint32Array.from(order, (_, i) => i);
-  }
-  sortPlaces(places, (i) => order[i]);
-  for (let i = 0; i < count; i++) {
-    const place = places[i];
-    const index = order[place];
-    source.records.read(index * 16, records, 16, place * 16);
-    if (weigh)
-      weights[place] =
-        records[place * 16 + 3] *
+  source.records.consume(first * 16, records, records.length);
+  readBands(source, first, count, sh, dims);
+  if (weigh) {
+    for (let i = 0; i < count; i++) {
+      if ((i & 4095) === 0) source.workspace.check();
+      weights[i] =
+        records[i * 16 + 3] *
         area(
-          Math.exp(records[place * 16 + 7]),
-          Math.exp(records[place * 16 + 8]),
-          Math.exp(records[place * 16 + 9]),
+          Math.exp(records[i * 16 + 7]),
+          Math.exp(records[i * 16 + 8]),
+          Math.exp(records[i * 16 + 9]),
         );
-    if (dims) {
-      let offset = place * dims;
-      for (let band = 0; band < source.maxSh; band++) {
-        const size = SH_DIMS[band];
-        source.sh[band].read(index * size, sh, size, offset);
-        offset += size;
-      }
     }
   }
-  let blindTextures;
-  if (blind) {
-    const rowIndex = source.blind
-      ? (i) => order[i]
-      : (i) => records[i * 16 + 14] + records[i * 16 + 15] * 65536;
-    // Input records and Blind rows already share the same order.
-    if (!source.blind) sortPlaces(places, rowIndex);
-    blindTextures = blind.gather(places, rowIndex, blindWords);
-  }
+  const blindTextures = blind?.pack(
+    source.blindValues,
+    first,
+    count,
+    blindWords,
+  );
   return { records, sh, weights, dims, blindWords, blindTextures };
 }

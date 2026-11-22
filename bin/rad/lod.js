@@ -666,7 +666,7 @@ function reorderChunks(splats, indices, pool, shCodebook) {
   const length = indices.length;
   const moved = new Permutation(
     workspace,
-    indices,
+    splats.maxSh ? indices : indices.consumingRange(),
     nodes,
     "Preparing chunk splat order",
   );

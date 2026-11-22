@@ -364,7 +364,7 @@ export class Splats {
     collecting.finish();
     const leafRows = new Permutation(
       this.workspace,
-      reads,
+      reads.consumingRange(),
       initial,
       "Preparing SH order",
     );
@@ -381,7 +381,7 @@ export class Splats {
     this.shOrder.dispose();
     const chunkRows = new Permutation(
       this.workspace,
-      indices,
+      indices.consumingRange(),
       this.length,
       "Preparing LOD SH order",
     );

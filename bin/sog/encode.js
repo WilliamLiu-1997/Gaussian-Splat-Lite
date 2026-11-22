@@ -288,6 +288,6 @@ if (!isMainThread && workerData?.encoder) {
     // The chunk's images and codebook would otherwise stay until the next
     // chunk's are there.
     collect();
-    parentPort.postMessage(result);
+    parentPort.postMessage(result, [result.boxes.buffer]);
   });
 }

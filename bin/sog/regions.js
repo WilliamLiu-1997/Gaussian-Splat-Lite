@@ -1,4 +1,4 @@
-import { splitRegions } from "./split.js";
+export { buildRegions } from "./split.js";
 
 export class Levels {
   constructor(levels) {
@@ -11,27 +11,6 @@ export class Levels {
       this.length += level.length;
     }
   }
-}
-
-// Divides the splats of all levels into regions of at most `limit`. Returns
-// the tree, its leaves, and `order`: level by level, each leaf's rows in
-// Morton order, indexed within their level. A leaf's `lods` gives their
-// place in `order`. A leaf's box holds only its splats' centers until
-// writeScene() has measured the splats of its chunks.
-export async function buildRegions(rows, limit) {
-  const root = { start: 0, count: rows.length };
-  const order = await splitRegions(rows, root, limit);
-  const leaves = [];
-  const stack = [root];
-  while (stack.length) {
-    const node = stack.pop();
-    if (node.children) {
-      stack.push(node.children[1], node.children[0]);
-      continue;
-    }
-    leaves.push(node);
-  }
-  return { root, leaves, order };
 }
 
 export function finishTree(root) {

@@ -17,13 +17,14 @@ export function writeFile(workspace, path, data) {
   return data.byteLength;
 }
 
-// Gathers the chunk of the splats `order` of `source` into `buffer` and has
+// Gathers `count` splats from `first` in `source` into `buffer` and has
 // `worker` of `encoder`, a thread or this one, encode its images, cluster
 // its SH, write its files into `directory` and measure its `ranges`; see
 // chunkBuffer() and encodeChunk().
 export async function writeChunk(
   source,
-  order,
+  first,
+  count,
   ranges,
   directory,
   options,
@@ -34,7 +35,6 @@ export async function writeChunk(
 ) {
   const { workspace } = source;
   const { blind, model } = input;
-  const count = order.length;
   // Without a thread, the images of the chunk before stay on this thread
   // until collected, and this chunk's would add to them.
   if (worker) workspace.adjust();
@@ -43,7 +43,7 @@ export async function writeChunk(
   // A codebook with an entry for every splat takes the SH as they are.
   const clustered = source.maxSh && entries(count, options) < count;
   const job = {
-    ...gather(source, order, clustered, buffer, blind),
+    ...gather(source, first, count, clustered, buffer, blind),
     model,
     count,
     ranges,
@@ -51,5 +51,5 @@ export async function writeChunk(
     directory,
     maxSh: source.maxSh,
   };
-  return encoder.request(worker, job);
+  return encoder.request(worker, job, [ranges.buffer]);
 }

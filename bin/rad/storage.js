@@ -457,11 +457,15 @@ export class PagedArray {
     return index & this.mask;
   }
   // The page of `index`: `values`, and `words` if wordView is set.
-  at(index, write = false) {
+  at(index, write = false, allowEmpty = false) {
     // Poll in-memory loops too, without an atomic read on every access.
     if ((++this.workspace.accesses & 4095) === 0) this.workspace.check();
     const block = Math.floor(index * this.inverse);
-    const page = this.pages[block] ?? this.workspace.allocate(this, block);
+    const resident = this.pages[block];
+    // Bulk reads can copy zeros from an unwritten page without caching it.
+    if (!resident && allowEmpty && !this.spill?.blocks.has(block))
+      return empty(this.Type);
+    const page = resident ?? this.workspace.allocate(this, block);
     page.used = true;
     if (write) page.dirty = true;
     return page;
@@ -503,7 +507,7 @@ export class PagedArray {
     let offset = 0;
     while (offset < count) {
       const index = base + offset;
-      const page = this.page(index);
+      const page = this.at(index, false, true).values;
       const within = index & this.mask;
       const size = Math.min(count - offset, this.items - within);
       if (size > 64)
@@ -522,7 +526,8 @@ export class PagedArray {
     const bytes = this.Type.BYTES_PER_ELEMENT;
     let offset = 0;
     while (offset < count) {
-      if ((++this.workspace.accesses & 4095) === 0) this.workspace.check();
+      // Each iteration can read a full page from disk.
+      if ((++this.workspace.accesses & 63) === 0) this.workspace.check();
       const index = base + offset;
       const block = Math.floor(index * this.inverse);
       const within = index & this.mask;
@@ -557,6 +562,14 @@ export class PagedArray {
   consume(base, output, count) {
     this.stream(base, output, count);
     this.discard(base - (base & this.mask), base + count);
+  }
+
+  // A single-pass permutation input. Consecutive ranges share boundary pages.
+  consumingRange(first = 0, length = this.length - first) {
+    return {
+      length,
+      read: (base, output, count) => this.consume(first + base, output, count),
+    };
   }
 
   // Forget fully consumed pages without writing them back. A page shared
@@ -704,6 +717,53 @@ export class SharedColumn {
   }
 }
 
+// Source row -> target row + 1; zero marks a row that is dropped. Bucket by
+// source range until it fits in the cache. The input streams past the active
+// range, and a split appends to at most 64 bucket tails.
+function invert(indices, rows, targets, block, label) {
+  const { workspace, items } = targets;
+  const progress = label && new Progress(label, 2 * indices.length);
+  let completed = 0;
+
+  function fill(order, first, size, paired) {
+    const stride = paired ? 2 : 1;
+    const read = paired ? order.consume : (order.stream ?? order.read);
+    let bins;
+    let span;
+    for (let base = 0; base < order.length; base += block.length) {
+      const fit = Math.floor(workspace.capacity / PAGE_BYTES) * items;
+      if (!bins && size > fit) {
+        span = Math.max(fit, Math.ceil(size / (64 * items)) * items);
+        bins = [];
+      }
+      const count = Math.min(block.length, order.length - base);
+      read.call(order, base, block, count);
+      for (let i = 0; i < count; i += stride) {
+        const row = block[i];
+        const target = paired ? block[i + 1] : base + i + 1;
+        if (bins) {
+          const b = Math.floor((row - first) / span);
+          bins[b] ??= new IndexArray(workspace);
+          bins[b].push(row);
+          bins[b].push(target);
+        } else targets.set(row, target);
+      }
+      if (!paired) completed += count;
+      if (!bins) completed += count / stride;
+      progress?.update(completed);
+    }
+    if (paired) order.dispose();
+    if (!bins) return;
+    for (let b = 0; b < bins.length; b++) {
+      if (bins[b])
+        fill(bins[b], first + b * span, Math.min(span, size - b * span), true);
+    }
+  }
+
+  fill(indices, 0, rows, false);
+  progress?.finish();
+}
+
 // Gathers columns into the order of `indices`: row indices[i] of a column with
 // `rows` rows becomes row i. Each output window is
 // filled while the column is read in order, so a column larger than the cache
@@ -714,23 +774,14 @@ export class Permutation {
     this.length = indices.length;
     this.rows = rows;
     this.block = new Uint32Array(16384);
-    // Source row -> target row + 1; 0 marks a row that is dropped.
     this.targets = new IndexArray(workspace);
-    const progress = label && new Progress(label, indices.length);
-    for (let base = 0; base < indices.length; base += this.block.length) {
-      const count = Math.min(this.block.length, indices.length - base);
-      indices.read(base, this.block, count);
-      for (let i = 0; i < count; i++)
-        this.targets.set(this.block[i], base + i + 1);
-      progress?.update(base + count);
-    }
-    progress?.finish();
+    invert(indices, rows, this.targets, this.block, label);
   }
 
   // Returns `source` gathered into a new column, and disposes `source`. The
-  // output window's pages stay cached while workers copy blocks of source
-  // rows into it; rows across pages are left to the main thread. The output
-  // spreads over as many files as `source`.
+  // output window's pages stay cached while source blocks are copied into it.
+  // A supplied pool copies resident rows in parallel. The output spreads
+  // over as many files as `source`.
   // With `words`, rows are copied as 32-bit words, which keeps any bits of
   // floats, and the output has word views; see PagedArray.at(). `visit` is
   // called with the output and each window's rows [start, end) once they are
@@ -748,25 +799,27 @@ export class Permutation {
       this.length * stride,
     );
     output.wordView = words;
-    output.share(source.stripes);
-    source.share();
+    if (pool) {
+      output.share(source.stripes);
+      source.share();
+    } else output.stripes = source.stripes;
     const record = words ? new Uint32Array(stride) : new source.Type(stride);
-    const { nodes: targets, later } = pool;
+    const targets = pool?.nodes ?? this.block;
+    const later = pool?.later;
     const rowBytes = stride * source.Type.BYTES_PER_ELEMENT;
     const pages = Math.floor(this.workspace.capacity / PAGE_BYTES);
     const targetBytes = targets.BYTES_PER_ELEMENT;
     const block = Math.min(
-      later.length,
+      later?.length ?? targets.length,
       Math.max(
         1,
         Math.floor((pages * PAGE_BYTES) / 8 / (rowBytes + targetBytes)),
       ),
     );
-    // The cache's pages besides one batch of source rows and targets, which
-    // stay alongside the destination; all three ranges can start partway
-    // through a page. The cache shrinks when the rest of the process grows.
+    // Workers need a source batch in the cache. The main thread reads only
+    // the current row. Each range can start partway through a page.
     const reserved =
-      Math.ceil((block * rowBytes) / PAGE_BYTES) +
+      Math.ceil(((pool ? block : 1) * rowBytes) / PAGE_BYTES) +
       Math.ceil((block * targetBytes) / PAGE_BYTES) +
       3;
     const room = () =>
@@ -795,7 +848,7 @@ export class Permutation {
         firstPage,
         Math.floor((end * stride - 1) / output.items) + 1,
       ];
-      output.load(start * stride, end * stride, true);
+      if (pool) output.load(start * stride, end * stride, true);
       for (let base = 0; base < this.rows; base += block) {
         const b = base / block;
         const begin = Math.max(start, nextTarget[b]);
@@ -824,13 +877,17 @@ export class Permutation {
             continue;
           }
         }
-        source.load(sourceStart, sourceEnd);
-        pool.copy(source, output, stride, count, base, begin, end, words);
+        if (pool) {
+          source.load(sourceStart, sourceEnd);
+          pool.copy(source, output, stride, count, base, begin, end, words);
+        }
         nextTarget[b] = end;
         for (let i = 0; i < count; i++) {
-          if (!later[i]) continue;
+          if (later && !later[i]) continue;
+          const target = targets[i] - 1;
+          if (target < begin || target >= end) continue;
           const from = (base + i) * stride;
-          const to = (targets[i] - 1) * stride;
+          const to = target * stride;
           if (!words) {
             source.read(from, record);
             output.write(to, record);

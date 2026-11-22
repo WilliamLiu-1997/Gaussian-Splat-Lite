@@ -608,7 +608,7 @@ export class Grid extends Lookup {
     progress?.finish();
     const permutation = new Permutation(
       this.workspace,
-      indices,
+      indices.consumingRange(),
       length,
       label && `${label} spatial order`,
     );

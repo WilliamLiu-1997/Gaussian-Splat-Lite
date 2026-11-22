@@ -41,14 +41,16 @@ export class Positions {
     return values;
   }
 
-  // Calls `visit(values, count, base)` with the centers of every batch of
-  // rows in order: three values a row, `count` rows from row `base`.
-  scan(visit) {
+  // Visit the centers in global row order and release them on this final pass.
+  consume(visit) {
     const values = new Float32Array(BATCH * 3);
-    for (let base = 0; base < this.length; base += BATCH) {
-      const count = Math.min(BATCH, this.length - base);
-      this.read(base, values, count);
-      visit(values, count, base);
+    for (const [i, level] of this.levels.entries()) {
+      for (let row = 0; row < level.length; row += BATCH) {
+        const count = Math.min(BATCH, level.length - row);
+        level.centers.consume(row * 3, values, count * 3);
+        visit(values, count, this.starts[i] + row);
+      }
+      level.centers.dispose();
     }
   }
 }

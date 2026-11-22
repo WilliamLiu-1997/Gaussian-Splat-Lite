@@ -1,5 +1,4 @@
 import { halfBits } from "../rad/math.js";
-import { PagedArray } from "../rad/storage.js";
 
 const bytes = {
   u8: 1,
@@ -86,18 +85,16 @@ function encoder({ name, type = "u32", range = [0, 1] }) {
   };
 }
 
-// Encoded fields follow the input's row order; LODs keep row references.
 // Only the current decode batch keeps Float64 values, until geometric filtering.
 export class BlindInput {
-  constructor(workspace, textures, batchSize) {
+  constructor(textures, batchSize) {
     this.textures = textures;
     this.fields = textures.flat();
     this.encoders = this.fields.map(encoder);
     this.automatic = this.fields.flatMap((field, i) => (field.type ? [] : [i]));
     this.maxima = new Uint32Array(this.fields.length);
     this.layout = this.automatic.length ? undefined : this.resolveLayout([]);
-    this.values = new PagedArray(workspace, Uint32Array);
-    this.row = new Uint32Array(this.fields.length);
+    this.batchSize = batchSize;
     this.batch = new Uint32Array(batchSize * this.fields.length);
     this.pending = new Float64Array(0);
     this.base = 0;
@@ -122,9 +119,17 @@ export class BlindInput {
       maxima[i] = Math.max(maxima[i], batch[slot * width + i]);
   }
 
-  flush(base, count) {
+  flush(values, base, count) {
     const width = this.fields.length;
-    this.values.write(base * width, this.batch, count * width);
+    values.write(base * width, this.batch, count * width);
+  }
+
+  finish() {
+    this.pending = undefined;
+    if (this.layout) return;
+    const layout = this.resolveLayout(this.maxima);
+    this.automatic = this.automatic.filter((i) => this.maxima[i] >= 256);
+    if (!this.automatic.length) this.layout = layout;
   }
 
   resolveLayout(maxima) {
@@ -151,33 +156,42 @@ export class BlindInput {
     return { textures, shifts, fields: textures.map(({ fields }) => fields) };
   }
 
-  gather(places, rowIndex, words) {
-    const { fields, row, automatic } = this;
-    const count = places.length;
+  // Automatic fields take their width from this chunk before it is packed.
+  pack(values, first, count, words) {
+    const { automatic, batch, batchSize } = this;
+    const width = this.fields.length;
     let layout = this.layout;
+    const buffered = !layout && count <= batchSize;
     if (!layout) {
-      const maxima = new Uint32Array(fields.length);
-      for (const place of places) {
-        this.values.read(rowIndex(place) * fields.length, row);
-        for (const i of automatic) maxima[i] = Math.max(maxima[i], row[i]);
+      const maxima = new Uint32Array(width);
+      for (let base = 0; base < count; base += batchSize) {
+        values.workspace.check();
+        const items = Math.min(batchSize, count - base) * width;
+        if (buffered) values.consume(first * width, batch, items);
+        else values.stream((first + base) * width, batch, items);
+        for (let at = 0; at < items; at += width)
+          for (const i of automatic)
+            maxima[i] = Math.max(maxima[i], batch[at + i]);
       }
       layout = this.resolveLayout(maxima);
     }
     const { textures, shifts } = layout;
-    for (const place of places) {
-      this.values.read(rowIndex(place) * fields.length, row);
-      let column = 0;
-      for (let texture = 0; texture < textures.length; texture++) {
-        const { end, padding } = textures[texture];
-        let word = padding;
-        for (; column < end; column++) word |= row[column] << shifts[column];
-        words[texture * count + place] = word;
+    for (let base = 0; base < count; base += batchSize) {
+      values.workspace.check();
+      const rows = Math.min(batchSize, count - base);
+      if (!buffered)
+        values.consume((first + base) * width, batch, rows * width);
+      for (let i = 0; i < rows; i++) {
+        let field = 0;
+        for (let t = 0; t < textures.length; t++) {
+          const { end, padding } = textures[t];
+          let word = padding;
+          for (; field < end; field++)
+            word |= batch[i * width + field] << shifts[field];
+          words[t * count + base + i] = word;
+        }
       }
     }
     return layout.fields;
-  }
-
-  dispose() {
-    this.values.dispose();
   }
 }

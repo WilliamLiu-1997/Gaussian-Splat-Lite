@@ -299,7 +299,7 @@ export function sortSplats(splats, pool, keepOrder) {
   }
   sorted.dispose();
   ordering.finish();
-  splats.reorder(order, pool);
+  splats.reorder(keepOrder ? order : order.consumingRange(), pool);
   if (keepOrder) return order;
   order.dispose();
 }

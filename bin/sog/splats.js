@@ -12,7 +12,7 @@ const CHECKED = 16384;
 // garbage, each call's would take room from the cache.
 let stored = new Float32Array(0);
 
-// Position, raw mass, RGB, log scale, XYZW rotation; Blind row as two u16s.
+// Position, raw mass, RGB, log scale and XYZW rotation in a 16-float record.
 export class Splats {
   // With `filter`, retain() crops the splats to its `withinDist`.
   constructor(workspace, maxSh, filter = undefined) {
@@ -22,8 +22,9 @@ export class Splats {
     // splats checked, and the first `kept` of them, which stay.
     this.withinDist = filter?.withinDist;
     this.blind = filter?.blind?.length
-      ? new BlindInput(workspace, filter.blind, CHECKED)
+      ? new BlindInput(filter.blind, CHECKED)
       : undefined;
+    this.blindValues = this.blind && new PagedArray(workspace, Uint32Array);
     this.fields = [];
     this.received = {};
     this.checked = 0;
@@ -191,8 +192,7 @@ export class Splats {
       );
     if (cropped) console.log(`Removed ${cropped} splats outside --within-dist`);
     if (!kept) throw new Error("Input has no usable splats");
-    if (this.blind?.automatic.length)
-      this.blind.resolveLayout(this.blind.maxima);
+    this.blind?.finish();
   }
 
   // Notes that the splats before `end` have `field`, and checks those that
@@ -296,7 +296,7 @@ export class Splats {
       }
       stay++;
     }
-    blind?.flush(this.kept, stay);
+    blind?.flush(this.blindValues, this.kept, stay);
     if (this.kept !== start || stay !== count) {
       this.store(this.kept, stay, records, sh);
     } else {
@@ -308,7 +308,7 @@ export class Splats {
   }
 
   dispose() {
-    this.blind?.dispose();
+    this.blindValues?.dispose();
     this.records.dispose();
     this.centers.dispose();
     for (const band of this.sh) band.dispose();
