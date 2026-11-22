@@ -7,10 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-23
+
 ### Changed
 
 - `gsl-build-sog` now builds coarser LODs using the same approach as `gsl-build-rad`. Rebuilt scenes can look different at those levels and retain different object IDs or other Blind values.
 - Optimized LOD generation in `gsl-build-rad` and reduced temporary disk access when converting large scenes.
+- Both converters now adapt chunk encoding to the memory budget and report peak temporary disk usage when conversion finishes.
 
 ### Fixed
 
@@ -845,7 +848,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.7.0...v1.8.0
