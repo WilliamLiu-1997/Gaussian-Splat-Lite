@@ -70,7 +70,7 @@ Larger codebooks can preserve more view-dependent color at the cost of file size
 
 Chunks whose SH coefficients are all zero use a single SH entry.
 
-Conversion is lossy, so colors and shape can differ from the source. SOG v3 limits linear opacity to **1.5625**; larger values are clamped, with splat scales increased to compensate, and reported.
+Conversion is lossy, so colors and shape can differ from the source. SOG v3 clamps linear opacity above **1.5625** and reports how many splats were clamped. Their scales increase to compensate. Elongated splats get a smaller scale multiplier along their longest axis.
 
 ## Blind data and PLY comments
 

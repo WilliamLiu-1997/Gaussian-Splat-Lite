@@ -12,6 +12,22 @@ export function opacityLogScale(mass) {
   return 0.5 * Math.log(radiusSquared / CAPPED_RADIUS_SQUARED);
 }
 
+// Attenuate growth along the longest axis using the original linear axis ratio.
+export function compensateScales(record) {
+  const x = record[7];
+  const y = record[8];
+  const z = record[9];
+  const longest = Math.max(x, y, z);
+  const middle = longest === z ? Math.max(x, y) : Math.max(Math.min(x, y), z);
+  const ratio = Math.exp(middle - longest);
+  const growth = opacityLogScale(record[3]);
+  const majorGrowth = Math.log1p(
+    (Math.expm1(growth) * ratio) / (1 - ratio * (1 - ratio)),
+  );
+  for (let axis = 7; axis < 10; axis++)
+    record[axis] += record[axis] === longest ? majorGrowth : growth;
+}
+
 // Squared equal-alpha radius of the wide kernel, before edge fade and blur.
 function contourRadiusSquared(power) {
   return -2 * Math.log(-Math.expm1(LOG_ONE_MINUS_ALPHA / power));

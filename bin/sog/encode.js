@@ -6,7 +6,7 @@ import { GENERATOR } from "../generator.js";
 import { initialize } from "../rad/input.js";
 import { collect } from "../rad/storage.js";
 import { cluster } from "./cluster.js";
-import { MAX_MASS, opacityLogScale } from "./opacity.js";
+import { MAX_MASS, compensateScales } from "./opacity.js";
 import { QUANTIZE_BYTES, encodeRotation, label, quantize } from "./quantize.js";
 import { SH_C0 } from "./splats.js";
 import {
@@ -74,8 +74,7 @@ function encodeGeometry({ records, count, ranges }, write) {
       max[d] = Math.max(max[d], record[d]);
     }
     if (record[3] > MAX_MASS) {
-      const compensation = opacityLogScale(record[3]);
-      for (let d = 7; d < 10; d++) record[d] += compensation;
+      compensateScales(record);
       clipped++;
     }
   }
