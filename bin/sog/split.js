@@ -1,7 +1,12 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { WorkerGroup, clusterers, computers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
-import { IndexArray, PagedArray, sharedBuffer } from "../rad/storage.js";
+import {
+  IndexArray,
+  PAGE_BYTES,
+  PagedArray,
+  sharedBuffer,
+} from "../rad/storage.js";
 import {
   POSITION_BATCH_ROWS as BATCH,
   SPLIT_BUFFER_ROWS as BUFFERED,
@@ -14,10 +19,20 @@ import {
 import { sortMorton } from "./morton.js";
 import { Positions } from "./positions.js";
 import { Centers, divide } from "./spatial-order.js";
-import { Cut, binRange, boundsOf, partRange, splitRange } from "./spatial.js";
+import {
+  CUT_BYTES,
+  CUT_SUFFIX_BYTES,
+  Cut,
+  binRange,
+  boundsOf,
+  partRange,
+  splitRange,
+} from "./spatial.js";
 
 // Bytes of a scanned row: its center and part.
 const SCANNED_BYTES = 16;
+// Per leaf row in Splitter.arrange(): level, index, xyz and Morton key.
+const ARRANGE_BYTES = 4 + 4 + 12 + 8;
 // The most rows of an array in a WebAssembly memory of 4 GiB.
 const MOST = Math.floor(0xffff0000 / 12);
 
@@ -257,7 +272,11 @@ async function splitShared(
           }
         node.bound = bound;
         const cut = new Cut(bound);
-        for (const bins of await each({ kind: "bins", bound })) cut.merge(bins);
+        await Promise.all(
+          stretches.map(async (stretch) => {
+            cut.merge(await run({ kind: "bins", bound, ...stretch }));
+          }),
+        );
         let middle;
         if (cut.choose(node.count)) {
           const fronts = await each({
@@ -274,7 +293,7 @@ async function splitShared(
           middle = node.start + Math.floor(node.count / 2);
         }
         divide(node, middle);
-        await Promise.all(node.children.map(split));
+        return Promise.all(node.children.map(split));
       };
       Promise.all(roots.map(split)).then(resolve, reject);
     });
@@ -390,7 +409,12 @@ function add(part, other) {
 async function cutLarge(workspace, positions, where, parts, fit, advance) {
   const { length } = positions;
   const check = () => workspace.check();
-  const bytes = HEAP_MB * 1024 ** 2 + SCAN * SCANNED_BYTES;
+  // Open parts are disjoint and each has at least fit + 1 rows. A scan
+  // builds their bins locally and the main thread accumulates the results.
+  const bins = Math.floor(length / (fit + 1)) * CUT_BYTES;
+  const batchBytes = SCAN * SCANNED_BYTES;
+  const extra = bins + CUT_SUFFIX_BYTES;
+  const bytes = HEAP_MB * 1024 ** 2 + batchBytes + bins;
   const most = Math.ceil(length / SCAN);
   // As many threads as leave the centers and parts of all rows cached, so
   // that the passes read them from memory. If none do, the passes read
@@ -398,14 +422,15 @@ async function cutLarge(workspace, positions, where, parts, fit, advance) {
   const cached = computers(
     workspace,
     bytes,
-    (SCAN + length) * SCANNED_BYTES,
+    extra + length * SCANNED_BYTES,
     most,
   );
   const threads = clusterers(
     workspace,
     bytes,
-    SCAN * SCANNED_BYTES,
+    extra,
     cached || most,
+    extra + batchBytes + bins,
   );
   const group = new WorkerGroup(
     new URL(import.meta.url),
@@ -417,7 +442,7 @@ async function cutLarge(workspace, positions, where, parts, fit, advance) {
   );
   try {
     // A batch of centers and parts for each thread.
-    const buffers = group.threads.map(() => sharedBuffer(SCAN * SCANNED_BYTES));
+    const buffers = group.threads.map(() => sharedBuffer(batchBytes));
     // Runs `scan` over all centers, a batch for each thread at a time, or
     // `ordered`, batch after batch; `taken` gets what each batch returns.
     const pass = async (scan, taken, ordered = false) => {
@@ -519,9 +544,18 @@ export async function buildRegions(rows, limit) {
   // Region IDs span all levels until arrange() converts them to per-level rows.
   const RowId = length - 1 > 0xffffffff ? Float64Array : Uint32Array;
   const gatheredBytes = 12 + 4 + RowId.BYTES_PER_ELEMENT;
+  const scratchBytes = (rows) =>
+    Math.min(rows, limit) * ARRANGE_BYTES +
+    (rows > limit ? CUT_BYTES + CUT_SUFFIX_BYTES : 0);
+  const room = workspace.room;
+  // Leave room for one local splitter and the padding of the three buffers.
+  const gatherRoom = Math.min(
+    room * SHARE,
+    room - scratchBytes(length) - 3 * PAGE_BYTES,
+  );
   const fit = Math.max(
     limit,
-    Math.min(MOST, Math.floor((workspace.room * SHARE) / gatheredBytes)),
+    Math.min(MOST, Math.floor(gatherRoom / gatheredBytes)),
   );
   // Progress counts passes over the rows: one each to put the parts side by
   // side and to split them. Cutting what does not fit takes two passes a
@@ -599,11 +633,19 @@ export async function buildRegions(rows, limit) {
     // cache takes their memory below.
     const splitParts = async (first, last, rows) => {
       const { start } = nodes[first];
+      const pages = (stride) =>
+        Math.ceil((rows * stride) / PAGE_BYTES) * PAGE_BYTES;
+      const shared = pages(12) + pages(4) + pages(RowId.BYTES_PER_ELEMENT);
+      const scratch = scratchBytes(rows);
+      // Larger disjoint nodes can each hold a cut on the main thread while
+      // their stretches are scanned. At most one chooses a split at a time.
+      const cuts = Math.floor(rows / (Math.max(STRETCH, limit) + 1));
       const threads = clusterers(
         workspace,
-        HEAP_MB * 1024 ** 2,
-        rows * gatheredBytes,
+        HEAP_MB * 1024 ** 2 + scratch,
+        shared + cuts * CUT_BYTES + (cuts ? CUT_SUFFIX_BYTES : 0),
         Math.ceil(rows / limit),
+        shared + scratch,
       );
       const centers = new Float32Array(sharedBuffer(rows * 12), 0, rows * 3);
       const local = new Uint32Array(sharedBuffer(rows * 4), 0, rows);
@@ -674,24 +716,22 @@ export async function buildRegions(rows, limit) {
   }
 }
 
-if (!isMainThread && workerData?.scanner) {
-  const { cancelled } = workerData;
-  const scanner = new Scanner(() => {
+if (!isMainThread && (workerData?.scanner || workerData?.splitter)) {
+  const { scanner, centers, order, ids, starts, cancelled } = workerData;
+  const check = () => {
     if (cancelled && Atomics.load(cancelled, 0))
       throw new Error("Conversion cancelled");
+  };
+  const handler = scanner
+    ? new Scanner(check)
+    : new Splitter(centers, order, ids, starts, check);
+  parentPort.on("message", (job) => {
+    const result = handler.handle(job);
+    const transfer = [];
+    if (job.kind === "bins") {
+      for (const { sizes, mins, maxs } of scanner ? result : [result])
+        transfer.push(sizes.buffer, mins.buffer, maxs.buffer);
+    }
+    parentPort.postMessage(result, transfer);
   });
-  parentPort.on("message", (batch) =>
-    parentPort.postMessage(scanner.handle(batch)),
-  );
-}
-
-if (!isMainThread && workerData?.splitter) {
-  const { centers, order, ids, starts, cancelled } = workerData;
-  const splitter = new Splitter(centers, order, ids, starts, () => {
-    if (cancelled && Atomics.load(cancelled, 0))
-      throw new Error("Conversion cancelled");
-  });
-  parentPort.on("message", (job) =>
-    parentPort.postMessage(splitter.handle(job)),
-  );
 }

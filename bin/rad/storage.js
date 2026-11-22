@@ -92,6 +92,8 @@ export class Workspace {
     this.version = 0;
     this.generation = 0;
     this.files = new Map();
+    this.tempBytes = 0;
+    this.peakTempBytes = 0;
     this.nextFile = 0;
     this.diskVersion = 0;
     this.readBytes = 0;
@@ -195,7 +197,7 @@ export class Workspace {
     }
     const file = join(this.directory, `${this.nextFile++}.tmp`);
     const fd = openSync(file, "wx+");
-    this.files.set(fd, file);
+    this.files.set(fd, { path: file, size: 0 });
     return fd;
   }
 
@@ -209,7 +211,8 @@ export class Workspace {
     } finally {
       try {
         closeSync(fd);
-        rmSync(file);
+        rmSync(file.path);
+        this.tempBytes -= file.size;
       } catch {}
     }
   }
@@ -218,17 +221,31 @@ export class Workspace {
   // Counting whole 64 KiB pages also covers partial pages on systems whose
   // native pages are larger than 4 KiB.
   write(fd, bytes, position) {
-    for (let offset = 0; offset < bytes.byteLength; offset += 1024 * 1024) {
-      const part =
-        bytes.byteLength <= 1024 * 1024
-          ? bytes
-          : bytes.subarray(offset, offset + 1024 * 1024);
+    const file = this.files.get(fd);
+    for (let offset = 0; offset < bytes.byteLength; ) {
+      const end = Math.min(offset + 1024 * 1024, bytes.byteLength);
       const at = position + offset;
       const size =
-        Math.ceil(((at % PAGE_BYTES) + part.byteLength) / PAGE_BYTES) *
+        Math.ceil(((at % PAGE_BYTES) + (end - offset)) / PAGE_BYTES) *
         PAGE_BYTES;
       this.writeback.prepare(size);
-      writeAll(fd, part, at);
+      while (offset < end) {
+        const count = writeSync(
+          fd,
+          bytes,
+          offset,
+          end - offset,
+          position + offset,
+        );
+        if (!count) throw new Error("Unable to write output or temporary file");
+        offset += count;
+        const length = position + offset;
+        if (file && length > file.size) {
+          this.tempBytes += length - file.size;
+          file.size = length;
+          this.peakTempBytes = Math.max(this.peakTempBytes, this.tempBytes);
+        }
+      }
       this.writeback.wrote(fd, size);
     }
   }
@@ -388,7 +405,7 @@ export class Workspace {
       progress?.finish();
       if (this.readBytes || this.writeBytes) {
         console.log(
-          `Temporary array I/O: ${(this.readBytes / 1048576).toFixed(1)} MiB read, ${(this.writeBytes / 1048576).toFixed(1)} MiB written`,
+          `Temporary array I/O: ${(this.readBytes / 1048576).toFixed(1)} MiB read, ${(this.writeBytes / 1048576).toFixed(1)} MiB written, ${(this.peakTempBytes / 1048576).toFixed(1)} MiB peak on disk`,
         );
       }
     }
@@ -942,20 +959,5 @@ export function removePath(file, options) {
   } catch (error) {
     if (error.code !== "ENOENT")
       console.warn(`Could not remove ${file} (${error.code ?? error.message})`);
-  }
-}
-
-function writeAll(fd, bytes, position) {
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const count = writeSync(
-      fd,
-      bytes,
-      offset,
-      bytes.byteLength - offset,
-      position + offset,
-    );
-    if (!count) throw new Error("Unable to write output or temporary file");
-    offset += count;
   }
 }

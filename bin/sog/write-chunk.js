@@ -20,7 +20,7 @@ export function writeFile(workspace, path, data) {
 // Gathers `count` splats from `first` in `source` into `buffer` and has
 // `worker` of `encoder`, a thread or this one, encode its images, cluster
 // its SH, write its files into `directory` and measure its `ranges`; see
-// chunkBuffer() and encodeChunk().
+// gather() and encodeChunk().
 export async function writeChunk(
   source,
   first,

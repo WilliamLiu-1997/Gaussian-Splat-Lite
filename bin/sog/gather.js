@@ -1,5 +1,5 @@
 import { area } from "../rad/math.js";
-import { PAGE_BYTES, sharedBuffer } from "../rad/storage.js";
+import { PAGE_BYTES } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
 
 const bandRows = new Uint16Array(PAGE_BYTES / Uint16Array.BYTES_PER_ELEMENT);
@@ -26,35 +26,27 @@ function readBands(source, first, count, sh, dims) {
   }
 }
 
-// Bytes of a gathered splat with SH of `dims` coefficients: its record, its
-// SH clustering weight and its SH as half bits.
-export const chunkRowBytes = (dims, blindCount = 0) =>
-  72 + dims * 2 + blindCount * 4;
-
-// Shared memory for a thread's chunks of up to `count` splats.
-// gather() fills it chunk after chunk and the thread
-// reads it in place. Arrays made for each chunk stayed in memory: handed
-// over, as freed heap on macOS; shared, until this thread collected its own
-// reference to them, which it rarely does.
-export const chunkBuffer = (count, dims, blindCount = 0) =>
-  sharedBuffer(count * chunkRowBytes(dims, blindCount));
+// gather() reuses one page-aligned buffer per encoder. Only SH clustering
+// needs a weight for every row.
+export function chunkBufferBytes(count, dims, blindCount, weigh) {
+  const stride = 64 + dims * 2 + blindCount * 4 + (weigh ? 8 : 0);
+  return Math.ceil((count * stride) / PAGE_BYTES) * PAGE_BYTES;
+}
 
 // Consume a contiguous chunk into its encoder's buffer.
 export function gather(source, first, count, weigh, buffer, blind) {
   source.workspace.check();
   const dims = SH_DIMS.slice(0, source.maxSh).reduce((a, b) => a + b, 0);
-  const weightBytes = weigh ? count * 8 : 0;
-  const recordBytes = count * 64;
   const weights = new Float64Array(buffer, 0, weigh ? count : 0);
-  const records = new Float32Array(buffer, weightBytes, count * 16);
+  const records = new Float32Array(buffer, weights.byteLength, count * 16);
   const blindWords = new Uint32Array(
     buffer,
-    weightBytes + recordBytes,
+    records.byteOffset + records.byteLength,
     count * (blind?.textures.length ?? 0),
   );
   const sh = new Uint16Array(
     buffer,
-    weightBytes + recordBytes + blindWords.byteLength,
+    blindWords.byteOffset + blindWords.byteLength,
     count * dims,
   );
   source.records.consume(first * 16, records, records.length);

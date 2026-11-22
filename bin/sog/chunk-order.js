@@ -1,4 +1,5 @@
 import { Pool } from "../rad/parallel.js";
+import { Progress } from "../rad/progress.js";
 import { Permutation } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
 
@@ -7,6 +8,20 @@ import { SH_DIMS } from "./splats.js";
 export async function orderChunks(rows, order) {
   const { workspace, levels, starts } = rows;
   const blindWidth = levels[0].blind?.fields.length;
+  // One indexing pass, then geometry, SH bands and any Blind data.
+  const passes = 2 + levels[0].maxSh + (blindWidth ? 1 : 0);
+  const progress = new Progress(
+    "Ordering SOG chunks",
+    rows.length * passes,
+    "",
+    true,
+  );
+  let completed = 0;
+  const advance = (count) => {
+    completed += count;
+    progress.update(completed);
+  };
+  const visit = (_output, start, end) => advance(end - start);
   const pool = new Pool(workspace, rows.length);
   try {
     pool.ready();
@@ -16,22 +31,16 @@ export async function orderChunks(rows, order) {
         workspace,
         order.consumingRange(starts[i], level.length),
         level.length,
-        `Indexing SOG LOD ${i}`,
       );
-      const reorder = (column, stride, name) =>
-        perm.apply(column, stride, pool, {
-          label: `Ordering SOG LOD ${i} ${name}`,
-        });
+      const reorder = (column, stride) =>
+        perm.apply(column, stride, pool, { visit });
       try {
-        level.records = reorder(level.records, 16, "geometry");
+        advance(level.length);
+        level.records = reorder(level.records, 16);
         for (let band = 0; band < level.maxSh; band++)
-          level.sh[band] = reorder(
-            level.sh[band],
-            SH_DIMS[band],
-            `SH${band + 1}`,
-          );
+          level.sh[band] = reorder(level.sh[band], SH_DIMS[band]);
         if (blindWidth)
-          level.blindValues = reorder(level.blindValues, blindWidth, "Blind");
+          level.blindValues = reorder(level.blindValues, blindWidth);
       } finally {
         perm.dispose();
       }
@@ -41,4 +50,5 @@ export async function orderChunks(rows, order) {
     workspace.settle();
     workspace.expect(0);
   }
+  progress.finish();
 }

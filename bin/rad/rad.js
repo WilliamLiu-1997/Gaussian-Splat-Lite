@@ -21,6 +21,7 @@ import { SH_DIMS } from "./splats.js";
 import { removePath } from "./storage.js";
 
 const CHUNK = 65536;
+const ENCODE_AHEAD = 2;
 function encodeSh(value) {
   const magnitude = Math.min(127, Math.round(Math.abs(value) * 128));
   return (value < 0 ? -magnitude : magnitude) & 255;
@@ -304,11 +305,46 @@ function encodeChunk(chunk, encoding) {
   return Buffer.concat([meta, size, ...payloads]);
 }
 
+// Budget gather(), both raw() slots, and the compressed properties that
+// coexist with their Buffer.concat() result.
+function encodingWorkers(splats, chunks, format, codebook) {
+  const { length, maxSh, workspace } = splats;
+  const rows = Math.min(length, CHUNK);
+  const bands = SH_DIMS.slice(0, maxSh);
+  const dims = bands.reduce((sum, width) => sum + width, 0);
+  const label = codebook?.labels.Type.BYTES_PER_ELEMENT ?? 0;
+  const inputRow = 64 + 4 + 8 + (label || dims * 2);
+  const scratchRow = Math.max(12, codebook ? 0 : (bands.at(-1) ?? 0)) + 4;
+  // Center, orientation and child columns always take 21 bytes per row.
+  const packedRow =
+    21 +
+    (format.alphaF16 ? 2 : 1) +
+    (format.rgbF16 ? 6 : 3) +
+    (format.scaleF16 ? 6 : 3) +
+    (label || dims);
+
+  // zlib's conservative expansion bound is under 14% plus a few bytes per
+  // property. The fixed allowance covers its state, output slabs and headers.
+  const compressed = (bytes) => Math.ceil(bytes * 1.14);
+  const active =
+    rows * (inputRow + scratchRow) +
+    2 * compressed(rows * packedRow) +
+    512 * 1024;
+  const codes = (codebook?.count ?? 0) * dims;
+  const firstChunk = codes + 2 * compressed(codes);
+
+  return encoders(workspace, chunks, active, (workers) => {
+    if (!workers) return firstChunk;
+    const queuedRows = Math.min(length - workers * rows, ENCODE_AHEAD * CHUNK);
+    // A queued chunk holds either its transferred input or its smaller
+    // encoded rows, plus room for a pooled buffer and the chunk header.
+    const queuedChunks = Math.ceil(queuedRows / CHUNK);
+    return firstChunk + queuedRows * inputRow + queuedChunks * Buffer.poolSize;
+  });
+}
+
 class Encoder extends WorkerGroup {
-  // Encodes `chunks` with workers when there is more than one and the
-  // workspace has room for them.
-  constructor(workspace, chunks, format) {
-    const count = encoders(workspace, chunks);
+  constructor(count, format) {
     super(
       new URL(import.meta.url),
       count,
@@ -317,9 +353,6 @@ class Encoder extends WorkerGroup {
       "Encoding",
     );
     this.next = 0;
-  }
-  get size() {
-    return this.workers.length;
   }
   async encode(chunk) {
     const threads = this.threads;
@@ -416,7 +449,9 @@ export async function writeRad(splats, output, chunked, codebook, format) {
   // order. A chunk's failure is thrown when its turn comes, not as an
   // unhandled rejection while an earlier chunk is awaited.
   const pending = [];
-  const encoder = new Encoder(workspace, chunkCount, format);
+  const workers = encodingWorkers(splats, chunkCount, format, codebook);
+  const pendingLimit = workers ? workers + ENCODE_AHEAD : 1;
+  const encoder = new Encoder(workers, format);
   try {
     if (!chunked) open(output);
     progress = new Progress("Encoding RAD chunks", chunkCount);
@@ -434,7 +469,7 @@ export async function writeRad(splats, output, chunked, codebook, format) {
       const bytes = encoder.encode(chunk);
       bytes.catch(() => {});
       pending.push(bytes);
-      if (pending.length > encoder.size + 1) store(await pending.shift());
+      if (pending.length === pendingLimit) store(await pending.shift());
     }
     while (pending.length) store(await pending.shift());
     progress.finish(`${chunks.length} chunks`);

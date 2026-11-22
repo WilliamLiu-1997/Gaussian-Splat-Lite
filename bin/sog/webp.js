@@ -22,7 +22,14 @@ export function initializeWebp() {
   return loading;
 }
 
-export function encodeWebp(rgba, width, height) {
+// A CLI thread that encoded locally may next convert another input.
+export function releaseWebp() {
+  loading = undefined;
+  module = undefined;
+}
+
+// A synchronous consumer can use the WASM view until the encoder frees it.
+export function encodeWebp(rgba, width, height, consume) {
   if (
     !Number.isInteger(width) ||
     !Number.isInteger(height) ||
@@ -46,7 +53,9 @@ export function encodeWebp(rgba, width, height) {
       throw new Error("WebP lossless encoding failed");
     output = module.HEAPU32[result >>> 2];
     const size = module.HEAPU32[(result + 4) >>> 2];
-    return module.HEAPU8.slice(output, output + size);
+    const view = module.HEAPU8.subarray(output, output + size);
+    if (!consume) return view.slice();
+    consume(view);
   } finally {
     if (output) module._WebPFree(output);
     module._free(input);

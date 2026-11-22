@@ -912,15 +912,15 @@ const trainingRows = (length, count) =>
   Math.max(count * SAMPLES_PER_CODE, Math.round(length * SAMPLE_SHARE));
 
 // Bytes at most that clusterRows() takes without a workspace for `length`
-// rows of `dims` single-precision coefficients and `count` entries: the
-// kernel, the jobs, the thread's arrays, each row's label and groups, and
-// the sample if only a part of the rows trains the entries.
-export function clusterBytes(module, length, dims, count) {
+// rows of `dims` coefficients and `count` entries. Chunks of the same SH
+// degree can share the kernel's scratch estimates for each group count.
+export function clusterBytes(module, length, dims, count, scratchByGroup = []) {
   const blocks = Math.ceil(count / BLOCK);
   const groups = groupsOf(count);
   const samples = trainingRows(length, count);
+  scratchByGroup[groups] ??= scratchBytes(module, dims, groups);
   return (
-    kernelBytes(dims, blocks, groups, scratchBytes(module, dims, groups)) +
+    kernelBytes(dims, blocks, groups, scratchByGroup[groups]) +
     WINDOW * JOB * (dims * 4 + 4 + 8 + TRAIN_PROBES * 2) +
     ownBytes(dims, count, blocks, groups) +
     length * 4 +

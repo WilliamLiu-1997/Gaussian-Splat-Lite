@@ -56,15 +56,11 @@ const SEARCH_SORTED = 6;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
-// Memory each LOD worker thread takes, 21 MiB and 3 MiB of the parts it
-// reads from files, and each encoding worker thread with its chunk, with
-// young generations of YOUNG_MB, measured on Linux and macOS; what the main
-// thread grows by during the LOD; and the chunks the main thread holds for
-// the encoders.
-const WORKER_BYTES = 24 * 1024 ** 2;
-const ENCODER_BYTES = 52 * 1024 ** 2;
+// Thread overhead with a YOUNG_MB young generation. LOD workers also
+// cache 3 MiB of parts read from files.
+const THREAD_BYTES = 21 * 1024 ** 2;
+const WORKER_BYTES = THREAD_BYTES + 3 * 1024 ** 2;
 const MAIN_BYTES = 64 * 1024 ** 2;
-const CHUNKS_BYTES = 24 * 1024 ** 2;
 // What an SH clustering worker thread takes besides its kernel and jobs,
 // with a full young generation, and the cache that clustering keeps: it
 // reads rows in order. A clustering thread measured 6 to 8 MiB on Linux
@@ -78,7 +74,7 @@ export const YOUNG_MB = 8;
 // now. Between the threads' searches this thread commits the merges, so
 // more threads gain ever less: 14 instead of 8 took a quarter off the
 // searches of a 12M-splat model, 4% of its conversion.
-function threads(workspace, bytes, extra, share = 1 / 4) {
+function threads(workspace, bytes, extra, share) {
   workspace.settle();
   return Math.max(
     0,
@@ -90,14 +86,14 @@ function threads(workspace, bytes, extra, share = 1 / 4) {
   );
 }
 
-// Makes room for the encoding worker threads of `chunks` and returns how
-// many there are.
-export function encoders(workspace, chunks) {
-  const count = Math.min(
-    threads(workspace, ENCODER_BYTES, CHUNKS_BYTES),
-    chunks - 1,
-  );
-  workspace.expect(count * ENCODER_BYTES + CHUNKS_BYTES);
+// Each encoder takes `active` bytes for its chunk. The rest depends on how
+// many chunks can be queued behind the workers.
+export function encoders(workspace, chunks, active, extraBytes) {
+  const worker = THREAD_BYTES + active;
+  let count = Math.min(chunks - 1, threads(workspace, worker, 0, 1 / 4));
+  while (count && count * worker * 2 + extraBytes(count) > workspace.room)
+    count--;
+  workspace.expect((count ? count * worker : active) + extraBytes(count));
   return count;
 }
 
@@ -118,11 +114,10 @@ export function computers(workspace, bytes, extra, jobs) {
   );
 }
 
-// Makes room for SH clustering worker threads, as many as computers() finds,
-// and returns how many there are.
-export function clusterers(workspace, bytes, extra, jobs) {
+// Reserve for the chosen workers, or for local processing if none fit.
+export function clusterers(workspace, bytes, extra, jobs, local = extra) {
   const count = computers(workspace, bytes, extra, jobs);
-  workspace.expect(count * (CLUSTER_BYTES + bytes) + extra);
+  workspace.expect(count ? count * (CLUSTER_BYTES + bytes) + extra : local);
   return count;
 }
 

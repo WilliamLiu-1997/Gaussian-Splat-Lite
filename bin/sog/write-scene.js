@@ -11,17 +11,16 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { GENERATOR } from "../generator.js";
-import { clusterBytes } from "../rad/cluster.js";
 import { initialize } from "../rad/input.js";
 import { WorkerGroup, clusterers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
-import { GIB, removePath } from "../rad/storage.js";
+import { removePath, sharedBuffer } from "../rad/storage.js";
 import { orderChunks } from "./chunk-order.js";
-import { entries } from "./cluster.js";
-import { MAX_CHUNK_SPLATS, encodeBytes, encodeChunk } from "./encode.js";
-import { chunkBuffer, chunkRowBytes } from "./gather.js";
+import { planChunks } from "./chunk-plan.js";
+import { encodeChunk } from "./encode.js";
 import { finishTree } from "./regions.js";
 import { SH_DIMS } from "./splats.js";
+import { releaseWebp } from "./webp.js";
 import { writeChunk, writeFile } from "./write-chunk.js";
 
 export function checkOutput(output) {
@@ -61,63 +60,34 @@ export async function writeScene(rows, regions, output, options, kernel) {
   // there is room for; without any, this thread does. A chunk in work takes
   // its gathered splats, its encoding, its SH clustering and its files.
   let encoder;
+
+  async function closeEncoder() {
+    if (!encoder) return;
+    await encoder.close();
+    if (!encoder.workers.length) releaseWebp();
+    encoder = undefined;
+  }
+
   try {
     await initialize();
-    workspace.settle();
-    const dims = SH_DIMS.slice(0, rows.levels[0].maxSh).reduce(
-      (a, b) => a + b,
-      0,
-    );
-    // Both the gathered rows and the WebP encoder must fit their own memory.
-    const capacity = Math.min(
-      Math.floor((workspace.room * 0.3) / (160 + dims * 8 + blindCount * 4)),
-      Math.floor((4 * GIB) / chunkRowBytes(dims, blindCount)),
-      MAX_CHUNK_SPLATS,
-    );
-    const limit = Math.min(options.lodChunkCount, capacity);
-    if (limit < 1) throw new Error("Memory budget too small for SOG encoding");
-
-    // Index of the first leaf after each chunk, relative to its LOD.
-    const chunkEnds = [];
-    let largest = 0;
-    let rangeCount = 0;
-    for (const [level, leaves] of regions.leavesByLevel.entries()) {
-      let size = 0;
-      rangeCount += leaves.length;
-      for (let i = 0; i < leaves.length; i++) {
-        const count = leaves[i].lods[level];
-        if (count > limit) {
-          const increase =
-            count <= capacity ? " or increase --lod-chunk-count" : "";
-          throw new Error(
-            `A region has ${count} splats, more than the chunk limit of ${limit}; reduce --region-splats${increase}`,
-          );
-        }
-        if (size + count > limit) {
-          chunkEnds.push(i);
-          size = 0;
-        }
-        size += count;
-        largest = Math.max(largest, size);
-      }
-      if (size) chunkEnds.push(leaves.length);
-    }
-    const total = chunkEnds.length;
-
-    // An entry per splat needs float codes and labels, but no clustering.
-    const codes = dims ? entries(largest, options) : 0;
-    const chunkBytes =
-      largest * (124 + dims * 2 + blindCount * 4) +
-      encodeBytes(largest, dims, codes, blindCount) +
-      (!dims
-        ? 0
-        : codes < largest
-          ? clusterBytes(kernel, largest, dims, codes)
-          : largest * (4 + dims * 4));
     await orderChunks(rows, regions.order);
     regions.order.dispose();
-    const threads = clusterers(workspace, chunkBytes, 0, total);
-    if (!threads) workspace.expect(chunkBytes);
+    workspace.settle();
+    const dims = SH_DIMS.slice(0, input.maxSh).reduce(
+      (sum, width) => sum + width,
+      0,
+    );
+    const plan = planChunks(
+      regions.leavesByLevel,
+      options,
+      dims,
+      blindCount,
+      kernel,
+      workspace.room,
+    );
+    const total = plan.ends.length;
+    const threads = total > 1 ? clusterers(workspace, plan.bytes, 0, total) : 0;
+    if (!threads) workspace.expect(plan.bytes);
     encoder = new WorkerGroup(
       new URL("./encode.js", import.meta.url),
       threads,
@@ -128,17 +98,19 @@ export async function writeScene(rows, regions, output, options, kernel) {
     // Idle threads keep their chunk buffers for reuse.
     const idle = encoder.threads.map((worker) => ({
       worker,
-      buffer: chunkBuffer(largest, dims, blindCount),
+      buffer: sharedBuffer(plan.gathered),
     }));
     const active = new Set();
 
+    let rangeCount = 0;
     const progress = new Progress("Writing SOG chunks", rows.length);
     for (const [level, leaves] of regions.leavesByLevel.entries()) {
+      rangeCount += leaves.length;
       const source = rows.levels[level];
       let first = 0;
       for (let start = 0, end; start < leaves.length; start = end) {
         const file = filenames.length;
-        end = chunkEnds[file];
+        end = plan.ends[file];
         const leafCount = end - start;
         const name = `lod-${level}-${file}`;
         const path = join(staging, name);
@@ -191,6 +163,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
         // A failure shows to what waits for the chunk.
         chunk.catch(() => {});
         active.add(chunk);
+        if (!threads) await chunk;
         filenames.push(`chunks/${name}/meta.json`);
         first += count;
       }
@@ -200,8 +173,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
     }
     await Promise.all(active);
     // The manifest may take the threads' memory and their chunks'.
-    await encoder.close();
-    encoder = undefined;
+    await closeEncoder();
     idle.length = 0;
     workspace.settle();
     workspace.expect(
@@ -243,7 +215,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
       );
     return { bytes, clipped, counts, files: filenames.length };
   } finally {
-    await encoder?.close();
+    await closeEncoder();
     for (const path of created.reverse())
       removePath(path, { recursive: path === chunks, force: true });
     removePath(staging, { recursive: true, force: true });

@@ -1,5 +1,9 @@
 import { KD_BINS_PER_AXIS as BINS } from "./lod-config.js";
 
+export const CUT_BYTES = (3 + 9 + 9) * BINS * Float64Array.BYTES_PER_ELEMENT;
+export const CUT_SUFFIX_BYTES =
+  (3 + 3 + 1) * BINS * Float64Array.BYTES_PER_ELEMENT;
+
 export function boundsOf(rows, order, start, count) {
   const min = [
     Number.POSITIVE_INFINITY,
