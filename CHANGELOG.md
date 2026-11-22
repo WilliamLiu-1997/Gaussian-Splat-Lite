@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-11-23
+
+### Fixed
+
+- `gsl-build-sog` now cleans up temporary output files if the chunk encoder fails to shut down.
+
 ## [1.10.0] - 2026-11-23
 
 ### Changed
@@ -848,7 +854,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.1...HEAD
+[1.10.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.8.0...v1.8.1
