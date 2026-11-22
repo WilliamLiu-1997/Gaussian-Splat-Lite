@@ -18,7 +18,7 @@ import { HALF, halfBits } from "./math.js";
 import { WorkerGroup, encoders } from "./parallel.js";
 import { Progress } from "./progress.js";
 import { SH_DIMS } from "./splats.js";
-import { readAll, removePath } from "./storage.js";
+import { removePath } from "./storage.js";
 
 const CHUNK = 65536;
 function encodeSh(value) {
@@ -26,11 +26,30 @@ function encodeSh(value) {
   return (value < 0 ? -magnitude : magnitude) & 255;
 }
 const SH_CODES = Uint8Array.from(HALF, encodeSh);
-function header(magic, meta) {
+
+function headerSize(jsonBytes) {
+  return 8 + Math.ceil(jsonBytes / 8) * 8;
+}
+
+function inlineHeaderSize(meta, count) {
+  const max = Number.MAX_SAFE_INTEGER;
+  const base = Buffer.byteLength(
+    JSON.stringify({ ...meta, allChunkBytes: max }),
+  );
+  const entry = JSON.stringify({ offset: max, bytes: max }).length;
+  // The empty chunks array already includes its brackets. Add entries and commas.
+  return headerSize(base + count * entry + Math.max(0, count - 1));
+}
+
+// With `size`, spaces pad the JSON to fill that many bytes.
+function header(magic, meta, size) {
   const json = Buffer.from(JSON.stringify(meta));
-  const result = Buffer.alloc(8 + Math.ceil(json.length / 8) * 8);
+  const length = size ? size - 8 : json.length;
+  if (json.length > length)
+    throw new Error("RAD header exceeds its reserved size");
+  const result = Buffer.alloc(headerSize(length), size ? " " : 0);
   result.write(magic);
-  result.writeUInt32LE(json.length, 4);
+  result.writeUInt32LE(length, 4);
   json.copy(result, 8);
   return result;
 }
@@ -335,54 +354,71 @@ export async function writeRad(splats, output, chunked, codebook, format) {
   const { workspace } = splats;
   const chunks = [];
   const stem = chunkStem(output);
-  const spool = chunked ? undefined : workspace.file();
+  const chunkCount = Math.ceil(splats.length / CHUNK);
+  const meta = {
+    version: 1,
+    type: "gsplat",
+    count: splats.length,
+    maxSh: splats.maxSh,
+    lodTree: true,
+    chunkSize: CHUNK,
+    allChunkBytes: 0,
+    chunks,
+    splatEncoding: format.meta,
+    ...(codebook && { shCodeCount: codebook.count }),
+    comment: GENERATOR,
+  };
+  const room = chunked ? 0 : inlineHeaderSize(meta, chunkCount);
   // Write every file completely before publishing chunks, then the header.
   // Track published names too, so cancellation rolls back this conversion.
   const staged = [];
   const created = [];
-  const stage = (file, write) => {
+  let activeFd;
+  const open = (file) => {
     workspace.check();
     const temporary = path.join(
       path.dirname(file),
       `.${path.basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
     );
-    const fd = openSync(temporary, "wx");
+    activeFd = openSync(temporary, "wx");
     staged.push({ temporary, file });
+  };
+  const close = () => {
+    const fd = activeFd;
+    activeFd = undefined;
     try {
-      write(fd);
-      workspace.check();
-      fsyncSync(fd);
+      workspace.writeback.synced(fd);
     } finally {
-      try {
-        workspace.writeback.synced(fd);
-      } finally {
-        closeSync(fd);
-      }
+      closeSync(fd);
     }
   };
-  let total = 0;
+  const complete = (bytes) => {
+    workspace.write(activeFd, bytes, 0);
+    workspace.check();
+    fsyncSync(activeFd);
+    close();
+  };
   let progress;
   const store = (bytes) => {
     if (chunked) {
       const filename = `${stem}-${chunks.length}.radc`;
-      stage(path.join(path.dirname(output), filename), (fd) =>
-        workspace.write(fd, bytes, 0),
-      );
+      open(path.join(path.dirname(output), filename));
+      complete(bytes);
       chunks.push({ offset: 0, bytes: bytes.length, filename });
     } else {
-      workspace.write(spool, bytes, total);
-      chunks.push({ offset: total, bytes: bytes.length });
+      workspace.write(activeFd, bytes, room + meta.allChunkBytes);
+      chunks.push({ offset: meta.allChunkBytes, bytes: bytes.length });
     }
-    total += bytes.length;
+    meta.allChunkBytes += bytes.length;
     progress.update(chunks.length);
   };
   // Gather the next chunks while workers encode earlier ones; store them in
   // order. A chunk's failure is thrown when its turn comes, not as an
   // unhandled rejection while an earlier chunk is awaited.
   const pending = [];
-  const chunkCount = Math.ceil(splats.length / CHUNK);
   const encoder = new Encoder(workspace, chunkCount, format);
   try {
+    if (!chunked) open(output);
     progress = new Progress("Encoding RAD chunks", chunkCount);
     for (let base = 0; base < splats.length; base += CHUNK) {
       workspace.check();
@@ -402,39 +438,10 @@ export async function writeRad(splats, output, chunked, codebook, format) {
     }
     while (pending.length) store(await pending.shift());
     progress.finish(`${chunks.length} chunks`);
-    const meta = header("RAD0", {
-      version: 1,
-      type: "gsplat",
-      count: splats.length,
-      maxSh: splats.maxSh,
-      lodTree: true,
-      chunkSize: CHUNK,
-      allChunkBytes: total,
-      chunks,
-      splatEncoding: format.meta,
-      ...(codebook && { shCodeCount: codebook.count }),
-      comment: GENERATOR,
-    });
-    const writing = new Progress(
-      "Writing RAD file",
-      meta.length + (spool === undefined ? 0 : total),
-    );
-    stage(output, (fd) => {
-      workspace.write(fd, meta, 0);
-      if (spool !== undefined) {
-        const buffer = Buffer.allocUnsafe(1024 * 1024);
-        for (let offset = 0; offset < total; offset += buffer.length) {
-          workspace.check();
-          const bytes = buffer.subarray(
-            0,
-            Math.min(buffer.length, total - offset),
-          );
-          readAll(spool, bytes, offset);
-          workspace.write(fd, bytes, meta.length + offset);
-          writing.update(meta.length + offset + bytes.length);
-        }
-      }
-    });
+    const head = header("RAD0", meta, room);
+    const writing = new Progress("Writing RAD file", head.length);
+    if (chunked) open(output);
+    complete(head);
     writing.finish();
     // Closing an output waits only for a sync that includes it; a temporary
     // file's failed writeback must surface before anything is published.
@@ -451,9 +458,12 @@ export async function writeRad(splats, output, chunked, codebook, format) {
     }
     workspace.check();
     publishing.finish();
-    return meta.length + total;
+    return head.length + meta.allChunkBytes;
   } catch (error) {
     await Promise.allSettled(pending);
+    try {
+      if (activeFd !== undefined) close();
+    } catch {}
     for (const { temporary } of staged) removePath(temporary);
     for (const file of created) removePath(file);
     throw error;
