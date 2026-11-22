@@ -61,11 +61,12 @@ export async function writeScene(rows, regions, output, options, kernel) {
   // its gathered splats, its encoding, its SH clustering and its files.
   let encoder;
 
-  async function closeEncoder() {
+  function closeEncoder() {
     if (!encoder) return;
-    await encoder.close();
-    if (!encoder.workers.length) releaseWebp();
+    const group = encoder;
     encoder = undefined;
+    if (group.workers.length) return group.close();
+    releaseWebp();
   }
 
   try {
@@ -215,9 +216,12 @@ export async function writeScene(rows, regions, output, options, kernel) {
       );
     return { bytes, clipped, counts, files: filenames.length };
   } finally {
-    await closeEncoder();
-    for (const path of created.reverse())
-      removePath(path, { recursive: path === chunks, force: true });
-    removePath(staging, { recursive: true, force: true });
+    try {
+      await closeEncoder();
+    } finally {
+      for (const path of created.reverse())
+        removePath(path, { recursive: path === chunks, force: true });
+      removePath(staging, { recursive: true, force: true });
+    }
   }
 }
