@@ -1,9 +1,17 @@
 // Candidate search adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
+import { GridRows, mergeRows } from "./grid-compact.js";
+import {
+  BlockRange,
+  SPREAD,
+  STRIDE,
+  sortLargeGrid,
+  store,
+} from "./grid-order.js";
 import { rank } from "./heap.js";
 import { HALF, halfBits } from "./math.js";
 import { Progress } from "./progress.js";
 import { LATER } from "./splats.js";
-import { IndexArray, PagedArray, Permutation } from "./storage.js";
+import { IndexArray, PAGE_BYTES, PagedArray, Permutation } from "./storage.js";
 export const NONE = 0xffffffff;
 // Files over which the tables of searches spread: worker threads read their
 // pages at once, and the system reads one file little faster from many.
@@ -24,7 +32,6 @@ let sorting;
 // Consecutive entries of one cell form a run within each 32-entry removal
 // word. The high half of BLUE stores its first bit index. LINK points to
 // the preceding run.
-const STRIDE = 16;
 const COLOR = 10;
 const BLUE = 11;
 const NODE = 12;
@@ -35,26 +42,10 @@ const double = new Float64Array(pair.buffer);
 // Entries are sorted by the Morton code of their cell, 4 bits per axis and
 // radix pass. Cells beyond 30 bits per axis share codes.
 const BITS = 30;
-const SPREAD = Uint16Array.from({ length: 16 }, (_, v) => {
-  let spread = 0;
-  for (let bit = 0; bit < 4; bit++) spread |= ((v >> bit) & 1) << (bit * 3);
-  return spread;
-});
 
-// The difference of two cells' coordinates on the axis that orders them in
-// Morton order, with x varying fastest: negative when the first comes first.
-function morton(a, b) {
-  const below = (x, y) => x < y && x < (x ^ y);
-  let high = a[0] ^ b[0];
-  let difference = a[0] - b[0];
-  for (let d = 1; d < 3; d++) {
-    const bits = a[d] ^ b[d];
-    if (!below(bits, high)) {
-      high = bits;
-      difference = a[d] - b[d];
-    }
-  }
-  return difference;
+function setRun(words, offset, first, previous) {
+  words[offset + BLUE] = (words[offset + BLUE] & 0xffff) | (first << 16);
+  words[offset + LINK] = previous;
 }
 
 // A round marks cells by their low hash bits. Collisions only add a slot lookup.
@@ -82,17 +73,6 @@ function newTable(workspace) {
   return table;
 }
 
-// Copies through `scratch`: fetching the target page may evict the source's.
-const scratch = new Uint32Array(STRIDE);
-function copy(source, from, target, to) {
-  const words = source.at(from * STRIDE).words;
-  const offset = (from * STRIDE) & source.mask;
-  for (let w = 0; w < STRIDE; w++) scratch[w] = words[offset + w];
-  const out = target.at(to * STRIDE, true).words;
-  const at = (to * STRIDE) & target.mask;
-  for (let w = 0; w < STRIDE; w++) out[at + w] = scratch[w];
-}
-
 // Writes the entry of splat `node` at `offset` of `values` and `words`, the
 // float and word views of one memory: its terms `tuple` and its weight.
 export function writeEntry(values, words, offset, node, tuple, weight) {
@@ -105,21 +85,6 @@ export function writeEntry(values, words, offset, node, tuple, weight) {
   double[0] = weight;
   words[offset + WEIGHT] = pair[0];
   words[offset + WEIGHT + 1] = pair[1];
-}
-
-// Appends the `count` entries in `words` to `table` after its first `length`
-// entries, the words of a page at a time: as words, every field keeps its
-// bits.
-function store(table, length, words, count) {
-  for (let done = 0; done < count; ) {
-    const index = (length + done) * STRIDE;
-    const within = index & table.mask;
-    const size = Math.min((count - done) * STRIDE, table.items - within);
-    table
-      .at(index, true)
-      .words.set(words.subarray(done * STRIDE, done * STRIDE + size), within);
-    done += size / STRIDE;
-  }
 }
 
 // A cell's hash XORs one term per axis. Above three bits for the cell in its
@@ -429,29 +394,31 @@ export class Grid extends Lookup {
     this.limit = 2 ** Math.min(bits, BITS) - 1;
     this.passes = Math.ceil(Math.min(bits, BITS) / 4);
     this.a = new Int32Array(3);
-    this.b = new Int32Array(3);
   }
 
   // The coordinates of the block of an entry's cell, into `out`.
   block(table, entry, out) {
     const values = table.page(entry * STRIDE);
     const offset = (entry * STRIDE) & table.mask;
+    return this.blockOf(values, offset, out);
+  }
+
+  blockOf(values, offset, out) {
     for (let d = 0; d < 3; d++)
-      out[d] = Math.min(
-        this.limit,
-        Math.max(
-          0,
-          Math.floor(
-            (this.cell(values[offset + d], d) - this.minCell[d]) / this.scale,
-          ),
-        ),
-      );
+      out[d] = this.blockAxis(this.cell(values[offset + d], d), d);
     return out;
+  }
+
+  blockAxis(cell, axis) {
+    return Math.min(
+      this.limit,
+      Math.max(0, Math.floor((cell - this.minCell[axis]) / this.scale)),
+    );
   }
 
   // Adds live splats no larger than the search step, in heap order: a batch
   // at a time, whose entries the pool's threads compute from the splats'
-  // records. This thread computes those of records that are not cached.
+  // records. When most pages are on disk, gather the batch for the workers.
   build(active, removed, label) {
     const progress = label && new Progress(`${label} grid`, active.length);
     const { pool, similarities } = this;
@@ -459,14 +426,29 @@ export class Grid extends Lookup {
     const { items } = active;
     // Active keys rank -size, so larger keys mean smaller splats.
     const cellKey = rank(-this.step);
+    const source = similarities.splats.records;
+    const range = this.largeSort(active.length) ? new BlockRange() : undefined;
     let count = 0;
     const flush = () => {
       if (count < 64) results.fill(LATER, 0, count);
-      else pool.enter(similarities.splats, count);
+      else {
+        const gathered = source.residentPages * 2 < source.pages.length;
+        if (gathered)
+          this.visitNodePages(source, count, STRIDE, false, (i, geometry) => {
+            const from = (nodes[i] * STRIDE) & source.mask;
+            for (let d = 0; d < STRIDE; d++)
+              values[i * STRIDE + d] = geometry[from + d];
+          });
+        pool.enter(similarities.splats, count, gathered);
+      }
       for (let i = 0; i < count; i++) {
         if (results[i] !== LATER) continue;
         const tuple = similarities.get(nodes[i], this.tuple);
         writeEntry(values, words, i * STRIDE, nodes[i], tuple, tuple[13]);
+      }
+      if (range) {
+        for (let i = 0; i < count; i++)
+          range.include(this.blockOf(values, i * STRIDE, this.a));
       }
       store(this.entries, this.length, words, count);
       this.length += count;
@@ -477,7 +459,7 @@ export class Grid extends Lookup {
       const offset = (i * 2) & items.mask;
       const key = pair[offset];
       const node = pair[offset + 1];
-      if (!removed.get(node) && key >= cellKey) {
+      if (!removed.has(node) && key >= cellKey) {
         nodes[count++] = node;
         if (count === nodes.length) flush();
       }
@@ -485,11 +467,14 @@ export class Grid extends Lookup {
     }
     flush();
     progress?.finish();
-    this.entries = this.sort(this.entries, this.length, label);
+    this.entries = this.sort(this.entries, this.length, label, range);
     this.sorted = this.length;
     // The cells that the sort counted size the table of slots at once.
     this.count = this.cells;
-    this.relink(label);
+    const indexing = label && new Progress(`${label} indexing`, this.length);
+    this.resetLinks();
+    this.linkRange(0, this.length, indexing);
+    indexing?.finish();
   }
 
   // Adds a merged splat and returns the hash of its cell.
@@ -502,15 +487,30 @@ export class Grid extends Lookup {
     return this.lastHash;
   }
 
+  largeSort(length) {
+    return length * STRIDE * 4 > this.workspace.capacity * 3;
+  }
+
   // Returns the first `length` entries of `table` stably sorted by block,
   // disposing `table` if they moved, and counts their blocks in `cells`.
   // Sorts each entry's block and position, four words, and then moves the
   // entries once. Keys are read a block at a time, and those of a bucket
   // written a run at a time: one by one, every key would look up its page.
-  sort(table, length, label) {
+  sort(table, length, label, range) {
+    const sortLabel = label && `${label} spatial sort`;
+    // Index the initial grid next. Write its cell runs before sorted pages spill.
+    const prepareRuns =
+      table === this.entries &&
+      this.scale === 1 &&
+      length * STRIDE * 4 > this.workspace.capacity
+        ? this.runWriter()
+        : undefined;
+    // Beyond a few output windows the permutation rereads most source pages.
+    if (this.largeSort(length))
+      return sortLargeGrid(this, table, length, sortLabel, range, prepareRuns);
     const passes = this.passes;
     const progress =
-      label && new Progress(`${label} spatial sort`, length * (passes + 2));
+      sortLabel && new Progress(sortLabel, length * (passes + 2));
     const digit = (words, o, pass) =>
       SPREAD[(words[o] >>> (pass * 4)) & 15] |
       (SPREAD[(words[o + 1] >>> (pass * 4)) & 15] << 1) |
@@ -613,12 +613,52 @@ export class Grid extends Lookup {
       label && `${label} spatial order`,
     );
     indices.dispose();
+    function visit(out, start, end) {
+      for (let entry = start; entry < end; ) {
+        const at = entry * STRIDE;
+        const { values, words } = out.at(at, true);
+        const offset = at & out.mask;
+        const stop = Math.min(end, entry + (out.items - offset) / STRIDE);
+        prepareRuns(values, words, offset, entry, stop);
+        entry = stop;
+      }
+    }
     const sorted = permutation.apply(table, STRIDE, this.pool, {
       words: true,
+      visit: prepareRuns && visit,
       label: label && `${label} spatial reorder`,
     });
     permutation.dispose();
     return sorted;
+  }
+
+  // A run may span several output chunks. Indexing reconnects cells that
+  // appear in separate runs within the same clamped block.
+  runWriter() {
+    let lastX;
+    let lastY;
+    let lastZ;
+    let first;
+    let previous;
+    return (values, words, from, start, end) => {
+      let offset = from;
+      for (let entry = start; entry < end; entry++, offset += STRIDE) {
+        const x = this.cell(values[offset], 0);
+        const y = this.cell(values[offset + 1], 1);
+        const z = this.cell(values[offset + 2], 2);
+        if (x !== lastX || y !== lastY || z !== lastZ) {
+          lastX = x;
+          lastY = y;
+          lastZ = z;
+          first = entry & 31;
+          previous = NONE;
+        } else if (!(entry & 31)) {
+          first = 0;
+          previous = entry - 1;
+        }
+        setRun(words, offset, first, previous);
+      }
+    };
   }
 
   // Drops removed entries and merges the inserted ones, sorted, into the
@@ -627,36 +667,34 @@ export class Grid extends Lookup {
     const old = this.entries;
     let inserted = newTable(this.workspace);
     let added = 0;
-    for (let entry = this.sorted; entry < this.length; entry++)
-      if (!this.isRemoved(entry)) copy(old, entry, inserted, added++);
-    inserted = this.sort(inserted, added);
-    this.entries = newTable(this.workspace);
-    let length = 0;
-    for (let i = 0, j = 0; ; ) {
-      while (i < this.sorted && this.isRemoved(i)) i++;
-      if (i === this.sorted && j === added) break;
-      if (
-        j === added ||
-        (i < this.sorted &&
-          morton(this.block(old, i, this.a), this.block(inserted, j, this.b)) <=
-            0)
-      )
-        copy(old, i++, this.entries, length++);
-      else copy(inserted, j++, this.entries, length++);
+    const range = this.largeSort(this.length - this.sorted)
+      ? new BlockRange()
+      : undefined;
+    const appended = new GridRows(old, this.sorted, this.length, this.gone);
+    while (appended.load()) {
+      if (range)
+        for (let i = 0; i < appended.size; i++)
+          range.include(this.blockOf(appended.values, i * STRIDE, this.a));
+      store(inserted, added, appended.words, appended.size);
+      added += appended.size;
     }
+    inserted = this.sort(inserted, added, undefined, range);
+    this.entries = newTable(this.workspace);
+    this.resetLinks();
+    const length = mergeRows(
+      this,
+      new GridRows(old, 0, this.sorted, this.gone),
+      new GridRows(inserted, 0, added),
+    );
     old.dispose();
     inserted.dispose();
     this.gone.dispose();
     this.gone = new IndexArray(this.workspace).share(STRIPES);
     this.length = this.sorted = length;
     this.removed = 0;
-    this.relink();
   }
 
-  // Rebuilds the lists in entry order. Entries of a cell are in insertion
-  // order, so each list runs from the newest entry to the oldest.
-  relink(label) {
-    const progress = label && new Progress(`${label} indexing`, this.length);
+  resetLinks() {
     this.slots.dispose();
     this.slots = new IndexArray(this.workspace).share(STRIPES);
     // Compaction keeps at most the cells there were.
@@ -665,16 +703,37 @@ export class Grid extends Lookup {
     this.count = 0;
     this.last = -1;
     this.layout++;
-    for (let entry = 0; entry < this.length; ) {
-      if ((entry & 4095) === 0) progress?.update(entry);
-      entry = this.link(entry, NONE, this.length);
-    }
-    progress?.finish();
   }
 
-  // Link consecutive entries in one cell and removal word, up to `end`.
-  // A single insertion publishes just its own entry.
-  link(entry, hint = NONE, end = entry + 1) {
+  // Build the index in Morton order, including across successive batches.
+  linkRange(first, end, progress) {
+    // Switch when this layer's index has spilled or occupies half the cache.
+    const pageLimit = this.workspace.capacity / (2 * PAGE_BYTES);
+    for (let entry = first; entry < end; ) {
+      if ((entry & 4095) === 0) progress?.update(entry);
+      if (
+        (!this.entryOf.spill && this.entryOf.residentPages < pageLimit) ||
+        end - entry < 64
+      ) {
+        entry = this.link(entry, NONE, end);
+        continue;
+      }
+      const base = entry;
+      const nodes = this.pool.nodes;
+      const limit = Math.min(base + nodes.length - (base % nodes.length), end);
+      while (entry < limit) entry = this.link(entry, NONE, limit, nodes, base);
+      this.mapNodes(limit - base, base);
+    }
+  }
+
+  // Link a run in Morton order up to sortedEnd, or just one appended entry.
+  link(
+    entry,
+    hint = NONE,
+    sortedEnd = undefined,
+    nodes = this.runNodes,
+    base = entry,
+  ) {
     const page = this.entries.at(entry * STRIDE);
     const offset = (entry * STRIDE) & this.entries.mask;
     const x = this.cell(page.values[offset], 0);
@@ -704,24 +763,46 @@ export class Grid extends Lookup {
           "Splat coordinates exceed the LOD grid's integer range",
         );
       this.lastHash = cellHash(x, y, z);
-      slot = this.slot(this.lastHash, x, y, z);
-      head = this.slotHead;
+      // The first cell of a new sorted block cannot already be in the table.
+      // A matching hash alone would otherwise fetch an older entry's page.
+      if (
+        sortedEnd !== undefined &&
+        slot >= 0 &&
+        (this.blockAxis(x, 0) !== this.blockAxis(this.lastX, 0) ||
+          this.blockAxis(y, 1) !== this.blockAxis(this.lastY, 1) ||
+          this.blockAxis(z, 2) !== this.blockAxis(this.lastZ, 2))
+      ) {
+        slot = this.emptySlot(this.lastHash);
+        head = 0;
+      } else {
+        slot = this.slot(this.lastHash, x, y, z);
+        head = this.slotHead;
+      }
     }
     const at = this.slots.offset(slot * 2);
-    const { values, words: entryWords } = this.entries.at(entry * STRIDE, true);
+    const row = this.entries.at(entry * STRIDE);
+    const { values, words: entryWords } = row;
     let first = entry & 31;
     let previous = head ? head - 1 : NONE;
     if (first && previous === entry - 1) {
       first = entryWords[offset - STRIDE + BLUE] >>> 16;
       previous = entryWords[offset - STRIDE + LINK];
     }
-    const limit = Math.min(end - entry, 32 - (entry & 31));
+    const limit = Math.min((sortedEnd ?? entry + 1) - entry, 32 - (entry & 31));
     let count = 0;
     let o = offset;
+    const start = entry - base;
     do {
-      this.runNodes[count++] = entryWords[o + NODE];
-      entryWords[o + BLUE] = (entryWords[o + BLUE] & 0xffff) | (first << 16);
-      entryWords[o + LINK] = previous;
+      nodes[start + count++] = entryWords[o + NODE];
+      // Matching links on a clean page need no writeback.
+      if (
+        row.dirty ||
+        entryWords[o + BLUE] >>> 16 !== first ||
+        entryWords[o + LINK] !== previous
+      ) {
+        row.dirty = true;
+        setRun(entryWords, o, first, previous);
+      }
       o += STRIDE;
     } while (
       count < limit &&
@@ -730,8 +811,9 @@ export class Grid extends Lookup {
       this.cell(values[o + 2], 2) === z
     );
     // Updating the node map may evict the entry page.
-    for (let i = 0; i < count; i++)
-      this.entryOf.set(this.runNodes[i], entry + i);
+    if (nodes === this.runNodes)
+      for (let i = 0; i < count; i++)
+        this.entryOf.set(nodes[start + i], entry + i);
     const words = this.slots.page(slot * 2, true);
     if (!head) words[at] = this.lastHash;
     if (this.workspace.finishSearch)
@@ -745,6 +827,14 @@ export class Grid extends Lookup {
     return entry + count;
   }
 
+  emptySlot(hash) {
+    const mask = this.capacity - 1;
+    let slot = wrapSlot(hash, mask);
+    let stride = 0;
+    while (this.slots.get(slot * 2 + 1)) slot = wrapSlot(slot + ++stride, mask);
+    return slot;
+  }
+
   grow() {
     this.workspace.finishSearch?.();
     this.last = -1;
@@ -753,15 +843,11 @@ export class Grid extends Lookup {
     const capacity = this.capacity;
     this.capacity *= 2;
     this.slots = new IndexArray(this.workspace).share(STRIPES);
-    const mask = this.capacity - 1;
     for (let i = 0; i < capacity; i++) {
       const head = old.get(i * 2 + 1);
       if (!head) continue;
       const hash = old.get(i * 2);
-      let slot = wrapSlot(hash, mask);
-      let stride = 0;
-      while (this.slots.get(slot * 2 + 1))
-        slot = wrapSlot(slot + ++stride, mask);
+      const slot = this.emptySlot(hash);
       this.slots.set(slot * 2, hash);
       this.slots.set(slot * 2 + 1, head);
     }
@@ -774,15 +860,89 @@ export class Grid extends Lookup {
     this.removed++;
   }
 
+  // Chain the nodes of a page in batch order. Visit resident pages first and
+  // sort only distinct misses, so each page lookup serves all its nodes.
+  visitNodePages(column, count, stride, write, visit) {
+    const { nodes, partners: pages, searchOrder: links } = this.pool;
+    const rows = column.items / stride;
+    this.pageHeads ??= new Uint16Array(column.pages.length);
+    let heads = this.pageHeads;
+    let used = 0;
+    for (let i = count - 1; i >= 0; i--) {
+      const page = Math.floor(nodes[i] / rows);
+      if (page >= heads.length) {
+        const grown = new Uint16Array(
+          Math.max(page + 1, column.pages.length, heads.length * 2),
+        );
+        grown.set(heads);
+        this.pageHeads = heads = grown;
+      }
+      links[i] = heads[page];
+      if (!links[i]) pages[used++] = page;
+      heads[page] = i + 1;
+    }
+
+    function visitPage(page) {
+      const values = column.page(page * column.items, write);
+      for (let at = heads[page]; at; at = links[at - 1]) visit(at - 1, values);
+      heads[page] = 0;
+    }
+
+    let cold = 0;
+    for (let i = 0; i < used; i++) {
+      const page = pages[i];
+      if (column.pages[page]) visitPage(page);
+      else pages[cold++] = page;
+    }
+    if (cold > 1) pages.subarray(0, cold).sort();
+    for (let i = 0; i < cold; i++) visitPage(pages[i]);
+  }
+
+  // Without a base, gather the round's entries in queue order. Relinking
+  // supplies a base and scatters the new entry numbers to the same node map.
+  mapNodes(count, base) {
+    const { nodes, entries } = this.pool;
+    const map = this.entryOf;
+    const write = base !== undefined;
+    this.visitNodePages(map, count, 1, write, (i, values) => {
+      const offset = nodes[i] & map.mask;
+      if (write) values[offset] = base + i;
+      else entries[i] = values[offset];
+    });
+  }
+
+  gatherEntries(count) {
+    const map = this.entryOf;
+    if (count >= 64 && map.spill && map.residentPages < map.pages.length)
+      this.mapNodes(count);
+    else
+      for (let i = 0; i < count; i++)
+        this.pool.entries[i] = map.get(this.pool.nodes[i]);
+  }
+
   // The entry of `node`, which must be in the grid.
   entry(node) {
     return this.entryOf.get(node);
   }
 
-  // Compacts the grid once half of it is removed. Entries keep their
-  // positions until the next call.
-  tidy() {
-    if (this.removed * 2 > this.length) this.compact();
+  // Regroup scattered parents if enough searches remain to repay the rebuild.
+  prepareRound(queue, stepKey, mergesLeft) {
+    const appended = this.length - this.sorted;
+    if (
+      this.removed * 2 > this.length ||
+      (this.entries.spill &&
+        this.entries.residentPages < this.entries.pages.length &&
+        appended * 12 > this.length &&
+        appended * STRIDE * 4 > this.workspace.capacity / 3 &&
+        appended <= mergesLeft &&
+        // The first candidate of this round has already been popped.
+        queue.hasCandidates(appended - 1, stepKey))
+    )
+      this.compact();
+    return Math.min(
+      this.pool.nodes.length,
+      Math.max(256, Math.floor(this.count / 100)),
+    );
   }
 
   dispose() {

@@ -1,17 +1,17 @@
 import { parentPort } from "node:worker_threads";
 
-let inline = false;
+let inlineStarted;
 
 // Call update at batch boundaries, not for every splat. A completed stage is
 // the only place that reports 100%; rounding cannot finish a stage early.
 export class Progress {
-  // Keep synchronous setup steps on the same line as the stage that follows.
+  // Share a timer and one terminal line across the stages started here.
   static inline(run) {
-    inline = true;
+    inlineStarted = performance.now();
     try {
       return run();
     } finally {
-      inline = false;
+      inlineStarted = undefined;
     }
   }
 
@@ -20,8 +20,8 @@ export class Progress {
     this.total = total;
     this.singleLine = singleLine;
     this.interval = interval;
-    this.started = performance.now();
-    this.updated = this.started;
+    this.updated = performance.now();
+    this.started = inlineStarted ?? this.updated;
     this.print(0, false, detail);
   }
 
@@ -41,11 +41,14 @@ export class Progress {
 
   print(percent, done, detail) {
     const seconds = ((performance.now() - this.started) / 1000).toFixed(1);
-    const line = `${this.label}: ${percent.toFixed(1)}%${detail ? `, ${detail}` : ""} (${seconds}s)`;
+    // Build a custom suffix only when the update is displayed.
+    const suffix =
+      typeof detail === "function" ? detail() : detail && `, ${detail}`;
+    const line = `${this.label}: ${percent.toFixed(1)}%${suffix} (${seconds}s)`;
     if (parentPort)
       parentPort.postMessage({
         method: "progress",
-        args: [line, done && !inline],
+        args: [line, done && inlineStarted === undefined],
         singleLine: this.singleLine,
       });
     else if (this.singleLine && process.stdout.isTTY)

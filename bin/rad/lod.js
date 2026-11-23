@@ -23,6 +23,17 @@ const blockSlot = (x, y, z) =>
   (x | 0) + Math.imul(y, Y_STRIDE) + Math.imul(z, Z_STRIDE);
 const BLOCK_OFFSETS = [0, Y_STRIDE, Z_STRIDE, Y_STRIDE + Z_STRIDE];
 
+class RemovedNodes extends IndexArray {
+  has(node) {
+    return (this.get(node >>> 5) >>> (node & 31)) & 1;
+  }
+
+  add(node) {
+    const word = node >>> 5;
+    this.page(word, true)[word & this.mask] |= 1 << (node & 31);
+  }
+}
+
 export function buildLod(splats, lodBase, pool, shCodebook) {
   const initial = splats.length;
   // N retained leaves produce 2N - 1 nodes in the binary tree.
@@ -179,12 +190,17 @@ export function buildLod(splats, lodBase, pool, shCodebook) {
 // until exactly target nodes remain.
 export function mergeLevels(splats, pool, target, saveBlends) {
   const initial = splats.length;
-  const end = initial + (initial - target);
+  const totalMerges = initial - target;
+  const end = initial + totalMerges;
+  const mergeCount = new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumSignificantDigits: 3,
+  });
   const workspace = splats.workspace;
   if (saveBlends) splats.blend = new PagedArray(workspace, Float64Array);
   // Merged splats lie within the leaves' bounds.
   const { bounds, sizes } = splats;
-  const removed = new PagedArray(workspace, Uint8Array);
+  const removed = new RemovedNodes(workspace);
   const similarities = new Similarities(splats);
   let active = new Heap(workspace);
   let frontier = 0;
@@ -221,16 +237,25 @@ export function mergeLevels(splats, pool, target, saveBlends) {
     if (!Number.isFinite(searchStep)) throw new Error("LOD scale overflow");
     const stepKey = rank(-step);
     const name = `LOD level ${level - first + 1}/≈${levels}`;
-    // The leaves are sorted by feature, so find this level's range without
-    // an extra linear pass just to count its work.
-    let low = frontier;
-    let high = initial;
-    while (low < high) {
-      const middle = Math.floor((low + high) / 2);
-      if (sizes.get(middle) <= searchStep) low = middle + 1;
-      else high = middle;
-    }
-    const { grid, queue } = Progress.inline(() => {
+    const levelStart = splats.length;
+    const detail = () => {
+      const count = splats.length - levelStart;
+      const overall =
+        splats.length === end
+          ? 100
+          : Math.min(99.99, ((splats.length - initial) * 100) / totalMerges);
+      return ` | ${mergeCount.format(count)} ${count === 1 ? "merge" : "merges"} | overall ${overall.toFixed(2)}%`;
+    };
+    const { grid, queue, progress } = Progress.inline(() => {
+      // The leaves are sorted by feature, so find this level's range without
+      // an extra linear pass just to count its work.
+      let low = frontier;
+      let high = initial;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (sizes.get(middle) <= searchStep) low = middle + 1;
+        else high = middle;
+      }
       const adding = new Progress(`Preparing ${name}`, low - frontier);
       const previous = frontier;
       while (frontier < low) {
@@ -242,38 +267,33 @@ export function mergeLevels(splats, pool, target, saveBlends) {
       const grid = new Grid(similarities, searchStep, bounds, pool);
       grid.build(active, removed, name);
       const queue = new Queue(active, workspace, `Sorting ${name} queue`);
-      return { grid, queue };
+      const progress = new Progress(`Merging ${name}`, queue.length, detail);
+      return { grid, queue, progress };
     });
     active.dispose();
     const next = new Heap(workspace);
-    const detail = () =>
-      `${splats.length - initial}/${initial - target} merges`;
-    const progress = new Progress(`Merging ${name}`, queue.length, detail());
     // Rounds of merges in heap order. Workers search for the candidates of
     // the next popped splats while this thread commits completed chunks.
     // Committing them in order, a search still holds unless its candidate is
-    // gone or a merge of the round added a candidate at least as good, and
+    // gone or a merge of the round added a better candidate, and
     // splats that merges add pop as they would one by one.
     while (queue.length && splats.length < end) {
-      grid.tidy();
-      // Keep the same rounds on disk. Changing them can reorder tied candidates.
-      const limit = Math.min(
-        ROUND,
-        Math.max(256, Math.floor(grid.count / 100)),
-      );
+      let limit = ROUND;
       let count = 0;
       while (count < limit && queue.length) {
         const index = queue.pop();
-        if (removed.get(index)) continue;
+        if (removed.has(index)) continue;
         if (queue.key < stepKey) {
           next.pushKey(index, queue.key);
           continue;
         }
+        if (!count)
+          limit = grid.prepareRound(queue, stepKey, end - splats.length);
         pool.nodes[count] = index;
-        pool.entries[count] = grid.entry(index);
         keys[count] = queue.key;
         count++;
       }
+      grid.gatherEntries(count);
       // Entries from here on are added by the round; slots stay put while
       // the layout does.
       const start = grid.length;
@@ -296,7 +316,7 @@ export function mergeLevels(splats, pool, target, saveBlends) {
         if (queue.length && queue.before(keys[t], pool.nodes[t])) {
           index = queue.pop();
           key = queue.key;
-          if (removed.get(index)) continue;
+          if (removed.has(index)) continue;
           self = grid.entry(index);
         } else {
           if (t === ready) ready = pool.readyThrough(t, count);
@@ -305,7 +325,7 @@ export function mergeLevels(splats, pool, target, saveBlends) {
           key = keys[t];
           best = pool.results[t];
           task = t++;
-          if (removed.get(index)) continue;
+          if (removed.has(index)) continue;
         }
         const offset = task * 14;
         if (best === MISS) grid.read(self, query);
@@ -325,11 +345,9 @@ export function mergeLevels(splats, pool, target, saveBlends) {
           copy(pool.queries, offset, query, 14);
           const metric = pool.metrics[task];
           const better = grid.find(query, self, start, added, metric);
-          if (better !== NONE && better !== best) {
-            if (best === NONE || grid.metric > metric) {
-              best = better;
-              task = -1;
-            } else best = MISS;
+          if (better !== NONE && (best === NONE || grid.metric > metric)) {
+            best = better;
+            task = -1;
           }
         }
         if (best === MISS) {
@@ -355,8 +373,8 @@ export function mergeLevels(splats, pool, target, saveBlends) {
                 pool.blends[task * 2 + 1],
               );
         if (splats.length === end) break;
-        removed.set(index, 1);
-        removed.set(other, 1);
+        removed.add(index);
+        removed.add(other);
         grid.remove(self);
         grid.remove(best);
         // Merger already rounds these fields to their stored precision.
@@ -395,11 +413,11 @@ export function mergeLevels(splats, pool, target, saveBlends) {
       workspace.finishSearch?.();
       // At round boundaries the queue only shrinks: each new merged item
       // replaces at least one popped item. Include those items until drained.
-      progress.update(progress.total - queue.length, detail());
+      progress.update(progress.total - queue.length, detail);
     }
     grid.dispose();
     queue.dispose();
-    progress.finish(detail());
+    progress.finish(detail);
     active = next;
     if (splats.length === end) break;
   }

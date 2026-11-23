@@ -151,6 +151,14 @@ export class Queue {
   get length() {
     return this.size - this.cursor + this.fresh.length;
   }
+  // All fresh parents can search this level. The sorted candidates with
+  // sufficient rank form a prefix, so checking its last required item suffices.
+  hasCandidates(count, minKey) {
+    const sorted = count - this.fresh.length;
+    if (sorted <= 0) return true;
+    const last = this.cursor + sorted - 1;
+    return last < this.size && this.items.get(last * 2) >= minKey;
+  }
   // Whether the next item pops before the item (key, index).
   before(key, index) {
     if (this.fresh.length && this.fresh.before(key, index)) return true;

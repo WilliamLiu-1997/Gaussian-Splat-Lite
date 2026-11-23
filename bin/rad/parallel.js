@@ -53,6 +53,7 @@ const CHECK = 3;
 const COLLECT = 4;
 const ENTER = 5;
 const SEARCH_SORTED = 6;
+const ENTER_GATHERED = 7;
 const TYPES = { Float32Array, Float64Array, Uint16Array, Uint32Array };
 const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
@@ -411,11 +412,13 @@ export class Pool {
   }
 
   // Writes the grid entries of the first `count` splats in `nodes` to
-  // `records`, 16 words each, and marks them 0 in `results`. A splat whose
-  // record is not cached is marked LATER.
-  enter(splats, count) {
-    this.share({ splatRecords: splats.records.share().directory });
-    this.run(ENTER, count, 1024);
+  // `records`, 16 words each. Gathered geometry already occupies those slots.
+  // When reading the column directly, uncached rows are marked LATER.
+  enter(splats, count, gathered = false) {
+    this.share(
+      gathered ? {} : { splatRecords: splats.records.share().directory },
+    );
+    this.run(gathered ? ENTER_GATHERED : ENTER, count, 1024);
   }
 
   // Makes the workers drop their views of arenas that the workspace
@@ -627,7 +630,8 @@ class Task {
       } else if (job === BLEND)
         this.blend(start, end, Atomics.load(control, DIMS));
       else if (job === COPY) this.copy(start, end);
-      else if (job === ENTER) this.enter(start, end);
+      else if (job === ENTER || job === ENTER_GATHERED)
+        this.enter(start, end, job === ENTER_GATHERED);
       else {
         const base = Atomics.load(control, BASE) >>> 0;
         for (let i = start; i < end; i++)
@@ -669,16 +673,20 @@ class Task {
     return filterRecord(record, this.withinDist);
   }
 
-  enter(start, end) {
+  enter(start, end, gathered) {
     const { splatRecords: column, nodes, results, merged: record } = this;
     for (let i = start; i < end; i++) {
-      const index = nodes[i] * 16;
-      column.missed = false;
-      const values = column.page(index);
-      const offset = column.offset(index);
-      if (column.missed) {
-        results[i] = LATER;
-        continue;
+      let values = this.records;
+      let offset = i * 16;
+      if (!gathered) {
+        const index = nodes[i] * 16;
+        column.missed = false;
+        values = column.page(index);
+        offset = column.offset(index);
+        if (column.missed) {
+          results[i] = LATER;
+          continue;
+        }
       }
       for (let d = 0; d < 16; d++) record[d] = values[offset + d];
       writeEntry(
