@@ -196,10 +196,15 @@ export function sortLargeGrid(
     }
     if (tails * values.byteLength > workspace.capacity * 0.75) return false;
 
+    // Input interleaves buckets, but each cursor visits its final rows in order.
+    const writers = prepareRuns && Array.from(cursor, () => grid.runWriter());
     scan(table, undefined, length, (size, base) => {
       for (let i = 0; i < size; i++) {
         const offset = i * STRIDE;
-        const target = cursor[key(offset)]++ * STRIDE;
+        const bucket = key(offset);
+        const row = cursor[bucket]++;
+        writers?.[bucket](values, words, offset, row, row + 1);
+        const target = row * STRIDE;
         const dest = output.at(target, true).words;
         const at = target & output.mask;
         for (let w = 0; w < STRIDE; w++) dest[at + w] = words[offset + w];
