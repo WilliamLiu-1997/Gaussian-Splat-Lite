@@ -570,25 +570,28 @@ export async function buildRegions(rows, limit) {
     done = Math.min(done + rows, most);
     progress.update(done);
   };
-  const order = new PagedArray(workspace, RowId, length);
   let where;
+  let order;
   let gathered;
   const arranged = new IndexArray(workspace);
   arranged.length = length;
-  try {
+
+  async function gatherParts() {
+    if (length <= fit) return [root];
+
     const positions = new Positions(rows);
     // Every row starts in the root's part, 0.
     where = new PagedArray(workspace, Uint32Array, length);
     const parts = [newPart()];
     parts[0].node = root;
-    if (length > fit)
-      await cutLarge(workspace, positions, where, parts, fit, (rows) =>
-        advance(rows, cutting),
-      );
+    await cutLarge(workspace, positions, where, parts, fit, (rows) =>
+      advance(rows, cutting),
+    );
     done = cutting;
     const which = new Uint32Array(BATCH);
     // Every part's centers go to its place in `gathered`, and its rows to
     // its place in the order, through a small buffer for each part.
+    order = new PagedArray(workspace, RowId, length);
     gathered = new PagedArray(workspace, Float32Array, length * 3);
     for (const part of parts) {
       if (!part.node) continue;
@@ -604,7 +607,7 @@ export async function buildRegions(rows, limit) {
       part.buffered = 0;
     };
     positions.consume((values, rows, base) => {
-      if (parts.length > 1) where.consume(base, which, rows);
+      where.consume(base, which, rows);
       for (let i = 0; i < rows; i++) {
         const part = parts[which[i]];
         const place = part.buffered++;
@@ -623,11 +626,14 @@ export async function buildRegions(rows, limit) {
       nodes.push(part.node);
     }
     nodes.sort((a, b) => a.start - b.start);
-    // By level, the parts' rows go to `arranged` at each level's next row,
-    // `cursors`; the order keeps the rows of the parts still to split.
-    const cursors = [...starts];
     where.dispose();
     where = undefined;
+    return nodes;
+  }
+
+  try {
+    const nodes = await gatherParts();
+    const cursors = [...starts];
     // Splits the parts from `first` up to `last`, `rows` rows, in memory. A
     // function of its own: its arrays are gone once it returns, before the
     // cache takes their memory below.
@@ -654,10 +660,20 @@ export async function buildRegions(rows, limit) {
         0,
         rows,
       );
-      gathered.consume(start * 3, centers, rows * 3);
-      order.consume(start, ids, rows);
+      if (gathered) {
+        gathered.consume(start * 3, centers, rows * 3);
+        order.consume(start, ids, rows);
+      } else {
+        // A single batch is already in input order.
+        for (const [i, level] of levels.entries()) {
+          const target = centers.subarray(starts[i] * 3);
+          level.centers.consume(0, target, level.length * 3);
+          level.centers.dispose();
+          advance(level.length);
+        }
+      }
       for (let i = 0; i < rows; i++) local[i] = i;
-      // From here each node's start indexes this batch.
+      if (!gathered) ids.set(local);
       const roots = nodes.slice(first, last);
       for (const node of roots) node.start -= start;
       await splitShared(
@@ -700,18 +716,17 @@ export async function buildRegions(rows, limit) {
       await splitParts(first, last, rows);
       first = last;
     }
-    order.dispose();
     progress.finish();
     // The centers and the threads are gone: the cache may take their memory.
     workspace.settle();
     workspace.expect(0);
     return { root, leavesByLevel, leafCount, order: arranged };
   } catch (error) {
-    order.dispose();
     arranged.dispose();
     throw error;
   } finally {
     where?.dispose();
+    order?.dispose();
     gathered?.dispose();
   }
 }
