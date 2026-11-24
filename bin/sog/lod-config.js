@@ -1,6 +1,7 @@
 // CLI defaults. Counts ending in _K use units of 1024 splats. Memory is in GiB.
 export const DEFAULT_ROOT_SPLATS_K = 256;
 export const DEFAULT_LOD_FACTOR = 2;
+export const DEFAULT_LOD_DENSITY = 1 / 3;
 export const DEFAULT_REGION_SPLATS_K = 8;
 export const DEFAULT_CHUNK_SPLATS_K = 256;
 export const DEFAULT_MEMORY_GIB = 4;

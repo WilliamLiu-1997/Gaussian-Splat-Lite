@@ -325,8 +325,8 @@ export class Splats {
     if (this.shapes) {
       this.shape(out);
       this.weight.set(index, out[15] * out[3]);
-      this.sizes.set(index, out[14]);
     }
+    this.sizes.set(index, out[14]);
     this.children.push(a);
     this.children.push(b);
     // SH coefficients do not affect merging; mergeSh() blends them later.

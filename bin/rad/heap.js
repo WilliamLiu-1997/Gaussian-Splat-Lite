@@ -202,7 +202,13 @@ const RUN = 256;
 // equal keys: a radix sort by byte, skipping bytes that all items share.
 // Items are read a block at a time, and those of a bucket written a run at
 // a time: one by one, every item would look up its page.
-function sortItems(items, count, workspace, byKey = false, label = undefined) {
+export function sortItems(
+  items,
+  count,
+  workspace,
+  byKey = false,
+  label = undefined,
+) {
   const first = byKey ? 4 : 0;
   const progress = label && new Progress(label, count * (10 - first));
   const counts = Array.from({ length: 8 }, () => new Float64Array(256));

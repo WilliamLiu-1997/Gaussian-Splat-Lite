@@ -3,12 +3,20 @@ import { Progress } from "../rad/progress.js";
 import { IndexArray, Permutation } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
 
-// A cut contains nodes born before it whose parent has yet to be created.
 // Collection consumes the temporary tree's geometry and leaf references.
-export function collectLevels(input, tree, order, cuts, levels, pool) {
+// `ranges` holds the first level of each node, then how many levels before
+// the coarsest it ends; see selectLevels().
+export function collectLevels(
+  input,
+  tree,
+  order,
+  targets,
+  ranges,
+  levels,
+  pool,
+) {
   const { workspace, length: leaves, maxSh, blind } = input;
-  const parent = new IndexArray(workspace);
-  const parentIds = new Uint32Array(4096);
+  const bounds = new ranges.Type(4096 * 2);
   const progress = new Progress(
     "Collecting SOG levels",
     tree.length * (1 + maxSh + (blind ? 1 : 0)),
@@ -21,13 +29,13 @@ export function collectLevels(input, tree, order, cuts, levels, pool) {
     // Share one MiB of buffers across cuts, down to one row per level.
     const batch = Math.max(
       1,
-      Math.min(1024, Math.floor(1024 ** 2 / cuts.length / row.byteLength)),
+      Math.min(1024, Math.floor(1024 ** 2 / levels.length / row.byteLength)),
     );
-    const buffers = cuts.map(
-      (cut) => new row.constructor(Math.min(batch, 2 * leaves - cut) * width),
+    const buffers = targets.map(
+      (target) => new row.constructor(Math.min(batch, target) * width),
     );
-    const counts = new Uint32Array(cuts.length);
-    const starts = new Uint32Array(cuts.length);
+    const counts = new Uint32Array(levels.length);
+    const starts = new Uint32Array(levels.length);
 
     function flush(i) {
       write(i, starts[i], counts[i], buffers[i]);
@@ -41,24 +49,24 @@ export function collectLevels(input, tree, order, cuts, levels, pool) {
       return starts[i] + counts[i] - 1;
     }
 
-    let first = 0;
-    for (let base = 0; base < tree.length; base += parentIds.length) {
+    const block = bounds.length / 2;
+    for (let base = 0; base < tree.length; base += block) {
       workspace.check();
       progress.update(completed + base);
-      const count = Math.min(parentIds.length, tree.length - base);
-      if (maxSh || blind) parent.read(base, parentIds, count);
-      else parent.consume(base, parentIds, count);
+      const count = Math.min(block, tree.length - base);
+      if (maxSh || blind) ranges.read(base * 2, bounds, count * 2);
+      else ranges.consume(base * 2, bounds, count * 2);
       for (let i = 0; i < count; i++) {
-        const node = base + i;
-        if (node === cuts[first]) first++;
-        visit(node, first, parentIds[i] || tree.length, emit);
+        const first = bounds[i * 2];
+        if (first < levels.length)
+          visit(base + i, first, levels.length - bounds[i * 2 + 1], emit);
       }
       consumed?.discard(base * width, (base + count) * width);
     }
 
-    for (let i = 0; i < cuts.length; i++) {
+    for (let i = 0; i < levels.length; i++) {
       if (counts[i]) flush(i);
-      if (starts[i] !== 2 * leaves - cuts[i])
+      if (starts[i] !== targets[i])
         throw new Error("LOD count differs from its target");
     }
     completed += tree.length;
@@ -69,8 +77,8 @@ export function collectLevels(input, tree, order, cuts, levels, pool) {
       row,
       (node, first, end, emit) => {
         if (node >= leaves && merge) merge(node);
-        else if (cuts[first] <= end) read(node);
-        for (let i = first; i < cuts.length && cuts[i] <= end; i++) emit(i);
+        else if (first < end) read(node);
+        for (let i = first; i < end; i++) emit(i);
       },
       write,
       consumed,
@@ -78,19 +86,6 @@ export function collectLevels(input, tree, order, cuts, levels, pool) {
   }
 
   try {
-    const children = tree.children;
-    for (let base = 0; base < children.length; base += parentIds.length) {
-      const count = Math.min(children.length - base, parentIds.length);
-      if (tree.blend) children.stream(base, parentIds, count);
-      else children.consume(base, parentIds, count);
-      for (let i = 0; i < count; i += 2) {
-        const node = leaves + (base + i) / 2;
-        parent.set(parentIds[i], node);
-        parent.set(parentIds[i + 1], node);
-      }
-    }
-    if (!tree.blend) children.dispose();
-
     const record = new Float32Array(16);
     collectColumn(
       record,
@@ -117,7 +112,7 @@ export function collectLevels(input, tree, order, cuts, levels, pool) {
     progress.finish();
     return refs;
   } finally {
-    parent.dispose();
+    ranges.dispose();
   }
 
   function collectBand(band, leafRows) {
@@ -157,10 +152,9 @@ export function collectLevels(input, tree, order, cuts, levels, pool) {
         const pair = (node - leaves) * 2;
         const left = tree.blend.get(pair) >= tree.blend.get(pair + 1);
         child = tree.children.get(left ? pair : pair + 1);
-      } else if (cuts[first] > end) return;
+      } else if (first === end) return;
       row[0] = order.get(child);
-      for (let i = first; i < cuts.length && cuts[i] <= end; i++)
-        row[0] = emit(i);
+      for (let i = first; i < end; i++) row[0] = emit(i);
       order.set(node, row[0]);
     }
     collect(row, inherit, (i, start, count, buffer) =>

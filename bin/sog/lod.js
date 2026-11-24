@@ -4,6 +4,7 @@ import { Pool } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import { Splats as RadSplats, refresh } from "../rad/splats.js";
 import { collectBlindValues, collectLevels } from "./lod-levels.js";
+import { selectLevels } from "./lod-select.js";
 import { Splats } from "./splats.js";
 
 const MAX_HALF = 65504;
@@ -34,9 +35,9 @@ function prepareTree(input, tree) {
   progress.finish();
 }
 
-export async function buildLevels(input, rootSplats, factor) {
+export async function buildLevels(input, rootSplats, factor, density) {
   const { workspace, length, maxSh } = input;
-  const cuts = [];
+  const targets = [];
   let target = length;
   let total = length;
   while (target > rootSplats) {
@@ -44,17 +45,15 @@ export async function buildLevels(input, rootSplats, factor) {
     total += target;
     if (!Number.isSafeInteger(total))
       throw new Error("Combined LOD count exceeds the safe integer limit");
-    // The first N nodes are leaves. Each following node reduces the live count by one.
-    cuts.push(length + (length - target));
+    targets.push(target);
   }
-  if (!cuts.length) {
+  if (!targets.length) {
     console.log(`LOD counts: ${length}`);
     return [input];
   }
-  if (cuts.at(-1) > 0xffffffff)
-    throw new Error("Input exceeds LOD u32 index limit");
+  if (length > 0x80000000) throw new Error("Input exceeds LOD u32 index limit");
 
-  const levels = cuts.map(() => new Splats(workspace, maxSh));
+  const levels = targets.map(() => new Splats(workspace, maxSh));
   async function collectTree() {
     const tree = new RadSplats(workspace, 0, {});
     const pool = new Pool(workspace, length);
@@ -68,10 +67,13 @@ export async function buildLevels(input, rootSplats, factor) {
       workspace.rest([...columns, input.centers, input.records]);
       const attributes = columns.length > 0;
       order = sortSplats(tree, pool, attributes);
-      mergeLevels(tree, pool, target, attributes);
-      workspace.rest([]);
+      // Every merge down to one splat, for the levels to choose from.
+      mergeLevels(tree, pool, 1, attributes);
+      const ranges = selectLevels(tree, length, targets, density);
       tree.sizes.dispose();
-      return collectLevels(input, tree, order, cuts, levels, pool);
+      if (!attributes) tree.children.dispose();
+      workspace.rest([]);
+      return collectLevels(input, tree, order, targets, ranges, levels, pool);
     } finally {
       try {
         await pool.close();

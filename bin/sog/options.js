@@ -3,6 +3,7 @@ import { GIB } from "../rad/storage.js";
 import { parseBlind } from "./blind.js";
 import {
   DEFAULT_CHUNK_SPLATS_K,
+  DEFAULT_LOD_DENSITY,
   DEFAULT_LOD_FACTOR,
   DEFAULT_MEMORY_GIB,
   DEFAULT_REGION_SPLATS_K,
@@ -21,6 +22,8 @@ Options:
   --region-splats <K>    Maximum splats per region, summed across all LODs (default: ${DEFAULT_REGION_SPLATS_K})
   --root-splats <K>      Maximum total splats in the coarsest scene LOD (default: ${DEFAULT_ROOT_SPLATS_K})
   --lod-factor <n>       Divide point count by this factor at each LOD (default: ${DEFAULT_LOD_FACTOR}, >1)
+  --lod-density <0..1>   Lower values favor merging smaller splats. Higher values
+                        favor preserving relative density (default: ${DEFAULT_LOD_DENSITY})
   --max-sh <0..4>        Maximum SH degree (default: 4)
   --within-dist <x,y,z,radius>
                         Keep splat centers within this sphere (input coordinates)
@@ -58,6 +61,7 @@ export function parse(args) {
       },
       "root-splats": { type: "string", default: String(DEFAULT_ROOT_SPLATS_K) },
       "lod-factor": { type: "string", default: String(DEFAULT_LOD_FACTOR) },
+      "lod-density": { type: "string", default: String(DEFAULT_LOD_DENSITY) },
       "max-sh": { type: "string", default: "4" },
       "within-dist": { type: "string" },
       "sh-codebook": { type: "string" },
@@ -102,9 +106,12 @@ export function parse(args) {
   const countInK = (name, max = 0xffffffff) =>
     integer(name, 1, Math.floor(max / 1024)) * 1024;
   const factor = Number(values["lod-factor"]);
+  const density = Number(values["lod-density"]);
   const budget = Number(values["memory-budget"]);
   if (!Number.isFinite(factor) || factor <= 1)
     throw new Error("--lod-factor must be finite and greater than 1");
+  if (!values["lod-density"].trim() || !(density >= 0 && density <= 1))
+    throw new Error("--lod-density must be a number in 0..1");
   if (
     !Number.isFinite(budget) ||
     budget < 1 ||
@@ -119,6 +126,7 @@ export function parse(args) {
     regionSplats: countInK("region-splats"),
     rootSplats: countInK("root-splats"),
     lodFactor: factor,
+    lodDensity: density,
     maxSh: integer("max-sh", 0, 4),
     withinDist,
     blind: parseBlind(values["sog-blind"]),

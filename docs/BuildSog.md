@@ -46,12 +46,15 @@ gsl-build-sog scene.ply \
   --lod-chunk-count 256 \
   --region-splats 8 \
   --root-splats 256 \
-  --lod-factor 2
+  --lod-factor 2 \
+  --lod-density 0.5
 ```
 
 Count options take positive integers in **K (1 K = 1024)**.
 
 The finest LOD retains the usable input splats. With the default `--lod-factor 2`, each coarser level has about half as many splats as the previous one, until the scene fits within `--root-splats`. An input already within this limit needs no additional LOD. Smaller factors produce more levels and usually larger output. Larger factors produce fewer levels.
+
+Lower `--lod-density` values favor merging smaller splats first. Higher values favor merges that combine fewer input splats, helping dense areas retain more detail in coarser LODs.
 
 `--region-splats` limits the count across all LODs in each spatial region. `--lod-chunk-count` limits output chunk size; chunks may be smaller to fit the memory budget or encoder limits. If a region cannot fit, reduce `--region-splats` or increase `--lod-chunk-count` as suggested by the error.
 
@@ -123,6 +126,7 @@ See [SOG streaming](SogStreamScheduler.md) for loading and display options.
 | `--region-splats <K>` | `8` | Maximum count across all LODs in each region, in K. |
 | `--root-splats <K>` | `256` | Maximum count in the coarsest scene LOD, in K. |
 | `--lod-factor <n>` | `2` | Point-count reduction factor, greater than 1. |
+| `--lod-density <0..1>` | `0.33` | Higher values favor preserving the input’s relative splat density. |
 | `--max-sh <0..4>` | `4` | Highest SH degree to keep, limited by the input. |
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere in input coordinates. |
 | `--sh-codebook <K>` | Automatic | Maximum SH entries per chunk, 1–256 K. |

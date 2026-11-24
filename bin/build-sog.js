@@ -41,7 +41,12 @@ async function convert(input, options, kernel, cancelled) {
     splats.retain();
     if (splats.maxSh < splats.inputSh)
       console.log(`Keeping SH0–SH${splats.maxSh}`);
-    levels = await buildLevels(splats, options.rootSplats, options.lodFactor);
+    levels = await buildLevels(
+      splats,
+      options.rootSplats,
+      options.lodFactor,
+      options.lodDensity,
+    );
     const rows = new Levels(levels);
     regions = await buildRegions(rows, options.regionSplats);
     await writeScene(rows, regions, output, options, kernel);
