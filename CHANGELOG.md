@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.3] - 2026-11-25
+
+### Added
+
+- Added `--lod-density <0..1>` to `gsl-build-sog` (default `0.4`). Lower values favor merging smaller splats first. Higher values help densely sampled areas retain more detail. Rebuilding a scene with the new default can change its coarser LODs while keeping the same target splat counts.
+
+### Changed
+
+- When building coarser LODs, `gsl-build-sog` accepts up to 2,147,483,648 usable input splats. In 1.10.2, the limit depended on the number of splats in the coarsest level.
+
 ## [1.10.2] - 2026-11-24
 
 ### Changed
@@ -862,7 +872,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.2...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.3...HEAD
+[1.10.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.9.0...v1.10.0
