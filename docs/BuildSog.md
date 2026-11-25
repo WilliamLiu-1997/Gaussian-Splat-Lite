@@ -126,7 +126,7 @@ See [SOG streaming](SogStreamScheduler.md) for loading and display options.
 | `--region-splats <K>` | `8` | Maximum count across all LODs in each region, in K. |
 | `--root-splats <K>` | `256` | Maximum count in the coarsest scene LOD, in K. |
 | `--lod-factor <n>` | `2` | Point-count reduction factor, greater than 1. |
-| `--lod-density <0..1>` | `0.33` | Higher values favor preserving the input’s relative splat density. |
+| `--lod-density <0..1>` | `0.4` | Higher values favor preserving the input’s relative splat density. |
 | `--max-sh <0..4>` | `4` | Highest SH degree to keep, limited by the input. |
 | `--within-dist <x,y,z,radius>` | Disabled | Keep splat centers inside or on a sphere in input coordinates. |
 | `--sh-codebook <K>` | Automatic | Maximum SH entries per chunk, 1–256 K. |
