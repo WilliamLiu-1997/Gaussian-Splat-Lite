@@ -1,11 +1,14 @@
 import { failLodTask, lodTask } from "../bin/rad/parallel.js";
+import { checkRun } from "../bin/run-state.js";
 import { taskHandler } from "../bin/tasks.js";
 
 let port;
 let shared;
 let handler;
+let state;
 let queue = Promise.resolve();
 async function dispatch(message) {
+  checkRun(state);
   if (message.init) {
     const data = message.init;
     if (data.control) {
@@ -31,6 +34,7 @@ function enqueue(data) {
 }
 self.onmessage = ({ data }) => {
   port = data.port;
+  state = data.init.cancelled;
   enqueue({ init: data.init });
   port.onmessage = ({ data }) => enqueue(data);
 };

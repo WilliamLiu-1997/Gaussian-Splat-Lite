@@ -311,6 +311,34 @@ button.primary {
 input[type="checkbox"] {
   accent-color: var(--accent);
 }
+.forecast {
+  padding: 18px clamp(18px, 2.55vw, 30px);
+  border-top: 1px solid var(--line);
+}
+#estimate-note {
+  white-space: pre-line;
+}
+.forecast dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 6px;
+}
+.forecast dl > div {
+  padding: 12px 15px;
+  background: var(--input);
+  border-radius: 6px;
+}
+.forecast dt {
+  color: var(--muted);
+  font-size: .84rem;
+}
+.forecast dd {
+  margin: 2px 0 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .actions {
   padding: 14px clamp(18px, 2.55vw, 30px);
   border-top: 1px solid var(--line);
@@ -443,6 +471,9 @@ progress::-moz-progress-bar {
   display: none !important;
 }
 @media (max-width: 720px) {
+  .forecast dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .workspace {
     grid-template-columns: 1fr;
   }

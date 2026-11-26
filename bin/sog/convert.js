@@ -1,3 +1,4 @@
+import { runTime } from "#gsl/clock";
 import { basename, dirname, extname, join } from "#gsl/path";
 import { readInput } from "../rad/input.js";
 import { GIB } from "../rad/storage.js";
@@ -19,7 +20,7 @@ export async function convert(
   const output = join(directory, "lod-meta.json");
   checkOutput(output);
   const workspace = createWorkspace();
-  const started = performance.now();
+  const started = runTime();
   let splats;
   let levels;
   let regions;
@@ -48,7 +49,7 @@ export async function convert(
     onPhase?.("encode", "Writing SOG chunks");
     await writeScene(rows, regions, output, options, kernel);
     console.log(
-      `Wrote ${output} in ${((performance.now() - started) / 1000).toFixed(2)}s`,
+      `Wrote ${output} in ${((runTime() - started) / 1000).toFixed(2)}s`,
     );
   } finally {
     regions?.order.dispose();

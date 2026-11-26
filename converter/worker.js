@@ -5,6 +5,7 @@ import { initialize } from "../bin/rad/input.js";
 import { Workspace } from "../bin/rad/storage.js";
 import { convert as sog } from "../bin/sog/convert.js";
 import { conversionOptions } from "./convert-options.js";
+import { useClock } from "./runtime/clock.js";
 import { externalHandle } from "./runtime/external.js";
 import { mkdirSync, mount } from "./runtime/files.js";
 import { trackDecoder } from "./runtime/memory.js";
@@ -18,9 +19,20 @@ async function compile(url) {
 }
 
 self.onmessage = async ({
-  data: { file, format, gib, directory, modelName, values, scratch, cancelled },
+  data: {
+    file,
+    format,
+    gib,
+    directory,
+    modelName,
+    values,
+    scratch,
+    cancelled,
+    clock,
+  },
 }) => {
   try {
+    useClock(clock);
     const phase = (name, unit) => self.postMessage({ phase: { name, unit } });
     for (const method of ["log", "warn"])
       console[method] = (...args) =>

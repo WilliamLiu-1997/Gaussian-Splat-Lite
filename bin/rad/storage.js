@@ -10,6 +10,7 @@ import { tmpdir } from "#gsl/host";
 import { collect, outsideBytes, sharedBuffer } from "#gsl/memory";
 import { join } from "#gsl/path";
 export { collect, sharedBuffer } from "#gsl/memory";
+import { checkRun } from "../run-state.js";
 import { Progress } from "./progress.js";
 import { PAGE_BYTES, Spill } from "./spill.js";
 import { Writeback } from "./writeback.js";
@@ -84,8 +85,7 @@ export class Workspace {
   }
 
   check() {
-    if (this.cancelled && Atomics.load(this.cancelled, 0))
-      throw new Error("Conversion cancelled");
+    checkRun(this.cancelled);
   }
 
   // Bytes all cached pages may take, at least one arena.

@@ -3,23 +3,14 @@ import { openChunkFile, outputBufferBytes } from "#gsl/output";
 import { sogBounds } from "../decoder/decoder.js";
 import { GENERATOR } from "../generator.js";
 import { cluster } from "./cluster.js";
+import { webpBytes } from "./image-limits.js";
 import { MAX_MASS, compensateScales } from "./opacity.js";
 import { QUANTIZE_BYTES, encodeRotation, label, quantize } from "./quantize.js";
 import { SH_C0 } from "./splats.js";
-import {
-  WEBP_MAX_PIXELS,
-  encodeWebp,
-  initializeWebp,
-  webpBytes,
-} from "./webp.js";
-
+import { encodeWebp, initializeWebp } from "./webp.js";
 import { writeFile } from "./write-file.js";
 
 const logPosition = (v) => Math.sign(v) * Math.log1p(Math.abs(v));
-
-// imageSize() rounds both sides up to multiples of four.
-export const MAX_CHUNK_SPLATS =
-  (Math.floor(Math.sqrt(WEBP_MAX_PIXELS) / 4) * 4) ** 2;
 
 // The side lengths of an image with a pixel for each of `count` splats.
 function imageSize(count) {

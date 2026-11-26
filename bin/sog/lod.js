@@ -3,6 +3,7 @@ import { mergeLevels } from "../rad/lod.js";
 import { Pool } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import { Splats as RadSplats, refresh } from "../rad/splats.js";
+import { nextLodCount } from "./lod-config.js";
 import { collectBlindValues, collectLevels } from "./lod-levels.js";
 import { selectLevels } from "./lod-select.js";
 import { Splats } from "./splats.js";
@@ -41,7 +42,7 @@ export async function buildLevels(input, rootSplats, factor, density) {
   let target = length;
   let total = length;
   while (target > rootSplats) {
-    target = Math.min(target - 1, Math.ceil(target / factor));
+    target = nextLodCount(target, factor);
     total += target;
     if (!Number.isSafeInteger(total))
       throw new Error("Combined LOD count exceeds the safe integer limit");

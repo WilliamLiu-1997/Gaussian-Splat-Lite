@@ -3,6 +3,12 @@ import { defaults } from "../bin/sog/options.js";
 const fields = document.querySelector("#fields");
 const form = document.querySelector("#form");
 export const outputFormat = () => form.elements.namedItem("format").value;
+export function memoryGiB() {
+  const budget = form.elements.namedItem("budget").value;
+  return Number(
+    budget === "custom" ? form.elements.namedItem("custom").value : budget,
+  );
+}
 const numeric = (flag, title, value, min, step = "1", max = undefined) => ({
   flag,
   title,

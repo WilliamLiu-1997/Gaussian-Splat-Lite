@@ -1,4 +1,4 @@
-import { PAGE_BYTES, SEGMENT_BYTES } from "./runtime/pages.js";
+import { MAX_WRITERS, PAGE_BYTES, SEGMENT_BYTES } from "./runtime/pages.js";
 import { WrittenPages } from "./runtime/written-pages.js";
 
 let directory;
@@ -44,7 +44,8 @@ async function transfer(op, at, size) {
   if (op === "write") {
     let stream = writers.get(index);
     if (!stream) {
-      if (writers.size >= 4) await commit(writers.keys().next().value);
+      if (writers.size >= MAX_WRITERS)
+        await commit(writers.keys().next().value);
       stream = await file.handle.createWritable({ keepExistingData: true });
       writers.set(index, stream);
       file.dirty.fill(0);

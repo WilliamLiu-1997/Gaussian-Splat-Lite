@@ -14,11 +14,7 @@ export function runWorker(args, signal, update) {
       if (error) reject(error);
       else resolve();
     }
-    const cancelled = new Int32Array(new SharedArrayBuffer(4));
-    const cancel = () => {
-      Atomics.store(cancelled, 0, 1);
-      finish(signal.reason);
-    };
+    const cancel = () => finish(signal.reason);
     signal.addEventListener("abort", cancel, { once: true });
     worker.onmessage = ({ data }) => {
       if (data.spawn !== undefined) {
@@ -43,7 +39,10 @@ export function runWorker(args, signal, update) {
           finish(
             new Error(event.message || `Could not start the ${role} worker.`),
           );
-        child.postMessage({ init: task, port: data.port }, [data.port]);
+        child.postMessage(
+          { init: { ...task, cancelled: args.cancelled }, port: data.port },
+          [data.port],
+        );
       } else if (data.stop !== undefined) {
         children.get(data.stop)?.terminate();
         children.delete(data.stop);
@@ -55,6 +54,6 @@ export function runWorker(args, signal, update) {
       finish(
         new Error(event.message || "Could not start the conversion worker."),
       );
-    worker.postMessage({ ...args, cancelled });
+    worker.postMessage(args);
   });
 }

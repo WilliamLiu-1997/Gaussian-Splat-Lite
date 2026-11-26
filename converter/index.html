@@ -60,8 +60,17 @@
             <div id="fields"></div>
           </div>
         </div>
+        <section class="forecast" aria-label="Conversion estimates">
+          <dl>
+            <div><dt>Detail levels</dt><dd id="estimate-levels">—</dd></div>
+            <div><dt>Free disk needed</dt><dd id="estimate-disk">—</dd></div>
+            <div><dt>Memory</dt><dd id="estimate-memory">—</dd></div>
+            <div><dt>Output size</dt><dd id="estimate-output">—</dd></div>
+          </dl>
+          <small id="estimate-note">Choose source files for an estimate.</small>
+        </section>
       </fieldset>
-      <div class="actions"><button class="primary" id="convert" type="submit" disabled>Convert to SOG</button><button id="cancel" type="button" hidden>Cancel</button><output id="status" aria-live="polite">Choose source files and a working folder.</output></div>
+      <div class="actions"><button class="primary" id="convert" type="submit" disabled>Convert to SOG</button><button id="pause" type="button" hidden>Pause</button><button id="cancel" type="button" hidden>Cancel</button><output id="status" aria-live="polite">Choose source files and a working folder.</output></div>
     </form>
 
     <section class="panel" id="activity">

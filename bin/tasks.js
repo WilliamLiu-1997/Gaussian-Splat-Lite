@@ -1,11 +1,9 @@
 // Task dispatch is shared. Each host owns its worker lifecycle and output I/O.
 import { collect } from "#gsl/memory";
+import { checkRun } from "./run-state.js";
 
 export async function taskHandler(data, reply) {
-  const check = () => {
-    if (data.cancelled && Atomics.load(data.cancelled, 0))
-      throw new Error("Conversion cancelled");
-  };
+  const check = () => checkRun(data.cancelled);
   if (data.encoder) {
     const { initialize } = await import("./rad/input.js");
     const { encodeChunk: encodeSog } = await import("./sog/encode.js");

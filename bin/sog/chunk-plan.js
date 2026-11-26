@@ -1,8 +1,9 @@
 import { clusterBytes, scratchEstimator } from "../rad/cluster.js";
 import { GIB } from "../rad/storage.js";
 import { entries } from "./cluster.js";
-import { MAX_CHUNK_SPLATS, imageBytes } from "./encode.js";
+import { imageBytes } from "./encode.js";
 import { chunkBufferBytes } from "./gather.js";
+import { MAX_CHUNK_SPLATS } from "./image-limits.js";
 
 // A range and its six f64 bounds have a copy in JS and in the bounds decoder.
 const RANGE_BYTES = 8 + 48;

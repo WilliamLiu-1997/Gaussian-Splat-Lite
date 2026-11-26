@@ -1,3 +1,5 @@
+import { runTime } from "./runtime/clock.js";
+
 const el = (id) => document.getElementById(id);
 const lines = [];
 const visibleLines = 250;
@@ -11,7 +13,6 @@ const steps = {
 };
 const phaseCount = 5;
 let timer;
-let started;
 let total;
 let file;
 let phase;
@@ -20,7 +21,7 @@ let peak;
 let liveLine = null;
 
 function duration() {
-  const seconds = Math.floor((performance.now() - started) / 1000);
+  const seconds = Math.floor(runTime() / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
@@ -67,7 +68,6 @@ function overall(percent) {
 export function start(count) {
   total = count;
   peak = 0;
-  started = performance.now();
   lines.length = 0;
   liveLine = null;
   el("run-state").textContent = "Running";
@@ -85,6 +85,12 @@ export function start(count) {
   timer = setInterval(() => {
     el("elapsed").textContent = duration();
   }, 500);
+}
+
+export function setPaused(paused) {
+  el("elapsed").textContent = duration();
+  el("run-state").textContent = paused ? "Paused" : "Running";
+  log(paused ? "Conversion paused." : "Conversion resumed.");
 }
 
 export function beginFile(index, name) {

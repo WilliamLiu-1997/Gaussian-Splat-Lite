@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- The browser converter at `/converter/` can batch-convert local PLY and SPZ files into streamed SOG or RAD scenes. You can preview each result in the converter or open its exported ZIP directly in the viewer.
+- The browser converter at `/converter/` can batch-convert local PLY and SPZ files into streamed SOG or RAD scenes. It estimates detail levels, free disk space, memory and output size as you adjust the settings. You can pause and resume conversion, preview each result in the converter or open its exported ZIP directly in the viewer.
 - Added an examples gallery at `/examples/` with Basic Viewer and Blind Data demos. The Blind Data demo lets you inspect object and part IDs and color objects by ID.
 - Added a **Splat data** toggle in the viewer to inspect Blind fields and model metadata on hover or click.
 

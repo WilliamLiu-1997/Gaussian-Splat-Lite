@@ -3,6 +3,7 @@
 export const PAGE_BYTES = 65536;
 // Writable streams replace their file on close. Keep each commit bounded on disk.
 export const SEGMENT_BYTES = 48 * 1024 ** 2;
+export const MAX_WRITERS = 4;
 const segmentPages = SEGMENT_BYTES / PAGE_BYTES;
 const zero = new Uint8Array(PAGE_BYTES);
 

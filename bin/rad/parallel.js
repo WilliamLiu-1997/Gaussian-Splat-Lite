@@ -1,5 +1,6 @@
 import { availableParallelism, workerOverhead } from "#gsl/host";
 import { createThread, wakePool } from "#gsl/threads";
+import { cancellationCode } from "../run-state.js";
 import { Lookup, NONE, writeEntry } from "./grid.js";
 import { HALF, halfBits } from "./math.js";
 import { PAGE_BYTES, Parts } from "./spill.js";
@@ -630,7 +631,7 @@ class Task {
   work(gen, one = false) {
     const control = this.control;
     for (;;) {
-      if (this.cancelled && Atomics.load(this.cancelled, 0)) return;
+      if (cancellationCode(this.cancelled)) return;
       const next = Atomics.load(control, NEXT);
       if (next >>> 16 !== (gen & 0x7fff)) return;
       const start = next & 0xffff;

@@ -1,3 +1,4 @@
+import { runTime } from "#gsl/clock";
 import { reportProgress } from "#gsl/host";
 
 let inlineStarted;
@@ -7,7 +8,7 @@ let inlineStarted;
 export class Progress {
   // Share a timer and one terminal line across the stages started here.
   static inline(run) {
-    inlineStarted = performance.now();
+    inlineStarted = runTime();
     try {
       return run();
     } finally {
@@ -21,7 +22,7 @@ export class Progress {
     this.singleLine = singleLine;
     this.interval = interval;
     this.updated = performance.now();
-    this.started = inlineStarted ?? this.updated;
+    this.started = inlineStarted ?? runTime();
     this.print(0, false, detail);
   }
 
@@ -40,7 +41,7 @@ export class Progress {
   }
 
   print(percent, done, detail) {
-    const seconds = ((performance.now() - this.started) / 1000).toFixed(1);
+    const seconds = ((runTime() - this.started) / 1000).toFixed(1);
     // Build a custom suffix only when the update is displayed.
     const suffix =
       typeof detail === "function" ? detail() : detail && `, ${detail}`;

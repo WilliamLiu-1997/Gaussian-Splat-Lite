@@ -1,3 +1,4 @@
+import { runTime } from "#gsl/clock";
 import path from "#gsl/path";
 import { clusterSh } from "./cluster.js";
 import { readInput } from "./input.js";
@@ -22,7 +23,7 @@ export async function convert(
     );
   checkOutput(output, options.chunked);
   const workspace = createWorkspace();
-  const start = performance.now();
+  const start = runTime();
   console.log(
     `${input} -> ${output}\nMemory target: ${(options.budget / GIB).toFixed(3)} GiB`,
   );
@@ -45,7 +46,7 @@ export async function convert(
     const count = splats.length;
     splats.retain();
     console.log(
-      `Read ${count} splats, SH${splats.inputSh}, in ${((performance.now() - start) / 1000).toFixed(2)}s`,
+      `Read ${count} splats, SH${splats.inputSh}, in ${((runTime() - start) / 1000).toFixed(2)}s`,
     );
     if (splats.inputSh > splats.maxSh)
       console.log(
@@ -61,20 +62,20 @@ export async function convert(
       console.log(`Removed ${splats.cropped} splats outside --within-dist`);
     if (!splats.length) throw new Error("Input contains no usable splats");
     const leaves = splats.length;
-    const lodStart = performance.now();
+    const lodStart = runTime();
     onPhase?.("lod");
     const format = buildLod(splats, options.lodBase, pool, options.shCodebook);
     await pool.close();
     pool = undefined;
     console.log(
-      `Built ${splats.length} LOD splats from ${leaves} leaves in ${((performance.now() - lodStart) / 1000).toFixed(2)}s`,
+      `Built ${splats.length} LOD splats from ${leaves} leaves in ${((runTime() - lodStart) / 1000).toFixed(2)}s`,
     );
     let codebook;
     if (kernel && !splats.maxSh)
       console.log("No SH coefficients to cluster; writing without a codebook");
     else if (kernel) {
       onPhase?.("cluster");
-      const clusterStart = performance.now();
+      const clusterStart = runTime();
       codebook = await clusterSh(
         splats,
         options.clusterSh,
@@ -85,7 +86,7 @@ export async function convert(
       for (const column of splats.sh) column.dispose();
       splats.weight.dispose();
       console.log(
-        `Clustered SH into ${codebook.count} codes in ${((performance.now() - clusterStart) / 1000).toFixed(2)}s`,
+        `Clustered SH into ${codebook.count} codes in ${((runTime() - clusterStart) / 1000).toFixed(2)}s`,
       );
     }
     onPhase?.("encode", "Encoding RAD chunks");
@@ -97,7 +98,7 @@ export async function convert(
       format,
     );
     console.log(
-      `Wrote ${(bytes / 1048576).toFixed(2)} MiB in ${((performance.now() - start) / 1000).toFixed(2)}s total`,
+      `Wrote ${(bytes / 1048576).toFixed(2)} MiB in ${((runTime() - start) / 1000).toFixed(2)}s total`,
     );
   } finally {
     await pool?.close();

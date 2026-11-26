@@ -1,8 +1,11 @@
 import * as activity from "./activity.js";
+import { ConversionRun } from "./conversion-run.js";
 import { convertFile } from "./convert-file.js";
 import { saveZip } from "./export.js";
+import { showForecast } from "./forecast.js";
 import { enableThreads } from "./isolation.js";
-import { options, outputFormat } from "./options.js";
+import { memoryGiB, options, outputFormat } from "./options.js";
+import { sourceInfo } from "./source-info.js";
 import { setupFolderPicker } from "./storage-picker.js";
 
 const el = (id) => document.getElementById(id);
@@ -10,22 +13,32 @@ const previewArea = el("preview-area");
 let supported = Boolean(
   window.showDirectoryPicker && navigator.locks && globalThis.Worker,
 );
-let files = [];
+let sources;
+let batch;
 let scenes = [];
 let active;
 let result;
 let workingFolder;
 let saving = false;
+let runningStatus;
 
 function status(message, error = false) {
+  runningStatus = message;
   el("status").textContent = message;
   el("status").classList.toggle("error", error);
 }
 function refresh() {
   el("convert").disabled =
-    !supported || !files.length || !workingFolder || Boolean(active) || saving;
+    !supported ||
+    !batch?.files.length ||
+    !workingFolder ||
+    Boolean(active) ||
+    saving;
   el("settings").disabled = !supported || Boolean(active) || saving;
   el("cancel").hidden = !active;
+  el("pause").hidden = !active;
+  el("pause").disabled = Boolean(active?.signal.aborted);
+  el("pause").textContent = active?.paused ? "Resume" : "Pause";
   el("result").hidden = !result;
   el("result-picker").disabled = saving;
   el("zip").disabled = saving;
@@ -52,29 +65,40 @@ function forget() {
   el("failures").textContent = "";
   el("result-picker").replaceChildren();
 }
-function select(selection) {
+async function select(selection) {
   if (active || saving || !selection.length) return;
   const chosen = Array.from(selection);
   if (chosen.some((file) => !/\.(spz|ply)$/i.test(file.name)))
     return status("Choose PLY or SPZ files.", true);
   forget();
-  files = chosen;
+  const current = [];
+  sources = current;
+  batch = showForecast();
   el("source-name").textContent =
-    files.length === 1 ? files[0].name : `${files.length} source files`;
+    chosen.length === 1 ? chosen[0].name : `${chosen.length} source files`;
   el("source-detail").textContent =
-    `${(files.reduce((n, f) => n + f.size, 0) / 1048576).toFixed(2)} MiB · Click to replace`;
+    `${(chosen.reduce((n, f) => n + f.size, 0) / 1048576).toFixed(2)} MiB · Click to replace`;
+  updateSetup();
+  for (const file of chosen) {
+    const source = await sourceInfo(file);
+    if (sources !== current) return;
+    current.push(source);
+  }
+  updateForecast();
+}
+
+function updateForecast() {
+  batch = showForecast(sources);
   updateSetup();
 }
 
 function updateSetup() {
   if (!supported) return status(unavailable, true);
-  status(
-    !workingFolder
-      ? "Choose or drop a working folder."
-      : files.length
-        ? "Ready to convert."
-        : "Choose PLY or SPZ files.",
-  );
+  if (!workingFolder) status("Choose or drop a working folder.");
+  else if (!sources) status("Choose PLY or SPZ files.");
+  else if (!batch) status("Reading source headers…");
+  else if (!batch.files.length) status("No compatible source files.", true);
+  else status("Ready to convert.");
   refresh();
 }
 
@@ -132,24 +156,32 @@ previewArea.addEventListener("fullscreenchange", () => {
       : "Enter fullscreen";
 });
 
+el("form").addEventListener("change", (event) => {
+  if (batch && event.target.matches("#format input, #budget")) updateForecast();
+});
+el("form").addEventListener("input", (event) => {
+  if (batch && event.target.matches("#fields input, #fields textarea, #custom"))
+    updateForecast();
+});
+
 el("form").onsubmit = async (event) => {
   event.preventDefault();
   if (el("convert").disabled) return;
-  const gib = Number(
-    el("budget").value === "custom" ? el("custom").value : el("budget").value,
-  );
+  const gib = memoryGiB();
   if (!(gib >= 1 && Number.isSafeInteger(Math.floor(gib * 1024 ** 3))))
     return status("Enter a valid budget of at least 1 GiB.", true);
   const format = outputFormat();
   const values = options();
   forget();
+  const run = new ConversionRun();
+  active = run;
+  const { files, skipped } = batch;
   activity.start(files.length);
   activity.log(
     `${format.toUpperCase()} · ${gib} GiB · Working folder: ${workingFolder.name}`,
   );
-  const controller = new AbortController();
-  active = controller;
   activity.record(JSON.stringify(values));
+  for (const message of skipped) activity.log(message);
   status("Opening temporary storage…");
   el("activity").scrollIntoView({ block: "nearest" });
   refresh();
@@ -163,7 +195,8 @@ el("form").onsubmit = async (event) => {
       );
     const failures = [];
     for (const [index, file] of files.entries()) {
-      if (controller.signal.aborted) break;
+      await run.waitWhilePaused();
+      if (run.signal.aborted) break;
       activity.beginFile(index, file.name);
       status(`Converting ${file.name}…`);
       try {
@@ -171,52 +204,67 @@ el("form").onsubmit = async (event) => {
           file,
           workingFolder,
           { format, gib, values },
-          controller.signal,
+          run,
           activity.update,
         );
         scenes.push(scene);
         el("result-picker").add(new Option(file.name));
         activity.log(`Saved ${workingFolder.name}/${scene.result.name}/`);
       } catch (error) {
-        if (controller.signal.aborted) break;
+        if (run.signal.aborted) break;
         const message = `${file.name}: ${error.message}`;
         failures.push(message);
         activity.log(message, "error");
       }
+      await run.waitWhilePaused();
       activity.endFile();
     }
+    const issues = [...failures, ...skipped].join("\n");
     if (!scenes.length) {
-      controller.signal.throwIfAborted();
-      throw new Error(failures.join("\n"));
+      run.signal.throwIfAborted();
+      throw new Error(issues);
     }
     el("result-picker").hidden = scenes.length === 1;
-    el("failures").textContent = failures.join("\n");
+    el("failures").textContent = issues;
     showResult(0);
     const counts = [`${scenes.length} converted`];
+    if (skipped.length) counts.push(`${skipped.length} skipped`);
     if (failures.length) counts.push(`${failures.length} failed`);
-    const message = controller.signal.aborted
+    const message = run.signal.aborted
       ? `Cancelled. ${counts.join(", ")}.`
       : counts.length > 1
         ? `${counts.join(", ")}.`
         : "Conversion complete.";
     activity.finish(message);
     status(message);
-    if (!controller.signal.aborted && result.details) {
+    if (!run.signal.aborted && result.details) {
       setPreviewOpen(true);
       previewArea.scrollIntoView({ block: "center" });
     }
   } catch (error) {
-    const message = controller.signal.aborted
+    const message = run.signal.aborted
       ? "Conversion cancelled."
       : error.message;
     activity.finish(message);
-    status(message, !controller.signal.aborted);
+    status(message, !run.signal.aborted);
   } finally {
     active = undefined;
     refresh();
   }
 };
-el("cancel").onclick = () => active?.abort();
+el("pause").onclick = () => {
+  if (!active || active.signal.aborted) return;
+  active.setPaused(!active.paused);
+  activity.setPaused(active.paused);
+  el("status").textContent = active.paused
+    ? "Conversion paused."
+    : runningStatus;
+  refresh();
+};
+el("cancel").onclick = () => {
+  active?.abort();
+  refresh();
+};
 el("zip").onclick = async () => {
   saving = true;
   refresh();

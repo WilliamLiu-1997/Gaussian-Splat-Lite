@@ -7,9 +7,10 @@ export async function convertFile(
   file,
   workingFolder,
   { format, gib, values },
-  signal,
+  run,
   update,
 ) {
+  const { signal } = run;
   const stem = file.name.replace(/\.(ply|spz)$/i, "");
   const directory = await reserveOutput(workingFolder, `${stem}-${format}`);
   try {
@@ -18,6 +19,7 @@ export async function convertFile(
       `gsl-temp-${crypto.randomUUID()}`,
     );
     try {
+      await run.waitWhilePaused();
       signal.throwIfAborted();
       await runWorker(
         {
@@ -26,6 +28,8 @@ export async function convertFile(
           gib,
           modelName: `${stem}-lod.rad`,
           values,
+          cancelled: run.state,
+          clock: run.clock,
           scratch: temporary,
           directory,
         },
@@ -50,7 +54,7 @@ export async function convertFile(
   update({ phase: { name: "preview", unit: label } });
   update({ progress: { label, percent: 0, line: label, done: false } });
   try {
-    scene.details = await describeResult(directory, signal);
+    scene.details = await describeResult(directory, run);
   } catch (error) {
     if (signal.aborted) return scene;
     update({

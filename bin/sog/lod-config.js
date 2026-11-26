@@ -17,3 +17,6 @@ export const POSITION_BATCH_ROWS = 16_384;
 export const SPLIT_BUFFER_ROWS = 4096;
 export const SPLIT_STRETCH_ROWS = 1 << 20;
 export const SPLIT_SCAN_ROWS = 1 << 18;
+
+export const nextLodCount = (count, factor) =>
+  Math.min(count - 1, Math.ceil(count / factor));
