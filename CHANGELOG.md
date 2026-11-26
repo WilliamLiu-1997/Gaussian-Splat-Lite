@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-27
+
 ### Added
 
 - The browser converter at `/converter/` can batch-convert local PLY and SPZ files into streamed SOG or RAD scenes. It estimates detail levels, free disk space, memory and output size as you adjust the settings. You can pause and resume conversion, preview each result in the converter or open its exported ZIP directly in the viewer.
@@ -882,7 +884,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.3...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.3...v1.11.0
 [1.10.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.0...v1.10.1

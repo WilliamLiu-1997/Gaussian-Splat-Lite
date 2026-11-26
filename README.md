@@ -218,12 +218,6 @@ npm run build:wasm
 npm run dev
 ```
 
-Open the URL printed by Vite (normally `http://localhost:8080/`) and drop a `.ply`, `.spz`, `.sog`, or `.rad` file into the viewer, choose a local file, or load one from an HTTP(S) URL. For LCC2, select or drop the scene folder containing `.lcc2` and its companion files, or load its index URL. For split SOG, select or drop `meta.json` together with its `.webp` images; for split RAD, include the header and its `.radc` pages. Files are decoded locally. Choose **WebGPU / WebGL2 / WebGPU · WebGL2** in the viewer to compare backends.
-
-Open **Converter** at `/converter/` to build streamed SOG or RAD from local PLY and SPZ files. Choose or drop your source files and a **Working folder**. The converter defaults to streamed SOG, a 4 GiB memory budget and unpacked output.
-
-Each scene is saved in a new subfolder of the working folder. Temporary files are kept in a separate subfolder and removed after conversion. Choose **Preview** to view the result or **Save ZIP** to write an archive beside it when available.
-
 See [Contributing](CONTRIBUTING.md#validation) for validation commands. `npm run build` emits ESM, CommonJS, declarations, and source maps in `dist/`.
 
 ## Acknowledgements
