@@ -12,7 +12,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 
 <div align="center">
 
-**[Try Live Demo](https://gaussian-splat-lite.vercel.app/)**
+**[Try Live Demo](https://gaussian-splat-lite.vercel.app/examples/#basic-viewer)**
 
 </div>
 
