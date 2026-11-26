@@ -61,6 +61,7 @@ const float SDF_DISTANCE_LIMIT = 1e20;
 
 // Edit group flags; see SplatEdit.js.
 const uint EDIT_BLIND = 0x200u;
+const uint EDIT_UNIFORM_SCALE = 0x400u;
 
 // Blind selection record flags; see SplatEditBlindField.js.
 const uint BLIND_ACTIVE = 0x200u;
@@ -289,6 +290,15 @@ float sdfEditAmount(float distance, float invSoftEdge) {
         : clamp(-distance * invSoftEdge + 0.5, 0.0, 1.0);
 }
 
+float selectionScale(int index) {
+    return uintBitsToFloat(texelFetch(sdfTexture, ivec2(1, index), 0).w);
+}
+
+// Normalize each contribution before summing so large finite multipliers stay representable.
+float blendSelectionScale(float previous, float previousWeight, int index, float weight, float total) {
+    return previous * (previousWeight / total) + selectionScale(index) * (weight / total);
+}
+
 // Return the blend factor for the RGBA and mask values (unnormalized for unions).
 float evaluateBlind(
     int fieldFirst,
@@ -296,9 +306,12 @@ float evaluateBlind(
     uint sourceIndex,
     float invSoftEdge,
     bool invert,
+    bool resizes,
     out vec4 resultRgba,
-    out vec4 resultRgbaMask
+    out vec4 resultRgbaMask,
+    out float size
 ) {
+    size = 1.0;
     resultRgba = vec4(0.0);
     resultRgbaMask = vec4(0.0);
 
@@ -309,6 +322,7 @@ float evaluateBlind(
         if (!sampleBlindSelection(fieldFirst, sourceIndex, distance, flags)) return 0.0;
         float amount = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
         if (amount > 0.0) {
+            if (resizes) size = (1.0 - amount) + amount * selectionScale(fieldFirst);
             resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, fieldFirst), 0));
             resultRgbaMask = sdfRgbaMask(flags);
         }
@@ -327,12 +341,16 @@ float evaluateBlind(
         if (weight > 0.0) {
             resultRgba += weight * uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
             resultRgbaMask += weight * sdfRgbaMask(flags);
-            weightSum += weight;
+            float total = weightSum + weight;
+            if (resizes) size = blendSelectionScale(size, weightSum, index, weight, total);
+            weightSum = total;
         }
     }
 
     if (weightSum == 0.0) return 0.0;
-    return sdfEditAmount(invert ? -distance : distance, invSoftEdge) / weightSum;
+    float coverage = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
+    size = (1.0 - coverage) + coverage * size;
+    return coverage / weightSum;
 }
 
 float evaluateSdfs(
@@ -342,9 +360,12 @@ float evaluateSdfs(
     float invSmoothAmount,
     float invSoftEdge,
     bool invert,
+    bool resizes,
     out vec4 resultRgba,
-    out vec4 resultRgbaMask
+    out vec4 resultRgbaMask,
+    out float size
 ) {
+    size = 1.0;
     resultRgba = vec4(0.0);
     resultRgbaMask = vec4(0.0);
 
@@ -355,6 +376,7 @@ float evaluateSdfs(
         if (!sampleSdfDistance(sdfFirst, position, distance, flags)) return 0.0;
         float amount = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
         if (amount > 0.0) {
+            if (resizes) size = (1.0 - amount) + amount * selectionScale(sdfFirst);
             resultRgba = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, sdfFirst), 0));
             resultRgbaMask = sdfRgbaMask(flags);
         }
@@ -375,7 +397,9 @@ float evaluateSdfs(
             if (weight > 0.0) {
                 resultRgba += weight * uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
                 resultRgbaMask += weight * sdfRgbaMask(flags);
-                weightSum += weight;
+                float total = weightSum + weight;
+                if (resizes) size = blendSelectionScale(size, weightSum, index, weight, total);
+                weightSum = total;
             }
         }
     } else {
@@ -393,7 +417,9 @@ float evaluateSdfs(
                 vec4 value = uintBitsToFloat(texelFetch(sdfTexture, ivec2(4, index), 0));
                 vec4 valueMask = sdfRgbaMask(flags);
                 maxExponent = dominant ? exponent : maxExponent;
-                weightSum = weightSum * rescale + weight;
+                float previousWeight = weightSum * rescale;
+                weightSum = previousWeight + weight;
+                if (resizes) size = blendSelectionScale(size, previousWeight, index, weight, weightSum);
                 resultRgba = resultRgba * rescale + weight * value;
                 resultRgbaMask = resultRgbaMask * rescale + weight * valueMask;
             }
@@ -402,16 +428,20 @@ float evaluateSdfs(
     }
 
     if (weightSum == 0.0) return 0.0;
-    return sdfEditAmount(invert ? -distance : distance, invSoftEdge) / weightSum;
+    float coverage = sdfEditAmount(invert ? -distance : distance, invSoftEdge);
+    size = (1.0 - coverage) + coverage * size;
+    return coverage / weightSum;
 }
 
 bool applySdfEdits(
     uint sourceIndex,
     vec3 position,
     inout vec4 rgba,
-    float shapeAmount
+    float shapeAmount,
+    inout vec3 lnScales,
+    out bool semanticOpacityDecoded
 ) {
-    bool semanticOpacityDecoded = false;
+    semanticOpacityDecoded = false;
     for (int editIndex = 0; editIndex < numEdits; ++editIndex) {
         uvec4 edit = texelFetch(editTexture, ivec2(0, editIndex), 0);
         uint blendMode = edit.x & 0xffu;
@@ -422,14 +452,20 @@ bool applySdfEdits(
         vec4 sdfRgba;
         vec4 sdfRgbaMask;
         float factor;
+        bool resizes = (edit.x & EDIT_UNIFORM_SCALE) != 0u;
+        float size;
         if ((edit.x & EDIT_BLIND) != 0u) {
             factor = evaluateBlind(
-                selectionFirst, selectionCount, sourceIndex, invSoftEdge, invert, sdfRgba, sdfRgbaMask
+                selectionFirst, selectionCount, sourceIndex, invSoftEdge, invert, resizes, sdfRgba, sdfRgbaMask, size
             );
         } else {
             factor = evaluateSdfs(
-                selectionFirst, selectionCount, position, uintBitsToFloat(edit.w), invSoftEdge, invert, sdfRgba, sdfRgbaMask
+                selectionFirst, selectionCount, position, uintBitsToFloat(edit.w), invSoftEdge, invert, resizes, sdfRgba, sdfRgbaMask, size
             );
+        }
+        if (size != 1.0) {
+            if (size == 0.0) return false;
+            lnScales += log(size);
         }
         bool editOpacity = factor > 0.0 && sdfRgbaMask.a > 0.0;
         if (editOpacity && !semanticOpacityDecoded) {
@@ -455,7 +491,7 @@ bool applySdfEdits(
         }
         rgba = mix(rgba, target, factor);
     }
-    return semanticOpacityDecoded;
+    return true;
 }
 
 void produceSplat(int index) {
@@ -528,12 +564,15 @@ void produceSplat(int index) {
 // matching the rebased SDF transforms without reconstructing world position.
     // Opacity is clamped once on the CPU when preparing this mesh.
     float opacityScale = recolor.a * blockOpacity;
-    bool semanticOpacityDecoded = applySdfEdits(
+    bool semanticOpacityDecoded;
+    if (!applySdfEdits(
         sourceIndex,
         editPosition,
         rgba,
-        shapeAmount
-    );
+        shapeAmount,
+        lnScales,
+        semanticOpacityDecoded
+    )) return;
     rgba.rgb *= recolor.rgb;
     if (!semanticOpacityDecoded && opacityScale >= 1.0) {
         // Neither SDFs nor the mesh opacity changed opacity, so preserve the

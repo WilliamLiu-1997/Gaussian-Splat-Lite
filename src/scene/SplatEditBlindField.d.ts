@@ -14,6 +14,8 @@ export type SplatEditBlindFieldOptions = {
   invert?: boolean;
   color?: SplatEditSdfColor;
   opacity?: number;
+  /** Multiplier for all three Splat axes about their own center. Default 1. */
+  uniformScale?: number;
 };
 
 /** Select Gaussians by an exact SOG v3 Blind value or an inclusive range.
@@ -26,6 +28,7 @@ export declare class SplatEditBlindField extends Object3D {
   invert: boolean;
   color: SplatEditSdfColor;
   opacity?: number;
+  uniformScale: number;
   /** Throws for a missing field, a non-finite value, or a value combined with min/max. */
   constructor(options: SplatEditBlindFieldOptions);
 }

@@ -1,6 +1,8 @@
 import { Object3D } from "three";
 import { getBlindFieldLayout } from "../data/blindFields.js";
 
+import { toUniformScale } from "../utils/numeric.js";
+
 // A Blind selection fills one SplatEdits record (six RGBA32UI texels). Its
 // header flags keep the invert and RGBA mask bits; the generate
 // shaders read the Blind bits below, and splatGenerate.glsl repeats them.
@@ -47,6 +49,14 @@ export class SplatEditBlindField extends Object3D {
     this.invert = options.invert ?? false;
     this.color = options.color ?? {};
     this.opacity = options.opacity;
+    this.uniformScale = options.uniformScale ?? 1;
+  }
+
+  get uniformScale() {
+    return this._uniformScale;
+  }
+  set uniformScale(value) {
+    this._uniformScale = toUniformScale(value);
   }
 }
 
@@ -73,6 +83,7 @@ export function encodeBlindSelection(selection, fields) {
     (color.b === undefined ? 0 : 4) |
     (opacity === undefined ? 0 : 8);
   record[3] = (invert ? SDF_INVERT : 0) | (mask << SDF_RGBA_MASK_SHIFT);
+  floats[7] = selection.uniformScale;
   floats[16] = color.r ?? 0;
   floats[17] = color.g ?? 0;
   floats[18] = color.b ?? 0;

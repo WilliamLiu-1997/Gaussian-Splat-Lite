@@ -20,6 +20,7 @@ export declare enum SplatEditRgbaBlendMode {
 }
 /** @internal Edit group flag shared with the generate shaders. */
 export declare const EDIT_BLIND: number;
+export declare const EDIT_UNIFORM_SCALE: number;
 
 export type SplatEditSdfColor = {
   r?: number;
@@ -30,6 +31,8 @@ export type SplatEditSdfOptions = {
   type?: SplatEditSdfType;
   invert?: boolean;
   opacity?: number;
+  /** Multiplier for all three Splat axes about their own center. Default 1. */
+  uniformScale?: number;
   color?: SplatEditSdfColor;
   radius?: number;
 };
@@ -38,6 +41,7 @@ export declare class SplatEditSdf extends THREE.Object3D {
   type: SplatEditSdfType;
   invert: boolean;
   opacity?: number;
+  uniformScale: number;
   color: SplatEditSdfColor;
   radius: number;
   constructor(options?: SplatEditSdfOptions);
@@ -51,7 +55,7 @@ export type SplatEditOptions = {
   invert?: boolean;
   sdfs?: SplatEditSdf[];
 };
-/** An ordered RGBA operation evaluated over spatial SDF shapes. */
+/** An ordered appearance and size edit over spatial SDF shapes. */
 export declare class SplatEdit extends THREE.Object3D {
   ordering: number;
   rgbaBlendMode: SplatEditRgbaBlendMode;

@@ -1,7 +1,7 @@
 import { Object3D } from "three";
 import { SplatEdit } from "./SplatEdit.js";
 
-/** An ordered RGBA operation evaluated over Blind field selections. */
+/** An ordered appearance and size edit over Blind field selections. */
 export class SplatEditBlind extends Object3D {
   constructor(options = {}) {
     super();

@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Recolor, fade, or hide Gaussians selected by SOG v3 Blind fields. A `SplatEditBlind` holds the edit settings, and one or more `SplatEditBlindField` children select field values or ranges.
+Resize, recolor, fade, or hide Gaussians selected by SOG v3 Blind fields. A `SplatEditBlind` holds the edit settings, and one or more `SplatEditBlindField` children select field values or ranges.
 
 ```js
 import {
@@ -52,6 +52,16 @@ Use `edit.add(selection)` and `edit.remove(selection)` for children. If you set 
 
 SDF and Blind edit groups share the same creation order. Change `edit.ordering` to reorder them. Edit groups cannot be nested. Spatial `SplatEditSdf` shapes belong in a separate [SplatEdit](SplatEdit.md) group; the two selection types cannot share an edit group. Blind groups have no `sdfSmooth` option.
 
+## Resizing Splats
+
+```js
+const resize = new SplatEditBlind();
+resize.add(new SplatEditBlindField({ field: "segment", value: 3, uniformScale: 2 }));
+mesh.add(resize);
+```
+
+This doubles the size of Splats labeled `3`. With a soft edge, a selection weight of 0.5 gives a multiplier of 1.5. Overlapping fields in one group blend their multipliers by selection weight. Separate groups multiply their size effects. A multiplier of zero hides a fully selected Splat.
+
 ## SplatEditBlindField options
 
 | Option | Type | Default | Description |
@@ -63,6 +73,7 @@ SDF and Blind edit groups share the same creation order. Change `edit.ordering` 
 | `invert` | `boolean` | `false` | Invert this selection |
 | `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | Color to apply |
 | `opacity` | `number` | Unassigned | Opacity to apply |
+| `uniformScale` | `number` | `1` | Multiplies the three axes of each selected Splat about its own center. Accepts finite, nonnegative float32 values. |
 
 Omit `min` or `max` for a one-sided range, or both to select every value of the field. Use `value` for category labels and a range for floating-point fields. For example, to hide one label, add `new SplatEditBlindField({ field: "segment", value: 3, opacity: 0 })` to a Blind edit with `SET_RGBA` and `softEdge: 0`.
 

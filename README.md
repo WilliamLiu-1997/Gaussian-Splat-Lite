@@ -32,7 +32,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 | **Large-scene streaming** | Load RAD, SOG, and LCC2 detail as the camera moves, with smooth transitions |
 | **Stochastic rendering** | Optional transparency mode, with an experimental neural denoiser to smooth it |
 | **Offscreen capture** | Render Splats to images, cube maps, and environment maps for reflections |
-| **SDF edits** | Recolor or hide parts of a model without moving Splats |
+| **SDF and Blind edits** | Resize, recolor, or hide Splats selected by shape or field value |
 | **Data and precision** | Load URLs, files, or bytes; place local models in large GIS/ECEF scenes |
 
 ## Installation
@@ -196,8 +196,8 @@ Keep the index and its companion files together. See [LCC2 streaming](docs/Lcc2S
 - [SplatLoader](docs/SplatLoader.md) — Three.js-style loading, progress, cancellation, and split files.
 - [SplatFileType](docs/SplatFileType.md) — PLY, SPZ, SOG, and RAD formats.
 - [postDecode](docs/PostDecode.md) — Change Splats while a model loads.
-- [SplatEdit](docs/SplatEdit.md) — Recolor, fade, or hide parts of a model.
-- [SplatEditBlind](docs/SplatEditBlind.md) — Select SOG v3 Blind fields to recolor, fade, or hide Gaussians.
+- [SplatEdit](docs/SplatEdit.md) — Resize, recolor, fade, or hide selected Splats.
+- [SplatEditBlind](docs/SplatEditBlind.md) — Resize, recolor, fade, or hide Gaussians selected by SOG v3 Blind fields.
 - [Splats](docs/Splats.md) — Read a loaded model's data.
 
 **Large scenes**

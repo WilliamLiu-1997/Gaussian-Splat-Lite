@@ -2,7 +2,7 @@
 
 [Back to documentation](../README.md#documentation)
 
-Recolor, fade, or hide the part of a model that lies inside a shape, such as a sphere or a box. Splats are not moved or deleted, so an edit can be changed or removed at any time. The shapes are signed distance fields (SDFs), which is where the class names come from.
+Resize, recolor, fade, or hide individual Gaussians inside a shape such as a sphere or a box. Splats are not moved or deleted, so an edit can be changed or removed at any time. The shapes are signed distance fields (SDFs), which is where the class names come from.
 
 A `SplatEdit` holds the settings, and one or more `SplatEditSdf` shapes say where it applies. Attach the edit to a `SplatMesh` to affect only that mesh:
 
@@ -56,6 +56,18 @@ Shapes are normally children of the edit: use `edit.add(sdf)` and `edit.remove(s
 
 SDF and Blind edit groups apply in the order they were created. Change `edit.ordering` to reorder them. Edit groups cannot be nested.
 
+## Resizing Splats
+
+```js
+const resize = new SplatEdit({ softEdge: 0.4 });
+resize.add(new SplatEditSdf({ type: SplatEditSdfType.SPHERE, radius: 3, uniformScale: 2 }));
+splat.add(resize);
+```
+
+Attach the edit to a mesh for a local effect or to the scene for a global effect on editable meshes. Moving its shapes updates the selection. At full strength the example doubles all three axes. At the boundary, a weight of 0.5 gives a multiplier of 1.5. Overlapping shapes in one edit blend their multipliers by selection weight. Separate edits multiply their size effects. A multiplier of zero hides a fully selected Splat.
+
+Centers stay fixed, so size edits reuse the WebGL depth order. Raycasting and source bounds continue to use the original Splat sizes.
+
 ## Blend modes
 
 | Mode | Description |
@@ -73,6 +85,7 @@ Only the channels a shape assigns are affected. A `THREE.Color` assigns red, gre
 | `type` | `SplatEditSdfType` | `SPHERE` | Shape |
 | `color` | `THREE.Color \| { r?: number; g?: number; b?: number }` | Unassigned | Color applied inside the shape |
 | `opacity` | `number` | Unassigned | Opacity applied inside the shape |
+| `uniformScale` | `number` | `1` | Multiplies the three axes of each selected Splat about its own center. Accepts finite, nonnegative float32 values. |
 | `radius` | `number` | `0` | Radius of a sphere, cylinder, capsule, and similar shapes |
 | `invert` | `boolean` | `false` | Affect the outside of this shape instead of the inside |
 

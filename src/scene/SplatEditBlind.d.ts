@@ -10,7 +10,7 @@ export type SplatEditBlindOptions = {
   fields?: SplatEditBlindField[];
 };
 
-/** An ordered RGBA operation evaluated over Blind field selections. */
+/** An ordered appearance and size edit over Blind field selections. */
 export declare class SplatEditBlind extends Object3D {
   ordering: number;
   rgbaBlendMode: SplatEditRgbaBlendMode;

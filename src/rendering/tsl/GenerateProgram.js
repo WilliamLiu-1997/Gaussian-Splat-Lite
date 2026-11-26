@@ -1,5 +1,5 @@
 import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines.js";
-import { EDIT_BLIND } from "../../scene/SplatEdit.js";
+import { EDIT_BLIND, EDIT_UNIFORM_SCALE } from "../../scene/SplatEdit.js";
 import { BLIND_ACTIVE } from "../../scene/SplatEditBlindField.js";
 import { createBlindSelection } from "./BlindSelection.js";
 import {
@@ -391,6 +391,18 @@ export function createGenerateProgram({ uniforms }) {
     const rgba = N.vec4(0).toVar();
     const mask = N.vec4(0).toVar();
     const factor = N.float(0).toVar();
+    const size = N.float(1).toVar();
+    const resizes = edit.x.bitAnd(EDIT_UNIFORM_SCALE).notEqual(0);
+    const selectionScale = (index) => N.uintBitsToFloat(loadSdf(1, index).w);
+    const blendScale = (index, previousWeight, weight, total) => {
+      N.If(resizes, () => {
+        size.assign(
+          size
+            .mul(previousWeight.div(total))
+            .add(selectionScale(index).mul(weight.div(total))),
+        );
+      });
+    };
 
     const evaluateSelections = (sample, spatial) => {
       N.If(
@@ -405,6 +417,13 @@ export function createGenerateProgram({ uniforms }) {
               ),
             );
             N.If(factor.greaterThan(0), () => {
+              N.If(resizes, () => {
+                size.assign(
+                  factor
+                    .oneMinus()
+                    .add(factor.mul(selectionScale(selectionFirst))),
+                );
+              });
               rgba.assign(N.uintBitsToFloat(loadSdf(4, selectionFirst)));
               mask.assign(sdfRgbaMask(flags));
             });
@@ -435,7 +454,9 @@ export function createGenerateProgram({ uniforms }) {
                   weight.mul(N.uintBitsToFloat(loadSdf(4, index))),
                 );
                 mask.addAssign(weight.mul(sdfRgbaMask(flags)));
-                weightSum.addAssign(weight);
+                const total = weightSum.add(weight).toVar();
+                blendScale(index, weightSum, weight, total);
+                weightSum.assign(total);
               });
             },
           );
@@ -468,7 +489,9 @@ export function createGenerateProgram({ uniforms }) {
                   ).toVar();
                   const valueMask = sdfRgbaMask(flags).toVar();
                   maxExponent.assign(N.select(dominant, exponent, maxExponent));
-                  weightSum.assign(weightSum.mul(rescale).add(weight));
+                  const previousWeight = weightSum.mul(rescale).toVar();
+                  weightSum.assign(previousWeight.add(weight));
+                  blendScale(index, previousWeight, weight, weightSum);
                   rgba.assign(rgba.mul(rescale).add(weight.mul(rgbaValue)));
                   mask.assign(mask.mul(rescale).add(weight.mul(valueMask)));
                 });
@@ -485,12 +508,12 @@ export function createGenerateProgram({ uniforms }) {
         }
         // Fold normalization into the final blend factor for both unions.
         N.If(weightSum.greaterThan(0), () => {
-          factor.assign(
-            sdfEditAmount(
-              N.select(invert, distance.negate(), distance),
-              invSoftEdge,
-            ).div(weightSum),
-          );
+          const amount = sdfEditAmount(
+            N.select(invert, distance.negate(), distance),
+            invSoftEdge,
+          ).toVar();
+          size.assign(amount.oneMinus().add(amount.mul(size)));
+          factor.assign(amount.div(weightSum));
         });
       });
     };
@@ -503,7 +526,7 @@ export function createGenerateProgram({ uniforms }) {
     }).Else(() => {
       evaluateSelections((index) => sampleSdf(index, position), true);
     });
-    return { rgba, mask, factor };
+    return { rgba, mask, factor, size };
   };
   const loadShBlock = (texture, coord, block) => {
     const value = N.uvec4(0).toVar();
@@ -690,7 +713,16 @@ export function createGenerateProgram({ uniforms }) {
                   rgba: sdfRgba,
                   mask: sdfMask,
                   factor,
+                  size,
                 } = evaluateEdit(edit, sourceIndex, position);
+                N.If(size.notEqual(1), () => {
+                  N.If(size.equal(0), () => {
+                    valid.assign(false);
+                    N.Break();
+                  }).Else(() => {
+                    lnScales.addAssign(size.log());
+                  });
+                });
                 const editOpacity = factor
                   .greaterThan(0)
                   .and(sdfMask.a.greaterThan(0));

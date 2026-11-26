@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { emptyUintTexture } from "../data/textureLayout.js";
+import { toUniformScale } from "../utils/numeric.js";
 import { rebaseAffineTransform } from "../utils/transforms.js";
 import {
   BLIND_ACTIVE,
@@ -24,6 +25,7 @@ export const SplatEditRgbaBlendMode = {
 };
 /** @internal Edit group flag shared with the generate shaders. */
 export const EDIT_BLIND = 1 << 9;
+export const EDIT_UNIFORM_SCALE = 1 << 10;
 
 /** A signed-distance shape carrying optional color and opacity channels. */
 export class SplatEditSdf extends THREE.Object3D {
@@ -34,9 +36,16 @@ export class SplatEditSdf extends THREE.Object3D {
     this.opacity = options.opacity;
     this.color = options.color ?? {};
     this.radius = options.radius ?? 0;
+    this.uniformScale = options.uniformScale ?? 1;
+  }
+  get uniformScale() {
+    return this._uniformScale;
+  }
+  set uniformScale(value) {
+    this._uniformScale = toUniformScale(value);
   }
 }
-/** An ordered RGBA operation evaluated over spatial SDF shapes. */
+/** An ordered appearance and size edit over spatial SDF shapes. */
 export class SplatEdit extends THREE.Object3D {
   static nextOrdering = 1;
   constructor(options = {}) {
@@ -121,7 +130,7 @@ export class SplatEdits {
     groups.forEach(({ edit, selections }, editIndex) => {
       const spatial = edit instanceof SplatEdit;
       editUpdated =
-        this.encodeEdit(editIndex, edit, selectionIndex, selections.length) ||
+        this.encodeEdit(editIndex, edit, selectionIndex, selections) ||
         editUpdated;
       for (const selection of selections) {
         if (!spatial) {
@@ -253,15 +262,22 @@ export class SplatEdits {
     }
     return updated;
   }
-  encodeEdit(index, edit, selectionFirst, selectionCount) {
+  encodeEdit(index, edit, selectionFirst, selections) {
+    const selectionCount = selections.length;
     if (selectionFirst > 0xffff || selectionCount > 0xffff) {
       throw new Error("An edit supports at most 65535 selections");
     }
     const base = index * 4;
     const blend = rgbaBlendModeToNumber(edit.rgbaBlendMode);
     const spatial = edit instanceof SplatEdit;
+    const resizes = selections.some(
+      (selection) => selection.uniformScale !== 1,
+    );
     const flags =
-      blend | (edit.invert ? 1 << 8 : 0) | (spatial ? 0 : EDIT_BLIND);
+      blend |
+      (edit.invert ? 1 << 8 : 0) |
+      (spatial ? 0 : EDIT_BLIND) |
+      (resizes ? EDIT_UNIFORM_SCALE : 0);
     // Zero keeps hard edges/unions; nonzero parameters are stored as reciprocals.
     const invSoftEdge = edit.softEdge === 0 ? 0 : 1 / edit.softEdge;
     const invSmoothAmount =
@@ -296,6 +312,7 @@ export class SplatEdits {
       updated = this.setSdfFloat(base + 8 + axis, e[4 + axis]) || updated;
       updated = this.setSdfFloat(base + 20 + axis, e[8 + axis]) || updated;
     }
+    updated = this.setSdfFloat(base + 7, sdf.uniformScale) || updated;
     // The sign carries shape inversion; zero disables collapsed transforms.
     const signedScale = sdf.invert ? -distanceScale : distanceScale;
     updated = this.setSdfFloat(base + 23, signedScale) || updated;

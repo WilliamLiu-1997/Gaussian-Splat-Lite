@@ -73,3 +73,15 @@ export function uintBitsToFloat(u) {
   u32buffer[0] = u;
   return f32buffer[0];
 }
+
+/** @internal Validate the multiplier before storing it as float32. */
+export function toUniformScale(value) {
+  if (
+    !Number.isFinite(value) ||
+    value < 0 ||
+    !Number.isFinite(Math.fround(value))
+  ) {
+    throw new RangeError("uniformScale must be a finite nonnegative float");
+  }
+  return Math.fround(value);
+}

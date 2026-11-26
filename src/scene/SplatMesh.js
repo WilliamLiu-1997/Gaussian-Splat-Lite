@@ -29,7 +29,7 @@ function validateSplatMeshInitializationInputs(options) {
     );
   }
 }
-/** A scene object backed by a fixed encoded splat source and RGBA SDF edits. */
+/** A scene object backed by a fixed encoded splat source and spatial SDF edits. */
 export class SplatMesh extends THREE.Object3D {
   /** SH limit fixed at construction; loading a file also caps its stored SH data. */
   get maxSh() {
@@ -207,7 +207,7 @@ export class SplatMesh extends THREE.Object3D {
         source.blindFields,
       ).updated
     ) {
-      // RGBA-only SDF changes preserve centers and their existing sort order.
+      // Edit groups preserve centers and their existing sort order.
       updated = true;
     }
     if (updated) {
