@@ -8,60 +8,32 @@ import {
 } from "gaussian-splat-lite";
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
-import { createBlindHover } from "./blindHover.js";
-import { createBlindObjectColors } from "./blindObjectColors.js";
-import { CameraController } from "./cameraController.js";
-import { createFrameGate } from "./frameGate.js";
+import { CameraController } from "../shared/cameraController.js";
+import { createFrameGate } from "../shared/frameGate.js";
+import { ViewerInspector } from "../shared/viewerInspector.js";
 import { getModelRotationX } from "./modelOrientation.js";
-import {
-  detectFileType,
-  filesFromDrop,
-  modelFromLocalFiles,
-  modelFromUrl,
-} from "./modelSource.js";
+import { detectFileType } from "./modelSource.js";
 import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
 import { createRenderOptionsPanel } from "./renderOptionsPanel.js";
+import { createSplatInspection } from "./splatInspection.js";
 import { getLcc2FrameBounds, getSogFrameBounds } from "./streamFrameBounds.js";
 import { createViewerDenoise } from "./viewerDenoise.js";
 import { createViewerHalfFloat } from "./viewerHalfFloat.js";
-import { ViewerInspector } from "./viewerInspector.js";
 import { createViewerUI } from "./viewerUI.js";
 
 const viewport = document.querySelector("#viewport");
-const fileInput = document.querySelector("#file-input");
-const folderInput = document.querySelector("#folder-input");
-const chooseFolderButton = document.querySelector("#choose-folder");
 const referenceToggle = document.querySelector("#reference-toggle");
-const loadExampleButton = document.querySelector("#load-example");
-const urlForm = document.querySelector("#url-form");
-const modelUrlInput = document.querySelector("#model-url");
-const loadUrlButton = document.querySelector("#load-url");
 const renderOptionsContent = document.querySelector("#render-options-content");
 const renderOptionsReset = document.querySelector("#render-options-reset");
 const sourceUpAxis = document.querySelector("#source-up-axis");
-const objectColorsControl = document.querySelector("#object-colors-control");
 
-// iOS Files can disable custom extensions such as .ply when accept is set.
-const isIOS =
-  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-if (isIOS) {
-  fileInput.removeAttribute("accept");
-}
-
-const ui = createViewerUI({
+export const ui = createViewerUI({
   onCancelLoad: cancelLoading,
   onResetView: () => {
     if (activeSplat) frameSplat(activeSplat);
   },
 });
-
-const EXAMPLE_MODEL = {
-  name: "JunkShop-SH3.sog",
-  size: 16324896,
-  url: new URL("../JunkShop-SH3.sog", import.meta.url),
-};
 
 const scene = new THREE.Scene();
 const controlsOverlayScene = new THREE.Scene();
@@ -218,8 +190,7 @@ function mountRendererState(state, attachInspector = true) {
 
 let needsRender = true;
 let denoiser = null;
-let blindHover = null;
-let blindObjectColors = null;
+let modelInteraction = null;
 // resizeRenderer() reads it while mounting the first renderer.
 let activeStream = null;
 let renderOnDemand = true;
@@ -231,29 +202,10 @@ let rendererState = await createRendererState("webgpu");
 let { renderer, controls, splatRenderer, frameGate } = rendererState;
 mountRendererState(rendererState);
 
-const STATS_UPDATE_INTERVAL_MS = 500;
-let statsSampleStart = performance.now();
-let statsRenderedFrames = 0;
-
-function updateStats(time, rendered) {
-  if (rendered) statsRenderedFrames += 1;
-
-  const elapsed = time - statsSampleStart;
-  if (elapsed < STATS_UPDATE_INTERVAL_MS) return;
-
-  ui.updateStats({
-    fps: (statsRenderedFrames * 1000) / elapsed,
-    memory: performance.memory,
-    streamStats: activeStream?.stats,
-  });
-  statsSampleStart = time;
-  statsRenderedFrames = 0;
-}
-
 function requestRender() {
   needsRender = true;
   denoiser?.invalidate();
-  blindHover?.invalidate();
+  modelInteraction?.invalidate();
 }
 
 function renderFrame(time) {
@@ -261,7 +213,7 @@ function renderFrame(time) {
   controls.update(time);
   activeStream?.update();
   drawFrame(time);
-  blindHover.update(time);
+  modelInteraction?.update(time);
 }
 
 function drawFrame(time) {
@@ -270,7 +222,7 @@ function drawFrame(time) {
     !frameGate.isReady(rendererState.drawPendingFrame) ||
     (renderOnDemand && !needsRender && !denoiser?.needsRender)
   ) {
-    updateStats(time, false);
+    ui.updateStats(time, false, activeStream);
     return;
   }
 
@@ -302,13 +254,11 @@ function drawFrame(time) {
     }
   }
   frameGate.submitted();
-  updateStats(time, true);
+  ui.updateStats(time, true, activeStream);
 }
 
 const renderOptionActions = {
-  objectColors: (value) => {
-    if (blindObjectColors) blindObjectColors.visible = value;
-  },
+  splatData: setSplatDataEnabled,
   rendererBackend: (backend) => {
     void switchRendererBackend(backend);
   },
@@ -424,7 +374,7 @@ async function performRendererSwitch(backend, switchToken) {
   }
 
   syncRendererOption(backend, true);
-  blindHover.clear();
+  modelInteraction?.clear();
   const previous = rendererState;
   const previousCanvas = previous.renderer.domElement;
   const previousOpacity = previousCanvas.style.opacity;
@@ -541,37 +491,31 @@ function retireDenoiser() {
 const frameSize = new THREE.Vector3();
 const frameCenter = new THREE.Vector3();
 let activeSplat = null;
-let activeExample = false;
 let activeRadSource = null;
 let radReloadQueued = false;
 let modelUpAxis = "auto";
 let disposeActiveSource = null;
 let cancelActiveLoad = null;
-let activeLoad = 0;
-let dragDepth = 0;
+export let activeLoad = 0;
 const remoteRequestByButton = new WeakMap();
-
-blindHover = createBlindHover({
-  viewport,
-  camera,
-  getModel: () => activeSplat,
-  isExample: () => activeExample,
-  requestRender,
-});
 
 const optionsPanel = createRenderOptionsPanel({
   container: renderOptionsContent,
   groups: renderOptionGroups,
   onChange: applyRenderOption,
 });
-document
-  .querySelector("#stochastic-control")
-  .append(
-    document.querySelector("#render-option-stochastic").closest(".option-row"),
-  );
-objectColorsControl.append(
-  document.querySelector("#render-option-objectColors").closest(".option-row"),
-);
+for (const [control, property] of [
+  ["stochastic-control", "stochastic"],
+  ["splat-data-control", "splatData"],
+]) {
+  document
+    .getElementById(control)
+    .append(
+      document
+        .getElementById(`render-option-${property}`)
+        .closest(".option-row"),
+    );
+}
 syncModelOptions();
 syncRendererOption(getRendererBackend());
 // Keep the initialized backend, including any automatic WebGL fallback.
@@ -587,7 +531,6 @@ function isChunkStream(stream) {
 function syncModelOptions() {
   const isRad = activeStream instanceof RadStreamScheduler;
   const isChunk = isChunkStream(activeStream);
-  objectColorsControl.hidden = !activeExample;
   optionsPanel.setHidden("splatBudget", !activeStream);
   optionsPanel.setHidden("maxResidentCpuBytes", !isRad);
   optionsPanel.setHidden("maxResidentGpuBytes", !isRad);
@@ -620,14 +563,21 @@ function reloadRadStream() {
   });
 }
 
-function isFileDrag(event) {
-  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+function setSplatDataEnabled(enabled) {
+  if (!enabled) {
+    modelInteraction?.dispose();
+    modelInteraction = null;
+  } else if (activeSplat) {
+    modelInteraction ??= createSplatInspection({
+      model: activeSplat,
+      viewport,
+      camera,
+    });
+  }
 }
 
 function clearActiveModel() {
-  blindHover.clear();
-  blindObjectColors?.removeFromParent();
-  blindObjectColors = null;
+  setSplatDataEnabled(false);
   denoiser?.reset();
   if (activeSplat) scene.remove(activeSplat);
   if (activeStream) activeStream.dispose();
@@ -635,7 +585,6 @@ function clearActiveModel() {
   disposeActiveSource?.();
   disposeActiveSource = null;
   activeSplat = null;
-  activeExample = false;
   activeStream = null;
   activeRadSource = null;
   syncModelOptions();
@@ -643,7 +592,7 @@ function clearActiveModel() {
   requestRender();
 }
 
-function cancelLoading() {
+export function cancelLoading() {
   activeLoad += 1;
   cancelActiveLoad?.();
   cancelActiveLoad = null;
@@ -791,7 +740,7 @@ async function initializeModel(
   }
 }
 
-async function loadFile(
+export async function loadFile(
   file,
   { url, button, resolveFile, manager, dispose, preserveView = false } = {},
 ) {
@@ -825,21 +774,14 @@ async function loadFile(
 
     applyModelOrientation(model.splat, isChunkStream(model.stream));
     activeSplat = model.splat;
-    activeExample = file === EXAMPLE_MODEL;
     activeStream = model.stream;
     if (activeStream instanceof RadStreamScheduler)
       activeRadSource = { file, url, resolveFile };
     syncStreamResolution();
-    syncModelOptions();
     disposeActiveSource = dispose;
     scene.add(activeSplat);
-    if (activeExample) {
-      blindObjectColors = createBlindObjectColors(
-        activeSplat.splats.extra.labeling.objects,
-      );
-      blindObjectColors.visible = optionsPanel.getValue("objectColors");
-      scene.add(blindObjectColors);
-    }
+    setSplatDataEnabled(optionsPanel.getValue("splatData"));
+    syncModelOptions();
     requestRender();
     const radStream = model.stream instanceof RadStreamScheduler;
     // SOG has index bounds; RAD needs its first page before framing the scene.
@@ -876,28 +818,6 @@ async function loadFile(
   }
 }
 
-function loadRemoteModel(model, button) {
-  return loadFile(model, {
-    url: model.url.toString(),
-    button,
-  });
-}
-
-function openFilePicker() {
-  fileInput.value = "";
-  fileInput.click();
-}
-
-function openFolderPicker() {
-  folderInput.value = "";
-  folderInput.click();
-}
-
-function clearDragState() {
-  dragDepth = 0;
-  ui.setDropOverlayVisible(false);
-}
-
 function resizeRenderer() {
   const width = viewport.clientWidth;
   const height = viewport.clientHeight;
@@ -914,64 +834,6 @@ function resizeRenderer() {
 function syncStreamResolution() {
   if (activeStream instanceof RadStreamScheduler)
     activeStream.setResolutionFromRenderer(camera, renderer);
-}
-
-for (const button of document.querySelectorAll("[data-file-picker]")) {
-  button.addEventListener("click", openFilePicker);
-}
-
-chooseFolderButton.addEventListener("click", openFolderPicker);
-
-loadExampleButton.addEventListener("click", () => {
-  loadRemoteModel(EXAMPLE_MODEL, loadExampleButton);
-});
-
-urlForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const model = modelFromUrl(modelUrlInput.value.trim());
-  if (!model) {
-    ui.showToast(
-      "Enter an HTTP(S) model URL (.ply, .spz, .sog, .rad, or a scene index).",
-    );
-    ui.setStatus("Enter a valid model URL");
-    modelUrlInput.focus();
-    return;
-  }
-
-  modelUrlInput.blur();
-  loadRemoteModel(model, loadUrlButton);
-});
-
-function loadLocalFiles(files) {
-  // Some drag relays replace directories with empty, path-named files.
-  if (
-    files.length === 1 &&
-    files[0].size === 0 &&
-    files[0].name.startsWith("/")
-  ) {
-    ui.clearLoading();
-    ui.setSourcePanelOpen(true);
-    ui.setStatus("Choose the scene folder");
-    ui.showToast(
-      "Could not read the dropped folder. Use Choose folder to open the scene.",
-    );
-    chooseFolderButton.focus();
-    return;
-  }
-
-  try {
-    const { file, ...source } = modelFromLocalFiles(files);
-    void loadFile(file, source);
-  } catch (error) {
-    ui.showToast(error.message);
-  }
-}
-
-for (const input of [fileInput, folderInput]) {
-  input.addEventListener("change", () => {
-    const files = Array.from(input.files);
-    if (files.length) loadLocalFiles(files);
-  });
 }
 
 referenceToggle.addEventListener("click", () => {
@@ -994,64 +856,15 @@ renderOptionsReset.addEventListener("click", () => {
   optionsPanel.reset({ last: ["rendererBackend"] });
 });
 
-window.addEventListener("dragenter", (event) => {
-  if (!isFileDrag(event)) return;
-  event.preventDefault();
-  dragDepth += 1;
-  ui.setDropOverlayVisible(true);
-});
-
-window.addEventListener("dragover", (event) => {
-  if (!isFileDrag(event)) return;
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "copy";
-});
-
-window.addEventListener("dragleave", (event) => {
-  if (event.relatedTarget === null) {
-    clearDragState();
-    return;
-  }
-  if (!isFileDrag(event)) return;
-  dragDepth = Math.max(0, dragDepth - 1);
-  if (dragDepth === 0) ui.setDropOverlayVisible(false);
-});
-
-window.addEventListener("drop", async (event) => {
-  event.preventDefault();
-  clearDragState();
-
-  cancelLoading();
-  const loadId = activeLoad;
-  try {
-    const files = await filesFromDrop(event.dataTransfer);
-    if (loadId !== activeLoad) return;
-    if (files.length) {
-      loadLocalFiles(files);
-    } else {
-      ui.showToast(
-        "Drop a model or a scene folder containing lod-meta.json or .lcc2 and its chunks.",
-      );
-      ui.setStatus("PLY, SPZ, SOG, RAD, and LCC2 files are supported");
-    }
-  } catch (error) {
-    if (loadId !== activeLoad) return;
-    ui.showToast(`Could not read dropped files: ${error.message}`);
-    ui.setStatus("Could not read dropped files");
-  }
-});
-
-window.addEventListener("blur", clearDragState);
-
 window.addEventListener("resize", resizeRenderer);
-window.addEventListener("beforeunload", () => {
+window.addEventListener("pagehide", (event) => {
+  if (event.persisted) return;
   viewerDisposed = true;
   rendererSwitchToken += 1;
   renderer.setAnimationLoop(null);
-  cancelActiveLoad?.();
+  cancelLoading();
   clearActiveModel();
   referenceHelpers.dispose();
-  blindHover.dispose();
   disposeRendererState(rendererState);
   disposeRendererState(retiringRendererState);
   ui.dispose();

@@ -1,0 +1,26 @@
+:root {
+  --corner-button-size: 40px;
+}
+
+.corner-button {
+  position: absolute;
+  bottom: var(--corner-bottom, 12px);
+  display: grid;
+  width: var(--corner-button-size);
+  height: var(--corner-button-size);
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  border: 1px solid #4a4a5a54;
+  border-radius: 50%;
+  background: rgb(30 30 36 / 55%);
+  color: #c4c9d2;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 22%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.corner-button:is(:hover, :focus-visible) {
+  border-color: rgb(255 255 255 / 25%);
+  background: color-mix(in srgb, var(--viewer-hover) 75%, transparent);
+}

@@ -1,0 +1,103 @@
+.brand {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.brand-mark {
+  position: relative;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex: 0 0 auto;
+  border-radius: 0.65rem;
+  /* Crop the SVG margin so the tile matches the toolbar buttons. */
+  background: url("../favicon.svg") center / 112.3% no-repeat;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
+}
+
+.brand-copy {
+  display: grid;
+  gap: 0.12rem;
+  line-height: 1.15;
+}
+
+.brand-copy strong {
+  overflow: hidden;
+  font-size: 0.91rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-accent {
+  color: var(--viewer-accent);
+}
+
+.brand-copy small {
+  color: #9097a4;
+  font-size: 0.69rem;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.file-meta {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem 0.52rem;
+  overflow: hidden;
+  justify-content: center;
+  color: #f5f7fa;
+  text-align: center;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 75%);
+}
+
+#file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#file-stats {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.meta-separator {
+  width: 0.2rem;
+  height: 0.2rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #4c525d;
+}
+
+@media (max-width: 900px) {
+  .brand-copy small {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .brand {
+    flex-shrink: 0;
+  }
+
+  .file-meta {
+    width: 100%;
+  }
+
+  #file-name {
+    max-width: 58vw;
+  }
+}
+
+@media (max-width: 520px) {
+  .brand-copy {
+    display: none;
+  }
+}

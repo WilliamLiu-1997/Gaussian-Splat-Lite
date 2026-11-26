@@ -1,3 +1,6 @@
+import { formatBytes, showFileMeta } from "../shared/fileMeta.js";
+import { createPerformanceStats } from "../shared/performanceStats.js";
+
 // Approximate overall progress; reserve completion for model initialization.
 const LOADING_STAGE_RANGES = {
   download: [0, 0.7],
@@ -20,7 +23,9 @@ export function createViewerUI({
   const sourcePanelBackdrop = document.querySelector("#source-panel-backdrop");
   const sourcePanelToggle = document.querySelector("#source-panel-toggle");
   const sourcePanelClose = document.querySelector("#source-panel-close");
-  const chooseFileButton = document.querySelector("#choose-file");
+  const sourceAction = emptyState.querySelector(
+    "button:not(.source-panel-close)",
+  );
   const resetViewButton = document.querySelector("#reset-view");
   const loadingBackdrop = document.querySelector("#loading-backdrop");
   const loadingPanel = document.querySelector("#loading-panel");
@@ -31,7 +36,6 @@ export function createViewerUI({
   const loadingDetail = document.querySelector("#loading-detail");
   const statusText = document.querySelector("#status-text");
   const fileMeta = document.querySelector("#file-meta");
-  const fileName = document.querySelector("#file-name");
   const fileStats = document.querySelector("#file-stats");
   const dropOverlay = document.querySelector("#drop-overlay");
   const toast = document.querySelector("#toast");
@@ -39,9 +43,7 @@ export function createViewerUI({
   const renderOptionsPanel = document.querySelector("#render-options");
   const renderOptionsClose = document.querySelector("#render-options-close");
   const performanceStats = document.querySelector("#performance-stats");
-  const performanceTooltip = document.querySelector("#performance-tooltip");
-  const performanceFps = document.querySelector("#performance-fps");
-  const performanceHeap = document.querySelector("#performance-heap");
+  const stats = createPerformanceStats(document);
 
   let hasModel = false;
   let loadingRatio = 0;
@@ -50,55 +52,6 @@ export function createViewerUI({
   let toastHideTimer;
   const events = new window.AbortController();
   const formatNumber = new Intl.NumberFormat();
-
-  function formatBytes(bytes) {
-    if (bytes < 1024) return `${bytes} B`;
-    const units = ["KB", "MB", "GB", "TB"];
-    let value = bytes / 1024;
-    let unit = units[0];
-
-    for (let index = 1; value >= 1024 && index < units.length; index += 1) {
-      value /= 1024;
-      unit = units[index];
-    }
-
-    const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-    return `${value.toFixed(digits)} ${unit}`;
-  }
-
-  function formatHeapSize(bytes) {
-    const mebibytes = bytes / (1024 * 1024);
-    if (mebibytes >= 1024) return `${(mebibytes / 1024).toFixed(1)} GB`;
-    return `${mebibytes.toFixed(mebibytes >= 100 ? 0 : 1)} MB`;
-  }
-
-  function updateHeapStat(memory) {
-    if (!memory || !Number.isFinite(memory.usedJSHeapSize)) {
-      performanceHeap.value = "N/A";
-      performanceTooltip.textContent =
-        "JS heap reporting is not available in this browser.";
-      return;
-    }
-
-    performanceHeap.value = formatHeapSize(memory.usedJSHeapSize);
-    performanceTooltip.textContent = Number.isFinite(memory.jsHeapSizeLimit)
-      ? `${formatHeapSize(memory.usedJSHeapSize)} used of ${formatHeapSize(memory.jsHeapSizeLimit)}`
-      : `${formatHeapSize(memory.usedJSHeapSize)} used`;
-  }
-
-  function setPerformanceTooltipOpen(open) {
-    if (open === performanceTooltip.matches(":popover-open")) return;
-    performanceStats.classList.toggle("is-tooltip-open", open);
-    performanceStats.setAttribute("aria-expanded", String(open));
-    if (open) {
-      performanceTooltip.showPopover();
-      const bounds = performanceStats.getBoundingClientRect();
-      performanceTooltip.style.left = `${Math.max(12, Math.min(bounds.left, window.innerWidth - performanceTooltip.offsetWidth - 12))}px`;
-      performanceTooltip.style.top = `${bounds.bottom + 6}px`;
-    } else {
-      performanceTooltip.hidePopover();
-    }
-  }
 
   function setRenderOptionsOpen(open) {
     renderOptionsPanel.hidden = !open;
@@ -114,7 +67,7 @@ export function createViewerUI({
   function syncBackgroundInteractivity() {
     const sourcePanelOpen = !emptyState.hidden;
     const loading = !loadingPanel.hidden;
-    if (sourcePanelOpen || loading) setPerformanceTooltipOpen(false);
+    if (sourcePanelOpen || loading) stats.closeTooltip();
     toolbarActions.inert = sourcePanelOpen || loading;
     statusBar.inert = sourcePanelOpen || loading;
     modelControls.hidden = !hasModel;
@@ -136,19 +89,19 @@ export function createViewerUI({
     sourcePanelBackdrop.hidden = !shouldOpen;
     interfaceRoot.classList.toggle("is-source-panel-open", shouldOpen);
     syncBackgroundInteractivity();
-    sourcePanelToggle.setAttribute("aria-expanded", String(shouldOpen));
-    sourcePanelClose.hidden = !hasModel;
+    sourcePanelToggle?.setAttribute("aria-expanded", String(shouldOpen));
+    if (sourcePanelClose) sourcePanelClose.hidden = !hasModel;
 
     if (moveFocus && shouldOpen) {
-      chooseFileButton.focus();
+      sourceAction.focus();
     } else if (restoreFocus) {
-      sourcePanelToggle.focus();
+      (sourcePanelToggle ?? resetViewButton).focus();
     }
   }
 
   function closeSourcePanel() {
     setSourcePanelOpen(false);
-    sourcePanelToggle.focus();
+    (sourcePanelToggle ?? resetViewButton).focus();
   }
 
   function setStatus(message) {
@@ -245,12 +198,7 @@ export function createViewerUI({
     hasModel = true;
     setSourcePanelOpen(false);
     resetViewButton.hidden = false;
-    fileMeta.hidden = false;
-    fileName.textContent = file.name;
-    const sizeLabel = file.size > 0 ? ` · ${formatBytes(file.size)}` : "";
-    fileStats.textContent = streamed
-      ? "Loading visible regions…"
-      : `${formatNumber.format(numSplats)} splats${sizeLabel}`;
+    showFileMeta(fileMeta, file, numSplats, { streamed });
     setStatus(streamed ? "Streaming visible regions" : "Loaded and ready");
   }
 
@@ -267,46 +215,19 @@ export function createViewerUI({
     onCancelLoad();
     clearLoading();
     setStatus("Loading canceled");
-    if (sourcePanelOpen) chooseFileButton.focus();
-    else sourcePanelToggle.focus();
+    if (sourcePanelOpen) sourceAction.focus();
+    else (sourcePanelToggle ?? resetViewButton).focus();
   }
 
   function listen(target, type, handler) {
     target.addEventListener(type, handler, { signal: events.signal });
   }
 
-  listen(performanceStats, "pointerenter", (event) => {
-    if (event.pointerType === "mouse") setPerformanceTooltipOpen(true);
-  });
-  listen(performanceStats, "pointerleave", (event) => {
-    if (event.pointerType === "mouse") setPerformanceTooltipOpen(false);
-  });
-  listen(performanceStats, "focus", () => {
-    if (performanceStats.matches(":focus-visible")) {
-      setPerformanceTooltipOpen(true);
-    }
-  });
-  listen(performanceStats, "blur", () => setPerformanceTooltipOpen(false));
-  listen(window, "resize", () => setPerformanceTooltipOpen(false));
-  listen(performanceStats, "click", () =>
-    setPerformanceTooltipOpen(
-      !performanceStats.classList.contains("is-tooltip-open"),
-    ),
-  );
-  document.addEventListener(
-    "pointerdown",
-    (event) => {
-      if (!performanceStats.contains(event.target)) {
-        setPerformanceTooltipOpen(false);
-      }
-    },
-    { capture: true, signal: events.signal },
-  );
-
-  listen(sourcePanelToggle, "click", () =>
-    setSourcePanelOpen(true, { moveFocus: true }),
-  );
-  listen(sourcePanelClose, "click", closeSourcePanel);
+  if (sourcePanelToggle)
+    listen(sourcePanelToggle, "click", () =>
+      setSourcePanelOpen(true, { moveFocus: true }),
+    );
+  if (sourcePanelClose) listen(sourcePanelClose, "click", closeSourcePanel);
   listen(sourcePanelBackdrop, "click", () => {
     if (hasModel) closeSourcePanel();
   });
@@ -317,16 +238,13 @@ export function createViewerUI({
   );
   listen(renderOptionsClose, "click", closeRenderOptions);
   listen(window, "keydown", (event) => {
-    if (event.key !== "Escape") return;
-    if (performanceStats.classList.contains("is-tooltip-open")) {
-      setPerformanceTooltipOpen(false);
-    } else if (!loadingPanel.hidden) requestCancelLoad();
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (!loadingPanel.hidden) requestCancelLoad();
     else if (!renderOptionsPanel.hidden) closeRenderOptions();
     else if (!emptyState.hidden && hasModel) closeSourcePanel();
   });
 
   setSourcePanelOpen(true);
-  updateHeapStat(window.performance.memory);
 
   return {
     showLoading,
@@ -342,22 +260,20 @@ export function createViewerUI({
     mountInspector(element) {
       if (element) performanceStats.before(element);
     },
-    updateStats({ fps, memory, streamStats }) {
-      performanceFps.value = fps >= 10 ? Math.round(fps) : fps.toFixed(1);
-      updateHeapStat(memory);
-      if (streamStats) {
-        const percent = Math.floor(streamStats.loadProgress * 100);
-        const progress =
-          percent === 100
-            ? "Current view ready"
-            : `Loading current view ${percent}%`;
-        fileStats.textContent = `${formatNumber.format(streamStats.visibleSplats)} visible splats · ${formatNumber.format(streamStats.visibleMeshes)} meshes · ${formatBytes(streamStats.residentCpuBytes)} CPU cached · ${formatBytes(streamStats.residentGpuBytes)} GPU cached · ${progress}`;
-        if (!loadingPanel.hidden)
-          updateLoadingProgress(streamStats.loadProgress, 1, "stream");
-      }
+    updateStats(time, rendered, stream) {
+      if (!stats.update(time, rendered) || !stream) return;
+      const streamStats = stream.stats;
+      const percent = Math.floor(streamStats.loadProgress * 100);
+      const progress =
+        percent === 100
+          ? "Current view ready"
+          : `Loading current view ${percent}%`;
+      fileStats.textContent = `${formatNumber.format(streamStats.visibleSplats)} visible splats · ${formatNumber.format(streamStats.visibleMeshes)} meshes · ${formatBytes(streamStats.residentCpuBytes)} CPU cached · ${formatBytes(streamStats.residentGpuBytes)} GPU cached · ${progress}`;
+      if (!loadingPanel.hidden)
+        updateLoadingProgress(streamStats.loadProgress, 1, "stream");
     },
     dispose() {
-      setPerformanceTooltipOpen(false);
+      stats.dispose();
       events.abort();
       clearToastTimers();
       toast.classList.remove("is-visible");

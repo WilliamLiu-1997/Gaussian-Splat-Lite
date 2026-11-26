@@ -1,0 +1,14 @@
+:root {
+  --viewer-panel: rgb(12 15 21 / 91%);
+  --viewer-border: rgb(255 255 255 / 12%);
+  --viewer-hover: rgb(40 40 46 / 85%);
+  --viewer-accent: #cfff58;
+  --viewer-selected: rgb(207 255 88 / 10%);
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #080808;
+  color: #f5f7f3;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}

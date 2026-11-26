@@ -3,7 +3,10 @@ import { defineConfig } from "vite";
 import arraybuffer from "vite-plugin-arraybuffer";
 import glsl from "vite-plugin-glsl";
 
+import { examples } from "./examples/catalog.js";
+
 export default defineConfig({
+  appType: "mpa",
   plugins: [
     arraybuffer(),
     glsl({
@@ -19,6 +22,13 @@ export default defineConfig({
 
   build: {
     target: "es2022",
+    rollupOptions: {
+      input: [
+        "index.html",
+        "examples/index.html",
+        ...examples.map(({ id }) => `examples/examples/${id}/index.html`),
+      ],
+    },
     outDir: "site-dist",
     sourcemap: true,
   },

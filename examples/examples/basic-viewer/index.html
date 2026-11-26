@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Basic Viewer · Gaussian Splat Lite</title>
+    <link rel="icon" href="../../favicon.svg" />
+    <link rel="stylesheet" href="./basicViewer.css" />
+  </head>
+  <body>
+    <div id="viewport" aria-hidden="true"></div>
+
+    <div class="interface">
+      <div
+        id="source-panel-backdrop"
+        class="source-panel-backdrop"
+        hidden
+        aria-hidden="true"
+      ></div>
+
+      <header class="toolbar">
+        <div class="brand" aria-label="Gaussian Splat Lite viewer">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-copy">
+            <strong>Gaussian Splat <span class="brand-accent">Lite</span></strong>
+            <small>Basic Viewer</small>
+          </span>
+        </div>
+
+        <div class="toolbar-actions" inert>
+          <button
+            id="performance-stats"
+            class="performance-stats"
+            type="button"
+            aria-expanded="false"
+            aria-controls="performance-tooltip"
+            aria-describedby="performance-tooltip"
+            aria-label="Performance metrics"
+          >
+            <span class="performance-stat">
+              <output id="performance-fps">—</output>
+              <small>FPS</small>
+            </span>
+            <span class="performance-stat performance-stat-heap">
+              <output id="performance-heap">—</output>
+              <small>JS heap</small>
+            </span>
+          </button>
+          <button
+            id="reset-view"
+            class="button button-quiet"
+            type="button"
+            aria-label="Reset view"
+            title="Reset view"
+            hidden
+          >
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 4v4h4M4.7 7.3A6 6 0 1 1 4 13" />
+            </svg>
+            <span class="reset-view-label">Reset view</span>
+          </button>
+          <button
+            id="render-options-toggle"
+            class="button button-quiet"
+            type="button"
+            aria-controls="render-options"
+            aria-expanded="false"
+            aria-label="Render options"
+          >
+            <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 5h12M7 10h9M4 15h12M7 3v4M13 8v4M8 13v4" />
+            </svg>
+            <span class="options-label">Render options</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="stage">
+        <section id="empty-state" class="empty-state" aria-labelledby="scene-title" hidden>
+          <h1 id="scene-title">Basic Viewer</h1>
+          <button class="button button-large" id="load-scene" type="button">Load scene</button>
+        </section>
+      </main>
+
+      <div id="loading-backdrop" class="loading-backdrop" aria-hidden="true" hidden></div>
+      <section id="loading-panel" class="loading-panel" aria-live="polite" hidden>
+        <div class="loading-header">
+          <div class="loading-copy">
+            <span>Loading</span>
+            <strong id="loading-name">splat file</strong>
+          </div>
+          <button
+            id="loading-cancel"
+            class="icon-button loading-cancel"
+            type="button"
+            aria-label="Cancel loading"
+            title="Cancel loading"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="m5 5 10 10M15 5 5 15" />
+            </svg>
+          </button>
+        </div>
+        <div
+          id="loading-progress"
+          class="progress-track is-indeterminate"
+          role="progressbar"
+          aria-label="Model loading progress"
+        >
+          <span id="loading-progress-fill"></span>
+        </div>
+        <span id="loading-detail" class="loading-detail">Preparing decoder…</span>
+      </section>
+
+      <footer class="statusbar">
+        <span id="status-text" class="visually-hidden" aria-live="polite">Loading example</span>
+        <div id="file-meta" class="file-meta" hidden>
+          <span id="file-name"></span>
+          <span class="meta-separator" aria-hidden="true"></span>
+          <span id="file-stats"></span>
+        </div>
+      </footer>
+    </div>
+
+    <aside id="render-options" class="options-panel" aria-labelledby="options-title" hidden>
+      <header class="options-header">
+        <div>
+          <p class="eyebrow">Live controls</p>
+          <h2 id="options-title">Render options</h2>
+          <p>Adjust the renderer and compare each effect in real time.</p>
+        </div>
+        <button
+          id="render-options-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close render options"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m5 5 10 10M15 5 5 15" />
+          </svg>
+        </button>
+      </header>
+      <div id="render-options-content" class="options-content"></div>
+      <footer class="options-footer">
+        <span>Changes apply immediately</span>
+        <button id="render-options-reset" class="text-button" type="button">
+          Reset defaults
+        </button>
+      </footer>
+    </aside>
+
+    <div id="performance-tooltip" class="performance-tooltip" role="tooltip" popover="manual"></div>
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <script type="module" src="./basicViewer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,152 @@
+@import "../../theme.css";
+@import "../../shared/cornerControls.css";
+@import "../../shared/exampleChrome.css";
+@import "../../shared/toolbarControls.css";
+@import "../../shared/renderOptions.css";
+@import "../../shared/viewerInspector.css";
+@import "./objectInspection.css";
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+}
+
+#viewport {
+  position: fixed;
+  inset: 0;
+  touch-action: none;
+}
+
+#viewport canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.example-header {
+  position: fixed;
+  z-index: 4;
+  inset: var(--example-inset) var(--example-inset) auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  pointer-events: none;
+}
+
+#loading,
+#backend-message {
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--viewer-border);
+  border-radius: 0.75rem;
+  background: var(--viewer-panel);
+  font-size: 0.8125rem;
+}
+
+.toolbar-actions button,
+.toolbar-actions output,
+.options-panel button {
+  font-family: inherit;
+}
+
+.blind-panel button,
+#retry {
+  border: 1px solid var(--viewer-border);
+  border-radius: 0.375rem;
+  background: #23262c;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#retry {
+  padding: 0.3rem 0.5rem;
+}
+
+#loading {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: min(18rem, 88vw);
+  gap: 0.8rem;
+  padding: 1.2rem;
+  transform: translate(-50%, -50%);
+}
+
+progress {
+  width: 100%;
+  height: 0.35rem;
+  accent-color: var(--viewer-accent);
+}
+
+.statusbar {
+  position: fixed;
+  inset: auto var(--example-inset) var(--example-inset);
+  display: grid;
+  font-size: 0.7rem;
+  pointer-events: none;
+}
+
+.info-toggle {
+  left: 12px;
+}
+
+#example-info {
+  position: fixed;
+  inset: auto auto
+    calc(var(--corner-bottom, 12px) + var(--corner-button-size) + 6px) 12px;
+  width: min(15rem, calc(100% - 24px));
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--viewer-border);
+  border-radius: 0.75rem;
+  background: rgb(30 30 36 / 63%);
+  color: inherit;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+@media (max-width: 420px) {
+  :root {
+    --corner-bottom: 3rem;
+  }
+}
+
+#example-info h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+#example-info p {
+  margin: 0.4rem 0 0;
+}
+
+#backend-message {
+  position: fixed;
+  bottom: 4rem;
+  left: 1rem;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .reset-view-label,
+  .options-label {
+    display: none;
+  }
+
+  #reset-view,
+  #controls-toggle {
+    width: 2.35rem;
+    padding: 0;
+  }
+}

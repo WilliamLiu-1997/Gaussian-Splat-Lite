@@ -1,0 +1,18 @@
+@import "./viewerChrome.css";
+
+:root {
+  --example-inset: clamp(0.5rem, 1vw, 0.75rem);
+}
+
+.options-panel,
+.blind-panel {
+  position: fixed;
+  top: calc(var(--example-inset) + 2.35rem);
+  top: anchor(--example-toolbar bottom);
+  right: var(--example-inset);
+  margin-top: 6px;
+}
+
+.toolbar-actions {
+  anchor-name: --example-toolbar;
+}

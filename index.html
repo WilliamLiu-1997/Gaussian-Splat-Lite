@@ -11,7 +11,7 @@
     <link
       rel="icon"
       type="image/svg+xml"
-      href="/examples/viewer/favicon.svg"
+      href="/examples/favicon.svg"
     />
     <link rel="stylesheet" href="/examples/viewer/viewer.css" />
   </head>
@@ -139,7 +139,7 @@
             </div>
           </div>
           <div id="stochastic-control" class="toolbar-select" title="Toggle stochastic rendering."></div>
-          <div id="object-colors-control" class="toolbar-select" title="Give each object of the example a random color." hidden></div>
+          <div id="splat-data-control" class="toolbar-select" title="Inspect splat data on hover or click."></div>
         </div>
       </header>
 
@@ -188,13 +188,6 @@
             >
               Choose folder
             </button>
-            <button
-              id="load-example"
-              class="button button-large button-example"
-              type="button"
-            >
-              Load example
-            </button>
           </div>
           <div class="source-divider" aria-hidden="true">
             <span>or load from URL</span>
@@ -217,6 +210,7 @@
             </button>
           </form>
           <p class="url-hint">Stream RAD, SOG lod-meta.json, or LCC2 scenes. Remote hosts must allow CORS; single-file RAD streaming requires byte-range requests.</p>
+          <a class="button examples-link" href="./examples/">Examples</a>
         </section>
       </main>
 
@@ -286,6 +280,8 @@
       </footer>
     </aside>
 
+    <div id="performance-tooltip" class="performance-tooltip" role="tooltip" popover="manual"></div>
+    <div id="toast" class="toast" role="alert" hidden></div>
     <div id="drop-overlay" class="drop-overlay" hidden>
       <div class="drop-overlay-card">
         <span class="drop-plus" aria-hidden="true">+</span>
@@ -294,11 +290,9 @@
       </div>
     </div>
 
-    <div id="performance-tooltip" class="performance-tooltip" role="tooltip" popover="manual"></div>
-    <div id="toast" class="toast" role="alert" hidden></div>
     <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp,.lcc2" multiple hidden />
     <input id="folder-input" type="file" webkitdirectory multiple hidden />
 
-    <script type="module" src="/examples/viewer/viewer.js"></script>
+    <script type="module" src="/examples/viewer/openModel.js"></script>
   </body>
 </html>

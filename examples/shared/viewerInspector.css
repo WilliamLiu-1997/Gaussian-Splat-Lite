@@ -1,0 +1,60 @@
+/* Keep the native Inspector widget in the toolbar and its panels on screen. */
+.three-inspector.viewer-inspector {
+  position: static;
+  /* Above viewer controls, below file and loading dialogs. */
+  z-index: 13;
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* Theme only the toolbar widget; panels keep the native Inspector palette. */
+.three-inspector.viewer-inspector
+  :is(
+    .profiler-toggle.panel-open .toggle-icon,
+    .profiler-toggle .builtin-tab-btn.active
+  ) {
+  background-color: rgb(207 255 88 / 20%);
+}
+
+.three-inspector.viewer-inspector
+  :is(
+    .profiler-toggle.panel-open:hover .toggle-icon,
+    .profiler-toggle .builtin-tab-btn.active:hover
+  ) {
+  background-color: rgb(207 255 88 / 30%);
+}
+
+.three-inspector.viewer-inspector .profiler-toggle {
+  --color-accent: #cfff58;
+  --text-primary: #f5f7f3;
+  --text-secondary: #9097a4;
+  position: relative;
+  /* Expanded and detached panels must cover the toolbar widget. */
+  z-index: 0;
+  inset: auto;
+  height: 2.35rem;
+  flex-direction: row;
+  border-radius: 0.65rem;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms
+    ease;
+}
+
+.three-inspector.viewer-inspector .profiler-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.three-inspector.viewer-inspector .profiler-toggle:active {
+  transform: translateY(0);
+}
+
+.three-inspector.viewer-inspector .toggle-text {
+  display: none;
+}
+
+.three-inspector.viewer-inspector .profiler-panel,
+.three-inspector.viewer-inspector .profiler-mini-panel,
+.three-inspector.viewer-inspector .detached-tab-panel {
+  position: fixed;
+}

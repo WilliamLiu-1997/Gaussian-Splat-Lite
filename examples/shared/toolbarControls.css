@@ -1,0 +1,184 @@
+.performance-stats {
+  position: relative;
+  display: flex;
+  height: 2.35rem;
+  flex: 0 0 auto;
+  align-items: stretch;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms
+    ease;
+}
+
+.performance-stats:is(:hover, :focus-visible) {
+  transform: translateY(-1px);
+}
+
+.performance-stat {
+  display: grid;
+  min-width: 4rem;
+  gap: 0.1rem;
+}
+
+.performance-stat:first-child {
+  min-width: 2rem;
+}
+
+.performance-stats:focus-visible {
+  outline: 2px solid #b9d9ff;
+  outline-offset: 3px;
+}
+
+.performance-stat output {
+  color: #f5f7f3;
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.performance-stat small {
+  color: #777f8c;
+  font-size: 0.55rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.performance-stat-heap {
+  padding-left: 0.6rem;
+  margin-left: 0.6rem;
+  border-left: 1px solid rgb(255 255 255 / 10%);
+}
+
+.performance-tooltip {
+  /* The popover top layer keeps glass controls from covering the tooltip. */
+  position: fixed;
+  inset: auto;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 1.5rem));
+  margin: 0;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid #4a4a5a54;
+  border-radius: 0.65rem;
+  background: rgb(30 30 36 / 85%);
+  box-shadow: 0 4px 15px rgb(0 0 0 / 20%);
+  color: #c4c9d2;
+  font-size: 0.65rem;
+  font-weight: 400;
+  line-height: 1.4;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  white-space: normal;
+}
+
+.toolbar-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.toolbar-actions > :not(.viewer-inspector) {
+  /* Let gaps between toolbar controls reach the canvas. */
+  pointer-events: auto;
+  z-index: 2;
+}
+
+/* Match every toolbar control to the native FPS widget's glass surface. */
+.toolbar-actions > .button,
+.toolbar-actions > .performance-stats,
+.toolbar-actions .viewer-inspector .profiler-toggle {
+  border: 1px solid #4a4a5a54;
+  background: rgb(30 30 36 / 85%);
+  box-shadow: 0 4px 15px rgb(0 0 0 / 30%);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.toolbar-actions > .button:hover,
+.toolbar-actions > .performance-stats:is(:hover, :focus-visible),
+.toolbar-actions .viewer-inspector .profiler-toggle:hover {
+  border-color: rgb(255 255 255 / 25%);
+  background: var(--viewer-hover);
+}
+
+.button {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  padding: 0.62rem 0.9rem;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.65rem;
+  background: rgb(20 23 30 / 82%);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 20%), inset 0 1px rgb(255 255 255 / 7%);
+  cursor: pointer;
+  font-size: 0.79rem;
+  font-weight: 620;
+  line-height: 1;
+  backdrop-filter: blur(18px);
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease,
+    transform 150ms ease;
+}
+
+.button:hover {
+  border-color: rgb(255 255 255 / 25%);
+  background: rgb(31 35 45 / 92%);
+  transform: translateY(-1px);
+}
+
+.button:active {
+  transform: translateY(0);
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+  transform: none;
+}
+
+.button:focus-visible {
+  outline: 2px solid #b9d9ff;
+  outline-offset: 3px;
+}
+
+.button-quiet {
+  color: #c4c9d2;
+}
+
+.button-icon,
+.icon-button svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+@media (max-width: 640px) {
+  .performance-stat-heap {
+    display: none;
+  }
+
+  .performance-stat:first-child {
+    min-width: 0;
+  }
+
+  #performance-fps {
+    width: 3ch;
+  }
+
+  .toolbar-actions {
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
+}

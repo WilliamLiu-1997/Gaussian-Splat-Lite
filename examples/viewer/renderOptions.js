@@ -23,6 +23,14 @@ export const renderOptionGroups = [
         ],
       },
       {
+        property: "splatData",
+        label: "Splat data",
+        description: "Inspect splat data on hover or click.",
+        defaultValue: true,
+        falseLabel: "Off",
+        trueLabel: "On",
+      },
+      {
         property: "splatBudget",
         label: "Streaming splat budget",
         description:
@@ -220,15 +228,6 @@ export const renderOptionGroups = [
     title: "Splat appearance",
     description: "Shape, filtering, and screen-space size.",
     options: [
-      {
-        property: "objectColors",
-        label: "Object colors",
-        description:
-          "Give each object of the example a stable random color. Off restores original colors.",
-        defaultValue: false,
-        falseLabel: "Off",
-        trueLabel: "On",
-      },
       {
         property: "maxStdDev",
         description:

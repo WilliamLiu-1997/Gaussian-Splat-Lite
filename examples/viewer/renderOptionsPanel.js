@@ -13,8 +13,9 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
   }
 
   function setValue(property, value, { emit = false } = {}) {
-    entries.get(property).setValue(value);
-    if (emit) onChange(property, getValue(property));
+    const entry = entries.get(property);
+    entry.setValue(value);
+    if (emit) onChange(property, entry.getValue());
     syncDependencies();
   }
 
@@ -152,7 +153,8 @@ export function createRenderOptionsPanel({ container, groups, onChange }) {
         ...last.filter((property) => properties.includes(property)),
       ];
       for (const property of order) {
-        onChange(property, getValue(property));
+        const entry = entries.get(property);
+        onChange(property, entry.getValue());
         syncDependencies();
       }
     },

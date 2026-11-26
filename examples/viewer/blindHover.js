@@ -1,24 +1,16 @@
 import { SplatMesh } from "gaussian-splat-lite";
 import { Raycaster, Vector2 } from "three";
-import { createBlindHighlight } from "./blindHighlight.js";
-import { createJsonTree } from "./jsonTree.js";
 
 const PICK_INTERVAL_MS = 100;
 const CLICK_DISTANCE_SQ = 25;
 
-export function createBlindHover({
-  viewport,
-  camera,
-  getModel,
-  isExample,
-  requestRender,
-}) {
+export function createBlindHover({ viewport, camera, model, view }) {
   const panel = document.createElement("section");
   panel.className = "blind-panel";
-  panel.setAttribute("aria-label", "Blind data");
+  panel.setAttribute("aria-label", view.title);
   panel.hidden = true;
   const title = document.createElement("strong");
-  title.textContent = "Blind data";
+  title.textContent = view.title;
   const close = document.createElement("button");
   close.className = "icon-button";
   close.type = "button";
@@ -28,32 +20,24 @@ export function createBlindHover({
   const header = document.createElement("div");
   header.className = "blind-panel-header";
   header.append(title, close);
-  const fields = document.createElement("dl");
-  const tree = createJsonTree(["blind"]);
-  const raw = tree.element;
-  raw.hidden = true;
   const content = document.createElement("div");
   content.className = "blind-panel-content";
-  content.append(fields, raw);
+  content.append(view.element);
   panel.append(header, content);
   document.body.append(panel);
 
   const raycaster = new Raycaster();
   const coords = new Vector2();
-  const hoverHighlight = createBlindHighlight(0.12, requestRender);
-  const selectedHighlight = createBlindHighlight(0.3, requestRender);
   let pointer = null;
   let pending = false;
   let lastPick = Number.NEGATIVE_INFINITY;
-  let inspectedModel = null;
   let press = null;
   let pinned = false;
-  let displayedObject = null;
 
   function stopHover() {
     pointer = null;
     pending = false;
-    hoverHighlight.clear();
+    view.hover?.(null);
   }
 
   function hide() {
@@ -65,15 +49,14 @@ export function createBlindHover({
     hide();
     press = null;
     pinned = false;
-    displayedObject = null;
-    selectedHighlight.clear();
+    view.clearSelection?.();
   }
 
   function pin() {
     if (panel.hidden) return;
     pinned = true;
-    selectedHighlight.set(displayedObject);
-    hoverHighlight.clear();
+    view.pin?.();
+    view.hover?.(null);
   }
 
   function pressPointer(event) {
@@ -144,14 +127,8 @@ export function createBlindHover({
   close.addEventListener("click", clear);
 
   function pick(select = false) {
-    const model = getModel();
-    if (model !== inspectedModel) {
-      tree.clear();
-      inspectedModel = model;
-    }
-    const example = isExample();
     const targets = [];
-    model?.traverseVisible((object) => {
+    model.traverseVisible((object) => {
       if (
         object instanceof SplatMesh &&
         object.raycastable &&
@@ -160,15 +137,8 @@ export function createBlindHover({
       )
         targets.push(object);
     });
-    if (
-      !targets.some(
-        ({ splats }) =>
-          splats.blindFields.length > 0 ||
-          (!example &&
-            (splats.extra !== undefined || splats.sceneExtra !== undefined)),
-      )
-    ) {
-      hoverHighlight.clear();
+    if (!targets.some(({ splats }) => view.canInspect(splats))) {
+      view.hover?.(null);
       panel.hidden = !pinned;
       return;
     }
@@ -185,65 +155,15 @@ export function createBlindHover({
     raycaster.far = camera.far;
     const hit = raycaster.intersectObjects(targets, false)[0];
     if (!hit) {
-      hoverHighlight.clear();
+      view.hover?.(null);
       panel.hidden = !pinned;
       return;
     }
 
-    const splats = hit.object.splats;
-    const { blind } = splats.getSplat(hit.index, false);
-    const { extra, sceneExtra } = splats;
-    const object = example
-      ? { mesh: hit.object, value: blind.object_id }
-      : null;
-    const selected =
-      pinned &&
-      object?.mesh === displayedObject?.mesh &&
-      object?.value === displayedObject?.value;
-    hoverHighlight.set(select || selected ? null : object);
+    const { blind } = hit.object.splats.getSplat(hit.index, false);
+    view.hover?.(select ? null : hit.object, blind, pinned);
     if (pinned && !select) return;
-
-    const entries = Object.entries(blind ?? {});
-    const empty =
-      entries.length === 0 &&
-      (example || (extra === undefined && sceneExtra === undefined));
-    if (empty) {
-      panel.hidden = !pinned;
-      return;
-    }
-    panel.hidden = false;
-    displayedObject = object;
-
-    title.textContent = example ? "Blind data" : "Splat data";
-    panel.setAttribute("aria-label", title.textContent);
-    fields.hidden = !example;
-    raw.hidden = example;
-    if (!example) {
-      tree.update({ blind, extra, sceneExtra });
-      return;
-    }
-
-    const labeling = extra?.labeling;
-    const sceneLabeling = sceneExtra?.labeling;
-    const names = {
-      object_id: labeling?.objects ?? sceneLabeling?.objects,
-      part_id: labeling?.parts ?? sceneLabeling?.parts,
-    };
-    fields.replaceChildren();
-    for (const [name, value] of entries) {
-      const label = document.createElement("dt");
-      const data = document.createElement("dd");
-      const records = names[name];
-      const displayName = Array.isArray(records)
-        ? records.find((record) => record?.[name] === value)?.name
-        : undefined;
-      label.textContent = name;
-      data.textContent =
-        typeof displayName === "string" && displayName
-          ? `${displayName} (${value})`
-          : String(value);
-      fields.append(label, data);
-    }
+    panel.hidden = !view.show(hit.object, blind) && !pinned;
   }
 
   return {
@@ -256,7 +176,7 @@ export function createBlindHover({
         !pointer ||
         !pending ||
         time - lastPick < PICK_INTERVAL_MS ||
-        (pinned && !isExample())
+        (pinned && !view.hover)
       )
         return;
       pending = false;
@@ -273,9 +193,7 @@ export function createBlindHover({
       panel.removeEventListener("pointerleave", cancelPointer);
       window.removeEventListener("blur", cancelPointer);
       close.removeEventListener("click", clear);
-      hoverHighlight.clear();
-      selectedHighlight.clear();
-      tree.clear();
+      clear();
       panel.remove();
     },
   };

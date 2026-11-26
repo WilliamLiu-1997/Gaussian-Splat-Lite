@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blind Data · Gaussian Splat Lite</title>
+    <link rel="icon" href="../../favicon.svg" />
+    <link rel="stylesheet" href="./blindData.css" />
+  </head>
+  <body>
+    <main id="viewport" aria-label="Interactive model"></main>
+    <header class="example-header">
+      <div class="brand" aria-label="Gaussian Splat Lite viewer">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-copy">
+          <strong>Gaussian Splat <span class="brand-accent">Lite</span></strong>
+          <small>Blind Data</small>
+        </span>
+      </div>
+      <div class="toolbar-actions">
+        <button
+          id="performance-stats"
+          class="performance-stats"
+          type="button"
+          aria-expanded="false"
+          aria-controls="performance-tooltip"
+          aria-describedby="performance-tooltip"
+          aria-label="Performance metrics"
+        >
+          <span class="performance-stat">
+            <output id="performance-fps">—</output>
+            <small>FPS</small>
+          </span>
+          <span class="performance-stat performance-stat-heap">
+            <output id="performance-heap">—</output>
+            <small>JS heap</small>
+          </span>
+        </button>
+        <button
+          id="reset-view"
+          class="button button-quiet"
+          type="button"
+          aria-label="Reset view"
+          title="Reset view"
+          hidden
+        >
+          <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M4 4v4h4M4.7 7.3A6 6 0 1 1 4 13" />
+          </svg>
+          <span class="reset-view-label">Reset view</span>
+        </button>
+        <button
+          id="controls-toggle"
+          class="button button-quiet"
+          disabled
+          type="button"
+          aria-controls="controls-panel"
+          aria-expanded="false"
+          aria-label="Controls"
+        >
+          <svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M4 5h12M7 10h9M4 15h12M7 3v4M13 8v4M8 13v4" />
+          </svg>
+          <span class="options-label">Controls</span>
+        </button>
+      </div>
+    </header>
+    <section id="loading" role="status">
+      <strong id="loading-label">Loading model</strong>
+      <progress aria-label="Loading progress"></progress>
+      <button type="button" id="retry" hidden>Retry</button>
+    </section>
+    <button class="corner-button info-toggle" type="button" popovertarget="example-info" aria-label="About this example" title="About this example">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <circle cx="10" cy="5" r="1.4" />
+        <path d="M9 8h2v8H9z" />
+      </svg>
+    </button>
+    <section id="example-info" popover aria-labelledby="info-title">
+      <h2 id="info-title">Blind Data</h2>
+      <p>Hover to see a splat’s object and part IDs. Click or tap to pin the selection.</p>
+    </section>
+    <footer class="statusbar">
+      <div id="file-meta" class="file-meta" hidden>
+        <span id="file-name"></span>
+        <span class="meta-separator" aria-hidden="true"></span>
+        <span id="file-stats"></span>
+      </div>
+    </footer>
+    <aside id="controls-panel" class="options-panel" aria-labelledby="options-title" hidden>
+      <header class="options-header">
+        <div>
+          <p class="eyebrow">Blind Data</p>
+          <h2 id="options-title">Controls</h2>
+          <p>Choose a renderer and toggle object colors.</p>
+        </div>
+        <button
+          id="controls-close"
+          class="icon-button"
+          type="button"
+          aria-label="Close controls"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m5 5 10 10M15 5 5 15" />
+          </svg>
+        </button>
+      </header>
+      <div class="options-content">
+        <section class="option-group">
+          <div class="option-group-heading">
+            <h3>Performance &amp; diagnostics</h3>
+            <p>Rendering backend for the scene.</p>
+          </div>
+          <div class="option-row">
+            <div class="option-copy">
+              <label for="backend">Renderer</label>
+              <p>Chooses the renderer; WebGPU falls back to WebGL2 when unavailable.</p>
+            </div>
+            <div class="option-control">
+              <select class="select-input" id="backend" disabled>
+                <option value="webgpu">WebGPU</option>
+                <option value="webgl-fallback">WebGPU (WebGL2 fallback)</option>
+                <option value="webgl">WebGLRenderer</option>
+              </select>
+            </div>
+          </div>
+        </section>
+        <section class="option-group">
+          <div class="option-group-heading">
+            <h3>Splat appearance</h3>
+            <p>Color objects by their Blind data labels.</p>
+          </div>
+          <div class="option-row option-row-toggle">
+            <div class="option-copy">
+              <label for="object-colors">Object colors</label>
+              <p>Give each labeled object a distinct color.</p>
+            </div>
+            <div class="option-control">
+              <output class="toggle-value" for="object-colors">Off</output>
+              <input class="toggle-input" id="object-colors" type="checkbox" role="switch" disabled />
+              <label class="toggle-track" for="object-colors" aria-hidden="true"></label>
+            </div>
+          </div>
+        </section>
+      </div>
+      <footer class="options-footer">
+        <span>Changes apply immediately</span>
+        <button id="controls-reset" class="text-button" type="button">
+          Reset defaults
+        </button>
+      </footer>
+    </aside>
+
+    <div id="performance-tooltip" class="performance-tooltip" role="tooltip" popover="manual"></div>
+    <p id="backend-message" role="status" hidden></p>
+    <script type="module" src="./blindData.js"></script>
+  </body>
+</html>
