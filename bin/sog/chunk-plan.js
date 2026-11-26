@@ -1,4 +1,4 @@
-import { clusterBytes } from "../rad/cluster.js";
+import { clusterBytes, scratchEstimator } from "../rad/cluster.js";
 import { GIB } from "../rad/storage.js";
 import { entries } from "./cluster.js";
 import { MAX_CHUNK_SPLATS, imageBytes } from "./encode.js";
@@ -21,7 +21,7 @@ export function planChunks(levels, options, dims, blindCount, kernel, room) {
     );
   }
 
-  const scratchByGroup = [];
+  const scratch = scratchEstimator(kernel);
   let retained = 0;
   let bounds = 0;
   let working = 0;
@@ -39,8 +39,7 @@ export function planChunks(levels, options, dims, blindCount, kernel, room) {
     const keep = Math.max(retained, buffer + image.retained);
     const decoder = Math.max(bounds, count * 12 + rangeBytes);
     let job = image.working + count * 24 + rangeBytes;
-    if (clustered)
-      job += clusterBytes(kernel, count, dims, codes, scratchByGroup);
+    if (clustered) job += clusterBytes(scratch, count, dims, codes);
     else if (codes) job += count * (dims * 4 + (codes <= 65536 ? 2 : 4));
     const peak = Math.max(working, job);
     if (keep + decoder + peak > room) return false;

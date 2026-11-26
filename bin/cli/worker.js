@@ -1,5 +1,35 @@
-import { Worker } from "node:worker_threads";
-import { syncFiles } from "./rad/writeback.js";
+import { fdatasync } from "node:fs";
+import { Worker, parentPort } from "node:worker_threads";
+import { Workspace } from "../rad/storage.js";
+
+// The CLI thread can receive these requests while conversion runs synchronous
+// code. Completion is shared so the converter need not yield its event loop.
+function syncFiles(files, state, cancelled) {
+  // A batch can still be in the message queue when cancellation arrives.
+  // Acknowledge it without submitting any more native I/O.
+  if (Atomics.load(cancelled, 0)) {
+    Atomics.store(state, 0, 0);
+    Atomics.notify(state, 0);
+    return;
+  }
+  for (const fd of files)
+    fdatasync(fd, (error) => {
+      if (error) Atomics.compareExchange(state, 1, 0, error.errno);
+      Atomics.sub(state, 0, 1);
+      Atomics.notify(state, 0);
+    });
+}
+
+export function cliWorkspace(options, cancelled, prefix) {
+  return new Workspace(
+    options.budget,
+    (files, state) =>
+      parentPort.postMessage({ method: "writeback", args: [files, state] }),
+    options.tempDir,
+    cancelled,
+    prefix,
+  );
+}
 
 // Keep signal handling responsive while the conversion runs synchronous code.
 // The worker observes cancellation and unwinds its existing catch/finally blocks.

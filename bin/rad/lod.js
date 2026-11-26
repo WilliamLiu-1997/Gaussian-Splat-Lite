@@ -238,12 +238,13 @@ export function mergeLevels(splats, pool, target, saveBlends) {
     const stepKey = rank(-step);
     const name = `LOD level ${level - first + 1}/≈${levels}`;
     const levelStart = splats.length;
+    const mergePercent = () =>
+      splats.length === end
+        ? 100
+        : Math.min(99.99, ((splats.length - initial) * 100) / totalMerges);
     const detail = () => {
       const count = splats.length - levelStart;
-      const overall =
-        splats.length === end
-          ? 100
-          : Math.min(99.99, ((splats.length - initial) * 100) / totalMerges);
+      const overall = mergePercent();
       return ` | ${mergeCount.format(count)} ${count === 1 ? "merge" : "merges"} | overall ${overall.toFixed(2)}%`;
     };
     const { grid, queue, progress } = Progress.inline(() => {
@@ -268,6 +269,7 @@ export function mergeLevels(splats, pool, target, saveBlends) {
       grid.build(active, removed, name);
       const queue = new Queue(active, workspace, `Sorting ${name} queue`);
       const progress = new Progress(`Merging ${name}`, queue.length, detail);
+      progress.phasePercent = mergePercent;
       return { grid, queue, progress };
     });
     active.dispose();

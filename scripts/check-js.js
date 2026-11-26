@@ -20,8 +20,8 @@ async function findJavaScriptFiles(directory) {
 
 const files = (
   await Promise.all(
-    ["src", "scripts", "test", "examples", "bin"].map((directory) =>
-      findJavaScriptFiles(path.join(root, directory)),
+    ["src", "scripts", "test", "examples", "bin", "converter"].map(
+      (directory) => findJavaScriptFiles(path.join(root, directory)),
     ),
   )
 ).flat();

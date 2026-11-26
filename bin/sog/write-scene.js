@@ -1,15 +1,16 @@
 import {
   constants,
   accessSync,
-  copyFileSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   renameSync,
   statSync,
-} from "node:fs";
-import { basename, dirname, join } from "node:path";
+} from "#gsl/files";
+import { Buffer } from "#gsl/host";
+import { chunkDirectory, openOutput, publishManifest } from "#gsl/output";
+import { basename, dirname, join } from "#gsl/path";
 import { GENERATOR } from "../generator.js";
 import { initialize } from "../rad/input.js";
 import { WorkerGroup, clusterers } from "../rad/parallel.js";
@@ -21,7 +22,8 @@ import { encodeChunk } from "./encode.js";
 import { finishTree } from "./regions.js";
 import { SH_DIMS } from "./splats.js";
 import { releaseWebp } from "./webp.js";
-import { writeChunk, writeFile } from "./write-chunk.js";
+import { writeChunk } from "./write-chunk.js";
+import { writeFile } from "./write-file.js";
 
 export function checkOutput(output) {
   if (basename(output) !== "lod-meta.json")
@@ -73,6 +75,11 @@ export async function writeScene(rows, regions, output, options, kernel) {
     await initialize();
     await orderChunks(rows, regions.order);
     regions.order.dispose();
+    const progress = new Progress(
+      "Writing SOG chunks",
+      rows.length,
+      "preparing encoders",
+    );
     workspace.settle();
     const dims = SH_DIMS.slice(0, input.maxSh).reduce(
       (sum, width) => sum + width,
@@ -87,10 +94,11 @@ export async function writeScene(rows, regions, output, options, kernel) {
       workspace.room,
     );
     const total = plan.ends.length;
-    const threads = total > 1 ? clusterers(workspace, plan.bytes, 0, total) : 0;
-    if (!threads) workspace.expect(plan.bytes);
+    let threads = 0;
+    if (total > 1)
+      threads = clusterers(workspace, plan.bytes, 0, total, plan.bytes);
+    else workspace.expect(plan.bytes);
     encoder = new WorkerGroup(
-      new URL("./encode.js", import.meta.url),
       threads,
       { encoder: true, kernel, cancelled: workspace.cancelled },
       { handle: (job) => encodeChunk(job, kernel, () => workspace.check()) },
@@ -104,7 +112,6 @@ export async function writeScene(rows, regions, output, options, kernel) {
     const active = new Set();
 
     let rangeCount = 0;
-    const progress = new Progress("Writing SOG chunks", rows.length);
     for (const [level, leaves] of regions.leavesByLevel.entries()) {
       rangeCount += leaves.length;
       const source = rows.levels[level];
@@ -136,7 +143,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
           first,
           count,
           ranges,
-          path,
+          await chunkDirectory(path, name),
           options,
           encoder,
           thread.worker,
@@ -192,7 +199,9 @@ export async function writeScene(rows, regions, output, options, kernel) {
       ...(input.comments?.length ? { comments: input.comments } : {}),
     };
     const path = join(staging, "lod-meta.json");
-    bytes += writeFile(workspace, path, Buffer.from(JSON.stringify(manifest)));
+    bytes += await writeFile(openOutput(path, output, workspace), (write) =>
+      write(Buffer.from(JSON.stringify(manifest))),
+    );
     workspace.check();
     mkdirSync(chunks);
     created.push(chunks);
@@ -203,7 +212,7 @@ export async function writeScene(rows, regions, output, options, kernel) {
     }
     // Publish the manifest last, refusing an existing file on every filesystem.
     workspace.check();
-    copyFileSync(path, output, constants.COPYFILE_EXCL);
+    publishManifest(path, output);
     created.push(output);
     workspace.check();
     created.length = 0;

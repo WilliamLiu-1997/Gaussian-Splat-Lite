@@ -1,4 +1,4 @@
-import { readSync } from "node:fs";
+import { readSync } from "#gsl/files";
 
 export const PAGE_BYTES = 65536;
 const PART_BYTES = 8192;

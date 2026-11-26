@@ -15,6 +15,8 @@ export const WEBP_MAX_PIXELS = Math.floor(
 let loading;
 let module;
 
+export const webpHeapBytes = () => module?.HEAPU8.byteLength ?? 0;
+
 export function initializeWebp() {
   loading ??= createWebp().then((instance) => {
     module = instance;
@@ -28,8 +30,8 @@ export function releaseWebp() {
   module = undefined;
 }
 
-// A synchronous consumer can use the WASM view until the encoder frees it.
-export function encodeWebp(rgba, width, height, consume) {
+// An output stream can consume this WASM view across multiple writes.
+export async function encodeWebp(rgba, width, height, consume) {
   if (
     !Number.isInteger(width) ||
     !Number.isInteger(height) ||
@@ -55,7 +57,7 @@ export function encodeWebp(rgba, width, height, consume) {
     const size = module.HEAPU32[(result + 4) >>> 2];
     const view = module.HEAPU8.subarray(output, output + size);
     if (!consume) return view.slice();
-    consume(view);
+    await consume(view);
   } finally {
     if (output) module._WebPFree(output);
     module._free(input);

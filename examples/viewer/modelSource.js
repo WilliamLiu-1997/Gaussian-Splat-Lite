@@ -89,6 +89,15 @@ export function modelFromUrl(value) {
   return { name: name || "model", size: 0, url };
 }
 
+export async function modelFromEntries(entries) {
+  const files = [];
+  for await (const { path, file } of entries) {
+    droppedPaths.set(file, path);
+    files.push(file);
+  }
+  return modelFromLocalFiles(files);
+}
+
 export function modelFromLocalFiles(selectedFiles) {
   const files = selectedFiles.filter(
     (entry) =>

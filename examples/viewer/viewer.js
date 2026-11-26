@@ -12,7 +12,7 @@ import { CameraController } from "../shared/cameraController.js";
 import { createFrameGate } from "../shared/frameGate.js";
 import { ViewerInspector } from "../shared/viewerInspector.js";
 import { getModelRotationX } from "./modelOrientation.js";
-import { detectFileType } from "./modelSource.js";
+import { detectFileType, fileTypeFor } from "./modelSource.js";
 import { createReferenceHelpers } from "./referenceHelpers.js";
 import { renderOptionGroups } from "./renderOptions.js";
 import { createRenderOptionsPanel } from "./renderOptionsPanel.js";
@@ -598,11 +598,12 @@ export function cancelLoading() {
   cancelActiveLoad = null;
 }
 
-function applyModelOrientation(splat, streamed) {
+function applyModelOrientation(splat) {
   denoiser?.reset();
   // Transform the stream group so rendering and LOD culling share the same
   // rotation; the decoded splats and index bounds remain in source space.
-  splat.rotation.set(getModelRotationX(modelUpAxis, streamed), 0, 0);
+  const { defaultUpAxis } = splat.userData;
+  splat.rotation.set(getModelRotationX(modelUpAxis, defaultUpAxis), 0, 0);
   splat.updateMatrixWorld(true);
 }
 
@@ -772,7 +773,13 @@ export async function loadFile(
       return;
     }
 
-    applyModelOrientation(model.splat, isChunkStream(model.stream));
+    model.splat.userData.defaultUpAxis =
+      model.stream instanceof Lcc2StreamScheduler
+        ? "z-up"
+        : fileTypeFor(file) === SplatFileType.SPZ
+          ? "y-up"
+          : "y-down";
+    applyModelOrientation(model.splat);
     activeSplat = model.splat;
     activeStream = model.stream;
     if (activeStream instanceof RadStreamScheduler)
@@ -847,7 +854,7 @@ referenceToggle.addEventListener("click", () => {
 sourceUpAxis.addEventListener("change", (event) => {
   modelUpAxis = event.target.value;
   if (!activeSplat) return;
-  applyModelOrientation(activeSplat, isChunkStream(activeStream));
+  applyModelOrientation(activeSplat);
   requestRender();
 });
 

@@ -1,5 +1,6 @@
 import {
   filesFromDrop,
+  modelFromEntries,
   modelFromLocalFiles,
   modelFromUrl,
 } from "./modelSource.js";
@@ -63,7 +64,7 @@ urlForm.addEventListener("submit", (event) => {
   void loadFile(model, { url: model.url.href, button: loadUrlButton });
 });
 
-function loadLocalFiles(files) {
+async function loadLocalFiles(files) {
   // Some drag relays replace directories with empty, path-named files.
   if (
     files.length === 1 &&
@@ -80,15 +81,32 @@ function loadLocalFiles(files) {
     return;
   }
 
+  const archive = files.length === 1 && /\.zip$/i.test(files[0].name);
+  if (archive) cancelLoading();
+  const loadId = activeLoad;
   try {
-    const { file, ...source } = modelFromLocalFiles(files);
+    let model;
+    if (archive) {
+      const { filesInArchive } = await import("./zipFiles.js");
+      const entries = filesInArchive(files[0], () => {
+        if (loadId !== activeLoad)
+          throw new DOMException("Model load cancelled", "AbortError");
+      });
+      model = await modelFromEntries(entries);
+      if (loadId !== activeLoad) {
+        model.dispose?.();
+        return;
+      }
+    } else model = modelFromLocalFiles(files);
+    const { file, ...source } = model;
     void loadFile(file, source);
   } catch (error) {
-    ui.showToast(error.message);
+    if (loadId === activeLoad) ui.showToast(error.message);
   }
 }
 
 for (const input of [fileInput, folderInput]) {
+  if (input.files.length) loadLocalFiles(Array.from(input.files));
   input.addEventListener("change", () => {
     const files = Array.from(input.files);
     if (files.length) loadLocalFiles(files);

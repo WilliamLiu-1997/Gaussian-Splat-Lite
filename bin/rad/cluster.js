@@ -1,7 +1,5 @@
 // SH codebook clustering adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
-import { readFileSync } from "node:fs";
-import { availableParallelism } from "node:os";
-import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { availableParallelism } from "#gsl/host";
 import { HALF } from "./math.js";
 import { WorkerGroup, clusterers } from "./parallel.js";
 import { Progress } from "./progress.js";
@@ -66,33 +64,15 @@ const groupsOf = (count) =>
         ),
       );
 
-let kernel;
-// The compiled nearest-code kernel, loaded before converting.
-export function codebookKernel() {
-  if (kernel) return kernel;
-  let bytes;
-  try {
-    bytes = readFileSync(new URL("../decoder/cluster.wasm", import.meta.url));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    throw new Error(
-      "SH clustering module not found; build it with npm run build:wasm:lod",
-    );
-  }
-  kernel = new WebAssembly.Module(bytes);
-  return kernel;
-}
-
 // Bytes of scratch memory that the kernel's search by `groups` groups needs.
-const scratchBytes = (module, dims, groups) =>
-  groups
-    ? new WebAssembly.Instance(module, {}).exports.probed_scratch(
-        JOB,
-        dims,
-        groups,
-        FINAL_PROBES,
-      )
-    : 0;
+export function scratchEstimator(module) {
+  let kernel;
+  return (dims, groups) => {
+    if (!groups) return 0;
+    kernel ??= new WebAssembly.Instance(module, {}).exports;
+    return kernel.probed_scratch(JOB, dims, groups, FINAL_PROBES);
+  };
+}
 
 // Bytes of a kernel instance's memory for `blocks` blocks of codes, with the
 // module's own 1 MiB, and for the groups of a search by group, if any: each
@@ -155,7 +135,7 @@ function jobBuffers({ buffer, slots, size, dims, halves, wide, probes }) {
 // centers and table, each point's groups, and the search's scratch memory.
 // `entries` are the jobs' buffers and the entries' sums and total weights,
 // all in shared memory.
-class Nearest {
+export class Nearest {
   constructor(module, dims, blocks, groups, entries) {
     this.jobs = jobBuffers(entries.jobs);
     this.sums = entries.sums;
@@ -337,20 +317,11 @@ class Nearest {
   }
 }
 
-if (!isMainThread && workerData?.codebook) {
-  const { module, dims, blocks, groups, entries } = workerData;
-  const nearest = new Nearest(module, dims, blocks, groups, entries);
-  parentPort.on("message", (message) =>
-    parentPort.postMessage(nearest.handle(message)),
-  );
-}
-
 // Spreads nearest-code jobs over worker threads, or runs them on this thread
 // without any.
 class Assigner extends WorkerGroup {
   constructor(module, dims, blocks, groups, entries, count) {
     super(
-      new URL(import.meta.url),
       count,
       { codebook: true, module, dims, blocks, groups, entries },
       count ? undefined : new Nearest(module, dims, blocks, groups, entries),
@@ -913,14 +884,13 @@ const trainingRows = (length, count) =>
 
 // Bytes at most that clusterRows() takes without a workspace for `length`
 // rows of `dims` coefficients and `count` entries. Chunks of the same SH
-// degree can share the kernel's scratch estimates for each group count.
-export function clusterBytes(module, length, dims, count, scratchByGroup = []) {
+// degree share one kernel for estimating scratch across all candidate chunks.
+export function clusterBytes(scratch, length, dims, count) {
   const blocks = Math.ceil(count / BLOCK);
   const groups = groupsOf(count);
   const samples = trainingRows(length, count);
-  scratchByGroup[groups] ??= scratchBytes(module, dims, groups);
   return (
-    kernelBytes(dims, blocks, groups, scratchByGroup[groups]) +
+    kernelBytes(dims, blocks, groups, scratch(dims, groups)) +
     WINDOW * JOB * (dims * 4 + 4 + 8 + TRAIN_PROBES * 2) +
     ownBytes(dims, count, blocks, groups) +
     length * 4 +
@@ -971,7 +941,12 @@ export async function clusterRows(
       // Each thread's kernel and the buffers of its jobs: half bits, labels,
       // weights and groups of their rows.
       const bytes =
-        kernelBytes(dims, blocks, groups, scratchBytes(module, dims, groups)) +
+        kernelBytes(
+          dims,
+          blocks,
+          groups,
+          scratchEstimator(module)(dims, groups),
+        ) +
         WINDOW * size * (rowBytes + labelBytes + 8 + pickBytes);
       // This thread's arrays. Its own kernel and jobs are added below, only
       // when there is no room for workers.
@@ -985,8 +960,8 @@ export async function clusterRows(
         bytes,
         extra,
         Math.ceil(training.length / size),
+        extra + bytes,
       );
-      if (!threads) workspace.expect(extra + bytes);
     }
     // Measure worker growth between passes: bypass reads do not allocate
     // pages or trigger measurements. Leave room for the splats' groups, and
@@ -1101,6 +1076,9 @@ export async function clusterRows(
           `Clustering ${label} ${pass + 1}/${iterations + 1}`,
           rows.length,
         );
+      if (progress)
+        progress.phasePercent = (percent) =>
+          (pass * 100 + percent) / (iterations + 1);
       const consume = (done) => {
         const { bits, weights, labels: nearest } = done;
         if (last) {

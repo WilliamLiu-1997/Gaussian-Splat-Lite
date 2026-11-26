@@ -1,11 +1,5 @@
-import { availableParallelism } from "node:os";
-import {
-  Worker,
-  isMainThread,
-  parentPort,
-  receiveMessageOnPort,
-  workerData,
-} from "node:worker_threads";
+import { availableParallelism, workerOverhead } from "#gsl/host";
+import { createThread, wakePool } from "#gsl/threads";
 import { Lookup, NONE, writeEntry } from "./grid.js";
 import { HALF, halfBits } from "./math.js";
 import { PAGE_BYTES, Parts } from "./spill.js";
@@ -19,10 +13,12 @@ import {
   refresh,
   validRecord,
 } from "./splats.js";
-import { ArenaViews, SharedColumn, collect } from "./storage.js";
+import { ArenaViews, DISK_PAGE, SharedColumn, collect } from "./storage.js";
 
 // A search to run on the committing thread.
 export const MISS = 0xfffffffe;
+// In a blend round, later is 0 for worker rows, 1 for dependencies, or SKIP_BLEND.
+export const SKIP_BLEND = 2;
 // The most searches in one round.
 export const ROUND = 32768;
 // Minimum input size for starting additional LOD workers.
@@ -59,14 +55,14 @@ const MAX_DIMS = SH_DIMS[SH_DIMS.length - 1];
 
 // Thread overhead with a YOUNG_MB young generation. LOD workers also
 // cache 3 MiB of parts read from files.
-const THREAD_BYTES = 21 * 1024 ** 2;
+const THREAD_BYTES = Math.max(21 * 1024 ** 2, workerOverhead);
 const WORKER_BYTES = THREAD_BYTES + 3 * 1024 ** 2;
 const MAIN_BYTES = 64 * 1024 ** 2;
 // What an SH clustering worker thread takes besides its kernel and jobs,
 // with a full young generation, and the cache that clustering keeps: it
 // reads rows in order. A clustering thread measured 6 to 8 MiB on Linux
 // and macOS.
-const CLUSTER_BYTES = 16 * 1024 ** 2;
+const CLUSTER_BYTES = Math.max(16 * 1024 ** 2, workerOverhead);
 const STREAM_BYTES = 64 * 1024 ** 2;
 export const YOUNG_MB = 8;
 
@@ -116,7 +112,7 @@ export function computers(workspace, bytes, extra, jobs) {
 }
 
 // Reserve for the chosen workers, or for local processing if none fit.
-export function clusterers(workspace, bytes, extra, jobs, local = extra) {
+export function clusterers(workspace, bytes, extra, jobs, local) {
   const count = computers(workspace, bytes, extra, jobs);
   workspace.expect(count ? count * (CLUSTER_BYTES + bytes) + extra : local);
   return count;
@@ -146,11 +142,11 @@ function watch(worker, name) {
 // schedule the jobs and close the workers; without workers, requests use the
 // local handler. Keep workers referenced so exit events can reject requests.
 export class WorkerGroup {
-  constructor(url, count, workerData, local, name, oldMb = 64) {
+  constructor(count, workerData, local, name, oldMb = 64) {
     this.local = local;
     this.workers = Array.from({ length: count }, () =>
       watch(
-        new Worker(url, {
+        createThread({
           workerData,
           resourceLimits: {
             maxOldGenerationSizeMb: oldMb,
@@ -271,7 +267,7 @@ export class Pool {
     this.base = workspace.outside;
     this.decoderBase = undefined;
     this.workers = Array.from({ length: count }, () => {
-      const worker = new Worker(new URL(import.meta.url), {
+      const worker = createThread({
         workerData: this.shared,
         resourceLimits: { maxYoungGenerationSizeMb: YOUNG_MB },
       });
@@ -370,14 +366,44 @@ export class Pool {
     this.workspace.finishSearch = undefined;
   }
 
-  // Blends the rows of `column` of the first `count` children pairs in
-  // `nodes` and `entries` with `blends` into `blended`, except rows marked
-  // `later`, and marks them 0 in `results`. Rows that are not cached are left
-  // to the main thread.
-  blend(column, count, dims) {
+  // Workers blend resident children from earlier batches. Resolve misses and
+  // same-batch dependencies in creation order before publishing the parents.
+  blend(column, start, count, dims, rows) {
     this.share({ column: column.directory });
     Atomics.store(this.control, DIMS, dims);
     this.run(BLEND, count, 512);
+    const { later, results, nodes, entries, blended, blends } = this;
+    let first = 0;
+    const write = (end) => {
+      if (first < end)
+        column.write(
+          (start + first) * dims,
+          blended.subarray(first * dims, end * dims),
+        );
+    };
+    for (let i = 0; i < count; i++) {
+      if (later[i] === SKIP_BLEND) {
+        write(i);
+        first = i + 1;
+        continue;
+      }
+      // A worker blended rows it marked 0.
+      if (!later[i] && results[i] === 0) continue;
+      for (let c = 0; c < 2; c++) {
+        const child = c ? entries[i] : nodes[i];
+        if (child < start) column.read(child * dims, rows[c], dims);
+        else
+          for (let d = 0; d < dims; d++)
+            rows[c][d] = blended[(child - start) * dims + d];
+      }
+      const w = blends[i * 2];
+      const v = blends[i * 2 + 1];
+      for (let d = 0; d < dims; d++)
+        blended[i * dims + d] = halfBits(
+          HALF[rows[0][d]] * w + HALF[rows[1][d]] * v,
+        );
+    }
+    write(count);
   }
 
   // Copies `count` rows of `source` from row `base` to rows of `output` at
@@ -473,7 +499,7 @@ export class Pool {
     Atomics.store(control, VERSION, this.sent);
     Atomics.store(control, COLLECTED, 0);
     Atomics.store(control, GEN, gen);
-    Atomics.notify(control, GEN);
+    wakePool(this.workers, control, GEN, gen);
     if (job !== SEARCH_AHEAD) this.finish(job, count);
   }
 
@@ -765,6 +791,15 @@ class Task {
   }
 
   search(t) {
+    try {
+      return this.predict(t);
+    } catch (error) {
+      if (error === DISK_PAGE) return MISS;
+      throw error;
+    }
+  }
+
+  predict(t) {
     const { lookup, query, other, merged } = this;
     lookup.read(this.entries[t], query);
     const best = lookup.find(query, this.entries[t]);
@@ -790,39 +825,34 @@ class Task {
   }
 }
 
-if (!isMainThread && workerData?.control) {
-  const task = new Task(workerData);
-  const control = task.control;
-  for (let seen = 0; ; ) {
-    Atomics.wait(control, GEN, seen);
-    const gen = Atomics.load(control, GEN);
-    if (gen < 0) break;
-    seen = gen;
-    try {
-      const version = Atomics.load(control, VERSION);
-      while (task.version < version) {
-        const received = receiveMessageOnPort(parentPort);
-        if (received) task.use(received.message);
-      }
+// The CLI waits on atomics. Browser workers receive ordered state and round
+// messages so their event loop can process structured clones.
+export function lodTask(shared) {
+  const task = new Task(shared);
+  const { control } = task;
+  return {
+    generation: GEN,
+    needsState: () => task.version < Atomics.load(control, VERSION),
+    use: (state) => task.use(state),
+    run(gen) {
+      if (gen !== Atomics.load(control, GEN)) return;
       if (Atomics.load(control, JOB) === COLLECT) {
         collect();
         Atomics.add(control, COLLECTED, 1);
         Atomics.notify(control, COLLECTED);
-        continue;
-      }
-      task.work(gen);
-    } catch (error) {
-      // Report the error and release the round, so the main thread throws it.
-      // The thread ends, and its views with it, so it counts as collected.
-      const message = new TextEncoder().encode(String(error?.stack ?? error));
-      const length = Math.min(message.length, task.failure.length - 1);
-      task.failure.set(message.subarray(0, length));
-      Atomics.store(control, FAILED, length + 1);
-      Atomics.store(control, DONE, Atomics.load(control, COUNT));
-      Atomics.notify(control, DONE);
-      Atomics.add(control, COLLECTED, 1);
-      Atomics.notify(control, COLLECTED);
-      break;
-    }
-  }
+      } else task.work(gen);
+    },
+  };
+}
+
+export function failLodTask(shared, error) {
+  const { control, failure } = shared;
+  const message = new TextEncoder().encode(String(error?.stack ?? error));
+  const length = Math.min(message.length, failure.length - 1);
+  failure.set(message.subarray(0, length));
+  Atomics.store(control, FAILED, length + 1);
+  Atomics.store(control, DONE, Atomics.load(control, COUNT));
+  Atomics.notify(control, DONE);
+  Atomics.add(control, COLLECTED, 1);
+  Atomics.notify(control, COLLECTED);
 }

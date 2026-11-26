@@ -1,21 +1,5 @@
-import { closeSync, fdatasyncSync, openSync } from "node:fs";
 import { entries } from "./cluster.js";
 import { gather } from "./gather.js";
-
-export function writeFile(workspace, path, data) {
-  const fd = openSync(path, "wx");
-  try {
-    workspace.write(fd, data, 0);
-    fdatasyncSync(fd);
-  } finally {
-    try {
-      workspace.writeback.synced(fd);
-    } finally {
-      closeSync(fd);
-    }
-  }
-  return data.byteLength;
-}
 
 // Gathers `count` splats from `first` in `source` into `buffer` and has
 // `worker` of `encoder`, a thread or this one, encode its images, cluster

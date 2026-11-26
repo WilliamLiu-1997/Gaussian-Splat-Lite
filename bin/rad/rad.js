@@ -1,17 +1,16 @@
 // RAD v1 encoding adapted from MIT-licensed code. See THIRD_PARTY_LICENSES.md.
-import { randomBytes } from "node:crypto";
 import {
   closeSync,
-  fsyncSync,
   lstatSync,
   openSync,
   readdirSync,
   renameSync,
   statSync,
-} from "node:fs";
-import path from "node:path";
-import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { deflateRawSync } from "node:zlib";
+} from "#gsl/files";
+import { Buffer, deflateRawSync, randomBytes } from "#gsl/host";
+import { unmeasuredBytes } from "#gsl/memory";
+import { openOutput } from "#gsl/output";
+import path from "#gsl/path";
 import { GENERATOR } from "../generator.js";
 import { SH_MAX, alpha } from "./encoding.js";
 import { HALF, halfBits } from "./math.js";
@@ -142,7 +141,7 @@ function raw(size, slot = 0) {
   return scratch[slot].subarray(0, size);
 }
 
-function encodeChunk(chunk, encoding) {
+export function encodeChunk(chunk, encoding) {
   const { base, count, records } = chunk;
   const properties = [];
   const payloads = [];
@@ -331,7 +330,8 @@ function encodingWorkers(splats, chunks, format, codebook) {
     2 * compressed(rows * packedRow) +
     512 * 1024;
   const codes = (codebook?.count ?? 0) * dims;
-  const firstChunk = codes + 2 * compressed(codes);
+  const firstChunk =
+    unmeasuredBytes(codebook?.codes) + codes + 2 * compressed(codes);
 
   return encoders(workspace, chunks, active, (workers) => {
     if (!workers) return firstChunk;
@@ -346,7 +346,6 @@ function encodingWorkers(splats, chunks, format, codebook) {
 class Encoder extends WorkerGroup {
   constructor(count, format) {
     super(
-      new URL(import.meta.url),
       count,
       { format },
       { handle: (chunk) => encodeChunk(chunk, format) },
@@ -367,19 +366,6 @@ class Encoder extends WorkerGroup {
     ]);
     return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length);
   }
-}
-
-if (!isMainThread && workerData?.format) {
-  parentPort.on("message", (chunk) => {
-    const result = encodeChunk(chunk, workerData.format);
-    // The chunk's buffers would otherwise pile up to tens of MiB before the
-    // collector frees them.
-    gc();
-    // A chunk with its own memory moves to the main thread without a copy.
-    const own =
-      result.byteOffset === 0 && result.byteLength === result.buffer.byteLength;
-    parentPort.postMessage(result, own ? [result.buffer] : []);
-  });
 }
 
 // With a codebook from clusterSh(), splats store SH as its labels.
@@ -406,40 +392,32 @@ export async function writeRad(splats, output, chunked, codebook, format) {
   // Track published names too, so cancellation rolls back this conversion.
   const staged = [];
   const created = [];
-  let activeFd;
-  const open = (file) => {
+  let writer;
+  const open = async (file) => {
     workspace.check();
     const temporary = path.join(
       path.dirname(file),
-      `.${path.basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
+      `.${path.basename(file)}.${randomBytes(6).toString("hex")}.tmp`,
     );
-    activeFd = openSync(temporary, "wx");
+    writer = await openOutput(temporary, file, workspace);
     staged.push({ temporary, file });
   };
-  const close = () => {
-    const fd = activeFd;
-    activeFd = undefined;
-    try {
-      workspace.writeback.synced(fd);
-    } finally {
-      closeSync(fd);
-    }
-  };
-  const complete = (bytes) => {
-    workspace.write(activeFd, bytes, 0);
+  const complete = async (bytes) => {
+    await writer.write(bytes, 0);
     workspace.check();
-    fsyncSync(activeFd);
-    close();
+    const completed = writer;
+    writer = undefined;
+    await completed.close();
   };
   let progress;
-  const store = (bytes) => {
+  const store = async (bytes) => {
     if (chunked) {
       const filename = `${stem}-${chunks.length}.radc`;
-      open(path.join(path.dirname(output), filename));
-      complete(bytes);
+      await open(path.join(path.dirname(output), filename));
+      await complete(bytes);
       chunks.push({ offset: 0, bytes: bytes.length, filename });
     } else {
-      workspace.write(activeFd, bytes, room + meta.allChunkBytes);
+      await writer.write(bytes, room + meta.allChunkBytes);
       chunks.push({ offset: meta.allChunkBytes, bytes: bytes.length });
     }
     meta.allChunkBytes += bytes.length;
@@ -453,7 +431,7 @@ export async function writeRad(splats, output, chunked, codebook, format) {
   const pendingLimit = workers ? workers + ENCODE_AHEAD : 1;
   const encoder = new Encoder(workers, format);
   try {
-    if (!chunked) open(output);
+    if (!chunked) await open(output);
     progress = new Progress("Encoding RAD chunks", chunkCount);
     for (let base = 0; base < splats.length; base += CHUNK) {
       workspace.check();
@@ -469,14 +447,14 @@ export async function writeRad(splats, output, chunked, codebook, format) {
       const bytes = encoder.encode(chunk);
       bytes.catch(() => {});
       pending.push(bytes);
-      if (pending.length === pendingLimit) store(await pending.shift());
+      if (pending.length === pendingLimit) await store(await pending.shift());
     }
-    while (pending.length) store(await pending.shift());
+    while (pending.length) await store(await pending.shift());
     progress.finish(`${chunks.length} chunks`);
     const head = header("RAD0", meta, room);
     const writing = new Progress("Writing RAD file", head.length);
-    if (chunked) open(output);
-    complete(head);
+    if (chunked) await open(output);
+    await complete(head);
     writing.finish();
     // Closing an output waits only for a sync that includes it; a temporary
     // file's failed writeback must surface before anything is published.
@@ -497,7 +475,7 @@ export async function writeRad(splats, output, chunked, codebook, format) {
   } catch (error) {
     await Promise.allSettled(pending);
     try {
-      if (activeFd !== undefined) close();
+      await writer?.abort();
     } catch {}
     for (const { temporary } of staged) removePath(temporary);
     for (const file of created) removePath(file);

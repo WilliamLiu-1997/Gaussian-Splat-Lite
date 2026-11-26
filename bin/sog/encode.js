@@ -1,10 +1,7 @@
-import { closeSync, fdatasyncSync, openSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { Buffer } from "#gsl/host";
+import { openChunkFile, outputBufferBytes } from "#gsl/output";
 import { sogBounds } from "../decoder/decoder.js";
 import { GENERATOR } from "../generator.js";
-import { initialize } from "../rad/input.js";
-import { collect } from "../rad/storage.js";
 import { cluster } from "./cluster.js";
 import { MAX_MASS, compensateScales } from "./opacity.js";
 import { QUANTIZE_BYTES, encodeRotation, label, quantize } from "./quantize.js";
@@ -15,6 +12,8 @@ import {
   initializeWebp,
   webpBytes,
 } from "./webp.js";
+
+import { writeFile } from "./write-file.js";
 
 const logPosition = (v) => Math.sign(v) * Math.log1p(Math.abs(v));
 
@@ -47,7 +46,7 @@ function opaqueImage({ width, height }) {
 // of first splat and count, six values each: what the splats of a range
 // reach at three standard deviations as a reader decodes them, see
 // sogBounds().
-function encodeGeometry({ records, count, ranges }, image, writeImage) {
+async function encodeGeometry({ records, count, ranges }, image, writeImage) {
   const rotation = new Uint8Array(count * 3);
   const values = new Float32Array(count * 3);
   const min = [
@@ -89,7 +88,7 @@ function encodeGeometry({ records, count, ranges }, image, writeImage) {
     for (let i = 0; i < count; i++)
       for (let d = 0; d < 3; d++)
         image[i * 4 + d] = (positions[i * 3 + d] >>> (part * 8)) & 255;
-    writeImage(part ? "means_u.webp" : "means_l.webp", image);
+    await writeImage(part ? "means_u.webp" : "means_l.webp", image);
   }
   for (let i = 0; i < count; i++)
     for (let d = 0; d < 3; d++) values[i * 3 + d] = records[i * 16 + 7 + d];
@@ -100,10 +99,10 @@ function encodeGeometry({ records, count, ranges }, image, writeImage) {
       scaleLabels[i * 3 + d] = label(values[i * 3 + d], scales);
       image[i * 4 + d] = scaleLabels[i * 3 + d];
     }
-  writeImage("scales.webp", image);
+  await writeImage("scales.webp", image);
   for (let i = 0; i < count; i++)
     for (let d = 0; d < 3; d++) image[i * 4 + d] = rotation[i * 3 + d];
-  writeImage("quats.webp", image);
+  await writeImage("quats.webp", image);
   // With the reader's own decoding: the boxes hold the three standard
   // deviations of the Gaussians that a reader decodes from these codes.
   const boxes = sogBounds(
@@ -130,7 +129,7 @@ function encodeGeometry({ records, count, ranges }, image, writeImage) {
     image[i * 4 + 3] = alpha;
     opacityMax = Math.max(opacityMax, alpha);
   }
-  writeImage("sh0.webp", image);
+  await writeImage("sh0.webp", image);
   return {
     means: { mins: min, maxs: max },
     scales: Array.from(scales),
@@ -143,7 +142,11 @@ function encodeGeometry({ records, count, ranges }, image, writeImage) {
 
 // Encodes a chunk's SH codebook, `entries` codes of `dims` coefficients, and
 // the label of each of its `count` splats. Returns the scalar codebook.
-function encodeSh({ codes, labels, dims, entries, count }, image, writeImage) {
+async function encodeSh(
+  { codes, labels, dims, entries, count },
+  image,
+  writeImage,
+) {
   const scalar = quantize(codes);
   const coefficients = dims / 3;
   const size = paletteSize(entries, dims);
@@ -154,7 +157,7 @@ function encodeSh({ codes, labels, dims, entries, count }, image, writeImage) {
       for (let d = 0; d < 3; d++)
         palette[pixel + d] = label(codes[entry * dims + c * 3 + d], scalar);
     }
-  writeImage("shN_centroids.webp", palette, size);
+  await writeImage("shN_centroids.webp", palette, size);
   for (let i = 0; i < count; i++) {
     const value = labels[i];
     image[i * 4] = value & 255;
@@ -162,7 +165,7 @@ function encodeSh({ codes, labels, dims, entries, count }, image, writeImage) {
     image[i * 4 + 2] = (value >>> 16) & 255;
     image[i * 4 + 3] = 255;
   }
-  writeImage("shN_labels.webp", image);
+  await writeImage("shN_labels.webp", image);
   return Array.from(scalar);
 }
 
@@ -178,26 +181,16 @@ export async function encodeChunk(job, kernel, check) {
   await initializeWebp();
   const { sh, weights, dims, count, options, directory, maxSh } = job;
   let bytes = 0;
-  const write = (name, data) => {
+  const write = async (name, produce) => {
     check();
-    const fd = openSync(join(directory, name), "wx");
-    try {
-      writeFileSync(fd, data);
-      fdatasyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    bytes += data.byteLength;
+    bytes += await writeFile(openChunkFile(directory, name), produce);
   };
   const size = imageSize(count);
   const image = opaqueImage(size);
   const writeImage = (name, pixels, { width, height } = size) =>
-    encodeWebp(pixels, width, height, (data) => write(name, data));
-  const { means, scales, sh0, opacityMax, clipped, boxes } = encodeGeometry(
-    job,
-    image,
-    writeImage,
-  );
+    write(name, (consume) => encodeWebp(pixels, width, height, consume));
+  const { means, scales, sh0, opacityMax, clipped, boxes } =
+    await encodeGeometry(job, image, writeImage);
   const meta = {
     version: 3,
     asset: { generator: GENERATOR },
@@ -213,14 +206,15 @@ export async function encodeChunk(job, kernel, check) {
   if (job.blindTextures?.length) {
     // The converter uses little-endian word storage.
     const pixels = new Uint32Array(image.buffer);
-    meta.blind = job.blindTextures.map((fields, texture) => {
+    meta.blind = [];
+    for (const [texture, fields] of job.blindTextures.entries()) {
       pixels.set(
         job.blindWords.subarray(texture * count, (texture + 1) * count),
       );
       const name = `blind_${texture}.webp`;
-      writeImage(name, image);
-      return { files: [name], fields };
-    });
+      await writeImage(name, image);
+      meta.blind.push({ files: [name], fields });
+    }
   }
   if (opacityMax > 204) meta.opacity = { max: (opacityMax / 204) ** 2 };
   if (dims) {
@@ -231,7 +225,7 @@ export async function encodeChunk(job, kernel, check) {
       check,
     );
     const { codes, labels, count: entries } = codebook;
-    const scalar = encodeSh(
+    const scalar = await encodeSh(
       { codes, labels, dims, entries, count },
       image,
       writeImage,
@@ -243,7 +237,9 @@ export async function encodeChunk(job, kernel, check) {
       files: ["shN_centroids.webp", "shN_labels.webp"],
     };
   }
-  write("meta.json", Buffer.from(JSON.stringify(meta)));
+  await write("meta.json", (consume) =>
+    consume(Buffer.from(JSON.stringify(meta))),
+  );
   return { bytes, clipped, boxes };
 }
 
@@ -258,22 +254,6 @@ export function imageBytes(count, dims, entries) {
   }
   return {
     retained: webpBytes(Math.max(points, codes)) + QUANTIZE_BYTES,
-    working: points + codes,
+    working: points + codes + outputBufferBytes,
   };
-}
-
-if (!isMainThread && workerData?.encoder) {
-  const { kernel, cancelled } = workerData;
-  const check = () => {
-    if (cancelled && Atomics.load(cancelled, 0))
-      throw new Error("Conversion cancelled");
-  };
-  await initialize();
-  parentPort.on("message", async (job) => {
-    const result = await encodeChunk(job, kernel, check);
-    // The chunk's images and codebook would otherwise stay until the next
-    // chunk's are there.
-    collect();
-    parentPort.postMessage(result, [result.boxes.buffer]);
-  });
 }

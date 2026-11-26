@@ -80,7 +80,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
+    "@jspm/core": "2.1.0",
     "@types/three": "0.187.0",
+    "fflate": "0.8.3",
     "gaussian-splat-rs": "file:rust/gaussian-splat-rs/pkg",
     "publint": "0.3.24",
     "three": "0.187.0",
@@ -117,5 +119,8 @@
     "@biomejs/biome@1.9.4": true,
     "esbuild@0.25.2": true,
     "fsevents@2.3.3": true
+  },
+  "imports": {
+    "#gsl/*": "./bin/cli/*.js"
   }
 }

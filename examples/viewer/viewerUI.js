@@ -77,7 +77,7 @@ export function createViewerUI({
   }
 
   function setSourcePanelOpen(open, { moveFocus = false } = {}) {
-    const shouldOpen = open || !hasModel;
+    const shouldOpen = !sourcePanelToggle?.hidden && (open || !hasModel);
     const restoreFocus =
       !shouldOpen && emptyState.contains(document.activeElement);
 

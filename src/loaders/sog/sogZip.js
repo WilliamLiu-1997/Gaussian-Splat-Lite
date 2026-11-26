@@ -35,7 +35,7 @@ function pathName(name) {
   }
   return parts.join("/");
 }
-export async function readZip(source) {
+export async function readZipDirectory(source) {
   if (source.size < 22) fail("truncated ZIP archive");
   const tailOffset = Math.max(0, source.size - 65557);
   const tail = await source.read(tailOffset, source.size - tailOffset, true);
@@ -118,23 +118,11 @@ export async function readZip(source) {
     cursor = next;
   }
   if (cursor !== size) fail("ZIP directory size mismatch");
-  const rootMeta = entries.get("meta.json");
-  const candidates = [...entries.keys()].filter(
-    (name) => name.split("/").pop() === "meta.json",
-  );
-  if (!rootMeta && candidates.length !== 1)
-    fail("ZIP must contain one unambiguous meta.json");
-  const metaName = rootMeta ? "meta.json" : candidates[0];
-  const meta = entries.get(metaName);
-  const prefix = metaName.slice(0, metaName.length - "meta.json".length);
-  const read = async (entry) => {
+  function checkLocalOffset(entry) {
     if (entry.offset + 30 + entry.nameLength > offset)
       fail(`invalid local header for ${entry.name}`);
-    // Fetch the local header and the first payload chunk together.
-    const header = await source.read(
-      entry.offset,
-      Math.min(READ_CHUNK, 30 + entry.nameLength + entry.compressedSize),
-    );
+  }
+  function payloadStart(entry, header) {
     const local = dataView(header);
     if (
       local.getUint32(0, true) !== 0x04034b50 ||
@@ -160,6 +148,16 @@ export async function readZip(source) {
         local.getUint32(22, true) !== entry.size)
     )
       fail(`local payload size or CRC mismatch for ${entry.name}`);
+    return start;
+  }
+  const read = async (entry) => {
+    checkLocalOffset(entry);
+    // Fetch the local header and the first payload chunk together.
+    const header = await source.read(
+      entry.offset,
+      Math.min(READ_CHUNK, 30 + entry.nameLength + entry.compressedSize),
+    );
+    const start = payloadStart(entry, header);
     const first = header.subarray(start - entry.offset);
     const chunks = first.length ? [first] : [];
     for (
@@ -176,6 +174,27 @@ export async function readZip(source) {
     }
     return chunks;
   };
+  async function storedOffset(entry) {
+    if (entry.method !== 0 || entry.size !== entry.compressedSize)
+      fail("scene preview requires a stored ZIP entry");
+    checkLocalOffset(entry);
+    const header = await source.read(entry.offset, 30 + entry.nameLength);
+    return payloadStart(entry, header);
+  }
+  return { entries, read, storedOffset };
+}
+
+export async function readZip(source) {
+  const { entries, read } = await readZipDirectory(source);
+  const rootMeta = entries.get("meta.json");
+  const candidates = [...entries.keys()].filter(
+    (name) => name.split("/").pop() === "meta.json",
+  );
+  if (!rootMeta && candidates.length !== 1)
+    fail("ZIP must contain one unambiguous meta.json");
+  const metaName = rootMeta ? "meta.json" : candidates[0];
+  const meta = entries.get(metaName);
+  const prefix = metaName.slice(0, metaName.length - "meta.json".length);
   return {
     meta,
     read,

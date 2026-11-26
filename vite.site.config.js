@@ -3,11 +3,14 @@ import { defineConfig } from "vite";
 import arraybuffer from "vite-plugin-arraybuffer";
 import glsl from "vite-plugin-glsl";
 
+import { converterPages, converterRuntime } from "./converter/vite.js";
 import { examples } from "./examples/catalog.js";
 
 export default defineConfig({
   appType: "mpa",
   plugins: [
+    converterRuntime(),
+    converterPages(),
     arraybuffer(),
     glsl({
       include: ["**/*.glsl"],
@@ -25,6 +28,7 @@ export default defineConfig({
     rollupOptions: {
       input: [
         "index.html",
+        "converter/index.html",
         "examples/index.html",
         ...examples.map(({ id }) => `examples/examples/${id}/index.html`),
       ],
@@ -44,14 +48,27 @@ export default defineConfig({
   },
 
   optimizeDeps: {
+    include: [
+      "fflate",
+      "@jspm/core/nodelibs/path",
+      "@jspm/core/nodelibs/buffer",
+    ],
     exclude: ["three", "three/webgpu", "three/tsl"],
   },
 
   worker: {
+    format: "es",
     rollupOptions: {
       treeshake: "smallest",
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.facadeModuleId?.includes("/converter/")
+            ? "converter/assets/[name]-[hash].js"
+            : "assets/[name]-[hash].js",
+      },
     },
     plugins: () => [
+      converterRuntime(),
       arraybuffer(),
       glsl({
         include: ["**/*.glsl"],

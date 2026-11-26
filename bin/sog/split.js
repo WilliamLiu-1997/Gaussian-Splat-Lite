@@ -1,4 +1,3 @@
-import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { WorkerGroup, clusterers, computers } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import {
@@ -40,7 +39,7 @@ const MOST = Math.floor(0xffff0000 / 12);
 // `ids`, the row of each center. Nodes own separate ranges of the order, so
 // threads split them at once; so do the stretches of a large node's rows,
 // whose boxes and bins add up to the node's.
-class Splitter {
+export class Splitter {
   constructor(centers, order, ids, starts, check) {
     this.rows = new Centers(centers, check);
     this.order = order;
@@ -198,7 +197,6 @@ async function splitShared(
 ) {
   const check = () => workspace.check();
   const group = new WorkerGroup(
-    new URL(import.meta.url),
     threads,
     {
       splitter: true,
@@ -337,7 +335,7 @@ function tally(part, values, at) {
 // Passes over a batch of centers, three values a row, with the part of each
 // row in `which`. Threads take batches at once: boxes, bins and counts of
 // the batches add up to those of all rows.
-class Scanner {
+export class Scanner {
   constructor(check) {
     this.check = check;
   }
@@ -433,7 +431,6 @@ async function cutLarge(workspace, positions, where, parts, fit, advance) {
     extra + batchBytes + bins,
   );
   const group = new WorkerGroup(
-    new URL(import.meta.url),
     threads,
     { scanner: true, cancelled: workspace.cancelled },
     new Scanner(check),
@@ -729,24 +726,4 @@ export async function buildRegions(rows, limit) {
     order?.dispose();
     gathered?.dispose();
   }
-}
-
-if (!isMainThread && (workerData?.scanner || workerData?.splitter)) {
-  const { scanner, centers, order, ids, starts, cancelled } = workerData;
-  const check = () => {
-    if (cancelled && Atomics.load(cancelled, 0))
-      throw new Error("Conversion cancelled");
-  };
-  const handler = scanner
-    ? new Scanner(check)
-    : new Splitter(centers, order, ids, starts, check);
-  parentPort.on("message", (job) => {
-    const result = handler.handle(job);
-    const transfer = [];
-    if (job.kind === "bins") {
-      for (const { sizes, mins, maxs } of scanner ? result : [result])
-        transfer.push(sizes.buffer, mins.buffer, maxs.buffer);
-    }
-    parentPort.postMessage(result, transfer);
-  });
 }

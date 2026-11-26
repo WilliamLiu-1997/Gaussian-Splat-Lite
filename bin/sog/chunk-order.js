@@ -25,15 +25,32 @@ export async function orderChunks(rows, order) {
   const pool = new Pool(workspace, rows.length);
   try {
     pool.ready();
+    // Evict already ordered columns and distant inputs before the active source.
+    const pending = new Set(
+      levels
+        .flatMap((level) => [
+          level.records,
+          ...level.sh.slice(0, level.maxSh),
+          ...(blindWidth ? [level.blindValues] : []),
+        ])
+        .reverse(),
+    );
+    const ordered = [];
     for (let i = 0; i < levels.length; i++) {
       const level = levels[i];
+      workspace.rest([...pending, ...ordered]);
       const perm = new Permutation(
         workspace,
         order.consumingRange(starts[i], level.length),
         level.length,
       );
-      const reorder = (column, stride) =>
-        perm.apply(column, stride, pool, { visit });
+      const reorder = (column, stride) => {
+        pending.delete(column);
+        workspace.rest([...pending, ...ordered]);
+        const result = perm.apply(column, stride, pool, { visit });
+        ordered.push(result);
+        return result;
+      };
       try {
         advance(level.length);
         level.records = reorder(level.records, 16);
@@ -46,6 +63,7 @@ export async function orderChunks(rows, order) {
       }
     }
   } finally {
+    workspace.rest([]);
     await pool.close();
     workspace.settle();
     workspace.expect(0);

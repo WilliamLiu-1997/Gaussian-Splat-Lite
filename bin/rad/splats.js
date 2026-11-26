@@ -409,7 +409,7 @@ export class Splats {
   // Workers blend earlier children. The main thread resolves dependencies
   // within a batch in creation order, rounding each parent to FP16.
   blendSh(column, band, initial, pool) {
-    const { nodes, entries, later, blends, blended, results } = pool;
+    const { nodes, entries, later, blends } = pool;
     const dims = SH_DIMS[band];
     const size = later.length;
     const rows = [new Uint16Array(dims), new Uint16Array(dims)];
@@ -470,25 +470,7 @@ export class Splats {
           column.page(rb * dims);
         }
       }
-      pool.blend(column, count, dims);
-      for (let i = 0; i < count; i++) {
-        // A worker blended rows it marked 0.
-        if (!later[i] && results[i] === 0) continue;
-        for (let c = 0; c < 2; c++) {
-          const child = c ? entries[i] : nodes[i];
-          if (child < start) column.read(child * dims, rows[c], dims);
-          else
-            for (let d = 0; d < dims; d++)
-              rows[c][d] = blended[(child - start) * dims + d];
-        }
-        const w = blends[i * 2];
-        const v = blends[i * 2 + 1];
-        for (let d = 0; d < dims; d++)
-          blended[i * dims + d] = halfBits(
-            HALF[rows[0][d]] * w + HALF[rows[1][d]] * v,
-          );
-      }
-      column.write(start * dims, blended, count * dims);
+      pool.blend(column, start, count, dims, rows);
       start += count;
       progress.update(start - initial);
     }

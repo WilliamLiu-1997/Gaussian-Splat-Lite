@@ -1,4 +1,4 @@
-import { HALF, halfBits } from "../rad/math.js";
+import { SKIP_BLEND } from "../rad/parallel.js";
 import { Progress } from "../rad/progress.js";
 import { IndexArray, Permutation } from "../rad/storage.js";
 import { SH_DIMS } from "./splats.js";
@@ -22,9 +22,10 @@ export function collectLevels(
     tree.length * (1 + maxSh + (blind ? 1 : 0)),
   );
   let completed = 0;
+  let lastPass = !maxSh && !blind;
 
   // emit(i) appends the current row to cut i and returns its row number there.
-  function collect(row, visit, write, consumed) {
+  function collect(row, visit, write, consumed, prepare) {
     const width = row.length;
     // Share one MiB of buffers across cuts, down to one row per level.
     const batch = Math.max(
@@ -54,8 +55,9 @@ export function collectLevels(
       workspace.check();
       progress.update(completed + base);
       const count = Math.min(block, tree.length - base);
-      if (maxSh || blind) ranges.read(base * 2, bounds, count * 2);
-      else ranges.consume(base * 2, bounds, count * 2);
+      if (lastPass) ranges.consume(base * 2, bounds, count * 2);
+      else ranges.read(base * 2, bounds, count * 2);
+      prepare?.(base, count);
       for (let i = 0; i < count; i++) {
         const first = bounds[i * 2];
         if (first < levels.length)
@@ -72,16 +74,16 @@ export function collectLevels(
     completed += tree.length;
   }
 
-  function collectColumn(row, read, merge, write, consumed) {
+  function collectColumn(row, read, write, consumed, prepare) {
     collect(
       row,
       (node, first, end, emit) => {
-        if (node >= leaves && merge) merge(node);
-        else if (first < end) read(node);
+        if (first < end) read(node);
         for (let i = first; i < end; i++) emit(i);
       },
       write,
       consumed,
+      prepare,
     );
   }
 
@@ -90,7 +92,6 @@ export function collectLevels(
     collectColumn(
       record,
       (node) => tree.read(node, record),
-      undefined,
       (i, start, count, buffer) => levels[i].store(start, count, buffer),
       tree.records,
     );
@@ -108,33 +109,82 @@ export function collectLevels(
         leafRows.dispose();
       }
     }
+    lastPass = true;
     const refs = blind && blindRows();
     progress.finish();
     return refs;
   } finally {
+    workspace.rest([]);
     ranges.dispose();
   }
 
   function collectBand(band, leafRows) {
     const width = SH_DIMS[band];
+    // Later stages own these columns; evict them before the active tree.
+    const idle = [
+      ...input.sh.slice(band + 1, maxSh).reverse(),
+      input.records,
+      input.centers,
+      ...levels.map((level) => level.records),
+      ...levels.map((level) => level.centers),
+      ...levels.flatMap((level) => level.sh.slice(0, band)),
+      ...input.sh.slice(0, band),
+    ];
+    workspace.rest([...idle]);
     const column = leafRows.apply(input.sh[band], width, pool, { keep: true });
+    workspace.rest([...idle, input.sh[band]]);
+    lastPass = band + 1 === maxSh && !blind;
     const row = new Uint16Array(width);
-    const other = new Uint16Array(width);
-    const read = (node) => column.read(node * width, row);
-    function merge(node) {
-      const pair = (node - leaves) * 2;
-      const w = tree.blend.get(pair);
-      const v = tree.blend.get(pair + 1);
-      read(tree.children.get(pair));
-      column.read(tree.children.get(pair + 1) * width, other);
-      for (let d = 0; d < width; d++)
-        row[d] = halfBits(HALF[row[d]] * w + HALF[other[d]] * v);
-      column.write(node * width, row);
+    const rows = [row, new Uint16Array(width)];
+    const pairs = new Uint32Array(bounds.length);
+    let firstParent;
+
+    // Parents in a batch can depend on earlier parents in that same batch.
+    // Use the same parallel blend and ordered dependency resolution as RAD.
+    function prepare(base, count) {
+      firstParent = Math.max(base, leaves);
+      const parents = base + count - firstParent;
+      if (parents <= 0) return;
+      const pair = (firstParent - leaves) * 2;
+      if (lastPass) {
+        tree.children.consume(pair, pairs, parents * 2);
+        tree.blend.consume(pair, pool.blends, parents * 2);
+      } else {
+        tree.children.read(pair, pairs, parents * 2);
+        tree.blend.read(pair, pool.blends, parents * 2);
+      }
+      let end = 0;
+      for (let i = 0; i < parents; i++) {
+        // A selected merge can feed a later parent even if no cut emits its row.
+        if (bounds[(firstParent - base + i) * 2] === levels.length) {
+          pool.later[i] = SKIP_BLEND;
+          continue;
+        }
+        end = i + 1;
+        const a = pairs[i * 2];
+        const b = pairs[i * 2 + 1];
+        pool.nodes[i] = a;
+        pool.entries[i] = b;
+        pool.later[i] = Number(a >= firstParent || b >= firstParent);
+      }
+      if (end) pool.blend(column, firstParent, end, width, rows);
     }
 
+    const read = (node) => {
+      if (node < leaves) column.read(node * width, row);
+      else {
+        const at = (node - firstParent) * width;
+        for (let d = 0; d < width; d++) row[d] = pool.blended[at + d];
+      }
+    };
     try {
-      collectColumn(row, read, merge, (i, start, count, buffer) =>
-        levels[i].sh[band].write(start * width, buffer, count * width),
+      collectColumn(
+        row,
+        read,
+        (i, start, count, buffer) =>
+          levels[i].sh[band].write(start * width, buffer, count * width),
+        undefined,
+        prepare,
       );
     } finally {
       column.dispose();

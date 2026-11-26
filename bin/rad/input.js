@@ -1,11 +1,6 @@
-import {
-  closeSync,
-  fstatSync,
-  openSync,
-  readFileSync,
-  readSync,
-} from "node:fs";
-import path from "node:path";
+import { closeSync, fstatSync, openSync, readSync } from "#gsl/files";
+import { Buffer, decoderSource } from "#gsl/host";
+import path from "#gsl/path";
 import init, { RawDecoder } from "../decoder/decoder.js";
 import { Progress } from "./progress.js";
 
@@ -13,11 +8,9 @@ let wasm;
 // A trapped WebAssembly instance is unusable, and this process cannot load a
 // second copy of the module, so later inputs fail with this error instead.
 let crashed;
-export function initialize() {
+export function initialize(source) {
   wasm ??= init({
-    module_or_path: readFileSync(
-      new URL("../decoder/decoder_bg.wasm", import.meta.url),
-    ),
+    module_or_path: source ?? decoderSource(),
   });
   return wasm;
 }

@@ -55,12 +55,15 @@ function decodeImage(image, count) {
 const rgba = new Uint8Array([
   19, 101, 233, 0, 0, 255, 128, 1, 255, 64, 0, 127, 12, 34, 56, 255,
 ]);
-const image = encodeWebp(rgba, 2, 2);
+const image = await encodeWebp(rgba, 2, 2);
 assert.deepEqual(decodeImage(image, 4), rgba);
 
 // Preserve the image decoder checks previously run inside Rust.
 const padded = new Uint8Array(512 * 512 * 4).fill(255);
-assert.deepEqual(decodeImage(encodeWebp(padded, 512, 512), 512 * 512), padded);
+assert.deepEqual(
+  decodeImage(await encodeWebp(padded, 512, 512), 512 * 512),
+  padded,
+);
 const truncated = new Uint8Array([
   82, 73, 70, 70, 18, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76, 5, 0, 0, 0, 47,
   255, 195, 255, 0, 0,

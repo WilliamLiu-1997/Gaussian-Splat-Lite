@@ -1,4 +1,4 @@
-import { parentPort } from "node:worker_threads";
+import { reportProgress } from "#gsl/host";
 
 let inlineStarted;
 
@@ -45,14 +45,14 @@ export class Progress {
     const suffix =
       typeof detail === "function" ? detail() : detail && `, ${detail}`;
     const line = `${this.label}: ${percent.toFixed(1)}%${suffix} (${seconds}s)`;
-    if (parentPort)
-      parentPort.postMessage({
-        method: "progress",
-        args: [line, done && inlineStarted === undefined],
-        singleLine: this.singleLine,
-      });
-    else if (this.singleLine && process.stdout.isTTY)
-      process.stdout.write(`\r\x1b[2K${line}${done ? "\n" : ""}`);
-    else if (done || !this.singleLine) console.log(line);
+    reportProgress(
+      line,
+      done,
+      this.singleLine,
+      inlineStarted === undefined,
+      this.label,
+      percent,
+      this.phasePercent?.(percent),
+    );
   }
 }

@@ -374,7 +374,8 @@ button {
   font-weight: 650;
 }
 
-.source-actions {
+.source-actions,
+.viewer-links {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.6rem;
@@ -391,9 +392,11 @@ button {
   background: rgb(255 255 255 / 8%);
 }
 
-.examples-link {
-  width: 100%;
+.viewer-links {
   margin-top: 1.25rem;
+}
+
+.examples-link {
   text-decoration: none;
   border-color: rgb(207 255 88 / 42%);
   background: var(--viewer-selected);

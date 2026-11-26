@@ -1,23 +1,4 @@
-import { fdatasync } from "node:fs";
-import { getSystemErrorName } from "node:util";
-
-// The CLI thread can receive these requests while conversion runs synchronous
-// code. Completion is shared so the converter need not yield its event loop.
-export function syncFiles(files, state, cancelled) {
-  // A batch can still be in the message queue when cancellation arrives.
-  // Acknowledge it without submitting any more native I/O.
-  if (Atomics.load(cancelled, 0)) {
-    Atomics.store(state, 0, 0);
-    Atomics.notify(state, 0);
-    return;
-  }
-  for (const fd of files)
-    fdatasync(fd, (error) => {
-      if (error) Atomics.compareExchange(state, 1, 0, error.errno);
-      Atomics.sub(state, 0, 1);
-      Atomics.notify(state, 0);
-    });
-}
+import { getSystemErrorName } from "#gsl/host";
 
 // Bounds buffered writes that have not yet been confirmed written back. One
 // batch syncs while the next fills; only the older batch is acknowledged when

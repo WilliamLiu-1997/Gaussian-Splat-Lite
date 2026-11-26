@@ -5,43 +5,21 @@ import {
   openSync,
   rmSync,
   writeSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import v8 from "node:v8";
-import { runInNewContext } from "node:vm";
+} from "#gsl/files";
+import { tmpdir } from "#gsl/host";
+import { collect, outsideBytes, sharedBuffer } from "#gsl/memory";
+import { join } from "#gsl/path";
+export { collect, sharedBuffer } from "#gsl/memory";
 import { Progress } from "./progress.js";
 import { PAGE_BYTES, Spill } from "./spill.js";
 import { Writeback } from "./writeback.js";
 
 export { PAGE_BYTES, readAll } from "./spill.js";
-export const GIB = 1024 ** 3;
+export { GIB } from "../units.js";
 // Memory the budget keeps for growth between measurements.
 const MARGIN = 64 * 1024 ** 2;
 // Copied over new pages: fill(0) writes shared memory a byte at a time.
 const ZERO = new Uint8Array(PAGE_BYTES);
-
-// gc() on this thread and on worker threads started later: arenas that the
-// cache releases, and garbage holding buffers, return their memory to the
-// system only once collected.
-v8.setFlagsFromString("--expose-gc");
-globalThis.gc ??= runInNewContext("gc");
-// Collects twice: a collection frees the memory of what the one before found.
-export function collect() {
-  globalThis.gc();
-  globalThis.gc();
-}
-
-// Shared memory of at least `bytes`, as WebAssembly memory like the arenas
-// below: it returns to the system once collected on every platform.
-export function sharedBuffer(bytes) {
-  const pages = Math.ceil(bytes / PAGE_BYTES);
-  return new WebAssembly.Memory({
-    initial: pages,
-    maximum: pages,
-    shared: true,
-  }).buffer;
-}
 
 // All large arrays consist of 64 KiB pages. Neither one ArrayBuffer nor one
 // WebAssembly memory has to hold the model, even with a 16+ GiB budget. Pages
@@ -143,7 +121,7 @@ export class Workspace {
   measure() {
     this.outside = Math.max(
       this.outside,
-      process.memoryUsage.rss() - this.slots.length * PAGE_BYTES,
+      outsideBytes(this.slots.length * PAGE_BYTES),
     );
   }
 
@@ -151,7 +129,7 @@ export class Workspace {
   // a phase starts.
   settle() {
     collect();
-    this.outside = process.memoryUsage.rss() - this.slots.length * PAGE_BYTES;
+    this.outside = outsideBytes(this.slots.length * PAGE_BYTES);
   }
 
   // Makes room for `bytes` that the process is about to take besides the
@@ -177,11 +155,22 @@ export class Workspace {
     const slots = Math.floor(this.capacity / this.arenaBytes) * this.arenaPages;
     // Without a copy of the slots: a copy kept the released pages alive
     // through the collection below, and their memory returned only later.
-    for (let slot = slots; slot < this.slots.length; slot++)
-      if (this.slots[slot]) this.drop(this.slots[slot]);
+    const free = this.free.filter((slot) => slot < slots);
+    for (let slot = slots; slot < this.slots.length; slot++) {
+      const page = this.slots[slot];
+      if (!page) continue;
+      // Keep dirty pages in vacant slots of the surviving arenas before spilling.
+      if (page.dirty && free.length) {
+        this.drop(page, false);
+        const kept = this.attach(page.array, page.index, free.pop(), false);
+        kept.bytes.set(page.bytes);
+        kept.dirty = true;
+        kept.used = page.used;
+      } else this.drop(page);
+    }
     this.slots.length = slots;
     this.reuse.length = slots;
-    this.free = this.free.filter((slot) => slot < slots);
+    this.free = free;
     this.arenas.length = slots / this.arenaPages;
     this.version++;
     this.generation++;
@@ -319,17 +308,15 @@ export class Workspace {
     if (slot === undefined) {
       slot = this.slots.length;
       if (slot === this.arenas.length * this.arenaPages) {
-        this.arenas.push(
-          new WebAssembly.Memory({
-            initial: this.arenaPages,
-            maximum: this.arenaPages,
-            shared: true,
-          }).buffer,
-        );
+        this.arenas.push(sharedBuffer(this.arenaBytes));
         this.version++;
         this.generation++;
       }
     }
+    return this.attach(array, index, slot, restore);
+  }
+
+  attach(array, index, slot, restore) {
     const arena = this.arenas[Math.floor(slot / this.arenaPages)];
     let reuse = this.reuse[slot];
     if (reuse?.arena !== arena) {
@@ -671,6 +658,7 @@ export class ArenaViews {
 // Worker's view of a shared PagedArray. A resident slot stays valid for the
 // job. Searches can also read spilled parts and see zeros for unwritten pages.
 // Other jobs report misses for the main thread.
+export const DISK_PAGE = Symbol("page owned by the I/O worker");
 export class SharedColumn {
   constructor(views, directory, Type, fds, parts, column = 0) {
     this.directory = directory;
@@ -716,6 +704,7 @@ export class SharedColumn {
     return this.lastArena;
   }
   part(index, disk) {
+    if (this.fds === null) throw DISK_PAGE;
     const parts = this.parts;
     const items = this.items / parts.perPage;
     const part = Math.floor((index & this.mask) / items);

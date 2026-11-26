@@ -40,7 +40,7 @@ set_target_properties(sog_webp PROPERTIES OUTPUT_NAME webp SUFFIX .mjs)
 target_link_options(sog_webp PRIVATE
   -sMODULARIZE=1
   -sEXPORT_ES6=1
-  -sENVIRONMENT=node
+  -sENVIRONMENT=node,worker
   -sFILESYSTEM=0
   -sALLOW_MEMORY_GROWTH=1
   -sABORTING_MALLOC=0

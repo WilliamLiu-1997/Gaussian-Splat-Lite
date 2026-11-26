@@ -170,7 +170,7 @@
             or load one from a URL. For split scenes, include SOG meta.json and its
             .webp images, or the RAD header and its .radc files. For Streamed SOG or LCC2,
             drop or choose the folder containing lod-meta.json or .lcc2 and its chunks.
-            The model is decoded in this browser.
+            ZIP downloads from the converter can be opened directly.
           </p>
           <div class="source-actions">
             <button
@@ -210,7 +210,10 @@
             </button>
           </form>
           <p class="url-hint">Stream RAD, SOG lod-meta.json, or LCC2 scenes. Remote hosts must allow CORS; single-file RAD streaming requires byte-range requests.</p>
-          <a class="button examples-link" href="./examples/">Examples</a>
+          <div class="viewer-links">
+            <a class="button examples-link" href="./converter/">Converter</a>
+            <a class="button examples-link" href="./examples/">Examples</a>
+          </div>
         </section>
       </main>
 
@@ -290,9 +293,20 @@
       </div>
     </div>
 
-    <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp,.lcc2" multiple hidden />
+    <input id="file-input" type="file" accept=".ply,.spz,.sog,.rad,.radc,.json,.webp,.lcc2,.zip" multiple hidden />
     <input id="folder-input" type="file" webkitdirectory multiple hidden />
 
-    <script type="module" src="/examples/viewer/openModel.js"></script>
+    <script>
+      if (new URLSearchParams(location.search).has("conversion")) {
+        document.getElementById("source-panel-toggle").hidden = true;
+        document.getElementById("source-panel-backdrop").hidden = true;
+        document.getElementById("empty-state").hidden = true;
+      }
+    </script>
+    <script type="module">
+      if (document.getElementById("source-panel-toggle").hidden)
+        await import("/converter/preview.js");
+      else await import("/examples/viewer/openModel.js");
+    </script>
   </body>
 </html>
