@@ -8,7 +8,6 @@
 .blind-panel {
   position: fixed;
   top: calc(var(--example-inset) + 2.35rem);
-  top: anchor(--example-toolbar bottom);
   right: var(--example-inset);
   margin-top: 6px;
 }
