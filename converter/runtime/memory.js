@@ -5,8 +5,11 @@ import { outputBufferBytes } from "./output.js";
 import { threadCount } from "./threads.js";
 import { writtenBytes } from "./written-pages.js";
 
-export const sharedBuffer = (bytes) =>
-  new SharedArrayBuffer(Math.ceil(bytes / 65536) * 65536);
+export function sharedBuffer(bytes) {
+  const size = Math.ceil(bytes / 65536) * 65536;
+  // Keep large caches out of Chromium's fixed-size ArrayBuffer pool.
+  return new SharedArrayBuffer(size, { maxByteLength: size });
+}
 export function collect() {}
 export const unmeasuredBytes = (view) => view?.byteLength ?? 0;
 const diskBytes = workerOverhead + 4 * 1024 ** 2 + writtenBytes;

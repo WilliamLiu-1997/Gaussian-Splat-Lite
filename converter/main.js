@@ -199,8 +199,9 @@ el("form").onsubmit = async (event) => {
       if (run.signal.aborted) break;
       activity.beginFile(index, file.name);
       status(`Converting ${file.name}…`);
+      let scene;
       try {
-        const scene = await convertFile(
+        scene = await convertFile(
           file,
           workingFolder,
           { format, gib, values },
@@ -217,7 +218,7 @@ el("form").onsubmit = async (event) => {
         activity.log(message, "error");
       }
       await run.waitWhilePaused();
-      activity.endFile();
+      activity.endFile(index + 1, scene);
     }
     const issues = [...failures, ...skipped].join("\n");
     if (!scenes.length) {

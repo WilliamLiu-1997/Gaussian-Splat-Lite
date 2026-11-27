@@ -14,7 +14,8 @@ const steps = {
 const phaseCount = 5;
 let timer;
 let total;
-let file;
+let fileStart;
+let progress;
 let phase;
 let unit;
 let peak;
@@ -59,14 +60,17 @@ export function log(message, level, progressDone) {
   if (follow) output.scrollTop = output.scrollHeight;
 }
 
-function overall(percent) {
+function overall(fraction) {
+  progress = Math.max(progress, fileStart + fraction);
   const meter = el("overall");
-  meter.value = Math.max(meter.value, Math.floor(percent));
+  meter.value = Math.floor((progress / total) * 100);
   el("overall-value").textContent = `${meter.value}%`;
 }
 
 export function start(count) {
   total = count;
+  fileStart = 0;
+  progress = 0;
   peak = 0;
   lines.length = 0;
   liveLine = null;
@@ -78,7 +82,6 @@ export function start(count) {
   el("stage").textContent = "Opening temporary storage";
   el("current-file").textContent = "Starting";
   el("threads").textContent = "0";
-  el("overall").value = 0;
   overall(0);
   el("file-count").textContent = `0 / ${total}`;
   el("elapsed").textContent = duration();
@@ -94,7 +97,7 @@ export function setPaused(paused) {
 }
 
 export function beginFile(index, name) {
-  file = index;
+  fileStart = progress;
   phase = 0;
   unit = undefined;
   el("current-file").textContent = name;
@@ -102,7 +105,6 @@ export function beginFile(index, name) {
   el("stage-progress").value = 0;
   el("stage-value").textContent = "0%";
   workers(1);
-  overall((file / total) * 100);
   log(`File ${index + 1} of ${total} · ${name}`);
 }
 
@@ -116,7 +118,7 @@ export function update(data) {
   else if (data.phase) {
     phase = steps[data.phase.name];
     unit = data.phase.unit;
-    overall(((file + phase / phaseCount) / total) * 100);
+    overall(phase / phaseCount);
   } else if (data.progress) {
     const { label, percent, line } = data.progress;
     el("stage").textContent = label;
@@ -125,21 +127,16 @@ export function update(data) {
     const phasePercent =
       data.progress.phasePercent ?? (label === unit ? percent : undefined);
     if (phasePercent !== undefined)
-      overall(
-        Math.min(
-          99,
-          ((file + (phase + phasePercent / 100) / phaseCount) / total) * 100,
-        ),
-      );
+      overall((phase + phasePercent / 100) / phaseCount);
     log(line, "", data.progress.done);
   } else if (data.log !== undefined)
     log(data.log, data.level === "warn" ? "warn" : "");
 }
 
-export function endFile() {
+export function endFile(count, saved) {
   liveLine = null;
-  el("file-count").textContent = `${file + 1} / ${total}`;
-  overall(((file + 1) / total) * 100);
+  el("file-count").textContent = `${count} / ${total}`;
+  if (saved) overall(1);
 }
 
 export function finish(message) {
