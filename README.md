@@ -12,7 +12,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 
 <div align="center">
 
-**[Try Live Demo](https://gaussian-splat-lite.vercel.app/examples/#basic-viewer)**
+**[Try Live Demo](https://gaussian-splat-lite.vercel.app/examples/#basic-viewer) · [Large Scenes Converter](https://gaussian-splat-lite.vercel.app/converter/)**
 
 </div>
 
@@ -30,6 +30,7 @@ High performance 3D Gaussian Splatting (3DGS) renderer for **Three.js** with **W
 | --- | --- |
 | **WebGPU / WebGL2** | Use the same Three.js scene API with either renderer |
 | **Large-scene streaming** | Load RAD, SOG, and LCC2 detail as the camera moves, with smooth transitions |
+| **RAD / SOG conversion** | Convert PLY or SPZ files to streamable RAD or SOG with levels of detail in the browser or from the command line |
 | **Stochastic rendering** | Optional transparency mode, with an experimental neural denoiser to smooth it |
 | **Offscreen capture** | Render Splats to images, cube maps, and environment maps for reflections |
 | **SDF edits** | Recolor or hide parts of a model without moving Splats |
@@ -200,10 +201,13 @@ Keep the index and its companion files together. See [LCC2 streaming](docs/Lcc2S
 - [SplatEditBlind](docs/SplatEditBlind.md) — Select SOG v3 Blind fields to recolor, fade, or hide Gaussians.
 - [Splats](docs/Splats.md) — Read a loaded model's data.
 
-**Large scenes**
+**RAD and SOG conversion**
 
 - [Building RAD files](docs/BuildRad.md) — Convert models to streamable RAD with quality LOD.
 - [Building SOG files](docs/BuildSog.md) — Convert PLY or SPZ to streamed SOG v3 with LOD and SH4.
+
+**Large Scene streaming**
+
 - [RadStreamScheduler](docs/RadStreamScheduler.md) — Large RAD scenes with adaptive detail.
 - [SogStreamScheduler](docs/SogStreamScheduler.md) — Large SOG scenes with adaptive detail.
 - [Lcc2StreamScheduler](docs/Lcc2StreamScheduler.md) — LCC2 scenes with adaptive detail.
