@@ -4,6 +4,10 @@ export declare const ORDERING_TEXTURE_WIDTH = 4096;
 export declare const SPLATS_PER_ORDERING_ROW: number;
 export declare const emptyOrdering: THREE.DataTexture;
 export declare const DEFAULT_MIN_ALPHA: number;
+export declare function setRenderOrigin(
+  uniforms: Uniforms,
+  origin: THREE.Vector3,
+): void;
 export declare function makeSplatUniforms(): {
   renderSize: {
     value: THREE.Vector2;
@@ -11,6 +15,8 @@ export declare function makeSplatUniforms(): {
   viewportOrigin: {
     value: THREE.Vector2;
   };
+  renderOriginHigh: { value: THREE.Vector3 };
+  renderOriginLow: { value: THREE.Vector3 };
   renderOrigin: {
     value: THREE.Vector3;
   };

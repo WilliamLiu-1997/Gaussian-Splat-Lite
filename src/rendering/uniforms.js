@@ -6,6 +6,7 @@ import {
 } from "../data/defines.js";
 import { emptySplatTexture } from "../data/textureLayout.js";
 import { SplatEdits } from "../scene/SplatEdit.js";
+import { splitWorldPosition } from "../utils/transforms.js";
 import { createBlueNoiseTexture } from "./blueNoise.js";
 export const ORDERING_TEXTURE_WIDTH = 4096;
 export const SPLATS_PER_ORDERING_ROW = ORDERING_TEXTURE_WIDTH * 4;
@@ -18,6 +19,16 @@ export const emptyOrdering = new THREE.DataTexture(
 );
 emptyOrdering.needsUpdate = true;
 export const DEFAULT_MIN_ALPHA = 0.5 / 255;
+// Keep the exact JS value for view matrices. The GPU receives its two float32 parts.
+export function setRenderOrigin(uniforms, origin) {
+  if (uniforms.renderOrigin.value.equals(origin)) return;
+  uniforms.renderOrigin.value.copy(origin);
+  splitWorldPosition(
+    origin,
+    uniforms.renderOriginHigh.value,
+    uniforms.renderOriginLow.value,
+  );
+}
 export function makeSplatUniforms() {
   const emptySplats = emptySplatTexture;
   const uniforms = {
@@ -25,6 +36,8 @@ export function makeSplatUniforms() {
     renderSize: { value: new THREE.Vector2() },
     viewportOrigin: { value: new THREE.Vector2() },
     renderOrigin: { value: new THREE.Vector3() },
+    renderOriginHigh: { value: new THREE.Vector3() },
+    renderOriginLow: { value: new THREE.Vector3() },
     // Near and far plane distances
     near: { value: 0.1 },
     far: { value: 1000.0 },
@@ -73,6 +86,8 @@ export function makeSplatUniforms() {
 export function makeGenerateUniforms() {
   return {
     renderOrigin: { value: new THREE.Vector3() },
+    renderOriginHigh: { value: new THREE.Vector3() },
+    renderOriginLow: { value: new THREE.Vector3() },
     targetLayer: { value: 0 },
     targetBase: { value: 0 },
     targetCount: { value: 0 },

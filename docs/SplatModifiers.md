@@ -25,6 +25,8 @@ reveal.setUniform("front", 1.5);
 | Field | Meaning |
 | --- | --- |
 | `center` | Writable absolute world-space center. The render hook sees the position produced by the mesh hook. |
+| `centerHigh`, `centerLow` | Writable pair for the absolute center. Add small world-axis offsets to `centerLow`. Assign both parts to place the splat at another absolute position. |
+| `originalCenterHigh`, `originalCenterLow` | Read-only pair for the original absolute center, including the mesh transform. |
 | `originalCenter` | Read-only absolute world-space center before either hook, including the mesh transform. |
 | `scale` | Three linear splat-axis sizes in world units. Multiply all three by one value for uniform scaling. |
 | `rotation` | World-space quaternion in XYZW order. Supply a nonzero quaternion. |
@@ -43,10 +45,31 @@ const tsl = ({ originalCenter, scale, color }, { front }) => {
 };
 ```
 
-Uniforms support `float`, `int`, `uint`, `bool`, `vec2`–`vec4`, `mat3` and `mat4`. Use Three.js vectors and matrices for the corresponding types. Pass the new value to the returned binding's `setUniform(name, value)`, including after mutating a vector in place. Each binding owns its parameter values. Uniform updates reuse the shader program.
+Uniforms support `float`, `int`, `uint`, `bool`, `vec2`–`vec4`, `mat3`, `mat4` and `worldPosition`. Use Three.js vectors and matrices for the corresponding types. Pass the new value to the returned binding's `setUniform(name, value)`, including after mutating a vector in place. Each binding owns its parameter values. Uniform updates reuse the shader program.
 
 On WebGL2, a mesh parameter change refreshes that mesh's accumulator range. A render parameter change only updates draw uniforms. The render hook can read the original center and seed from an extra RGBA32UI stream (16 bytes per allocated splat, replacing the seed-only stream in stochastic mode). Direct GLSL references enable it automatically. Set `sourceData: true` if a macro constructs either name. TSL defaults to enabling this stream; set `sourceData: false` for effects that use neither field.
 
 On native WebGPU the two hooks execute in the existing projection compute pass. GPU sorting uses the modified center. The WebGL2 worker continues sorting the CPU source centers. Shader changes affect rendering; CPU raycasts, bounds and streaming selection use the source geometry.
 
-Absolute shader coordinates have float32 precision. At a world-axis value of 6,400,000, adjacent representable values are 0.5 units apart. GSL retains its camera-relative projection internally and applies the change in world position, so a color-only hook preserves center precision.
+## Large world coordinates
+
+Use the high/low fields in both hooks for GIS and ECEF positions. At Earth scale the high vector holds whole world units and the low vector holds the signed fraction. For example, this body works as GLSL or WGSL. It moves splats inside a 2 cm radius by 1 cm along world X. The anchor is an absolute Three.js position supplied in JavaScript double precision.
+
+```js
+const body = `
+  if (length((originalCenterHigh - anchorHigh) + (originalCenterLow - anchorLow)) < 0.02) {
+    centerLow.x += 0.01;
+  }
+`;
+mesh.setWorkBufferModifier({
+  uniforms: {
+    anchor: { type: "worldPosition", value: new THREE.Vector3(6400000.125, 0, 0) },
+  },
+  glsl: body,
+  wgsl: body,
+});
+```
+
+A `worldPosition` uniform named `anchor` exposes `anchorHigh` and `anchorLow` in GLSL, WGSL and TSL. Update it with `setUniform("anchor", position)`. For absolute placement assign `centerHigh = anchorHigh` and `centerLow = anchorLow`. Each hook receives a fresh split of the current position. Use one representation per position edit.
+
+The single-vector fields `center` and `originalCenter` round to float32. At X = 6,400,000 their spacing is 0.5 world units. When measuring small distances, subtract the corresponding high and low parts before adding the differences. Source coordinates and the internal camera-to-splat distance still limit attainable precision.

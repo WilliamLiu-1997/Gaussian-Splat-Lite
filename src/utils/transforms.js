@@ -75,3 +75,11 @@ export function rebaseAffineTransform(matrix, origin) {
   elements[14] = tz;
   return matrix;
 }
+
+// Integer world units are exactly representable throughout the ECEF range.
+export function splitWorldPosition(value, high, low) {
+  for (const axis of ["x", "y", "z"]) {
+    high[axis] = Math.fround(Math.round(value[axis]));
+    low[axis] = value[axis] - high[axis];
+  }
+}

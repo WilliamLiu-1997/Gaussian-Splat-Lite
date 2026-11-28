@@ -241,6 +241,8 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
     viewportOrigin: {
       value: THREE.Vector2;
     };
+    renderOriginHigh: { value: THREE.Vector3 };
+    renderOriginLow: { value: THREE.Vector3 };
     renderOrigin: {
       value: THREE.Vector3;
     };

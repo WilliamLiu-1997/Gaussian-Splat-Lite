@@ -122,14 +122,13 @@ void main() {
     vec3 scales = exp(decodeLnScales(splat2));
     vec4 quaternion = decodeQuatSmallestThree32(splat2.w);
     vec4 rgba = decodeSplatRgba(splat2, alpha);
-    vec3 world = center + renderOrigin;
     #if GSL_SOURCE_DATA
     uvec4 data = texelFetch(stochasticSeeds, texCoord, 0);
     #else
-    uvec4 data = uvec4(0u, floatBitsToUint(world));
+    uvec4 data = uvec4(0u, floatBitsToUint(center));
     #endif
-    mat4 modified = GSL_APPLY(world, scales, quaternion, rgba, uintBitsToFloat(data.yzw), data.x);
-    center += modified[0].xyz - world;
+    mat4 modified = GSL_APPLY(center, scales, quaternion, rgba, uintBitsToFloat(data.yzw), data.x);
+    center = modified[0].xyz;
     scales = max(modified[1].xyz, vec3(0.0));
     quaternion = normalize(modified[2]);
     rgba = modified[3];

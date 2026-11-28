@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- World-space shader modifiers on `SplatMesh` and `GaussianSplatRenderer`, with GLSL for WebGL2 and TSL or WGSL for `WebGPURenderer`.
+- World-space shader modifiers on `SplatMesh` and `GaussianSplatRenderer`, with GLSL for WebGL2 and TSL or WGSL for `WebGPURenderer`. Split world centers and `worldPosition` uniforms preserve centimetre-scale edits at ECEF coordinates.
 
 ## [1.11.1] - 2026-11-28
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Vector3 } from "three";
 import { SplatModifier, glslModifier } from "../src/rendering/SplatModifier.js";
 
 test("modifier uniforms and cached GPU resources belong to one installation", () => {
@@ -59,4 +60,52 @@ test("original-center and seed storage is selected for the active shader languag
       ),
     /GLSL/,
   );
+});
+
+test("world-position uniforms preserve centimetres across a world grid boundary", () => {
+  const point = new Vector3(6400127.495, -6400127.505, 0.003);
+  const anchor = { type: "worldPosition", value: point };
+  const options = { glsl: "centerLow += anchorLow;", uniforms: { anchor } };
+  const binding = new SplatModifier(options);
+  const other = new SplatModifier(options);
+  const uniforms = {};
+  glslModifier("#define GSL_MODIFIER_HOOK", binding, "Work", uniforms);
+  const high = uniforms.gslParam_anchorHigh.value;
+  const low = uniforms.gslParam_anchorLow.value;
+  const previousHigh = high.clone();
+  const previousLow = low.clone();
+  const previous = point.clone();
+  point.addScalar(0.01);
+  binding.setUniform("anchor", point);
+  // Model the actual uploads and subtraction on the GPU, including float32 rounding.
+  const f = Math.fround;
+  for (const axis of ["x", "y", "z"]) {
+    const delta = f(
+      f(high[axis] - previousHigh[axis]) +
+        f(f(low[axis]) - f(previousLow[axis])),
+    );
+    assert.ok(Math.abs(delta - 0.01) < 0.0000001);
+    assert.ok(
+      Math.abs(f(high[axis]) + f(low[axis]) - point[axis]) < 0.00000005,
+    );
+  }
+  assert.notEqual(high.x, previousHigh.x);
+  assert.equal(f(point.x), f(previous.x));
+  assert.deepEqual(other.uniforms.anchorLow.value, previousLow);
+  assert.throws(() => binding.setUniform("anchorHigh", point), /Unknown/);
+  assert.throws(
+    () =>
+      new SplatModifier({
+        ...options,
+        uniforms: { anchor, anchorLow: { type: "vec3", value: point } },
+      }),
+    /Conflicting/,
+  );
+  for (const field of ["originalCenterLow", "originalCenterHigh"]) {
+    assert.ok(
+      new SplatModifier({ glsl: `color.r = ${field}.x;` }).needsSourceData(
+        false,
+      ),
+    );
+  }
 });

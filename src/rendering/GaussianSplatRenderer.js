@@ -14,7 +14,11 @@ import {
   getViews,
   isWebGPURenderer,
 } from "./rendererUtils.js";
-import { DEFAULT_MIN_ALPHA, makeSplatUniforms } from "./uniforms.js";
+import {
+  DEFAULT_MIN_ALPHA,
+  makeSplatUniforms,
+  setRenderOrigin,
+} from "./uniforms.js";
 const renderToViewScaleTmp = new THREE.Vector3();
 const renderToViewMatrixTmp = new THREE.Matrix4();
 const renderTranslationTmp = new THREE.Matrix4();
@@ -406,7 +410,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     if (this.autoUpdate && renderNested) {
       display.refreshTransforms(renderer);
     }
-    this.uniforms.renderOrigin.value.copy(display.viewOrigin);
+    setRenderOrigin(this.uniforms, display.viewOrigin);
     const geometry = this.geometry;
     // CPU orderings exist only while they match the displayed accumulator.
     this.uniforms.stochasticOrdering.value =

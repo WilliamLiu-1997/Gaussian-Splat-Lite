@@ -12,6 +12,7 @@ import {
   isWebGPURenderer,
   usesNativeWebGPU,
 } from "./rendererUtils.js";
+import { setRenderOrigin } from "./uniforms.js";
 import { WebGLFallbackAccumulatorGenerator } from "./webgl-fallback/AccumulatorGenerator.js";
 import {
   createWebGLAccumulatorTarget,
@@ -174,7 +175,7 @@ export class SplatAccumulator {
       throw new Error("SplatMesh has no source");
     }
     source.setTextureUniforms(uniforms);
-    uniforms.renderOrigin.value.copy(this.viewOrigin);
+    setRenderOrigin(uniforms, this.viewOrigin);
     // A mesh keeps its seed when other meshes enter/leave the packed mapping.
     // Combine it on the GPU with the physical source index, before LOD compaction.
     uniforms.stochasticSeedBase.value =

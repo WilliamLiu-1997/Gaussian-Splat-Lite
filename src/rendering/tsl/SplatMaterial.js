@@ -318,9 +318,7 @@ export function createSplatNodeMaterial({
           rgba: decodeRgba(second, alphaShape.x).toVar(),
           shapeAmount: alphaShape.y,
         };
-        const original = data
-          ? N.uintBitsToFloat(data.yzw)
-          : source.center.add(uniformBinding(uniforms, "renderOrigin", "vec3"));
+        const original = data ? N.uintBitsToFloat(data.yzw) : source.center;
         modify(source, original, data ? data.x : N.uint(0));
       }
       const projected = project(source);

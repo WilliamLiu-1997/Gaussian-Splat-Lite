@@ -24,3 +24,8 @@ export declare function rebaseAffineTransform(
   matrix: THREE.Matrix4,
   origin: THREE.Vector3,
 ): THREE.Matrix4;
+export declare function splitWorldPosition(
+  value: THREE.Vector3,
+  high: THREE.Vector3,
+  low: THREE.Vector3,
+): void;

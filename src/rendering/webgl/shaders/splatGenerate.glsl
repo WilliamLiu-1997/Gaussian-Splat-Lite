@@ -461,9 +461,6 @@ bool applySdfEdits(
 }
 
 #define GSL_MODIFIER_HOOK
-#if GSL_MODIFIER_DATA && !defined(GSL_MODIFIER)
-uniform vec3 renderOrigin;
-#endif
 void produceSplat(int index) {
     uint sourceIndex = uint(index);
     if (sourceIndexed) {
@@ -530,11 +527,8 @@ void produceSplat(int index) {
 
     vec3 editPosition = center;
     center += objectOffset;
-#if defined(GSL_MODIFIER) || GSL_MODIFIER_DATA
-    vec3 originalCenter = center + renderOrigin;
-#endif
 #if GSL_MODIFIER_DATA
-    modifierData = uvec4(sourceIndex ^ stochasticSeedBase, floatBitsToUint(originalCenter));
+    modifierData = uvec4(sourceIndex ^ stochasticSeedBase, floatBitsToUint(center));
 #endif
 // The center is camera-relative while editPosition is mesh-origin-relative,
 // matching the rebased SDF transforms without reconstructing world position.
@@ -550,8 +544,8 @@ void produceSplat(int index) {
     float storedAlpha = rgba.a;
     if (!semanticOpacityDecoded) rgba.a = decodeSemanticOpacity(clamp(rgba.a, 0., 1.), shapeAmount);
     float inputOpacity = rgba.a;
-    mat4 modified = GSL_APPLY(originalCenter, exp(lnScales), quaternion, rgba, originalCenter, sourceIndex ^ stochasticSeedBase);
-    center += modified[0].xyz - originalCenter;
+    mat4 modified = GSL_APPLY(center, exp(lnScales), quaternion, rgba, center, sourceIndex ^ stochasticSeedBase);
+    center = modified[0].xyz;
     lnScales = log(max(modified[1].xyz, vec3(0.0)));
     quaternion = normalize(modified[2]);
     rgba = modified[3];

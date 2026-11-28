@@ -291,10 +291,6 @@ export function createGenerateProgram({
   language = "glsl",
 }) {
   const modify = nodeModifier(modifier, "Work", language, uniforms);
-  const origin =
-    modify || modifierData
-      ? uniformBinding(uniforms, "renderOrigin", "vec3")
-      : null;
   const sampleBlind = createBlindSelection(uniforms);
   const bindUniform = (name, type) => uniformBinding(uniforms, name, type);
   const bindTexture = (name) => textureBinding(uniforms, name, true);
@@ -602,7 +598,7 @@ export function createGenerateProgram({
   };
   // `isVisible` keeps camera-relative centers that need decoding and editing.
   const generateValues = (index, deferredColor, isVisible) => {
-    const originalCenter = origin ? N.vec3(0).toVar() : null;
+    const originalCenter = modify || modifierData ? N.vec3(0).toVar() : null;
     const valid = N.bool(false).toVar();
     const center = N.vec3(0).toVar();
     const lnScales = N.vec3(0).toVar();
@@ -633,7 +629,7 @@ export function createGenerateProgram({
       // SDF transforms are rebased to the mesh origin; center is camera-relative.
       const position = objectBasis.mul(decodeCenter(sourceA)).toVar();
       center.assign(position.add(objectOffset));
-      if (origin) originalCenter.assign(center.add(origin));
+      if (originalCenter) originalCenter.assign(center);
 
       N.If(isVisible ? isVisible(center) : N.bool(true), () => {
         const blockOpacity = N.float(1).toVar();
