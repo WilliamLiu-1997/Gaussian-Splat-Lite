@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-11-28
+
+### Added
+
+- Import `convertFile` from `gaussian-splat-lite/converter` to convert local PLY and SPZ files to RAD or streamed SOG in a browser. Use `onProgress` for progress and logs, and `ConversionController` to pause, resume or cancel.
+- Added a 12 GiB memory preset to the browser converter.
+
+### Fixed
+
+- Fixed large shared-buffer allocations that could fail during browser conversion. Failed files now count as processed without increasing the batch completion percentage.
+- Cancelling a browser conversion removes unfinished output and preserves a scene once its entry file has been published.
+- The viewer now opens converter output from dot-prefixed folders and RAD files, including exported ZIPs with macOS metadata. Selecting another file while a scene is opening keeps the latest selection.
+- Fixed example controls scrolling back to the top on mobile.
+
 ## [1.11.0] - 2026-11-27
 
 ### Added
@@ -884,7 +898,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 - Initial public release of the Three.js Gaussian Splatting renderer.
 
-[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.3...v1.11.0
 [1.10.3]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/WilliamLiu-1997/Gaussian-Splat-Lite/compare/v1.10.1...v1.10.2
