@@ -6,6 +6,11 @@ import type {
   SplatProgressEvent,
 } from "../loaders/loadTypes.js";
 import type { SplatPostDecodeProgram } from "../loaders/postDecode/program.js";
+import type {
+  SplatModifier,
+  SplatModifierOptions,
+  SplatModifierUniforms,
+} from "../rendering/SplatModifier.js";
 import type { SplatEdit, SplatEdits } from "./SplatEdit.js";
 import type { SplatEditBlind } from "./SplatEditBlind.js";
 export type SplatMeshOptions = {
@@ -86,6 +91,15 @@ export declare class SplatMesh extends THREE.Object3D {
       color: THREE.Color,
     ) => void,
   ): void;
+  readonly workBufferModifier: SplatModifier | null;
+  /** @internal */ readonly modifierRevision: number;
+  setWorkBufferModifier<U extends SplatModifierUniforms>(
+    options: SplatModifierOptions<U>,
+  ): SplatModifier;
+  setWorkBufferModifier(options: null): null;
+  setWorkBufferModifier(
+    options: SplatModifierOptions | null,
+  ): SplatModifier | null;
   dispose(): void;
   /** Copy cached local bounds; false includes scale/rotation and shape at source alpha 0.01. */
   getBoundingBox(centersOnly?: boolean, target?: THREE.Box3): THREE.Box3;

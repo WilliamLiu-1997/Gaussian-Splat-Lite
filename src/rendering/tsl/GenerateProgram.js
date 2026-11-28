@@ -1,6 +1,7 @@
 import { SPLAT_TEX_WIDTH, SPLAT_TEX_WIDTH_BITS } from "../../data/defines.js";
 import { EDIT_BLIND } from "../../scene/SplatEdit.js";
 import { BLIND_ACTIVE } from "../../scene/SplatEditBlindField.js";
+import { nodeModifier } from "../SplatModifier.js";
 import { createBlindSelection } from "./BlindSelection.js";
 import {
   decodeQuatSmallestThree32,
@@ -283,7 +284,17 @@ const evaluateSH4 = N.Fn(([previous, first, second, direction]) => {
     { name: "direction", type: "vec3" },
   ],
 });
-export function createGenerateProgram({ uniforms }) {
+export function createGenerateProgram({
+  uniforms,
+  modifier,
+  modifierData = false,
+  language = "glsl",
+}) {
+  const modify = nodeModifier(modifier, "Work", language, uniforms);
+  const origin =
+    modify || modifierData
+      ? uniformBinding(uniforms, "renderOrigin", "vec3")
+      : null;
   const sampleBlind = createBlindSelection(uniforms);
   const bindUniform = (name, type) => uniformBinding(uniforms, name, type);
   const bindTexture = (name) => textureBinding(uniforms, name, true);
@@ -591,6 +602,7 @@ export function createGenerateProgram({ uniforms }) {
   };
   // `isVisible` keeps camera-relative centers that need decoding and editing.
   const generateValues = (index, deferredColor, isVisible) => {
+    const originalCenter = origin ? N.vec3(0).toVar() : null;
     const valid = N.bool(false).toVar();
     const center = N.vec3(0).toVar();
     const lnScales = N.vec3(0).toVar();
@@ -621,6 +633,7 @@ export function createGenerateProgram({ uniforms }) {
       // SDF transforms are rebased to the mesh origin; center is camera-relative.
       const position = objectBasis.mul(decodeCenter(sourceA)).toVar();
       center.assign(position.add(objectOffset));
+      if (origin) originalCenter.assign(center.add(origin));
 
       N.If(isVisible ? isVisible(center) : N.bool(true), () => {
         const blockOpacity = N.float(1).toVar();
@@ -739,6 +752,26 @@ export function createGenerateProgram({ uniforms }) {
                 input.assign(N.mix(input, target, factor));
               },
             );
+            if (modify) {
+              const storedAlpha = rgba.a.toVar();
+              N.If(semanticOpacityDecoded.not(), () => {
+                rgba.a.assign(
+                  decodeSemanticOpacity(rgba.a.clamp(0, 1), shapeAmount),
+                );
+              });
+              const inputOpacity = rgba.a.toVar();
+              modify(
+                { center, lnScales, quaternion, rgba },
+                originalCenter,
+                stochasticSeed,
+              );
+              N.If(rgba.a.equal(inputOpacity), () => {
+                rgba.a.assign(storedAlpha);
+              }).Else(() => {
+                semanticOpacityDecoded.assign(true);
+              });
+              quaternion.assign(quaternion.normalize());
+            }
             if (!deferredColor) rgba.rgb.mulAssign(recolor.rgb);
             const opacityScale = recolor.a.mul(blockOpacity);
             N.If(
@@ -770,6 +803,7 @@ export function createGenerateProgram({ uniforms }) {
 
     return {
       valid,
+      originalCenter,
       center,
       lnScales,
       quaternion,
@@ -802,6 +836,7 @@ export function createGenerateProgram({ uniforms }) {
     return {
       accumulatorA,
       accumulatorB,
+      originalCenter: generated.originalCenter,
       stochasticSeed: generated.stochasticSeed,
     };
   };
@@ -809,7 +844,11 @@ export function createGenerateProgram({ uniforms }) {
   // SDFs update alpha and compose RGB scale/offset in one traversal. Apply the
   // composed color transform after visibility and SH. Composition preserves
   // the affine edit semantics, but can change float32 rounding between edits.
-  const prepare = (index, isVisible) => {
+  const prepare = (index, isVisible, eagerColor = false) => {
+    if (modify || eagerColor) {
+      const generated = generateValues(index);
+      return { ...generated, resolveRgb: () => generated.rgba.rgb.max(0) };
+    }
     const color = {
       coord: N.ivec3(0).toVar(),
       center: N.vec3(0).toVar(),

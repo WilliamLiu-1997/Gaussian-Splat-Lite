@@ -15,6 +15,8 @@ With `WebGPURenderer`, call `await renderer.init()` before creating it. Create y
 
 Every option except `renderer` and `timer` is also a property, so you can change it at any time.
 
+Use `splatRenderer.setRenderModifier(options)` to modify all meshes drawn by this renderer in world space. [Shader modifiers](SplatModifiers.md)
+
 ## Basic options
 
 | Option | Type | Default | Description |

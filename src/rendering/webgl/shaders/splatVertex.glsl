@@ -35,6 +35,9 @@ uniform usampler2DArray splats2;
 uniform bool stochasticOrdering;
 uniform uint stochasticSample;
 uniform vec2 viewportOrigin;
+#endif
+#define GSL_MODIFIER_HOOK
+#if GSL_STOCHASTIC || GSL_SOURCE_DATA
 uniform usampler2DArray stochasticSeeds;
 #endif
 
@@ -107,10 +110,32 @@ void main() {
     uvec4 splat1 = texelFetch(splats, texCoord, 0);
     vec2 alphaShapeAmount = decodeSplatAlphaShapeAmount(splat1);
     float alpha = alphaShapeAmount.x;
-    if ((alpha == 0.0) || (alpha < minAlpha)) {
+    if (alpha == 0.0) return;
+    #ifndef GSL_MODIFIER
+    if (alpha < minAlpha) {
         return;
     }
+    #endif
     vec3 center = decodeSplatCenter(splat1);
+    #ifdef GSL_MODIFIER
+    uvec4 splat2 = texelFetch(splats2, texCoord, 0);
+    vec3 scales = exp(decodeLnScales(splat2));
+    vec4 quaternion = decodeQuatSmallestThree32(splat2.w);
+    vec4 rgba = decodeSplatRgba(splat2, alpha);
+    vec3 world = center + renderOrigin;
+    #if GSL_SOURCE_DATA
+    uvec4 data = texelFetch(stochasticSeeds, texCoord, 0);
+    #else
+    uvec4 data = uvec4(0u, floatBitsToUint(world));
+    #endif
+    mat4 modified = GSL_APPLY(world, scales, quaternion, rgba, uintBitsToFloat(data.yzw), data.x);
+    center += modified[0].xyz - world;
+    scales = max(modified[1].xyz, vec3(0.0));
+    quaternion = normalize(modified[2]);
+    rgba = modified[3];
+    alpha = clamp(rgba.a, 0.0, 1.0);
+    if (alpha <= 0.0 || alpha < minAlpha) return;
+    #endif
     // Compute the view space center of the splat
     vec3 viewCenter = renderToViewScale * quatVec(renderToViewQuat, center) + renderToViewPos;
 
@@ -135,10 +160,12 @@ void main() {
 
     // The second record is only needed by splats whose centers survive the
     // view-frustum checks above.
+    #ifndef GSL_MODIFIER
     uvec4 splat2 = texelFetch(splats2, texCoord, 0);
     vec3 scales = exp(decodeLnScales(splat2));
     vec4 quaternion = decodeQuatSmallestThree32(splat2.w);
     vec4 rgba = decodeSplatRgba(splat2, alpha);
+    #endif
     if (all(equal(scales, vec3(0.0)))) {
         return;
     }

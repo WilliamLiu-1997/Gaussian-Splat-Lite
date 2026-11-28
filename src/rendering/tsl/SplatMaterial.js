@@ -1,9 +1,17 @@
 import * as THREE from "three";
 import { NodeMaterial } from "three/webgpu";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry.js";
+import { nodeModifier } from "../SplatModifier.js";
 import { registerStochasticSplatMaterial } from "../StochasticSplatMaterial.js";
 import { ORDERING_TEXTURE_WIDTH } from "../uniforms.js";
 import { createProjectionProgram } from "./ProjectionProgram.js";
+import { decodeQuatSmallestThree32 } from "./quaternion.js";
+import {
+  decodeAlphaShape,
+  decodeCenter,
+  decodeLnScales,
+  decodeRgba,
+} from "./shaderUtils.js";
 import {
   N,
   load2D,
@@ -156,6 +164,7 @@ const packSplatVarying = N.Fn(([rgba, supportRadiusSquared, kernelPower]) => {
 export function createSplatNodeMaterial({
   uniforms,
   orderingNode,
+  modifier,
   vertexData,
   premultipliedAlpha,
   transparent,
@@ -182,12 +191,20 @@ export function createSplatNodeMaterial({
     ? uniformBinding(uniforms, "stochasticSample", "uint")
     : null;
   // Accumulator textures are only read without a projection cache.
+  const modify = nodeModifier(modifier, "Render", "glsl", uniforms);
+  const sourceData = !!modifier?.needsSourceData(true);
   const accumulator = vertexData
     ? null
     : {
         splats: textureBinding(uniforms, "splats"),
         splats2: textureBinding(uniforms, "splats2"),
-        seeds: stochastic ? textureBinding(uniforms, "stochasticSeeds") : null,
+        seeds:
+          stochastic || sourceData
+            ? textureBinding(
+                uniforms,
+                sourceData ? "modifierData" : "stochasticSeeds",
+              )
+            : null,
       };
   const stochasticNoise = stochastic
     ? textureBinding(uniforms, "stochasticNoise", true)
@@ -286,10 +303,27 @@ export function createSplatNodeMaterial({
     N.If(splatIndex.notEqual(N.uint(0xffffffff)), () => {
       const texCoord = splatTexCoord(splatIndex);
       const first = loadArray(accumulator.splats, texCoord);
-      const projected = project({
-        first,
-        second: loadArray(accumulator.splats2, texCoord),
-      });
+      const second = loadArray(accumulator.splats2, texCoord);
+      let source = { first, second };
+      if (modify) {
+        const alphaShape = decodeAlphaShape(first);
+        const data = sourceData
+          ? loadArray(accumulator.seeds, texCoord).toVar()
+          : null;
+        source = {
+          valid: alphaShape.x.greaterThan(0),
+          center: decodeCenter(first).toVar(),
+          lnScales: decodeLnScales(second).toVar(),
+          quaternion: decodeQuatSmallestThree32(second.w).toVar(),
+          rgba: decodeRgba(second, alphaShape.x).toVar(),
+          shapeAmount: alphaShape.y,
+        };
+        const original = data
+          ? N.uintBitsToFloat(data.yzw)
+          : source.center.add(uniformBinding(uniforms, "renderOrigin", "vec3"));
+        modify(source, original, data ? data.x : N.uint(0));
+      }
+      const projected = project(source);
       N.If(projected.valid, () => {
         const ndcOffset = projected.axis1
           .mul(N.positionGeometry.x)

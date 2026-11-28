@@ -1,3 +1,8 @@
+export type {
+  SplatModifier,
+  SplatModifierOptions,
+  SplatModifierUniforms,
+} from "./rendering/SplatModifier.js";
 export {
   Lcc2StreamScheduler,
   type Lcc2StreamSchedulerOptions,

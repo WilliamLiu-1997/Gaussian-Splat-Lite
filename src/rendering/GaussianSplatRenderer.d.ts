@@ -2,6 +2,11 @@ import * as THREE from "three";
 import type { SplatWorker } from "../runtime/SplatWorker.js";
 import type { SplatAccumulator } from "./SplatAccumulator.js";
 import type { SplatGeometry } from "./SplatGeometry.js";
+import type {
+  SplatModifier,
+  SplatModifierOptions,
+  SplatModifierUniforms,
+} from "./SplatModifier.js";
 import type { SplatMaterial } from "./backend.js";
 import type { GaussianSplatCompatibleRenderer } from "./rendererUtils.js";
 export interface GaussianSplatRendererOptions {
@@ -296,6 +301,7 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
       type: string;
       value: THREE.Texture<unknown, THREE.TextureEventMap>;
     };
+    modifierData: { value: THREE.Texture };
     stochasticSeeds: {
       type: string;
       value: THREE.Texture<unknown, THREE.TextureEventMap>;
@@ -313,6 +319,12 @@ export declare class GaussianSplatRenderer extends THREE.Mesh<
       value: boolean;
     };
   };
+  readonly renderModifier: SplatModifier | null;
+  setRenderModifier<U extends SplatModifierUniforms>(
+    options: SplatModifierOptions<U>,
+  ): SplatModifier;
+  setRenderModifier(options: null): null;
+  setRenderModifier(options: SplatModifierOptions | null): SplatModifier | null;
   dispose(): void;
   /** Native WebGPU sorts on the GPU before drawing; WebGL sorts in a worker. */
   get synchronousSort(): boolean;

@@ -7,6 +7,7 @@ import {
 import * as THREE from "three";
 import { Splats } from "../data/Splats.js";
 import { SplatRaycastQuery } from "../data/raycast.js";
+import { SplatModifier } from "../rendering/SplatModifier.js";
 import * as wasm from "../runtime/wasm.js";
 import { SplatEdit, SplatEditSdf, SplatEdits } from "./SplatEdit.js";
 import { SplatEditBlind } from "./SplatEditBlind.js";
@@ -75,6 +76,8 @@ export class SplatMesh extends THREE.Object3D {
       throw new Error("maxSh must be an integer between 0 and 4");
     this.edits = null;
     this.sdfEdits = null;
+    this.workBufferModifier = null;
+    this.modifierRevision = 0;
     this.version = 0;
     this.sortVersion = 0;
     this.centerVersion = 0;
@@ -113,7 +116,18 @@ export class SplatMesh extends THREE.Object3D {
   forEachSplat(callback) {
     this.splats?.forEachSplat(callback);
   }
+  setWorkBufferModifier(options) {
+    if (!options && !this.workBufferModifier) return null;
+    const next = options
+      ? new SplatModifier(options, () => this.modifierRevision++)
+      : null;
+    this.workBufferModifier?.dispose();
+    this.workBufferModifier = next;
+    this.modifierRevision++;
+    return next;
+  }
   dispose() {
+    this.workBufferModifier?.dispose();
     super.dispose();
     this.sdfEdits?.dispose();
     this.sdfEdits = null;

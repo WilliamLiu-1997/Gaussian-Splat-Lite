@@ -1,12 +1,13 @@
 import * as THREE from "three";
 import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
 import { SPLAT_TEX_HEIGHT, SPLAT_TEX_WIDTH } from "../../data/defines.js";
+import { glslModifier } from "../SplatModifier.js";
 import { isWebGPURenderer } from "../rendererUtils.js";
 import { makeGenerateUniforms } from "../uniforms.js";
 import { getShaders } from "./shaders.js";
 import splatGenerate from "./shaders/splatGenerate.glsl";
 import { IDENT_VERTEX_SHADER } from "./textureUtils.js";
-// Generate materials without and with the stochastic seed output.
+// Default generate programs, keyed by their output attachments.
 const webGLMaterials = [];
 let webGLUniforms = null;
 const fullScreenQuad = new FullScreenQuad(
@@ -18,6 +19,7 @@ export function createWebGLAccumulatorTarget(
   height,
   depth,
   stochasticSeeds,
+  modifierData = false,
 ) {
   const target = new THREE.WebGLArrayRenderTarget(width, height, depth, {
     depthBuffer: false,
@@ -31,9 +33,13 @@ export function createWebGLAccumulatorTarget(
   target.scissorTest = true;
   const second = target.texture.clone();
   target.textures = [target.texture, second];
-  if (stochasticSeeds) {
+  target.stochasticSeeds = stochasticSeeds;
+  target.modifierData = modifierData;
+  if (stochasticSeeds || modifierData) {
     const seeds = target.texture.clone();
-    seeds.format = THREE.RedIntegerFormat;
+    seeds.format = modifierData
+      ? THREE.RGBAIntegerFormat
+      : THREE.RedIntegerFormat;
     seeds.name = "SplatAccumulator.stochasticSeeds";
     target.textures.push(seeds);
   }
@@ -41,33 +47,38 @@ export function createWebGLAccumulatorTarget(
 }
 /** Whether an accumulator target stores stochastic sampling seeds. */
 export function hasStochasticSeeds(target) {
-  return target.textures.length > 2;
+  return target.stochasticSeeds;
 }
-function getMaterial(stochasticSeeds) {
-  const index = Number(stochasticSeeds);
-  let material = webGLMaterials[index];
-  if (!material) {
+function getMaterial(target, modifier) {
+  const index =
+    Number(target.stochasticSeeds) + 2 * Number(target.modifierData);
+  const create = () => {
     getShaders();
-    material = new THREE.RawShaderMaterial({
+    const uniforms = { ...getWebGLGenerateUniforms() };
+    return new THREE.RawShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: IDENT_VERTEX_SHADER,
-      fragmentShader: splatGenerate,
-      // Both variants share one uniform set.
-      uniforms: getWebGLGenerateUniforms(),
-      defines: { GSL_STOCHASTIC_SEEDS: index },
+      fragmentShader: glslModifier(splatGenerate, modifier, "Work", uniforms),
+      // Built-in values are shared; modifier parameters belong to their binding.
+      uniforms,
+      defines: {
+        GSL_STOCHASTIC_SEEDS: Number(target.stochasticSeeds),
+        GSL_MODIFIER_DATA: Number(target.modifierData),
+      },
       depthTest: false,
       depthWrite: false,
     });
-    webGLMaterials[index] = material;
-  }
-  return material;
+  };
+  if (modifier) return modifier.resource(`classic-${index}`, create);
+  webGLMaterials[index] ??= create();
+  return webGLMaterials[index];
 }
 export function getWebGLGenerateUniforms() {
   webGLUniforms ??= makeGenerateUniforms();
   return webGLUniforms;
 }
 export function generateWebGLAccumulator(options) {
-  const material = getMaterial(hasStochasticSeeds(options.target));
+  const material = getMaterial(options.target, options.modifier);
   fullScreenQuad.material = material;
   renderAccumulatorLayers(options, material.uniforms, () =>
     fullScreenQuad.render(options.renderer),

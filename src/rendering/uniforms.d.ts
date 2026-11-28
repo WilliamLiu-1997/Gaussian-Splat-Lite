@@ -71,6 +71,7 @@ export declare function makeSplatUniforms(): {
     type: string;
     value: THREE.Texture<unknown, THREE.TextureEventMap>;
   };
+  modifierData: { value: THREE.Texture };
   stochasticSeeds: {
     type: string;
     value: THREE.Texture<unknown, THREE.TextureEventMap>;

@@ -1,4 +1,5 @@
 import type * as THREE from "three";
+import type { SplatModifier } from "../SplatModifier.js";
 import type { GaussianSplatCompatibleRenderer } from "../rendererUtils.js";
 import type { Uniforms } from "../uniforms.js";
 /** Sorted rendering needs no seed layer; stochastic draws read one per Splat. */
@@ -7,6 +8,7 @@ export declare function createWebGLAccumulatorTarget(
   height: number,
   depth: number,
   stochasticSeeds: boolean,
+  modifierData?: boolean,
 ): THREE.WebGLArrayRenderTarget;
 /** Whether an accumulator target stores stochastic sampling seeds. */
 export declare function hasStochasticSeeds(
@@ -24,6 +26,7 @@ export type AccumulatorRenderOptions<
   target: THREE.WebGLArrayRenderTarget;
   base: number;
   count: number;
+  modifier?: SplatModifier | null;
 };
 /** Draw row-aligned ranges into array layers with either WebGL renderer API. */
 export declare function renderAccumulatorLayers(

@@ -51,7 +51,9 @@ uniform usampler2D editTexture;
 
 layout(location = 0) out uvec4 target;
 layout(location = 1) out uvec4 target2;
-#if GSL_STOCHASTIC_SEEDS
+#if GSL_MODIFIER_DATA
+layout(location = 2) out uvec4 modifierData;
+#elif GSL_STOCHASTIC_SEEDS
 layout(location = 2) out uint targetSeed;
 #endif
 
@@ -458,13 +460,17 @@ bool applySdfEdits(
     return semanticOpacityDecoded;
 }
 
+#define GSL_MODIFIER_HOOK
+#if GSL_MODIFIER_DATA && !defined(GSL_MODIFIER)
+uniform vec3 renderOrigin;
+#endif
 void produceSplat(int index) {
     uint sourceIndex = uint(index);
     if (sourceIndexed) {
         uvec4 indices = texelFetch(sourceIndices, splatTexCoord(index >> 2), 0);
         sourceIndex = indices[index & 3];
     }
-    #if GSL_STOCHASTIC_SEEDS
+    #if GSL_STOCHASTIC_SEEDS && !GSL_MODIFIER_DATA
     targetSeed = sourceIndex ^ stochasticSeedBase;
     #endif
     float blockOpacity = 1.0;
@@ -524,6 +530,12 @@ void produceSplat(int index) {
 
     vec3 editPosition = center;
     center += objectOffset;
+#if defined(GSL_MODIFIER) || GSL_MODIFIER_DATA
+    vec3 originalCenter = center + renderOrigin;
+#endif
+#if GSL_MODIFIER_DATA
+    modifierData = uvec4(sourceIndex ^ stochasticSeedBase, floatBitsToUint(originalCenter));
+#endif
 // The center is camera-relative while editPosition is mesh-origin-relative,
 // matching the rebased SDF transforms without reconstructing world position.
     // Opacity is clamped once on the CPU when preparing this mesh.
@@ -534,6 +546,19 @@ void produceSplat(int index) {
         rgba,
         shapeAmount
     );
+#ifdef GSL_MODIFIER
+    float storedAlpha = rgba.a;
+    if (!semanticOpacityDecoded) rgba.a = decodeSemanticOpacity(clamp(rgba.a, 0., 1.), shapeAmount);
+    float inputOpacity = rgba.a;
+    mat4 modified = GSL_APPLY(originalCenter, exp(lnScales), quaternion, rgba, originalCenter, sourceIndex ^ stochasticSeedBase);
+    center += modified[0].xyz - originalCenter;
+    lnScales = log(max(modified[1].xyz, vec3(0.0)));
+    quaternion = normalize(modified[2]);
+    rgba = modified[3];
+    // Preserve independent alpha and kernel width when the modifier leaves opacity alone.
+    if (rgba.a == inputOpacity) rgba.a = storedAlpha;
+    else semanticOpacityDecoded = true;
+#endif
     rgba.rgb *= recolor.rgb;
     if (!semanticOpacityDecoded && opacityScale >= 1.0) {
         // Neither SDFs nor the mesh opacity changed opacity, so preserve the
@@ -573,9 +598,12 @@ void main() {
         + int(gl_FragCoord.x);
     int index = targetIndex - targetBase;
 
+#if GSL_MODIFIER_DATA
+    modifierData = uvec4(0u);
+#endif
     target = uvec4(0u);
     target2 = uvec4(0u);
-    #if GSL_STOCHASTIC_SEEDS
+    #if GSL_STOCHASTIC_SEEDS && !GSL_MODIFIER_DATA
     targetSeed = 0u;
     #endif
     if (index >= 0 && index < targetCount) {

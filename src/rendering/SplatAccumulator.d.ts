@@ -6,6 +6,7 @@ export type SplatMapping = {
   matrixWorld: THREE.Matrix4;
   source: SplatMesh["splats"];
   version: number;
+  modifierRevision: number;
   sortVersion: number;
   centerVersion: number;
   mappingVersion: number;
@@ -48,11 +49,13 @@ export declare class SplatAccumulator {
     renderer,
     shrinkResources,
     stochasticSeeds,
+    modifierData,
   }: {
     maxSplats: number;
     renderer?: GaussianSplatCompatibleRenderer;
     shrinkResources?: boolean;
     stochasticSeeds?: boolean;
+    modifierData?: boolean;
   }): boolean;
   prepareUniforms(
     mesh: SplatMesh,
@@ -93,8 +96,13 @@ export declare class SplatAccumulator {
   }): {
     version: number;
     sortUpdated: boolean;
+    modifierUpdated: boolean;
     requiredMaxSplats: number;
-    generate: (shrinkResources?: boolean, stochasticSeeds?: boolean) => void;
+    generate: (
+      shrinkResources?: boolean,
+      stochasticSeeds?: boolean,
+      modifierData?: boolean,
+    ) => void;
   };
   static emptyTexture: THREE.DataArrayTexture;
   static emptyTextures: SplatDataTextures;

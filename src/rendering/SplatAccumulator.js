@@ -97,7 +97,11 @@ export class SplatAccumulator {
     let changed = false;
     for (const entry of this.mapping) {
       const { node, source, base, count } = entry;
-      if (entry.matrixWorld.equals(node.matrixWorld)) continue;
+      if (
+        entry.matrixWorld.equals(node.matrixWorld) &&
+        entry.modifierRevision === node.modifierRevision
+      )
+        continue;
       // A new source/LOD mapping needs matching indices before it can be shown.
       if (
         !source ||
@@ -110,6 +114,7 @@ export class SplatAccumulator {
         continue;
       this.generate({ mesh: node, base, count, renderer });
       entry.matrixWorld.copy(node.matrixWorld);
+      entry.modifierRevision = node.modifierRevision;
       changed = true;
     }
     if (changed) this.version++;
@@ -119,6 +124,7 @@ export class SplatAccumulator {
     renderer,
     shrinkResources = false,
     stochasticSeeds = false,
+    modifierData = false,
   }) {
     if (renderer && usesNativeWebGPU(renderer)) {
       throw new Error(
@@ -139,6 +145,7 @@ export class SplatAccumulator {
       this.target &&
       reusable &&
       fallback === (this.fallbackGenerator !== null) &&
+      modifierData === this.target.modifierData &&
       stochasticSeeds === hasStochasticSeeds(this.target)
     ) {
       return false;
@@ -152,10 +159,12 @@ export class SplatAccumulator {
       height,
       depth,
       stochasticSeeds,
+      modifierData,
     );
     if (fallback)
       this.fallbackGenerator = new WebGLFallbackAccumulatorGenerator(
         stochasticSeeds,
+        modifierData,
       );
     return true;
   }
@@ -165,6 +174,7 @@ export class SplatAccumulator {
       throw new Error("SplatMesh has no source");
     }
     source.setTextureUniforms(uniforms);
+    uniforms.renderOrigin.value.copy(this.viewOrigin);
     // A mesh keeps its seed when other meshes enter/leave the packed mapping.
     // Combine it on the GPU with the physical source index, before LOD compaction.
     uniforms.stochasticSeedBase.value =
@@ -223,8 +233,21 @@ export class SplatAccumulator {
     if (isWebGPURenderer(renderer)) {
       if (!this.fallbackGenerator)
         throw new Error("WebGL fallback accumulator is not initialized");
-      this.prepareUniforms(mesh, this.fallbackGenerator.uniforms);
-      this.fallbackGenerator.generate({
+      const { stochasticSeeds, modifierData } = this.target;
+      const modifier = mesh.workBufferModifier;
+      const generator = modifier
+        ? modifier.resource(
+            `fallback-${Number(stochasticSeeds)}-${Number(modifierData)}`,
+            () =>
+              new WebGLFallbackAccumulatorGenerator(
+                stochasticSeeds,
+                modifierData,
+                modifier,
+              ),
+          )
+        : this.fallbackGenerator;
+      this.prepareUniforms(mesh, generator.uniforms);
+      generator.generate({
         renderer,
         target: this.target,
         base,
@@ -233,7 +256,13 @@ export class SplatAccumulator {
       return;
     }
     this.prepareUniforms(mesh, getWebGLGenerateUniforms());
-    generateWebGLAccumulator({ renderer, target: this.target, base, count });
+    generateWebGLAccumulator({
+      renderer,
+      modifier: mesh.workBufferModifier,
+      target: this.target,
+      base,
+      count,
+    });
   }
   prepareGenerate({
     renderer,
@@ -312,6 +341,7 @@ export class SplatAccumulator {
     let maxSplats = 0;
     let mapped = 0;
     let splatsUpdated = false;
+    let modifierUpdated = false;
     let mappingUpdated = false;
     let sortUpdated = false;
     this.numSplats = 0;
@@ -338,6 +368,8 @@ export class SplatAccumulator {
       ) {
         mappingUpdated = true;
       } else {
+        if (last.modifierRevision !== node.modifierRevision)
+          modifierUpdated = true;
         if (last.version !== node.version) splatsUpdated = true;
         if (last.sortVersion !== node.sortVersion) sortUpdated = true;
       }
@@ -345,6 +377,7 @@ export class SplatAccumulator {
       mapping[mapped] ??= { matrixWorld: new THREE.Matrix4() };
       const entry = mapping[mapped];
       entry.node = node;
+      entry.modifierRevision = node.modifierRevision;
       entry.matrixWorld.copy(node.matrixWorld);
       entry.source = node.splats;
       entry.version = node.version;
@@ -361,21 +394,29 @@ export class SplatAccumulator {
     if (mappingUpdated) splatsUpdated = sortUpdated = true;
     const shViewChanged =
       !this.viewOrigin.equals(previousOrigin) && hasViewDependentColor(mapping);
-    this.version = previousVersion + (splatsUpdated || shViewChanged ? 1 : 0);
+    this.version =
+      previousVersion +
+      (splatsUpdated || shViewChanged || (native && modifierUpdated) ? 1 : 0);
     this.mappingVersion = previousMappingVersion + (mappingUpdated ? 1 : 0);
     return {
       version: this.version,
       sortUpdated,
+      modifierUpdated,
       requiredMaxSplats: getTextureSize(
         Math.max(1, maxSplats),
         native ? 256 : 1,
       ).maxSplats,
-      generate: (shrinkResources = false, stochasticSeeds = false) => {
+      generate: (
+        shrinkResources = false,
+        stochasticSeeds = false,
+        modifierData = false,
+      ) => {
         this.ensureGenerate({
           maxSplats,
           renderer,
           shrinkResources,
           stochasticSeeds,
+          modifierData,
         });
         for (const { node, base, count } of this.mapping) {
           this.generate({ mesh: node, base, count, renderer });

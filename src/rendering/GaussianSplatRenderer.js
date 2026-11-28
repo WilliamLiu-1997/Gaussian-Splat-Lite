@@ -5,6 +5,7 @@ import { MaterialState } from "./MaterialState.js";
 import { SortCenterCache } from "./SortCenterCache.js";
 import { SplatAccumulator } from "./SplatAccumulator.js";
 import { SplatGeometry } from "./SplatGeometry.js";
+import { SplatModifier } from "./SplatModifier.js";
 import { configureSplatOutput, createSplatBackend } from "./backend.js";
 import {
   assertSupportedRenderer,
@@ -107,6 +108,8 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.viewportSize = new THREE.Vector4();
     this.renderer = options.renderer;
     this.backend = backend;
+    this.renderModifier = null;
+    this.modifierData = false;
     this.uniforms = uniforms;
     this.sortedBlending = material.blending;
     this._depthTest = options.depthTest ?? true;
@@ -158,6 +161,39 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       };
     }
   }
+  setRenderModifier(options) {
+    if (!options && !this.renderModifier) return null;
+    const next = options
+      ? new SplatModifier(options, () => this.setDirty())
+      : null;
+    const backend = this.backend;
+    if (backend.kind === "webgpu") {
+      if (next && !options.tsl && !options.wgsl)
+        throw new Error(
+          "The render splat modifier needs WGSL or TSL for native WebGPU",
+        );
+      backend.projection.clearModifierSlots();
+      backend.projection.renderModifier = next;
+    } else {
+      const sorted = backend.createMaterial(false, next);
+      const stochastic = backend.createMaterial(true, next);
+      const oldSorted = backend.sortedMaterial;
+      const oldStochastic = backend.stochasticMaterial;
+      backend.sortedMaterial = sorted;
+      backend.stochasticMaterial = stochastic;
+      const material = backend.selectMaterial(this.stochasticFrame);
+      this.applyMaterialState(this.stochasticFrame, material);
+      this.material = material;
+      this.materialState = new MaterialState(material);
+      oldSorted.dispose();
+      oldStochastic.dispose();
+    }
+    this.renderModifier?.dispose();
+    this.renderModifier = next;
+    this.modifierData = !!next?.needsSourceData(backend.kind !== "webgl");
+    this.setDirty();
+    return next;
+  }
   raycast(_raycaster, _intersects) {}
   static makeUniforms() {
     return makeSplatUniforms();
@@ -174,6 +210,7 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.orderingReady = false;
     this.maxSplats = 0;
     this.activeSplats = 0;
+    this.renderModifier?.dispose();
     this.backend.dispose();
     this.uniforms.stochasticNoise.value.dispose();
     const accumulators = new Set();
@@ -375,8 +412,13 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     this.uniforms.stochasticOrdering.value =
       this.stochasticSort &&
       (this.backend.kind === "webgpu" || this.orderingReady);
-    const splatCount =
-      this.stochasticFrame && !this.uniforms.stochasticOrdering.value
+    const awaitingModifierData =
+      this.modifierData &&
+      this.backend.kind !== "webgpu" &&
+      !display.target?.modifierData;
+    const splatCount = awaitingModifierData
+      ? 0
+      : this.stochasticFrame && !this.uniforms.stochasticOrdering.value
         ? display.numSplats
         : this.activeSplats;
     geometry.setSplatCount(splatCount);
@@ -434,6 +476,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
       this.uniforms.splats.value = splatTextures[0];
       this.uniforms.splats2.value = splatTextures[1];
       this.uniforms.stochasticSeeds.value = display.getStochasticSeeds();
+      // Keep the node binding typed as RGBA even during a transition from seed-only R32UI.
+      this.uniforms.modifierData.value = display.target?.modifierData
+        ? this.uniforms.stochasticSeeds.value
+        : SplatAccumulator.emptyTexture;
     }
     this.dirty = false;
   }
@@ -616,7 +662,10 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     const orderingNeedsShrink =
       shrinkResources &&
       this.backend.getOrderingCapacity(requiredMaxSplats) < this.maxSplats;
+    const modifierData = this.modifierData;
     const doUpdate =
+      (modifierData !== !!this.current.target?.modifierData &&
+        requiredMaxSplats > 0) ||
       shrinkResources ||
       mode !== this.sortedMode ||
       center.distanceTo(this.current.viewOrigin) > moveTolerance ||
@@ -625,12 +674,18 @@ export class GaussianSplatRenderer extends THREE.Mesh {
     // Unsorted stochastic draws read source indices directly.
     const skipSort = mode === "identity";
     if (!doUpdate) {
+      if (preparation.modifierUpdated) {
+        this.current.refreshTransforms(renderer);
+        if (this.current !== this.display)
+          this.display.refreshTransforms(renderer);
+        this.setDirty();
+      }
       this.current.viewDirection.copy(direction);
       this.sortDirty ||= needsSort;
       this.releaseAccumulator(next);
     } else {
       try {
-        generate(shrinkResources, mode !== "back");
+        generate(shrinkResources, mode !== "back", modifierData);
       } catch (error) {
         this.releaseAccumulator(next);
         throw error;

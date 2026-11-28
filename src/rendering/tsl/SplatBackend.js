@@ -3,16 +3,17 @@ import { createSplatNodeMaterial } from "./SplatMaterial.js";
 export class NodeSplatBackend {
   constructor(renderer, uniforms, options, orderingNode, vertexData) {
     this.renderer = renderer;
-    const create = (stochastic) =>
+    this.createMaterial = (stochastic, modifier) =>
       createSplatNodeMaterial({
         uniforms,
+        modifier,
         ...options,
         orderingNode,
         vertexData,
         stochastic,
       });
-    this.sortedMaterial = create(false);
-    this.stochasticMaterial = create(true);
+    this.sortedMaterial = this.createMaterial(false);
+    this.stochasticMaterial = this.createMaterial(true);
   }
   selectMaterial(stochastic) {
     return stochastic ? this.stochasticMaterial : this.sortedMaterial;

@@ -12,6 +12,8 @@ scene.add(splat);
 await splat.initialized;
 ```
 
+Use `splat.setWorkBufferModifier(options)` to modify position, scale, rotation, color and opacity in world space. [Shader modifiers](SplatModifiers.md)
+
 ## Loading
 
 Use `url` for a remote file. For a local PLY, SPZ, SOG, or RAD file:

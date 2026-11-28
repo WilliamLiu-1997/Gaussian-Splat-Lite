@@ -5,6 +5,7 @@ import type {
 } from "three/webgpu";
 import type { SplatAccumulator } from "../SplatAccumulator.js";
 import type { SplatGeometry } from "../SplatGeometry.js";
+import type { SplatModifier } from "../SplatModifier.js";
 import type { ProjectedVertexData } from "../tsl/SplatMaterial.js";
 import type { Uniforms } from "../uniforms.js";
 /** Fixed compute graph. Source mappings and storage may change without rebuilding shaders. */
@@ -29,6 +30,9 @@ export declare class ProjectedSplats {
   private readonly seeds;
   private readonly sorter;
   private readonly slotSets;
+  private readonly modifierSlots;
+  renderModifier: SplatModifier | null;
+  clearModifierSlots(): void;
   private readonly nodes;
   private kernelWork;
   private shrinkViews;

@@ -1,3 +1,4 @@
+import { nodeModifier } from "../SplatModifier.js";
 import { createGenerateProgram } from "../tsl/GenerateProgram.js";
 import { createProjectionProgram } from "../tsl/ProjectionProgram.js";
 import { N, uniformBinding } from "../tsl/shaderUtils.js";
@@ -9,6 +10,8 @@ const WORKGROUP_SIZE = 256;
 export function createProjectionKernel({
   uniforms,
   eyeCount,
+  workModifier,
+  renderModifier,
   keys,
   seeds,
   sortValues,
@@ -16,7 +19,13 @@ export function createProjectionKernel({
   cache,
 }) {
   const u = (name, type) => uniformBinding(uniforms, name, type);
-  const generate = createGenerateProgram({ uniforms });
+  const generate = createGenerateProgram({
+    uniforms,
+    modifier: workModifier,
+    modifierData: !!renderModifier,
+    language: "wgsl",
+  });
+  const modify = nodeModifier(renderModifier, "Render", "wgsl", uniforms);
   const focalAdjustment = u("focalAdjustment", "float");
   // Eye 0 reads the unsuffixed uniforms; later eyes append their index.
   const eyes = Array.from({ length: eyeCount }, (_, eye) =>
@@ -51,14 +60,22 @@ export function createProjectionKernel({
     // keep source order every frame.
     const sorted = stochastic.not().or(u("stochasticOrdering", "bool")).toVar();
     const mappingIndex = u("targetBase", "uint").add(index).toVar();
-    // Cull by the frustum of every eye before a Splat is decoded and edited.
+    // Without modifiers, cull each center before decoding the rest of the Splat.
     // Each eye projects the center again afterwards: keeping this result
     // across the edits makes them slower.
-    const generated = generate.prepare(index, (center) =>
-      eyes
-        .map(({ project }) => project.projectCenter(center).visible)
-        .reduce((any, visible) => any.or(visible)),
+    const generated = generate.prepare(
+      index,
+      (center) =>
+        eyes
+          .map(({ project }) => project.projectCenter(center).visible)
+          .reduce((any, visible) => any.or(visible)),
+      !!modify,
     );
+    if (modify) {
+      N.If(generated.valid.and(generated.rgba.a.greaterThan(0)), () => {
+        modify(generated, generated.originalCenter, generated.stochasticSeed);
+      });
+    }
     const projected = eyes.map(({ project }) => {
       const projection = project(generated, false);
       const extent = projection.axis1.abs().add(projection.axis2.abs());

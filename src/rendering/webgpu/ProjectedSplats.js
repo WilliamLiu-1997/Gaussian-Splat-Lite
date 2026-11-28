@@ -63,6 +63,8 @@ export class ProjectedSplats {
     this.seeds = buffer("gslProjectionSeeds");
     // Mono and WebXR stereo stay compiled for our lifetime.
     this.slotSets = new Map();
+    this.modifierSlots = new Map();
+    this.renderModifier = null;
     this.shrinkViews = false;
     this.onSessionEnd = () => {
       this.shrinkViews = true;
@@ -164,7 +166,7 @@ export class ProjectedSplats {
       });
     renderer.xr.addEventListener("sessionend", this.onSessionEnd);
   }
-  createSlot(eyeCount) {
+  createSlot(eyeCount, workModifier, renderModifier) {
     const uniforms = {
       ...this.state,
       ...makeGenerateUniforms(),
@@ -183,6 +185,8 @@ export class ProjectedSplats {
       node: createProjectionKernel({
         uniforms,
         eyeCount,
+        workModifier,
+        renderModifier,
         keys,
         seeds,
         sortValues,
@@ -253,6 +257,7 @@ export class ProjectedSplats {
       this.seeds,
       this.uniforms.stochastic.value ? this.capacity : 1,
     );
+    this.clearModifierSlots();
     const refresh = new Set(resized || seedsResized ? this.nodes : []);
     // Idle slots must release source textures of removed models. The next
     // dispatch fills active slots again; compiled shader graphs stay intact.
@@ -461,8 +466,11 @@ export class ProjectedSplats {
     inputs[length++] = uniforms.blurAmount.value;
     inputs[length++] = uniforms.clipXY.value;
     inputs[length++] = uniforms.focalAdjustment.value;
-    for (const { node } of accumulator.mapping)
+    inputs[length++] = this.renderModifier;
+    inputs[length++] = this.renderModifier?.version;
+    for (const { node } of accumulator.mapping) {
       inputs[length++] = node.layers.mask;
+    }
     for (const view of cameras) {
       for (const value of view.matrixWorld.elements) inputs[length++] = value;
       for (const value of (monoProjection ?? view.projectionMatrix).elements)
@@ -532,6 +540,7 @@ export class ProjectedSplats {
    */
   dispatch(slots, views, accumulator, sortMode) {
     const pending = [this.resetCount];
+    const used = new Set();
     let slotCount = 0;
     for (const { node, base, count, matrixWorld } of accumulator.mapping) {
       const drawn = views.some((view) => view.layers.test(node.layers));
@@ -544,7 +553,33 @@ export class ProjectedSplats {
         pending.length = 0;
         slotCount = 0;
       }
-      const slot = slots[slotCount++];
+      let slot = slots[slotCount++];
+      if (drawn && (node.workBufferModifier || this.renderModifier)) {
+        // Global-only draws share the normal batch width, including across streamed meshes.
+        const key = node.workBufferModifier ?? slot;
+        let entry = this.modifierSlots.get(key);
+        if (
+          !entry ||
+          entry.eyes !== views.length ||
+          entry.work !== node.workBufferModifier ||
+          entry.render !== this.renderModifier
+        ) {
+          entry?.slot.node.dispose();
+          entry = {
+            eyes: views.length,
+            work: node.workBufferModifier,
+            render: this.renderModifier,
+            slot: this.createSlot(
+              views.length,
+              node.workBufferModifier,
+              this.renderModifier,
+            ),
+          };
+          this.modifierSlots.set(key, entry);
+        }
+        used.add(key);
+        slot = entry.slot;
+      }
       if (drawn) {
         accumulator.prepareUniforms(node, slot.uniforms, matrixWorld);
       } else {
@@ -563,6 +598,11 @@ export class ProjectedSplats {
     if (sortMode)
       pending.push(...this.sorter.prepare(accumulator.numSplats, sortMode));
     this.renderer.compute(pending);
+    for (const [key, entry] of this.modifierSlots) {
+      if (used.has(key)) continue;
+      entry.slot.node.dispose();
+      this.modifierSlots.delete(key);
+    }
   }
   dispose() {
     if (this.disposed) return;
@@ -572,7 +612,13 @@ export class ProjectedSplats {
     this.renderer.xr.removeEventListener("sessionend", this.onSessionEnd);
     void this.kernelWork.then(() => this.disposeResources());
   }
+  clearModifierSlots() {
+    if (this.modifierSlots.size) this.projectedInputs.length = 0;
+    for (const { slot } of this.modifierSlots.values()) slot.node.dispose();
+    this.modifierSlots.clear();
+  }
   disposeResources() {
+    this.clearModifierSlots();
     for (const { slots } of this.slotSets.values())
       for (const { node } of slots) node.dispose();
     this.resetCount.dispose();

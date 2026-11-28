@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- World-space shader modifiers on `SplatMesh` and `GaussianSplatRenderer`, with GLSL for WebGL2 and TSL or WGSL for `WebGPURenderer`.
+
 ## [1.11.1] - 2026-11-28
 
 ### Added

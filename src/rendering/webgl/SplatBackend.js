@@ -9,8 +9,10 @@ export class WebGLSplatBackend {
     this.uniforms = uniforms;
     this.kind = "webgl";
     this.ordering = new OrderingTexture();
-    this.sortedMaterial = createWebGLSplatMaterial(uniforms, options, false);
-    this.stochasticMaterial = createWebGLSplatMaterial(uniforms, options, true);
+    this.createMaterial = (stochastic, modifier) =>
+      createWebGLSplatMaterial(uniforms, options, stochastic, modifier);
+    this.sortedMaterial = this.createMaterial(false);
+    this.stochasticMaterial = this.createMaterial(true);
     const extension = renderer
       .getContext()
       .getExtension("WEBGL_provoking_vertex");

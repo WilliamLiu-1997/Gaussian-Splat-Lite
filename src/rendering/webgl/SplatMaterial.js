@@ -1,9 +1,16 @@
 import * as THREE from "three";
 import { SPLATS_PER_INSTANCE } from "../SplatGeometry.js";
+import { glslModifier } from "../SplatModifier.js";
 import { registerStochasticSplatMaterial } from "../StochasticSplatMaterial.js";
 import { getShaders } from "./shaders.js";
 /** Sorted and stochastic variants keep separate programs. */
-export function createWebGLSplatMaterial(uniforms, options, stochastic) {
+export function createWebGLSplatMaterial(
+  sharedUniforms,
+  options,
+  stochastic,
+  modifier = null,
+) {
+  const uniforms = modifier ? { ...sharedUniforms } : sharedUniforms;
   const shaders = getShaders();
   const material = new THREE.ShaderMaterial({
     ...options,
@@ -12,7 +19,12 @@ export function createWebGLSplatMaterial(uniforms, options, stochastic) {
       GSL_STOCHASTIC: Number(stochastic),
     },
     glslVersion: THREE.GLSL3,
-    vertexShader: shaders.splatVertex,
+    vertexShader: glslModifier(
+      shaders.splatVertex,
+      modifier,
+      "Render",
+      uniforms,
+    ),
     fragmentShader: shaders.splatFragment,
     uniforms,
     side: THREE.FrontSide,

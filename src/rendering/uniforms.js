@@ -60,6 +60,7 @@ export function makeSplatUniforms() {
     // Gsplat collection to render
     splats: { type: "t", value: emptySplats },
     splats2: { type: "t", value: emptySplats },
+    modifierData: { value: emptySplats },
     stochasticSeeds: { type: "t", value: emptySplats },
     stochasticNoise: { value: createBlueNoiseTexture() },
     stochasticSample: { value: 0 },
@@ -71,6 +72,7 @@ export function makeSplatUniforms() {
 }
 export function makeGenerateUniforms() {
   return {
+    renderOrigin: { value: new THREE.Vector3() },
     targetLayer: { value: 0 },
     targetBase: { value: 0 },
     targetCount: { value: 0 },
