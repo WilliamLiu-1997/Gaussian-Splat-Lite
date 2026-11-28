@@ -1,5 +1,8 @@
-import { MAX_CHUNK_SPLATS } from "../bin/sog/image-limits.js";
-import { conversionOptions } from "./convert-options.js";
+import { MAX_CHUNK_SPLATS } from "../../bin/sog/image-limits.js";
+import {
+  conversionFlags,
+  conversionOptions,
+} from "../../converter/convert-options.js";
 import { estimateBatch } from "./estimate.js";
 import { memoryGiB, options, outputFormat } from "./options.js";
 
@@ -35,19 +38,7 @@ function regionWarning(sources, { regionSplats, lodChunkCount }) {
   return `A region may exceed the ${limit.toLocaleString("en-US")}-point chunk limit in ${names.join(", ")}. ${fix}`;
 }
 
-function estimate(sources, format, values, notes) {
-  if (!sources.length) return;
-  if (form.matches(":invalid")) {
-    notes.push("Check your conversion settings to see an estimate.");
-    return;
-  }
-  const config = conversionOptions(
-    format,
-    sources[0].file.name,
-    "",
-    memoryGiB(),
-    values,
-  );
+function estimate(sources, format, config, notes) {
   if (format === "sog") {
     const warning = regionWarning(sources, config);
     if (warning) notes.push(warning);
@@ -98,12 +89,28 @@ export function showForecast(sources) {
     else eligible.push(source);
   }
   const notes = [...skipped];
+  const files = eligible.map(({ file }) => file);
+  let settingsError = form.querySelector("input:invalid")?.validationMessage;
+  let config;
+  if (files.length && !settingsError) {
+    try {
+      config = conversionOptions(
+        format,
+        files[0].name,
+        "",
+        conversionFlags(format, memoryGiB(), values),
+      );
+    } catch (error) {
+      settingsError = error.message;
+    }
+  }
+  if (settingsError) notes.push(settingsError);
   let result;
   try {
-    result = estimate(eligible, format, values, notes);
+    if (config) result = estimate(eligible, format, config, notes);
   } catch (error) {
     notes.push(error.message);
   }
   show(notes.join("\n"), result);
-  return { files: eligible.map(({ file }) => file), skipped };
+  return { files, skipped, settingsError };
 }

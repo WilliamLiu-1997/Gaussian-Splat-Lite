@@ -2,7 +2,11 @@
 
 [Back to documentation](../README.md#documentation)
 
-Convert PLY or SPZ models into streamed SOG v3 with levels of detail (LOD), ready for [SOG streaming](SogStreamScheduler.md). Requires Node.js 22.12 or later. No GPU or compilation is required.
+Convert PLY or SPZ models into streamed SOG v3 with levels of detail (LOD), ready for [SOG streaming](SogStreamScheduler.md).
+
+## Command line
+
+The CLI requires Node.js 22.12 or later. No GPU or compilation is required.
 
 ```sh
 npm install --global gaussian-splat-lite
@@ -136,3 +140,34 @@ See [SOG streaming](SogStreamScheduler.md) for loading and display options.
 | `--temp-dir <path>` | System temp directory | Directory for temporary working files. |
 | `-o, --output <path>` | `<input-stem>-sog/` | Output directory, for one input only. |
 | `-h, --help` | — | Show command help. |
+
+## Browser API
+
+Pass a PLY or SPZ `File`. Use browser storage as shown, or pass a writable folder handle as `workingDirectory`.
+
+```js
+import { convertFile, ConversionController } from "gaussian-splat-lite/converter";
+
+const controller = new ConversionController(); // Optional
+const { directory, entryPath } = await convertFile(file, {
+  format: "sog",
+  workingDirectory: await navigator.storage.getDirectory(),
+  controller,
+});
+const entry = await directory.getFileHandle(entryPath);
+```
+
+The new output folder contains `lod-meta.json` and `chunks/`.
+
+- `memoryBudget` is the CLI’s `--memory-budget` in GiB (default `4`). Pass format-specific [CLI options](#options) in `flags` without the leading `--`, for example `flags: { "lod-chunk-count": 256 }`.
+- Use `onProgress` for progress updates, logs, and cleanup warnings.
+- Call `pause()`, `resume()`, or `abort()` on the controller. Share it across conversions or pass `signal` for per-call cancellation. Cancellation removes unfinished output and keeps completed scenes.
+
+Serve the page and workers from the same origin over HTTPS or localhost and set both response headers.
+
+```http
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+For Vite development, add `"gaussian-splat-lite/converter"` to `optimizeDeps.exclude`.

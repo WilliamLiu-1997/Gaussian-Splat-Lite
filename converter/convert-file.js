@@ -1,77 +1,80 @@
 import { removeTemporary } from "./cleanup.js";
-import { describeResult } from "./results.js";
+import { requireIsolation } from "./conversion-controller.js";
+import { conversionFlags } from "./convert-options.js";
 import { runWorker } from "./run-worker.js";
+import { startClock } from "./runtime/clock.js";
 import { reserveOutput } from "./write-output.js";
 
-export async function convertFile(
-  file,
-  workingFolder,
-  { format, gib, values },
-  run,
-  update,
-) {
-  const { signal } = run;
+export async function convertFile(file, options) {
+  const { workingDirectory, format, memoryBudget, onProgress, controller } =
+    options;
+  const signal =
+    controller && options.signal
+      ? AbortSignal.any([controller.signal, options.signal])
+      : (controller?.signal ?? options.signal);
+  signal?.throwIfAborted();
+  requireIsolation();
+  if (!/\.(ply|spz)$/i.test(file.name))
+    throw new Error("Expected a PLY or SPZ file.");
+  if (format !== "rad" && format !== "sog")
+    throw new Error("Expected rad or sog output.");
+  const flags = conversionFlags(format, memoryBudget, options.flags);
   const stem = file.name.replace(/\.(ply|spz)$/i, "");
-  const directory = await reserveOutput(workingFolder, `${stem}-${format}`);
+  const entryPath = format === "sog" ? "lod-meta.json" : `${stem}-lod.rad`;
+  const published = new Int32Array(new SharedArrayBuffer(4));
+  const directory = await reserveOutput(workingDirectory, `${stem}-${format}`, {
+    signal,
+  });
+  let temporary;
   try {
-    const temporary = await reserveOutput(
-      workingFolder,
+    temporary = await reserveOutput(
+      workingDirectory,
       `gsl-temp-${crypto.randomUUID()}`,
+      { signal },
     );
-    try {
-      await run.waitWhilePaused();
-      signal.throwIfAborted();
-      await runWorker(
-        {
-          file,
-          format,
-          gib,
-          modelName: `${stem}-lod.rad`,
-          values,
-          cancelled: run.state,
-          clock: run.clock,
-          scratch: temporary,
-          directory,
-        },
-        signal,
-        update,
-      );
-    } finally {
-      try {
-        await removeTemporary(workingFolder, temporary.name, true);
-      } catch (error) {
-        update({ log: error.message, level: "warn" });
-      }
-    }
+    signal?.throwIfAborted();
+    await runWorker(
+      {
+        file,
+        format,
+        entryPath,
+        published,
+        flags,
+        cancelled: controller?.state,
+        clock: controller?.clock ?? startClock(),
+        scratch: temporary,
+        directory,
+      },
+      signal,
+      onProgress,
+    );
   } catch (error) {
-    await removeTemporary(workingFolder, directory.name, true);
-    throw error;
+    if (!Atomics.load(published, 0)) {
+      await remove(directory);
+      throw error;
+    }
+    if (!signal?.aborted) void warn(error);
+  } finally {
+    if (temporary) await remove(temporary);
   }
 
-  const scene = { result: directory, workingFolder, format, stem };
-  if (signal.aborted) return scene;
-  const label = "Preparing preview files";
-  update({ phase: { name: "preview", unit: label } });
-  update({ progress: { label, percent: 0, line: label, done: false } });
-  try {
-    scene.details = await describeResult(directory, run);
-  } catch (error) {
-    if (signal.aborted) return scene;
-    update({
-      log: `Could not read output details: ${error.message}`,
-      level: "warn",
-    });
+  return { directory, entryPath };
+
+  async function remove(handle) {
+    try {
+      await removeTemporary(workingDirectory, handle.name, true);
+    } catch (error) {
+      void warn(error);
+    }
   }
-  const summary = scene.details
-    ? `Preview ready · ${scene.details.count} files`
-    : "Scene saved · File details unavailable";
-  update({
-    progress: {
-      label: scene.details ? label : "Scene saved",
-      percent: 100,
-      done: true,
-      line: summary,
-    },
-  });
-  return scene;
+
+  async function warn(error) {
+    const log = error?.message ?? String(error);
+    try {
+      if (onProgress) await onProgress({ log, level: "warn" });
+      else console.warn(log);
+    } catch (callbackError) {
+      console.warn(log, callbackError);
+    }
+  }
 }

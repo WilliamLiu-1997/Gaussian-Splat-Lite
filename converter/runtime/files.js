@@ -5,6 +5,7 @@ import { PageStore } from "./pages.js";
 const nodes = new Map([["/", { children: new Set() }]]);
 const reader = new FileReaderSync();
 let pages;
+let output;
 let serial = 0;
 export const constants = { W_OK: 2, X_OK: 1 };
 
@@ -24,7 +25,8 @@ function get(path) {
   return node;
 }
 
-export function mount(path, input, handle) {
+export function mount(path, input, handle, result) {
+  output = result;
   pages = new PageStore(handle);
   add(path, { input, size: input.size });
 }
@@ -112,4 +114,6 @@ export function renameSync(from, to) {
   moveTree(from, to);
   get(dirname(from)).children.delete(basename(from));
   get(dirname(to)).children.add(basename(to));
+  // Both writers publish their entry last, after closing the output files.
+  if (to === output?.entry) Atomics.store(output.published, 0, 1);
 }

@@ -1,17 +1,18 @@
 import { PAGE_BYTES } from "./pages.js";
 
 // The coordinator and disk worker take turns using the same transfer buffer.
-export async function externalHandle(directory) {
-  const worker = new Worker(new URL("../disk-worker.js", import.meta.url), {
-    type: "module",
-    name: "GSL temporary disk",
-  });
+export async function externalHandle(directory, worker) {
   const state = new Int32Array(new SharedArrayBuffer(8));
   const bytes = new Uint8Array(new SharedArrayBuffer(1024 ** 2));
   const writes = new Uint8Array(new SharedArrayBuffer(bytes.length));
   await new Promise((resolve, reject) => {
     worker.onmessage = resolve;
-    worker.onerror = (event) => reject(new Error(event.message));
+    worker.onerror = (event) =>
+      reject(
+        new Error(
+          event.message || "Could not start the temporary disk worker.",
+        ),
+      );
     worker.postMessage({ directory, state, bytes, writes });
   });
   function request(op, at, size) {
@@ -23,7 +24,7 @@ export async function externalHandle(directory) {
     }
     const n = Atomics.load(state, 1);
     if (Atomics.load(state, 0) < 0)
-      throw new Error(new TextDecoder().decode(bytes.subarray(0, n)));
+      throw new Error(new TextDecoder().decode(bytes.slice(0, n)));
     return n;
   }
   let readStart = 0;
@@ -92,23 +93,11 @@ export async function externalHandle(directory) {
       return part.length;
     },
     submit(_files, completion) {
-      try {
-        writePending();
-        worker.postMessage({ completion });
-      } catch (error) {
-        // Cleanup waits on this batch even when submission fails.
-        Atomics.store(completion, 1, -5);
-        Atomics.store(completion, 0, 0);
-        throw error;
-      }
+      writePending();
+      worker.postMessage({ completion });
+      // A failed batch retains its browser error in the disk worker.
+      return flush;
     },
     flush,
-    close() {
-      try {
-        flush();
-      } finally {
-        worker.terminate();
-      }
-    },
   };
 }

@@ -1,10 +1,10 @@
+import { ConversionController, convertFile } from "../../converter/index.js";
 import * as activity from "./activity.js";
-import { ConversionRun } from "./conversion-run.js";
-import { convertFile } from "./convert-file.js";
 import { saveZip } from "./export.js";
 import { showForecast } from "./forecast.js";
 import { enableThreads } from "./isolation.js";
 import { memoryGiB, options, outputFormat } from "./options.js";
+import { previewResult } from "./results.js";
 import { sourceInfo } from "./source-info.js";
 import { setupFolderPicker } from "./storage-picker.js";
 
@@ -18,7 +18,6 @@ let batch;
 let scenes = [];
 let active;
 let result;
-let workingFolder;
 let saving = false;
 let runningStatus;
 
@@ -31,7 +30,8 @@ function refresh() {
   el("convert").disabled =
     !supported ||
     !batch?.files.length ||
-    !workingFolder ||
+    Boolean(batch.settingsError) ||
+    !getWorkingFolder() ||
     Boolean(active) ||
     saving;
   el("settings").disabled = !supported || Boolean(active) || saving;
@@ -43,6 +43,7 @@ function refresh() {
   el("result-picker").disabled = saving;
   el("zip").disabled = saving;
   el("preview").disabled = saving;
+  if (result) showSummary();
 }
 function setPreviewOpen(open) {
   const viewer = el("viewer");
@@ -66,18 +67,22 @@ function forget() {
   el("result-picker").replaceChildren();
 }
 async function select(selection) {
-  if (active || saving || !selection.length) return;
+  if (!selection.length || el("settings").disabled) return;
   const chosen = Array.from(selection);
-  if (chosen.some((file) => !/\.(spz|ply)$/i.test(file.name)))
-    return status("Choose PLY or SPZ files.", true);
+  el("file").value = "";
   forget();
   const current = [];
   sources = current;
-  batch = showForecast();
   el("source-name").textContent =
     chosen.length === 1 ? chosen[0].name : `${chosen.length} source files`;
   el("source-detail").textContent =
     `${(chosen.reduce((n, f) => n + f.size, 0) / 1048576).toFixed(2)} MiB · Click to replace`;
+  if (chosen.some((file) => !/\.(spz|ply)$/i.test(file.name))) {
+    batch = showForecast(current);
+    refresh();
+    return status("Choose PLY or SPZ files.", true);
+  }
+  batch = showForecast();
   updateSetup();
   for (const file of chosen) {
     const source = await sourceInfo(file);
@@ -94,34 +99,31 @@ function updateForecast() {
 
 function updateSetup() {
   if (!supported) return status(unavailable, true);
-  if (!workingFolder) status("Choose or drop a working folder.");
+  if (!getWorkingFolder()) status("Choose or drop a working folder.");
   else if (!sources) status("Choose PLY or SPZ files.");
   else if (!batch) status("Reading source headers…");
   else if (!batch.files.length) status("No compatible source files.", true);
+  else if (batch.settingsError) status(batch.settingsError, true);
   else status("Ready to convert.");
   refresh();
 }
 
-setupFolderPicker((directory) => {
-  if (active || saving) return;
-  workingFolder = directory;
-  el("folder-name").textContent = directory.name;
-  el("folder-action").textContent = "Change folder ↗";
-  updateSetup();
-}, status);
+const getWorkingFolder = setupFolderPicker(updateSetup, status);
 
 function showResult(index) {
   result = scenes[index];
   if (!result) return;
   resetPreview();
+  refresh();
+}
+function showSummary() {
   const { details } = result;
-  el("zip").hidden = !details?.canPack;
+  el("zip").hidden = details?.canPack === false;
   const stats = details
     ? `${details.count} ${details.count === 1 ? "file" : "files"} · ${(details.size / 1048576).toFixed(2)} MiB`
     : "File details unavailable";
   el("summary").textContent =
     `${result.stem} · ${result.format.toUpperCase()} · ${stats} · Saved to ${result.workingFolder.name}/${result.result.name}/`;
-  refresh();
 }
 el("result-picker").onchange = () =>
   showResult(el("result-picker").selectedIndex);
@@ -129,7 +131,10 @@ el("file").onchange = (event) => select(event.target.files);
 for (const type of ["dragover", "dragleave", "drop"])
   el("drop").addEventListener(type, (event) => {
     event.preventDefault();
-    el("drop").classList.toggle("drag", type === "dragover");
+    el("drop").classList.toggle(
+      "drag",
+      type === "dragover" && !el("settings").disabled,
+    );
     if (type === "drop") select(event.dataTransfer.files);
   });
 el("budget").onchange = () => {
@@ -167,16 +172,17 @@ el("form").addEventListener("input", (event) => {
 el("form").onsubmit = async (event) => {
   event.preventDefault();
   if (el("convert").disabled) return;
+  const workingFolder = getWorkingFolder();
   const gib = memoryGiB();
   if (!(gib >= 1 && Number.isSafeInteger(Math.floor(gib * 1024 ** 3))))
     return status("Enter a valid budget of at least 1 GiB.", true);
   const format = outputFormat();
   const values = options();
   forget();
-  const run = new ConversionRun();
+  const run = new ConversionController();
   active = run;
   const { files, skipped } = batch;
-  activity.start(files.length);
+  activity.start(files.length, run);
   activity.log(
     `${format.toUpperCase()} · ${gib} GiB · Working folder: ${workingFolder.name}`,
   );
@@ -201,10 +207,19 @@ el("form").onsubmit = async (event) => {
       status(`Converting ${file.name}…`);
       let scene;
       try {
-        scene = await convertFile(
-          file,
+        const { directory } = await convertFile(file, {
+          workingDirectory: workingFolder,
+          format,
+          memoryBudget: gib,
+          flags: values,
+          onProgress: activity.update,
+          controller: run,
+        });
+        scene = await previewResult(
+          directory,
           workingFolder,
-          { format, gib, values },
+          file,
+          format,
           run,
           activity.update,
         );
@@ -255,7 +270,8 @@ el("form").onsubmit = async (event) => {
 };
 el("pause").onclick = () => {
   if (!active || active.signal.aborted) return;
-  active.setPaused(!active.paused);
+  if (active.paused) active.resume();
+  else active.pause();
   activity.setPaused(active.paused);
   el("status").textContent = active.paused
     ? "Conversion paused."

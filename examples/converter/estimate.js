@@ -1,7 +1,11 @@
-import { MAX_CHUNK_SPLATS, webpBytes } from "../bin/sog/image-limits.js";
-import { nextLodCount } from "../bin/sog/lod-config.js";
-import { QUANTIZE_BYTES } from "../bin/sog/quantize.js";
-import { MAX_WRITERS, PAGE_BYTES, SEGMENT_BYTES } from "./runtime/pages.js";
+import { MAX_CHUNK_SPLATS, webpBytes } from "../../bin/sog/image-limits.js";
+import { nextLodCount } from "../../bin/sog/lod-config.js";
+import { QUANTIZE_BYTES } from "../../bin/sog/quantize.js";
+import {
+  MAX_WRITERS,
+  PAGE_BYTES,
+  SEGMENT_BYTES,
+} from "../../converter/runtime/pages.js";
 
 const MIB = 1024 ** 2;
 

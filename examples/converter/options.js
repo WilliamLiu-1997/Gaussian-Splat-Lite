@@ -1,4 +1,4 @@
-import { defaults } from "../bin/sog/options.js";
+import { defaults } from "../../bin/sog/options.js";
 
 const fields = document.querySelector("#fields");
 const form = document.querySelector("#form");

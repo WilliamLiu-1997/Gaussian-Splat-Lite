@@ -7,9 +7,19 @@ let module;
 export const webpHeapBytes = () => module?.HEAPU8.byteLength ?? 0;
 
 export function initializeWebp() {
-  loading ??= createWebp().then((instance) => {
-    module = instance;
-  });
+  loading ??= createWebp().then(
+    (instance) => {
+      module = instance;
+    },
+    (error) => {
+      throw new Error(
+        `Could not initialize webp.wasm: ${error.message ?? error}`,
+        {
+          cause: error,
+        },
+      );
+    },
+  );
   return loading;
 }
 

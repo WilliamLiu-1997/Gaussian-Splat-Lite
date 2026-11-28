@@ -1,5 +1,3 @@
-import { runTime } from "./runtime/clock.js";
-
 const el = (id) => document.getElementById(id);
 const lines = [];
 const visibleLines = 250;
@@ -13,8 +11,9 @@ const steps = {
 };
 const phaseCount = 5;
 let timer;
+let run;
 let total;
-let fileStart;
+let completed;
 let progress;
 let phase;
 let unit;
@@ -22,7 +21,7 @@ let peak;
 let liveLine = null;
 
 function duration() {
-  const seconds = Math.floor(runTime() / 1000);
+  const seconds = Math.floor(run.elapsedMilliseconds / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
@@ -60,17 +59,21 @@ export function log(message, level, progressDone) {
   if (follow) output.scrollTop = output.scrollHeight;
 }
 
-function overall(fraction) {
-  progress = Math.max(progress, fileStart + fraction);
+function overall(fraction = 0) {
   const meter = el("overall");
-  meter.value = Math.floor((progress / total) * 100);
+  meter.value = Math.floor(((completed + fraction) / total) * 100);
   el("overall-value").textContent = `${meter.value}%`;
 }
 
-export function start(count) {
+function advance(fraction) {
+  progress = Math.max(progress, fraction);
+  overall(progress);
+}
+
+export function start(count, controller) {
+  run = controller;
   total = count;
-  fileStart = 0;
-  progress = 0;
+  completed = 0;
   peak = 0;
   lines.length = 0;
   liveLine = null;
@@ -82,7 +85,7 @@ export function start(count) {
   el("stage").textContent = "Opening temporary storage";
   el("current-file").textContent = "Starting";
   el("threads").textContent = "0";
-  overall(0);
+  overall();
   el("file-count").textContent = `0 / ${total}`;
   el("elapsed").textContent = duration();
   timer = setInterval(() => {
@@ -97,7 +100,7 @@ export function setPaused(paused) {
 }
 
 export function beginFile(index, name) {
-  fileStart = progress;
+  progress = 0;
   phase = 0;
   unit = undefined;
   el("current-file").textContent = name;
@@ -118,7 +121,7 @@ export function update(data) {
   else if (data.phase) {
     phase = steps[data.phase.name];
     unit = data.phase.unit;
-    overall(phase / phaseCount);
+    advance(phase / phaseCount);
   } else if (data.progress) {
     const { label, percent, line } = data.progress;
     el("stage").textContent = label;
@@ -127,7 +130,7 @@ export function update(data) {
     const phasePercent =
       data.progress.phasePercent ?? (label === unit ? percent : undefined);
     if (phasePercent !== undefined)
-      overall((phase + phasePercent / 100) / phaseCount);
+      advance((phase + phasePercent / 100) / phaseCount);
     log(line, "", data.progress.done);
   } else if (data.log !== undefined)
     log(data.log, data.level === "warn" ? "warn" : "");
@@ -136,12 +139,14 @@ export function update(data) {
 export function endFile(count, saved) {
   liveLine = null;
   el("file-count").textContent = `${count} / ${total}`;
-  if (saved) overall(1);
+  if (saved) completed++;
+  overall();
 }
 
 export function finish(message) {
   liveLine = null;
   clearInterval(timer);
+  overall();
   el("elapsed").textContent = duration();
   el("threads").textContent = `0 · peak ${peak}`;
   el("run-state").textContent = message;

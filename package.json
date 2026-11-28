@@ -22,12 +22,18 @@
         "types": "./dist/types/index.d.cts",
         "default": "./dist/gaussian-splat-lite.cjs"
       }
+    },
+    "./converter": {
+      "import": {
+        "types": "./dist/converter/index.d.ts",
+        "default": "./dist/converter/index.js"
+      }
     }
   },
   "scripts": {
-    "build": "vite build --mode production-es && vite build --mode production-cjs && vite build --mode dev-es && vite build --mode dev-cjs && npm run build:types",
-    "build:dev": "vite build --mode dev-es && vite build --mode dev-cjs && npm run build:types",
-    "build:production": "vite build --mode production-es && vite build --mode production-cjs && npm run build:types",
+    "build": "vite build --mode production-es && vite build --mode production-cjs && vite build --mode dev-es && vite build --mode dev-cjs && npm run build:types && npm run build:converter",
+    "build:dev": "vite build --mode dev-es && vite build --mode dev-cjs && npm run build:types && npm run build:converter",
+    "build:production": "vite build --mode production-es && vite build --mode production-cjs && npm run build:types && npm run build:converter",
     "build:site": "vite build --config vite.site.config.js",
     "build:types": "node scripts/check-declarations.js && node scripts/build-types.js",
     "build:wasm": "node rust/build_wasm.js",
@@ -49,7 +55,8 @@
     "test": "npm run test:js && npm run test:rust",
     "test:js": "node --test test/*.test.js",
     "test:rust": "cargo test --manifest-path rust/Cargo.toml --workspace --locked",
-    "build-sog": "node bin/build-sog.js"
+    "build-sog": "node bin/build-sog.js",
+    "build:converter": "node scripts/build-converter.js"
   },
   "files": [
     "bin",
@@ -82,6 +89,7 @@
     "@biomejs/biome": "1.9.4",
     "@jspm/core": "2.1.0",
     "@types/three": "0.187.0",
+    "esbuild": "0.25.2",
     "fflate": "0.8.3",
     "gaussian-splat-rs": "file:rust/gaussian-splat-rs/pkg",
     "publint": "0.3.24",

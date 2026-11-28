@@ -3,13 +3,13 @@ import { defineConfig } from "vite";
 import arraybuffer from "vite-plugin-arraybuffer";
 import glsl from "vite-plugin-glsl";
 
-import { converterPages, converterRuntime } from "./converter/vite.js";
 import { examples } from "./examples/catalog.js";
+import { converterPages } from "./examples/converter/vite.js";
+import { converterAliases } from "./scripts/converter-aliases.js";
 
 export default defineConfig({
   appType: "mpa",
   plugins: [
-    converterRuntime(),
     converterPages(),
     arraybuffer(),
     glsl({
@@ -19,6 +19,7 @@ export default defineConfig({
 
   resolve: {
     alias: {
+      ...converterAliases,
       "gaussian-splat-lite": path.resolve(__dirname, "src/index.js"),
     },
   },
@@ -68,7 +69,6 @@ export default defineConfig({
       },
     },
     plugins: () => [
-      converterRuntime(),
       arraybuffer(),
       glsl({
         include: ["**/*.glsl"],

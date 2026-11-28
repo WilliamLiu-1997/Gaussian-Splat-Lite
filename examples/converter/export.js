@@ -1,7 +1,7 @@
 import { Zip, ZipPassThrough } from "fflate";
-import { removeTemporary } from "./cleanup.js";
-import { filesIn } from "./results.js";
-import { reserveOutput } from "./write-output.js";
+import { removeTemporary } from "../../converter/cleanup.js";
+import { reserveOutput } from "../../converter/write-output.js";
+import { describeResult, filesIn } from "./results.js";
 
 async function archive(handle, source) {
   const writer = (await handle.createWritable()).getWriter();
@@ -28,21 +28,31 @@ async function archive(handle, source) {
     await writer.close();
   } catch (error) {
     zip.terminate();
-    await writer.abort();
+    try {
+      await writer.abort();
+    } catch {
+      // An already-failed stream can reject abort as well.
+    }
     throw error;
   }
 }
 
 export async function saveZip(scene) {
-  const handle = await reserveOutput(
-    scene.workingFolder,
-    scene.result.name,
-    ".zip",
-  );
+  // A late cancellation can keep the scene before its files have been counted.
+  scene.details ??= await describeResult(scene.result);
+  if (!scene.details.canPack)
+    throw new Error("This scene exceeds the ZIP size or file count limit.");
+  const handle = await reserveOutput(scene.workingFolder, scene.result.name, {
+    extension: ".zip",
+  });
   try {
     await archive(handle, scene.result);
   } catch (error) {
-    await removeTemporary(scene.workingFolder, handle.name);
+    try {
+      await removeTemporary(scene.workingFolder, handle.name);
+    } catch (cleanup) {
+      throw new Error(`${error.message}\n${cleanup.message}`, { cause: error });
+    }
     throw error;
   }
   return `Saved ${scene.workingFolder.name}/${handle.name}`;

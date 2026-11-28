@@ -1,5 +1,5 @@
-import { SplatFileType } from "gaussian-splat-lite";
 import { LoadingManager } from "three";
+import { SplatFileType } from "../../src/data/defines.js";
 
 const droppedPaths = new WeakMap();
 
@@ -59,13 +59,14 @@ export function fileTypeFor(file) {
   return undefined;
 }
 
+async function hasRadHeader(file) {
+  return (await file.slice(0, 4).text()) === "RAD0";
+}
+
 export async function detectFileType(file, url) {
   const fileType = fileTypeFor(file);
   if (fileType || url) return fileType;
-  const prefix = new Uint8Array(await file.slice(0, 4).arrayBuffer());
-  return String.fromCharCode(...prefix) === "RAD0"
-    ? SplatFileType.RAD
-    : undefined;
+  return (await hasRadHeader(file)) ? SplatFileType.RAD : undefined;
 }
 
 export function modelFromUrl(value) {
@@ -98,13 +99,23 @@ export async function modelFromEntries(entries) {
   return modelFromLocalFiles(files);
 }
 
-export function modelFromLocalFiles(selectedFiles) {
-  const files = selectedFiles.filter(
+export async function modelFromLocalFiles(selectedFiles) {
+  const entries = selectedFiles.filter(
     (entry) =>
-      !localPath(entry)
-        .split("/")
-        .some((part) => part.startsWith(".")),
+      (!entry.name.startsWith(".") || /\.radc?$/i.test(entry.name)) &&
+      !localPath(entry).split("/").includes("__MACOSX"),
   );
+  // A selected scene folder can itself be hidden. Keep its path for chunk URLs.
+  const root = entries.length && localPath(entries[0]).match(/^\.[^/]*\//)?.[0];
+  const start =
+    root && entries.every((entry) => localPath(entry).startsWith(root))
+      ? root.length
+      : 0;
+  // Exclude hidden subdirectories for every format, including hidden RAD headers.
+  const sceneFiles = entries.filter(
+    (entry) => !/(^|\/)\.[^/]*\//.test(localPath(entry).slice(start)),
+  );
+  const files = sceneFiles.filter((entry) => !entry.name.startsWith("."));
   const indexes = files.filter(
     (entry) =>
       entry.name.toLowerCase() === "lod-meta.json" ||
@@ -113,6 +124,18 @@ export function modelFromLocalFiles(selectedFiles) {
   const models = indexes.length
     ? indexes
     : files.filter((entry) => fileTypeFor(entry));
+  if (!models.length) {
+    // Converting .capture.ply produces a dot-prefixed RAD and companion files.
+    for (const entry of sceneFiles) {
+      if (!entry.name.startsWith(".")) continue;
+      if (fileTypeFor(entry)) {
+        // A real header and a macOS resource fork can both start with "._".
+        if (!(await hasRadHeader(entry))) continue;
+        models.push(entry);
+      }
+      files.push(entry);
+    }
+  }
   if (models.length > 1) {
     throw new Error(
       "Choose one model or metadata file together with its companion files.",
@@ -163,10 +186,10 @@ export function modelFromLocalFiles(selectedFiles) {
   if (indexes.length) {
     // Keep hierarchical URLs for relative chunk/image references. The manager
     // maps them to local blobs only at fetch time, including inside workers.
-    const baseUrl = "https://local-sog.invalid/";
+    const origin = "https://local-sog.invalid";
     const url = new URL(
       rootPath.split("/").map(encodeURIComponent).join("/"),
-      baseUrl,
+      origin,
     ).href;
     const blobs = new Map();
     let disposed = false;
@@ -174,7 +197,7 @@ export function modelFromLocalFiles(selectedFiles) {
     manager.setURLModifier((value) => {
       if (disposed) throw new Error("Local streamed source has been disposed");
       const asset = new URL(value, url);
-      if (asset.origin !== new URL(baseUrl).origin)
+      if (asset.origin !== origin)
         throw new Error(`Select the companion file: ${value}`);
       const companion = findFile(decodeURIComponent(asset.pathname), "");
       let blob = blobs.get(companion);

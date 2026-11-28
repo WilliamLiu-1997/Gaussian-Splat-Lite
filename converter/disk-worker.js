@@ -120,8 +120,11 @@ self.onmessage = async ({ data }) => {
     Atomics.store(state, 1, count);
     Atomics.store(state, 0, 1);
   } catch (error) {
-    const { written } = new TextEncoder().encodeInto(error.message, bytes);
-    Atomics.store(state, 1, written);
+    const message = new TextEncoder()
+      .encode(error?.message ?? String(error))
+      .subarray(0, bytes.length);
+    bytes.set(message);
+    Atomics.store(state, 1, message.length);
     Atomics.store(state, 0, -1);
   } finally {
     Atomics.notify(state, 0);

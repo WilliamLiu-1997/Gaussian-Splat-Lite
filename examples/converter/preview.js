@@ -1,5 +1,5 @@
-import { modelFromEntries } from "../examples/viewer/modelSource.js";
-import { loadFile, ui } from "../examples/viewer/viewer.js";
+import { modelFromEntries } from "../viewer/modelSource.js";
+import { loadFile, ui } from "../viewer/viewer.js";
 import { filesIn } from "./results.js";
 
 for (const type of ["dragover", "drop"])

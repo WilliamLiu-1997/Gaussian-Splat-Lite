@@ -22,6 +22,13 @@ if (isIOS) {
 }
 
 let dragDepth = 0;
+let selection = 0;
+
+function beginSelection() {
+  const request = ++selection;
+  const loadId = activeLoad;
+  return () => request === selection && loadId === activeLoad;
+}
 
 function isFileDrag(event) {
   return Array.from(event.dataTransfer?.types ?? []).includes("Files");
@@ -65,6 +72,9 @@ urlForm.addEventListener("submit", (event) => {
 });
 
 async function loadLocalFiles(files) {
+  const archive = files.length === 1 && /\.zip$/i.test(files[0].name);
+  if (archive) cancelLoading();
+  const isCurrent = beginSelection();
   // Some drag relays replace directories with empty, path-named files.
   if (
     files.length === 1 &&
@@ -81,27 +91,24 @@ async function loadLocalFiles(files) {
     return;
   }
 
-  const archive = files.length === 1 && /\.zip$/i.test(files[0].name);
-  if (archive) cancelLoading();
-  const loadId = activeLoad;
   try {
     let model;
     if (archive) {
       const { filesInArchive } = await import("./zipFiles.js");
       const entries = filesInArchive(files[0], () => {
-        if (loadId !== activeLoad)
+        if (!isCurrent())
           throw new DOMException("Model load cancelled", "AbortError");
       });
       model = await modelFromEntries(entries);
-      if (loadId !== activeLoad) {
-        model.dispose?.();
-        return;
-      }
-    } else model = modelFromLocalFiles(files);
+    } else model = await modelFromLocalFiles(files);
+    if (!isCurrent()) {
+      model.dispose?.();
+      return;
+    }
     const { file, ...source } = model;
     void loadFile(file, source);
   } catch (error) {
-    if (loadId === activeLoad) ui.showToast(error.message);
+    if (isCurrent()) ui.showToast(error.message);
   }
 }
 
@@ -141,10 +148,10 @@ window.addEventListener("drop", async (event) => {
   clearDragState();
 
   cancelLoading();
-  const loadId = activeLoad;
+  const isCurrent = beginSelection();
   try {
     const files = await filesFromDrop(event.dataTransfer);
-    if (loadId !== activeLoad) return;
+    if (!isCurrent()) return;
     if (files.length) {
       loadLocalFiles(files);
     } else {
@@ -154,7 +161,7 @@ window.addEventListener("drop", async (event) => {
       ui.setStatus("PLY, SPZ, SOG, RAD, and LCC2 files are supported");
     }
   } catch (error) {
-    if (loadId !== activeLoad) return;
+    if (!isCurrent()) return;
     ui.showToast(`Could not read dropped files: ${error.message}`);
     ui.setStatus("Could not read dropped files");
   }

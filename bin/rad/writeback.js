@@ -18,12 +18,15 @@ export class Writeback {
 
   complete() {
     if (!this.pending || Atomics.load(this.state, 0)) return;
+    const { checkError } = this.pending;
     this.pending = undefined;
     const error = Atomics.load(this.state, 1);
-    if (error)
+    if (error) {
+      if (typeof checkError === "function") checkError();
       throw new Error(
         `Unable to write back file data: ${getSystemErrorName(error)}`,
       );
+    }
   }
 
   // Cancellation interrupts conversion, but keeps the batch tracked. Cleanup
@@ -65,8 +68,8 @@ export class Writeback {
     const files = [...this.files.keys()];
     Atomics.store(this.state, 0, files.length);
     Atomics.store(this.state, 1, 0);
-    this.pending = { files: this.files, bytes: this.bytes };
-    this.submit(files, this.state);
+    const checkError = this.submit(files, this.state);
+    this.pending = { files: this.files, bytes: this.bytes, checkError };
     this.files = new Map();
     this.bytes = 0;
   }

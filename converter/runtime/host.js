@@ -1,5 +1,5 @@
 import { Buffer } from "@jspm/core/nodelibs/buffer";
-import decoderUrl from "../../bin/decoder/decoder_bg.wasm?url";
+import { decoderUrl } from "./wasm.js";
 export { Buffer };
 export { deflateSync as deflateRawSync } from "fflate";
 export const decoderSource = () => decoderUrl;
@@ -17,9 +17,10 @@ export const reportProgress = (
   label,
   percent,
   phasePercent,
-) =>
-  self.postMessage({
-    progress: { line, label, percent, phasePercent, done: done && end },
-  });
+) => {
+  const progress = { line, label, percent, done: done && end };
+  if (phasePercent !== undefined) progress.phasePercent = phasePercent;
+  self.postMessage({ progress });
+};
 
 export const workerOverhead = 32 * 1024 ** 2;
